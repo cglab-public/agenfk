@@ -1,58 +1,23 @@
 /**
  * AgenFK MCP Enforcer — Opencode plugin (tool.execute.before hook)
  *
- * Blocks all three bypass routes that agents use instead of MCP tool calls:
+ * Blocks the two routes around the AgEnFK server (the single owner of state):
  *   1. Direct database reads  — .agenfk/db.sqlite or .agenfk/db.json via bash or read
  *   2. Direct REST API calls  — curl/wget to localhost:3000 or 127.0.0.1:3000
- *   3. CLI state queries      — agenfk list/status/get/show, npx agenfk, etc.
+ *
+ * The `agenfk` CLI and the MCP tools are interchangeable ways in, so neither is
+ * blocked (BUG ec325925).
  *
  * Installed to ~/.config/opencode/plugins/ during agenfk install/upgrade.
  */
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 
-function isMcpAvailable() {
-    try {
-        const homeDir = os.homedir();
-        const claudeJsonPath = path.join(homeDir, '.claude.json');
-        if (!fs.existsSync(claudeJsonPath)) return false;
-        const claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf8'));
-        if (!claudeJson?.mcpServers?.agenfk) return false;
-        const remoteSettingsPath = path.join(homeDir, '.claude', 'remote-settings.json');
-        if (fs.existsSync(remoteSettingsPath)) {
-            const remoteSettings = JSON.parse(fs.readFileSync(remoteSettingsPath, 'utf8'));
-            const allowed = remoteSettings?.allowedMcpServers;
-            if (Array.isArray(allowed) && allowed.length === 0) return false;
-        }
-        return true;
-    } catch {
-        return true;
-    }
-}
-
-const FALLBACK_FLAG = path.join(
-    process.env.HOME || process.env.USERPROFILE || '',
-    '.agenfk', 'mcp-fallback-approved'
-);
-const FALLBACK_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
-function isFallbackApproved() {
-    try {
-        if (!fs.existsSync(FALLBACK_FLAG)) return false;
-        const ageMs = Date.now() - fs.statSync(FALLBACK_FLAG).mtimeMs;
-        if (ageMs < FALLBACK_TTL_MS) return true;
-        fs.unlinkSync(FALLBACK_FLAG); // expired — clean up
-        return false;
-    } catch {
-        return false;
-    }
-}
-
-const FALLBACK_INSTRUCTIONS =
-    '\nIf MCP tools are genuinely unavailable: tell the user and ask permission. ' +
-    'Once approved, run: touch ~/.agenfk/mcp-fallback-approved (expires in 5 min).';
+/** How to read state instead: the CLI first, MCP as its equivalent. */
+const INSTEAD =
+    '\nRead and change state through the agenfk CLI instead: agenfk list --project <id> --json • agenfk get <id> --json • ' +
+    'agenfk create ... • agenfk update <id> ... • agenfk verify <id> ... (or the equivalent agenfk MCP tools, when installed with --with-mcp).';
 
 function isInsideAgenFKProjectDir(dirPath) {
     if (!dirPath) return false;
@@ -68,9 +33,6 @@ function isInsideAgenFKProjectDir(dirPath) {
 export default async function agenfkMcpEnforcer(context) {
     return {
         'tool.execute.before': async (input) => {
-            // If user has approved fallback, allow bypass for this window
-            if (isFallbackApproved()) return;
-
             const tool = (input.tool || '').toLowerCase();
             const args = input.args || {};
             const cwd = context?.directory || process.cwd();
@@ -83,9 +45,8 @@ export default async function agenfkMcpEnforcer(context) {
                 if (/\.agenfk[/\\](db\.sqlite|db\.json)/.test(command)) {
                     throw new Error(
                         'AgenFK MCP ENFORCER: Direct database access is forbidden.\n' +
-                        'Do NOT read .agenfk/db.sqlite or .agenfk/db.json via Bash.\n' +
-                        'Use MCP tool invocations: list_items() • get_item() • create_item() • update_item()' +
-                        FALLBACK_INSTRUCTIONS
+                        'Do NOT read .agenfk/db.sqlite or .agenfk/db.json via Bash.' +
+                        INSTEAD
                     );
                 }
 
@@ -94,23 +55,10 @@ export default async function agenfkMcpEnforcer(context) {
                     if (isInsideAgenFKProjectDir(cwd)) {
                         throw new Error(
                             'AgenFK MCP ENFORCER: Direct REST API calls to the AgenFK server are forbidden.\n' +
-                            'Do NOT use curl/wget to http://localhost:3000.\n' +
-                            'Use MCP tool invocations: list_items() • create_item() • update_item() • verify_changes()' +
-                            FALLBACK_INSTRUCTIONS
+                            'Do NOT use curl/wget to http://localhost:3000.' +
+                            INSTEAD
                         );
                     }
-                }
-
-                // 3. Block agenfk CLI state query commands (only when MCP is available).
-                if (isMcpAvailable() &&
-                    (/\bagenfk\s+(list|status|get|show|board)\b/.test(command) ||
-                     /\bnpx\s+agenfk\s+(list|status|get|show|board)\b/.test(command))) {
-                    throw new Error(
-                        'AgenFK MCP ENFORCER: agenfk CLI state queries are forbidden while MCP is available.\n' +
-                        'Do NOT use: agenfk list, agenfk status, agenfk get, npx agenfk ...\n' +
-                        'Use MCP tool invocations: list_items() • get_item() • list_projects()' +
-                        FALLBACK_INSTRUCTIONS
-                    );
                 }
             }
 
@@ -121,9 +69,8 @@ export default async function agenfkMcpEnforcer(context) {
                 if (/\.agenfk[/\\](db\.sqlite|db\.json)/.test(filePath)) {
                     throw new Error(
                         'AgenFK MCP ENFORCER: Direct reads of AgenFK database files are forbidden.\n' +
-                        'Do NOT read .agenfk/db.sqlite or .agenfk/db.json.\n' +
-                        'Use MCP tool invocations: list_items() • get_item() • create_item() • update_item()' +
-                        FALLBACK_INSTRUCTIONS
+                        'Do NOT read .agenfk/db.sqlite or .agenfk/db.json.' +
+                        INSTEAD
                     );
                 }
             }

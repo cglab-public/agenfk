@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { requestOrigin } from '../util/publicUrl.js';
 import axios from 'axios';
 import jwt, { JwtHeader, SigningKeyCallback } from 'jsonwebtoken';
 import jwksClient, { JwksClient } from 'jwks-rsa';
@@ -44,9 +45,11 @@ async function getDiscovery(tenantId: string) {
   return entry;
 }
 
+// The host the user is browsing, never AGENFK_HUB_PUBLIC_URL: the state cookie
+// was set on this host, so the provider must send the user back to it. The
+// protocol honours X-Forwarded-Proto only from a trusted proxy.
 function callbackUrl(req: Request): string {
-  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol;
-  return `${proto}://${req.get('host')}/auth/entra/callback`;
+  return `${requestOrigin(req)}/auth/entra/callback`;
 }
 
 function verifyIdToken(idToken: string, jwks: JwksClient, audience: string, issuer: string): Promise<jwt.JwtPayload> {
@@ -123,12 +126,17 @@ export function entraRouter(ctx: HubServerContext): Router {
 
     const subject = (claims.oid as string | undefined) || (claims.sub as string | undefined);
     const email = (claims.email as string | undefined) || (claims.preferred_username as string | undefined);
+    // `name` comes free with the `profile` scope we already request. It is
+    // optional: a tenant can withhold it, and sign-in must still succeed.
+    const name = (claims.name as string | undefined)
+      || [claims.given_name, claims.family_name].filter(Boolean).join(' ').trim()
+      || undefined;
     if (!subject || !email) return res.status(403).json({ error: 'Entra ID token missing sub/email' });
 
     const allow = checkEmailAllowlist(email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email });
+    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email, name });
     if (!user) return res.status(403).json({ error: 'Account not invited — ask your admin to invite you first' });
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
     await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);

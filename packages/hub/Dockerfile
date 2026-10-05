@@ -45,6 +45,8 @@ COPY packages/flow-editor packages/flow-editor
 COPY packages/brand packages/brand
 COPY packages/hub packages/hub
 COPY packages/hub-ui packages/hub-ui
+# Each tsc package's prebuild cleans its dist/ with this script (d781db05).
+COPY scripts/clean-dist.mjs scripts/
 
 RUN npm run build -w packages/core \
  && npm run build -w packages/hub \

@@ -28,6 +28,7 @@
  * Same server message feeds the CLI (`agenfk verify`) and MCP
  * `validate_progress`, so fixing it here fixes both clients.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -42,7 +43,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./verify-diagnostics-test-db.sqlite');
+const TEST_DB = testDbPath('verify-diagnostics-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
@@ -54,7 +55,8 @@ const LOG_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-verifytest-'));
 setVerifyLogRootForTests(LOG_ROOT);
 
 // Import AFTER the env var so storage lands in the test DB.
-import { app, initStorage, VERIFY_TOKEN, getVerifyLogRoot, setVerifyLogRootForTests } from '../server';
+import { app, initStorage, VERIFY_TOKEN, getVerifyLogRoot, setVerifyLogRootForTests, storage } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 /** Item log dir for one item, under the temp root. */
 const itemLogDir = (itemId: string) => path.join(getVerifyLogRoot(), itemId);
@@ -70,8 +72,9 @@ const clearLogRoot = () => {
 
 const setupItem = async (name: string) => {
   const p = (await request(app).post('/projects').send({ name })).body;
+  await bindRoleLessDefaultFlow(storage, p.id);
   const item = (await request(app).post('/items').send({ type: 'TASK', title: name, projectId: p.id })).body;
-  await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+  await storage.updateItem(item.id, { status: 'IN_PROGRESS' } as any);
   return { p, item };
 };
 
@@ -472,8 +475,9 @@ describe('DELETE /projects/:id — purges verify logs with the project (BUG b233
   it('removes the item log directories that the hard delete would otherwise orphan', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PurgeProject' })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'x', projectId: p.id })).body;
-    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(item.id, { status: 'IN_PROGRESS' } as any);
 
     await request(app)
       .post(`/items/${item.id}/validate`)

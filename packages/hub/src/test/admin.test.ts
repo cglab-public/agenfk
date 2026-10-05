@@ -3,10 +3,22 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { encryptSecret, decryptSecret } from '../crypto';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-admin-test-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64); // 64 hex chars = 32 bytes
@@ -17,10 +29,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 describe('crypto', () => {
   it('round-trips ciphertext', () => {
@@ -52,6 +60,8 @@ describe('admin routes', () => {
       defaultOrgId: 'org',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org', 'view@x', 'longenough1', 'viewer');
@@ -59,20 +69,20 @@ describe('admin routes', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('rejects non-admin sessions', async () => {
     const cookie = await loginAs(app, 'view@x', 'longenough1');
-    const r = await supertest(app).get('/v1/admin/auth-config').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/admin/auth-config').set('Cookie', cookie);
     expect(r.status).toBe(403);
   });
 
   it('admin can read auth-config; secrets never echoed', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).get('/v1/admin/auth-config').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/admin/auth-config').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.passwordEnabled).toBe(true);
     expect(r.body.google.clientSecretSet).toBe(false);
@@ -80,7 +90,7 @@ describe('admin routes', () => {
 
   it('PUT /auth-config encrypts client secrets at rest', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).put('/v1/admin/auth-config').set('Cookie', cookie).send({
+    const r = await supertest(__server).put('/v1/admin/auth-config').set('Cookie', cookie).send({
       googleEnabled: true,
       google: { clientId: 'google-client', clientSecret: 'top-secret' },
       emailAllowlist: ['acme.com'],
@@ -95,11 +105,11 @@ describe('admin routes', () => {
 
   it('issues api keys (raw token shown once) and lists them', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/api-keys').set('Cookie', cookie).send({ label: 'laptop-a' });
+    const r = await supertest(__server).post('/v1/admin/api-keys').set('Cookie', cookie).send({ label: 'laptop-a' });
     expect(r.status).toBe(201);
     expect(r.body.token.startsWith('agk_')).toBe(true);
 
-    const list = await supertest(app).get('/v1/admin/api-keys').set('Cookie', cookie);
+    const list = await supertest(__server).get('/v1/admin/api-keys').set('Cookie', cookie);
     expect(list.body).toHaveLength(1);
     expect(list.body[0].label).toBe('laptop-a');
     expect(list.body[0].tokenHashPreview).toMatch(/^[0-9a-f]{8}$/);
@@ -107,29 +117,29 @@ describe('admin routes', () => {
 
   it('revokes api keys via preview', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const issued = await supertest(app).post('/v1/admin/api-keys').set('Cookie', cookie).send({});
-    const list = await supertest(app).get('/v1/admin/api-keys').set('Cookie', cookie);
+    const issued = await supertest(__server).post('/v1/admin/api-keys').set('Cookie', cookie).send({});
+    const list = await supertest(__server).get('/v1/admin/api-keys').set('Cookie', cookie);
     const preview = list.body[0].tokenHashPreview;
-    const r = await supertest(app).delete(`/v1/admin/api-keys/${preview}`).set('Cookie', cookie);
+    const r = await supertest(__server).delete(`/v1/admin/api-keys/${preview}`).set('Cookie', cookie);
     expect(r.body.revoked).toBe(1);
-    const after = await supertest(app).get('/v1/admin/api-keys').set('Cookie', cookie);
+    const after = await supertest(__server).get('/v1/admin/api-keys').set('Cookie', cookie);
     expect(after.body[0].revokedAt).not.toBeNull();
     void issued;
   });
 
   it('invites users and prevents duplicates', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/users/invite').set('Cookie', cookie)
+    const r = await supertest(__server).post('/v1/admin/users/invite').set('Cookie', cookie)
       .send({ email: 'new@x', password: 'longenough1', role: 'viewer' });
     expect(r.status).toBe(201);
-    const dup = await supertest(app).post('/v1/admin/users/invite').set('Cookie', cookie)
+    const dup = await supertest(__server).post('/v1/admin/users/invite').set('Cookie', cookie)
       .send({ email: 'new@x', password: 'longenough1', role: 'viewer' });
     expect(dup.status).toBe(409);
   });
 
   it('invites SSO-only users when password is omitted', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/users/invite').set('Cookie', cookie)
+    const r = await supertest(__server).post('/v1/admin/users/invite').set('Cookie', cookie)
       .send({ email: 'sso-only@x', role: 'viewer' });
     expect(r.status).toBe(201);
     const row = await ctx.db.get<any>('SELECT * FROM users WHERE email = ?', ['sso-only@x']);
@@ -140,25 +150,25 @@ describe('admin routes', () => {
 
   it('rejects invites with too-short password', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/users/invite').set('Cookie', cookie)
+    const r = await supertest(__server).post('/v1/admin/users/invite').set('Cookie', cookie)
       .send({ email: 'shortpw@x', password: 'short', role: 'viewer' });
     expect(r.status).toBe(400);
   });
 
   it('password login fails for an SSO-only invited user', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    await supertest(app).post('/v1/admin/users/invite').set('Cookie', cookie)
+    await supertest(__server).post('/v1/admin/users/invite').set('Cookie', cookie)
       .send({ email: 'sso-only2@x', role: 'viewer' });
     // Try password login against the SSO-only invite — must be rejected.
-    const r = await supertest(app).post('/auth/login')
+    const r = await supertest(__server).post('/auth/login')
       .send({ email: 'sso-only2@x', password: 'anythinglong' });
     expect(r.status).toBe(401);
   });
 
   it('cannot delete self', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const me = await supertest(app).get('/auth/me').set('Cookie', cookie);
-    const r = await supertest(app).delete(`/v1/admin/users/${me.body.userId}`).set('Cookie', cookie);
+    const me = await supertest(__server).get('/auth/me').set('Cookie', cookie);
+    const r = await supertest(__server).delete(`/v1/admin/users/${me.body.userId}`).set('Cookie', cookie);
     expect(r.status).toBe(400);
   });
 
@@ -166,7 +176,7 @@ describe('admin routes', () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
     const target = await ctx.db.get<any>('SELECT id FROM users WHERE email = ?', ['view@x']);
     expect(target?.id).toBeTruthy();
-    const r = await supertest(app).delete(`/v1/admin/users/${target.id}`).set('Cookie', cookie);
+    const r = await supertest(__server).delete(`/v1/admin/users/${target.id}`).set('Cookie', cookie);
     expect(r.status).toBe(200);
     const after = await ctx.db.get<any>('SELECT id FROM users WHERE email = ?', ['view@x']);
     expect(after).toBeFalsy();
@@ -174,7 +184,7 @@ describe('admin routes', () => {
 
   it('delete returns 404 for an unknown id', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).delete(`/v1/admin/users/00000000-0000-0000-0000-000000000000`).set('Cookie', cookie);
+    const r = await supertest(__server).delete(`/v1/admin/users/00000000-0000-0000-0000-000000000000`).set('Cookie', cookie);
     expect(r.status).toBe(404);
   });
 });

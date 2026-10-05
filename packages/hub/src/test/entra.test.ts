@@ -9,6 +9,17 @@ import { encryptSecret } from '../crypto';
 import { _resetEntraDiscoveryCache } from '../auth/entra';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 let mockClaims: any = {};
 
 // Mock only verify; keep sign + everything else from the real module so
@@ -63,19 +74,21 @@ describe('Entra OIDC flow', () => {
       defaultOrgId: 'org',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     vi.restoreAllMocks();
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('returns 404 when not configured', async () => {
-    const r = await supertest(app).get('/auth/entra/start');
+    const r = await supertest(__server).get('/auth/entra/start');
     expect(r.status).toBe(404);
   });
 
@@ -89,7 +102,7 @@ describe('Entra OIDC flow', () => {
         issuer: 'https://login.microsoftonline.com/tenant-uuid/v2.0',
       },
     } as any);
-    const r = await supertest(app).get('/auth/entra/start').redirects(0);
+    const r = await supertest(__server).get('/auth/entra/start').redirects(0);
     expect(r.status).toBe(302);
     expect(r.headers.location).toContain('login.microsoftonline.com/tenant-uuid/oauth2/v2.0/authorize');
     expect(r.headers.location).toContain('client_id=app-client-id');
@@ -97,7 +110,7 @@ describe('Entra OIDC flow', () => {
 
   it('callback rejects bad state', async () => {
     await enableEntra(ctx.db);
-    const r = await supertest(app).get('/auth/entra/callback?code=x&state=wrong');
+    const r = await supertest(__server).get('/auth/entra/callback?code=x&state=wrong');
     expect(r.status).toBe(400);
   });
 
@@ -117,11 +130,11 @@ describe('Entra OIDC flow', () => {
     const postSpy = vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt.token' } } as any);
     mockClaims = { oid: 'entra-oid-1', email: 'bob@acme.com' };
 
-    const start = await supertest(app).get('/auth/entra/start').redirects(0);
+    const start = await supertest(__server).get('/auth/entra/start').redirects(0);
     const stateCookie = start.headers['set-cookie']?.[0];
     const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
 
-    const cb = await supertest(app)
+    const cb = await supertest(__server)
       .get(`/auth/entra/callback?code=abc&state=${state}`)
       .set('Cookie', stateCookie!)
       .redirects(0);
@@ -149,11 +162,11 @@ describe('Entra OIDC flow', () => {
     vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt.token' } } as any);
     mockClaims = { oid: 'entra-stranger', email: 'stranger@acme.com' };
 
-    const start = await supertest(app).get('/auth/entra/start').redirects(0);
+    const start = await supertest(__server).get('/auth/entra/start').redirects(0);
     const stateCookie = start.headers['set-cookie']?.[0];
     const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
 
-    const cb = await supertest(app)
+    const cb = await supertest(__server)
       .get(`/auth/entra/callback?code=abc&state=${state}`)
       .set('Cookie', stateCookie!);
     expect(cb.status).toBe(403);

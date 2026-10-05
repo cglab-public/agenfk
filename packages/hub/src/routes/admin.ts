@@ -2,10 +2,11 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
+import { checkEmailAllowlist } from '../auth/oauth.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
-import { DEFAULT_FLOW } from '@agenfk/core';
+import { DEFAULT_FLOW, describeFlowContract, mergeStepContracts, registryInstallSteps, flowChecksErrors } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
 import { isOnboardingKeyLabel } from '../util/keyLabel.js';
@@ -16,7 +17,7 @@ import { recomputeRollups } from '../rollup.js';
 import { loadModelMeta, isLicenseClass, isHarnessName } from '../util/modelMeta.js';
 import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
-import { rateLimit } from '../util/rateLimit.js';
+import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { mintChildHubInvite } from './federation.js';
 import { parentUrlFromInviteToken, inviteExpiryFromToken } from '../auth/inviteToken.js';
 import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
@@ -28,7 +29,7 @@ import { outboxDepth } from '../services/federation/federationSync.js';
 import { releaseParentFlows } from '../services/federation/parentFlows.js';
 import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
 import { httpFederationClient, type FederationClient } from '../services/federation/federationClient.js';
-import { publicHubUrl } from '../util/publicUrl.js';
+import { publicHubUrl, requestOrigin } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 import {
@@ -44,6 +45,8 @@ import {
   ghHeaders,
   listRegistryFiles,
 } from '../services/flowRegistry.js';
+import { listRegistryPulls } from '../services/registryPulls.js';
+import { purgeRevokedJiraConnections } from '../services/jira.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -98,13 +101,82 @@ function publicAuthConfig(row: AuthConfigRow) {
   };
 }
 
+interface SignInAdmin { id?: string; email: string; password_hash: string | null; provider: string }
+
+/**
+ * Whether at least one of `admins` (the org's active admins) could still sign
+ * in under this config, judged the way the sign-in routes judge it: password
+ * login needs a password account and ignores the allowlist (/auth/login), and
+ * Google/Entra need the provider on with everything its callback needs, plus
+ * an email the allowlist lets through (auth/google.ts, auth/entra.ts). A
+ * method being "on" is not enough; somebody has to be able to use it.
+ *
+ * An approximation in one respect: the callbacks check the allowlist against
+ * the email the identity provider returns, and this checks the stored
+ * users.email. They differ only for an admin who signs in under another
+ * address than the one they were invited with.
+ */
+export function adminCanStillSignIn(cfg: AuthConfigRow, admins: SignInAdmin[]): boolean {
+  const byPassword = !!cfg.password_enabled && admins.some(a => a.provider === 'password' && !!a.password_hash);
+  if (byPassword) return true;
+  const google = !!cfg.google_enabled && !!cfg.google_client_id?.trim() && !!cfg.google_client_secret_enc;
+  const entra = !!cfg.entra_enabled && !!cfg.entra_tenant_id?.trim() && !!cfg.entra_client_id?.trim() && !!cfg.entra_client_secret_enc;
+  return (google || entra) && admins.some(a => checkEmailAllowlist(a.email, cfg.email_allowlist).allowed);
+}
+
+/** The org's active admins, as the sign-in checks need them. Exported for tests that hold this read. */
+export const ACTIVE_ADMINS_SQL = "SELECT id, email, password_hash, provider FROM users WHERE org_id = ? AND role = 'admin' AND active = 1";
+
+/** Why no admin could sign in under this config, for the refusal; null when one can. */
+export function signInLockoutReason(cfg: AuthConfigRow, admins: SignInAdmin[]): string | null {
+  if (adminCanStillSignIn(cfg, admins)) return null;
+  if (cfg.password_enabled && !admins.some(a => a.provider === 'password' && !!a.password_hash)) {
+    return 'This would leave no admin able to sign in: no admin has an email + password account any more '
+      + '(signing in with Google or Entra once moves an account to it), and no single sign-on provider is set up '
+      + 'with an allowlist that lets an admin in.';
+  }
+  return 'This would leave no admin able to sign in: keep email + password on, or finish setting up '
+    + 'Google or Microsoft Entra (client ID, secret and, for Entra, the tenant) with an allowlist '
+    + 'that still lets an admin in.';
+}
+
+/**
+ * A WHERE fragment that holds unless the row is the org's last active admin.
+ * Binds two parameters: the org id, then the row's id.
+ */
+const NOT_LAST_ACTIVE_ADMIN = `NOT (role = 'admin' AND active = 1 AND (
+  SELECT COUNT(*) FROM users others
+  WHERE others.org_id = ? AND others.role = 'admin' AND others.active = 1 AND others.id <> ?
+) = 0)`;
+const LAST_ADMIN_ERROR = 'This is the last active admin; make someone else an admin first.';
+
 export function adminRouter(ctx: HubServerContext): Router {
   const router = Router();
 
   // Admin routes are session-guarded, but several mutate state or run wide
   // queries, so bound them too rather than relying on the guard alone.
-  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, message: 'Too many requests, slow down.' }));
-  const guard = requireAdmin(ctx.config.sessionSecret);
+  // Keyed by the signed-in user, not the address: the hub is reached through
+  // shared corporate egress, and an IP bucket would be an office-wide cap.
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
+  const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
+
+  const activeAdmins = (orgId: string) => ctx.db.all<SignInAdmin>(ACTIVE_ADMINS_SQL, [orgId]);
+  /**
+   * Whether taking `userId`'s admin access away leaves no admin who can sign
+   * in. Counting active admins is not enough: an admin outside the allowlist,
+   * or without a password account once password is off, still counts but can
+   * never sign in again once their session ends. Judged as "makes it worse",
+   * like the sign-in config guard: an org already in that state is not blocked.
+   */
+  const removalStrandsSignIn = async (orgId: string, userId: string): Promise<boolean> => {
+    const cfg = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
+    if (!cfg) return false;
+    const admins = await activeAdmins(orgId);
+    if (!admins.some(a => a.id === userId)) return false;
+    return adminCanStillSignIn(cfg, admins) && !adminCanStillSignIn(cfg, admins.filter(a => a.id !== userId));
+  };
+  const STRANDS_SIGN_IN = 'This would leave no admin able to sign in: the admins left are outside the allowlist or '
+    + 'have no way to sign in that is switched on. Fix the sign-in settings first.';
 
   // ── Auth config ──────────────────────────────────────────────────────────
   router.get('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
@@ -116,9 +188,12 @@ export function adminRouter(ctx: HubServerContext): Router {
   router.put('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const b = req.body ?? {};
+    const current = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
+    if (!current) return res.status(404).json({ error: 'auth_config row missing for org' });
+    const next: AuthConfigRow = { ...current };
     const updates: string[] = [];
     const params: any[] = [];
-    const setField = (col: string, val: any) => { updates.push(`${col} = ?`); params.push(val); };
+    const setField = (col: keyof AuthConfigRow, val: any) => { updates.push(`${col} = ?`); params.push(val); (next as any)[col] = val; };
 
     if (b.passwordEnabled !== undefined) setField('password_enabled', b.passwordEnabled ? 1 : 0);
     if (b.googleEnabled !== undefined) setField('google_enabled', b.googleEnabled ? 1 : 0);
@@ -135,6 +210,16 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (Array.isArray(b.emailAllowlist)) setField('email_allowlist', JSON.stringify(b.emailAllowlist));
 
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    // Saving a config nobody can sign in with locks the whole org out, the
+    // admin making the change included.
+    const admins = await activeAdmins(orgId);
+    // Refuse only a save that makes things worse: a config already stored in a
+    // state no admin can sign in under (saved before this guard existed) must
+    // still accept a step towards fixing it.
+    if (adminCanStillSignIn(current, admins)) {
+      const reason = signInLockoutReason(next, admins);
+      if (reason) return res.status(400).json({ error: reason });
+    }
     params.push(orgId);
     await ctx.db.run(`UPDATE auth_config SET ${updates.join(', ')} WHERE org_id = ?`, params);
     const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
@@ -222,6 +307,8 @@ export function adminRouter(ctx: HubServerContext): Router {
       "UPDATE api_keys SET revoked_at = datetime('now') WHERE org_id = ? AND token_hash LIKE ? AND revoked_at IS NULL",
       [req.session!.orgId, `${preview}%`],
     );
+    // A revoked key's JIRA token must not outlive it (CGLAB-412).
+    await purgeRevokedJiraConnections(ctx.db, req.session!.orgId);
     res.json({ revoked: result.changes });
   }));
 
@@ -281,6 +368,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         [orgId, orgId, userKey],
       );
       revokedApiKeys = r.changes;
+      await purgeRevokedJiraConnections(ctx.db, orgId);
     });
 
     res.status(201).json({ userKey, revokedApiKeys });
@@ -706,6 +794,29 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (!record) { res.status(404).json({ error: 'Unknown merge' }); return; }
     if (record.reverted_at) { res.status(409).json({ error: 'This merge has already been reverted' }); return; }
 
+    // Superseded: the merge moved events, and a newer merge has since taken
+    // every one of them onward. Reverting now would move nothing yet mark this
+    // merge reverted, using it up for good. Refuse, and keep it revertable for
+    // when the newer merge has been reverted first. (A merge that moved no
+    // events has nothing to supersede and reverts as before.)
+    const claim = await ctx.db.get<{ journaled: number; on_target: number }>(
+      `SELECT COUNT(*) AS journaled,
+              SUM(CASE WHEN lower(e.user_key) = lower(?) THEN 1 ELSE 0 END) AS on_target
+         FROM user_key_merge_events j
+         JOIN events e ON e.event_id = j.event_id AND e.org_id = ?
+        WHERE j.merge_id = ?`,
+      [record.to_user_key, orgId, id],
+    );
+    const journaled = Number(claim?.journaled ?? 0);
+    const SUPERSEDED = 'A newer merge has since taken these events. Revert the newer merge first; this one stays revertable.';
+    if (journaled > 0 && Number(claim?.on_target ?? 0) === 0) {
+      res.status(409).json({ error: SUPERSEDED });
+      return;
+    }
+    // Thrown inside the transaction when a merge landed after the check above:
+    // rolls the revert back instead of marking it reverted with nothing moved.
+    class Superseded extends Error {}
+
     // Oldest affected day BEFORE the restore, or the range is unrecoverable.
     const span = await ctx.db.get<{ first_day: string | null }>(
       `SELECT MIN(date(e.occurred_at)) AS first_day
@@ -718,6 +829,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     let eventsRestored = 0;
     let aliasesRemoved = 0;
     let aliasesRestored = 0;
+    try {
     await ctx.db.transaction(async () => {
       // Only rows still sitting on this merge's target are ours to move: if a
       // later merge took them onward, reverting here would corrupt the chain.
@@ -733,6 +845,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         [id, orgId, record.to_user_key, id],
       );
       eventsRestored = restored.changes;
+      if (eventsRestored === 0 && journaled > 0) throw new Superseded(SUPERSEDED);
       if (eventsRestored > 0) {
         // Both identities change shape, so neither's stale rows may survive:
         // the recompute only rebuilds groups that still have events.
@@ -804,6 +917,10 @@ export function adminRouter(ctx: HubServerContext): Router {
         [id, orgId],
       );
     });
+    } catch (e) {
+      if (e instanceof Superseded) { res.status(409).json({ error: e.message }); return; }
+      throw e;
+    }
 
     let daysRecomputed = 0;
     if (eventsRestored > 0) {
@@ -822,10 +939,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       aliasesRemoved,
       aliasesRestored,
       daysRecomputed,
-      note: eventsRestored === 0
-        ? 'Nothing to restore: a newer merge has since claimed these events, so this one is superseded. '
-          + 'Revert the newer merge first.'
-        : null,
+      // A superseded merge is refused above, so a zero here is a merge that
+      // never moved anything.
+      note: eventsRestored === 0 ? 'This merge moved no events, so there was nothing to move back.' : null,
     });
   }));
 
@@ -896,7 +1012,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       return;
     }
     if (await openCampaign(orgId)) {
-      res.status(409).json({ error: 'A repoint campaign is already open. Close it before starting another.' });
+      res.status(409).json({ error: 'An address change is already under way. End it before starting another.' });
       return;
     }
 
@@ -985,7 +1101,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       "UPDATE repoint_campaigns SET closed_at = datetime('now') WHERE id = ? AND org_id = ? AND closed_at IS NULL",
       [req.params.id, req.session!.orgId],
     );
-    if (r.changes === 0) { res.status(404).json({ error: 'Unknown or already-closed campaign' }); return; }
+    if (r.changes === 0) { res.status(404).json({ error: 'Unknown or already-ended address change' }); return; }
     res.json({ id: req.params.id, closed: true });
   }));
 
@@ -1228,6 +1344,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         [orgId, id],
       );
       revokedApiKeys = revoked.changes;
+      await purgeRevokedJiraConnections(ctx.db, orgId);
       // Only in-flight work is cancelled; a finished target keeps its verdict.
       const cancelled = await ctx.db.run(
         `UPDATE upgrade_directive_targets
@@ -1312,16 +1429,48 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (active === true || active === false) { sets.push('active = ?'); params.push(active ? 1 : 0); }
     if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(hashPassword(password)); }
     if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
-    params.push(req.params.id, req.session!.orgId);
-    const result = await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`, params);
-    if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
+    const orgId = req.session!.orgId;
+    const removesAdminAccess = role === 'viewer' || active === false;
+    if (removesAdminAccess && req.session!.userId === req.params.id) {
+      return res.status(400).json({ error: 'You cannot demote or deactivate your own account; ask another admin.' });
+    }
+    if (removesAdminAccess && await removalStrandsSignIn(orgId, req.params.id)) {
+      return res.status(409).json({ error: STRANDS_SIGN_IN });
+    }
+    params.push(req.params.id, orgId);
+    // The session guard has checked the actor is an active admin, but another
+    // admin's change can land between that read and this write (two admins
+    // demoting each other). So the last-admin check sits in the UPDATE itself:
+    // on SQLite, where writes are serialised, that closes the race outright;
+    // on Postgres two exactly simultaneous cross-demotions could still both
+    // pass under READ COMMITTED.
+    let where = 'id = ? AND org_id = ?';
+    if (removesAdminAccess) {
+      where += ` AND ${NOT_LAST_ACTIVE_ADMIN}`;
+      params.push(orgId, req.params.id);
+    }
+    const result = await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE ${where}`, params);
+    if (result.changes === 0) {
+      const exists = await ctx.db.get('SELECT id FROM users WHERE id = ? AND org_id = ?', [req.params.id, orgId]);
+      if (!exists) return res.status(404).json({ error: 'User not found' });
+      return res.status(409).json({ error: LAST_ADMIN_ERROR });
+    }
     res.json({ ok: true });
   }));
 
   router.delete('/users/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     if (req.session!.userId === req.params.id) return res.status(400).json({ error: 'Cannot delete the signed-in user' });
-    const result = await ctx.db.run('DELETE FROM users WHERE id = ? AND org_id = ?', [req.params.id, req.session!.orgId]);
-    if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
+    const orgId = req.session!.orgId;
+    if (await removalStrandsSignIn(orgId, req.params.id)) return res.status(409).json({ error: STRANDS_SIGN_IN });
+    const result = await ctx.db.run(
+      `DELETE FROM users WHERE id = ? AND org_id = ? AND ${NOT_LAST_ACTIVE_ADMIN}`,
+      [req.params.id, orgId, orgId, req.params.id],
+    );
+    if (result.changes === 0) {
+      const exists = await ctx.db.get('SELECT id FROM users WHERE id = ? AND org_id = ?', [req.params.id, orgId]);
+      if (!exists) return res.status(404).json({ error: 'User not found' });
+      return res.status(409).json({ error: LAST_ADMIN_ERROR });
+    }
     res.json({ ok: true });
   }));
 
@@ -1440,6 +1589,12 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.status(201).json(presentFlow(row!));
   }));
 
+  // CGLAB-384: what a draft's steps mean, for the flow editor. Declared
+  // before /flows/:id; computed with the core functions that validate it.
+  router.post('/flows/contract', guard, (req: Request, res: Response) => {
+    res.json(describeFlowContract(req.body?.steps));
+  });
+
   router.get('/flows/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     const row = await ctx.db.get<FlowRow>(
       'SELECT * FROM flows WHERE id = ? AND org_id = ?',
@@ -1456,7 +1611,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     if (!existing) return res.status(404).json({ error: 'Flow not found' });
     if (parentOwned(existing)) return res.status(409).json({ error: PARENT_FLOW_LOCKED });
-    const definition = req.body?.definition;
+    let definition = req.body?.definition;
+    // CGLAB-380: a step that omits role/checks keeps the stored ones, so an
+    // older hub-ui never wipes a contract. Validated after the merge.
+    if (definition && typeof definition === 'object' && Array.isArray(definition.steps)) {
+      let stored: any[] | undefined;
+      try { stored = JSON.parse(existing.definition_json)?.steps; } catch { stored = undefined; }
+      definition = { ...definition, steps: mergeStepContracts(definition.steps, stored) };
+    }
     const err = validateDefinition(definition);
     if (err) return res.status(400).json({ error: err });
     await ctx.db.run(
@@ -1700,6 +1862,44 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json({ copied: copy.copied, skipped: copy.skipped, failed: copy.failed, truncated: copy.truncated });
   }));
 
+  // ── Open pull requests on the org's registry (CGLAB-368) ─────────────
+  // What installations have published (CGLAB-367) and is waiting for review.
+  // Read-only here: every entry links to GitHub, where review and merge
+  // happen. An org still on the public community registry has no repo of its
+  // own to review, so it is told so rather than shown every community PR.
+  router.get('/registry/pulls', guard, asyncRoute(async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const cfg = await getRegistryConfig(ctx.db, orgId);
+    if (cfg.isPublic) {
+      res.json({ repo: cfg.repo, branch: cfg.branch, isPublic: true, pulls: [] });
+      return;
+    }
+    let token: string | null;
+    try {
+      token = await registryToken(ctx.db, orgId, ctx.config.secretKey);
+    } catch {
+      // A rotated hub secret leaves a stored token that cannot be read.
+      res.status(409).json({ error: `the stored GitHub token for ${cfg.repo} cannot be decrypted; re-enter it in Admin > Flows`, repo: cfg.repo });
+      return;
+    }
+    if (!token) {
+      res.status(409).json({ error: `no GitHub token is stored for the org registry ${cfg.repo}`, repo: cfg.repo });
+      return;
+    }
+    const listed = await listRegistryPulls(fetch, cfg.repo, cfg.branch, token);
+    if (!listed.ok) {
+      // Never 200-with-empty: "nothing to review" is a claim, and a failure
+      // must not make it.
+      res.status(502).json({ error: listed.error, repo: cfg.repo });
+      return;
+    }
+    res.json({
+      repo: cfg.repo, branch: cfg.branch, isPublic: false, pulls: listed.pulls,
+      truncated: listed.truncated, allUrl: `https://github.com/${cfg.repo}/pulls`,
+    });
+  }));
+
+
   router.get('/registry/flows', guard, asyncRoute(async (req: Request, res: Response) => {
     const resolved = await resolveRegistrySource(
       ctx.db, req.session!.orgId, ctx.config.secretKey, req.query?.source,
@@ -1759,29 +1959,18 @@ export function adminRouter(ctx: HubServerContext): Router {
       const rawContent = Buffer.from(fileInfo.content, 'base64').toString('utf8');
       const flowData = JSON.parse(rawContent);
 
-      // Normalise step shape: drop anchors and add fresh ones (matches local
-      // server's /registry/flows/install transform, so installed flows behave
-      // identically wherever they land).
-      const rawSteps: any[] = Array.isArray(flowData.steps) ? flowData.steps : [];
-      const middle = rawSteps
-        .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
-        .map((s: any, i: number) => ({
-          id: randomUUID(),
-          name: s.name ?? `step-${i}`,
-          label: s.label ?? s.name ?? `Step ${i + 1}`,
-          order: i + 1,
-          exitCriteria: s.exitCriteria ?? '',
-          isSpecial: s.isSpecial ?? false,
-        }));
-      const steps = [
-        { id: randomUUID(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
-        ...middle,
-        { id: randomUUID(), name: 'DONE', label: 'Done', order: middle.length + 1, exitCriteria: '', isAnchor: true },
-      ];
+      // Fresh anchors, each step's contract kept: the same transform as the
+      // local server's /registry/flows/install, so installed flows behave
+      // identically wherever they land. An invalid contract is refused whole.
+      const steps = registryInstallSteps(flowData.steps, randomUUID);
+      const contractErrors = flowChecksErrors(steps);
+      if (contractErrors.length) return res.status(422).json({ error: `The registry flow cannot be installed: ${contractErrors.join(' ')}` });
       const definition = {
         name: flowData.name ?? filename.replace('.json', ''),
         description: flowData.description ?? '',
         steps,
+        // 281adef0: where the flow runs the suite travels with it.
+        ...(flowData.verifyAt === 'parent' ? { verifyAt: 'parent' } : {}),
       };
 
       const id = randomUUID();
@@ -1887,7 +2076,15 @@ export function adminRouter(ctx: HubServerContext): Router {
       return res.status(503).json({ error: `Could not fetch release list: ${e?.message ?? e}` });
     }
 
-    const versionRows = await ctx.db.all<{ agenfk_version: string }>(
+    // ?unfiltered=1 skips the fleet floor. The floor is the oldest version
+    // among THIS org's own installations, which is the right bound for the
+    // fleet form and the wrong one for a group upgrade: a parent never sees a
+    // child's installations, so its own floor says nothing about theirs, and
+    // a parent whose own fleet is on the newest release could otherwise not
+    // pin children to anything older (CGLAB-360). POST /upgrade-dispatches
+    // only requires the release to exist.
+    const unfiltered = req.query.unfiltered === '1' || req.query.unfiltered === 'true';
+    const versionRows = unfiltered ? [] : await ctx.db.all<{ agenfk_version: string }>(
       `SELECT agenfk_version FROM installations
         WHERE org_id = ? AND agenfk_version IS NOT NULL AND agenfk_version <> ''`,
       [orgId],
@@ -2727,6 +2924,11 @@ export function adminRouter(ctx: HubServerContext): Router {
    * would turn this route into a readout for whatever it was pointed at.
    */
   const parentError = (err: unknown): { status: number; error: string } => {
+    // The DNS guard's refusal is this hub's own sentence, not upstream content,
+    // and it names the fix; "could not be reached" would hide it (CGLAB-371).
+    if ((err as any)?.code === 'EPRIVATEADDR' && typeof (err as any)?.message === 'string') {
+      return { status: 400, error: (err as any).message };
+    }
     const status = (err as any)?.response?.status;
     const fromParent = (err as any)?.response?.data?.error;
     const looksLikeHub = typeof fromParent === 'string' && fromParent.length > 0 && fromParent.length <= 200
@@ -2771,11 +2973,14 @@ export function adminRouter(ctx: HubServerContext): Router {
         res.status(400).json({ error: (err as Error).message });
         return;
       }
-      // A footgun guard, not a control: publicHubUrl comes from proxy headers,
-      // so an admin typing a loopback address or a different scheme walks past
-      // it. It catches the obvious paste, which is what it is for.
+      // A footgun guard, not a control: an admin typing a loopback address or a
+      // different scheme walks past it. It catches the obvious paste, which is
+      // what it is for - including this hub's OTHER name: a hub served on two
+      // hostnames is the same hub under either, whichever one
+      // AGENFK_HUB_PUBLIC_URL calls canonical.
       try {
-        if (parentUrl === assertHttpUrl(publicHubUrl(req), { allowPrivate: true })) {
+        const selves = [publicHubUrl(req), requestOrigin(req)].map(u => assertHttpUrl(u, { allowPrivate: true }));
+        if (selves.includes(parentUrl)) {
           res.status(400).json({ error: 'a hub cannot enrol with itself as its own parent' });
           return;
         }

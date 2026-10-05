@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import {
   StorageProvider,
   PluginConfig,
@@ -13,6 +14,10 @@ import {
   TokenEvent,
   TokenEventQuery,
   IngestionState,
+  AppSettings,
+  DEFAULT_APP_SETTINGS,
+  isLegalSettingValue,
+  TerminalSession,
   Pr,
   PrSizing,
   AgentRun,
@@ -45,6 +50,165 @@ export class SQLiteStorageProvider implements StorageProvider {
     // fs.watch() on the main file to detect writes (see server.ts).
     this.database.prepare('PRAGMA journal_mode = WAL').run();
     this.createTables();
+    // e248239d: rows written before per-test results moved out, then what nothing references any more.
+    this.moveInlineResults();
+    this.dropUnreferencedBlobs();
+    // 26c059f6: claims were removed; the field old cards carry goes with them.
+    this.dropClaimsField();
+  }
+
+  // ── Per-test results (e248239d) ──────────────────────────────────────────
+  //
+  // A capture record holds a whole run's per-test results; inline, one card
+  // weighed 1.8 MB and every listItems parsed hundreds of MB. Each record's
+  // `tests` is kept in `blobs` under the hash of its JSON (identical result
+  // sets share one row) and the item row keeps `testsBlob`. Reads put the
+  // results back unless the caller asks for `hydrate: false`.
+
+  private static readonly RECORD_LISTS = ['stepRecords', 'supersededRecords'] as const;
+  /** What a record's field is stored as (6e0d2fd6: a capture's per-file map rides along with its results). */
+  private static readonly HEAVY_FIELDS = [['tests', 'testsBlob'], ['fileShas', 'fileShasBlob']] as const;
+  /** What a read puts back (80920048): not the file map, which only a partial run reads - through readBlob. */
+  private static readonly HYDRATED_FIELDS = [['tests', 'testsBlob']] as const;
+  private static heavy(v: unknown): boolean {
+    return Array.isArray(v) ? v.length > 0 : !!v && typeof v === 'object' && Object.keys(v as object).length > 0;
+  }
+
+  /** The item as its row stores it: results out, references in. */
+  private rowOf(item: any): string {
+    let changed = false;
+    const lists: Record<string, unknown> = {};
+    for (const key of SQLiteStorageProvider.RECORD_LISTS) {
+      const records = item?.[key];
+      if (!Array.isArray(records)) continue;
+      lists[key] = records.map((r: any) => {
+        if (!r || typeof r !== 'object') return r;
+        let out = r;
+        for (const [field, ref] of SQLiteStorageProvider.HEAVY_FIELDS) {
+          if (!SQLiteStorageProvider.heavy(out[field])) continue;
+          const json = JSON.stringify(out[field]);
+          const hash = crypto.createHash('sha256').update(json).digest('hex');
+          this.database.prepare('INSERT OR IGNORE INTO blobs (hash, data) VALUES (?, ?)').run(hash, json);
+          changed = true;
+          const { [field]: _heavy, ...rest } = out;
+          out = { ...rest, [ref]: hash };
+        }
+        return out;
+      });
+    }
+    return JSON.stringify(changed ? { ...item, ...lists } : item);
+  }
+
+  /** The item with its records' results read back. */
+  private hydrated<T>(item: T): T {
+    const it: any = item;
+    // ec325925: one parse per blob per read - a capture and the authoredTests record that
+    // references the same results share it, rather than parsing megabytes twice.
+    const parsed = new Map<string, unknown>();
+    for (const key of SQLiteStorageProvider.RECORD_LISTS) {
+      const records = it?.[key];
+      if (!Array.isArray(records) || !records.some((r: any) => typeof r?.testsBlob === 'string')) continue;
+      it[key] = records.map((r: any) => {
+        let out = r;
+        for (const [field, ref] of SQLiteStorageProvider.HYDRATED_FIELDS) {
+          if (typeof out?.[ref] !== 'string') continue;
+          const hash = out[ref] as string;
+          if (!parsed.has(hash)) {
+            const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(hash) as { data: string } | undefined;
+            parsed.set(hash, row ? JSON.parse(row.data) : undefined);
+          }
+          const data = parsed.get(hash);
+          const { [ref]: _ref, ...rest } = out;
+          // A missing blob reads as missing - never as an empty, green run or an unchanged tree.
+          out = data !== undefined ? { ...rest, [field]: data } : { ...rest, [`${field}Missing`]: true };
+        }
+        return out;
+      });
+    }
+    return item;
+  }
+
+  async readBlob(hash: string): Promise<unknown | null> {
+    const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(hash) as { data: string } | undefined;
+    return row ? JSON.parse(row.data) : null;
+  }
+
+  /** Once per database: rows an older build wrote, with the results inline, get them moved out. */
+  private moveInlineResults(): void {
+    const rows = this.database.prepare(`SELECT id, data FROM items WHERE data LIKE '%"tests":[{%'`).all() as { id: string; data: string }[];
+    if (!rows.length) return;
+    this.database.exec('BEGIN');
+    try {
+      for (const row of rows) {
+        let item: any;
+        try { item = JSON.parse(row.data); } catch { continue; }
+        const next = this.rowOf(item);
+        if (next !== row.data) this.database.prepare('UPDATE items SET data = ? WHERE id = ?').run(next, row.id);
+      }
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  /** Once per database: the `claims` field rows kept after claims were removed. */
+  private dropClaimsField(): void {
+    const rows = this.database.prepare(`SELECT id, data FROM items WHERE data LIKE '%"claims":%'`).all() as { id: string; data: string }[];
+    if (!rows.length) return;
+    this.database.exec('BEGIN');
+    try {
+      const update = this.database.prepare('UPDATE items SET data = ? WHERE id = ?');
+      for (const row of rows) {
+        let item: any;
+        try { item = JSON.parse(row.data); } catch { continue; }
+        // The LIKE also matches text that merely mentions the word; only a top-level field goes.
+        if (!item || typeof item !== 'object' || !Object.prototype.hasOwnProperty.call(item, 'claims')) continue;
+        const { claims: _claims, ...rest } = item;
+        update.run(JSON.stringify(rest), row.id);
+      }
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  /** ec325925: the records replaced as housekeeping - the card's updatedAt and history stay as they were. */
+  async rewriteRecords(id: string, records: { stepRecords?: unknown[]; supersededRecords?: unknown[] }): Promise<void> {
+    const stored = this.database.prepare('SELECT data FROM items WHERE id = ?').get(id) as { data: string } | undefined;
+    if (!stored) throw new Error(`Item ${id} not found`);
+    const item: any = { ...this.parseItem(stored.data) };
+    for (const key of SQLiteStorageProvider.RECORD_LISTS) {
+      if (!(key in records)) continue;
+      const list = (records as any)[key];
+      if (list === undefined) delete item[key]; else item[key] = list;
+    }
+    this.database.prepare('UPDATE items SET data = ? WHERE id = ?').run(this.rowOf(item), id);
+  }
+
+  async sweepUnreferencedBlobs(): Promise<number> {
+    return this.dropUnreferencedBlobs();
+  }
+
+  /** Blobs no item row references: a rollback or a later capture replaced them. */
+  private dropUnreferencedBlobs(): number {
+    const keep = new Set<string>();
+    const rows = this.database.prepare(`SELECT data FROM items WHERE data LIKE '%Blob"%'`).all() as { data: string }[];
+    for (const row of rows) for (const m of row.data.matchAll(/"(?:testsBlob|fileShasBlob)":"([0-9a-f]{64})"/g)) keep.add(m[1]);
+    const all = this.database.prepare('SELECT hash FROM blobs').all() as { hash: string }[];
+    const drop = all.filter(b => !keep.has(b.hash));
+    if (!drop.length) return 0;
+    this.database.exec('BEGIN');
+    try {
+      const del = this.database.prepare('DELETE FROM blobs WHERE hash = ?');
+      for (const b of drop) del.run(b.hash);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+    return drop.length;
   }
 
   async shutdown(): Promise<void> {
@@ -63,6 +227,10 @@ export class SQLiteStorageProvider implements StorageProvider {
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
+        data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS blobs (
+        hash TEXT PRIMARY KEY,
         data TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS items (
@@ -118,6 +286,29 @@ export class SQLiteStorageProvider implements StorageProvider {
       CREATE INDEX IF NOT EXISTS idx_token_events_session ON token_events(session_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_token_events_dedup
         ON token_events(client, source_path, source_offset);
+      CREATE TABLE IF NOT EXISTS terminal_sessions (
+        id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL,
+        project_id TEXT,
+        agent_id TEXT NOT NULL,
+        agent_session_id TEXT,
+        -- Part of the session IDENTITY, not decoration (BUG 63fcf702).
+        --
+        -- persist decides whether the terminal runs inside tmux, and
+        -- auto_approve is baked into the tmux session NAME, so a restore that
+        -- does not know them cannot find the session that survived: it looked
+        -- for the ask variant of a session created as auto, found nothing, and
+        -- started a second agent beside the one still running.
+        persist INTEGER NOT NULL DEFAULT 0,
+        auto_approve INTEGER NOT NULL DEFAULT 0,
+        opened_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_terminal_sessions_item ON terminal_sessions(item_id);
+      CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id);
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS ingestion_state (
         source_path TEXT PRIMARY KEY,
         last_offset INTEGER NOT NULL,
@@ -169,6 +360,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_dedup ON run_events(run_id, seq);
     `);
     this.migrateFlowsTable();
+    this.migrateTerminalSessionsTable();
   }
 
   // ── Hub outbox helpers ─────────────────────────────────────────────────────
@@ -311,6 +503,27 @@ export class SQLiteStorageProvider implements StorageProvider {
     return Number(result.changes ?? 0);
   }
 
+  /**
+   * Add `persist` / `auto_approve` to `terminal_sessions` when an older
+   * database lacks them (BUG 63fcf702).
+   *
+   * Plain ALTER with a default rather than a rebuild: both are new columns
+   * with a safe zero value, and rows written before this existed genuinely do
+   * not know their session's identity — defaulting them to "not persisted,
+   * prompts on" is the conservative answer, not a guess dressed up as data.
+   */
+  private migrateTerminalSessionsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(terminal_sessions)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes('persist')) {
+      this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN persist INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columns.includes('auto_approve')) {
+      this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
   /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
   private migrateFlowsTable(): void {
     const columns = (
@@ -394,12 +607,14 @@ export class SQLiteStorageProvider implements StorageProvider {
     });
     this.database.prepare(
       'INSERT INTO items (id, project_id, type, status, parent_id, data) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(item.id, item.projectId, item.type, item.status, item.parentId ?? null, JSON.stringify(item));
+    ).run(item.id, item.projectId, item.type, item.status, item.parentId ?? null, this.rowOf(item));
     return item;
   }
 
   async updateItem(id: string, updates: Partial<AgEnFKItem>): Promise<AgEnFKItem> {
-    const existing = await this.getItem(id);
+    // e248239d: merged onto the row as stored - unchanged results stay references, never re-read or re-hashed.
+    const stored = this.database.prepare('SELECT data FROM items WHERE id = ?').get(id) as { data: string } | undefined;
+    const existing = stored ? this.parseItem(stored.data) : null;
     if (!existing) throw new Error(`Item ${id} not found`);
 
     if (updates.status !== undefined && updates.status !== existing.status) {
@@ -414,20 +629,39 @@ export class SQLiteStorageProvider implements StorageProvider {
     }
 
     const updated = { ...existing, ...updates, updatedAt: new Date() } as AgEnFKItem;
+    /*
+     * A card that reached DONE has no failed-attempt history to carry
+     * (CGLAB-202). Reaching the end is the one event that means the work
+     * landed, so it is the one that clears - a run ending `done` does not,
+     * because the hook closes runs `done` on SessionEnd whether or not the
+     * attempt succeeded.
+     *
+     * Cleared HERE because every path to DONE routes through this method:
+     * validate_progress, its sibling propagation, and an internal PUT.
+     */
+    if (updated.status === Status.DONE && existing.status !== Status.DONE) {
+      updated.failureCount = 0;
+    }
     this.database.prepare(
       'UPDATE items SET project_id = ?, type = ?, status = ?, parent_id = ?, data = ? WHERE id = ?'
-    ).run(updated.projectId, updated.type, updated.status, updated.parentId ?? null, JSON.stringify(updated), id);
-    return updated;
+    ).run(updated.projectId, updated.type, updated.status, updated.parentId ?? null, this.rowOf(updated), id);
+    // The caller gets its results, as getItem would give them.
+    return this.hydrated({ ...updated });
   }
 
   async deleteItem(id: string): Promise<boolean> {
     const result = this.database.prepare('DELETE FROM items WHERE id = ?').run(id) as { changes: number };
+    // The card's remembered terminals go with it. Left behind, they would make
+    // the desktop try to resolve a worktree for a card that no longer exists —
+    // at app startup, which is the least helpful moment for it to fail, and on
+    // every launch from then on.
+    this.database.prepare('DELETE FROM terminal_sessions WHERE item_id = ?').run(id);
     return result.changes > 0;
   }
 
   async getItem(id: string): Promise<AgEnFKItem | null> {
     const row = this.database.prepare('SELECT data FROM items WHERE id = ?').get(id) as { data: string } | undefined;
-    return row ? this.parseItem(row.data) : null;
+    return row ? this.hydrated(this.parseItem(row.data)) : null;
   }
 
   async listItems(query?: StorageQuery): Promise<AgEnFKItem[]> {
@@ -445,7 +679,8 @@ export class SQLiteStorageProvider implements StorageProvider {
     }
 
     const rows = this.database.prepare(sql).all(...params) as { data: string }[];
-    return rows.map(r => this.parseItem(r.data));
+    // e248239d: hydrate: false for a caller that never reads per-test results.
+    return query?.hydrate === false ? rows.map(r => this.parseItem(r.data)) : rows.map(r => this.hydrated(this.parseItem(r.data)));
   }
 
   async listChildren(parentId: string): Promise<AgEnFKItem[]> {
@@ -685,14 +920,101 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (query.status !== undefined) { where.push('status = ?'); params.push(query.status); }
     let sql = 'SELECT * FROM agent_runs';
     if (where.length) sql += ' WHERE ' + where.join(' AND ');
-    sql += ' ORDER BY started_at ASC';
+    /*
+     * Newest first, because the LIMIT applies AFTER the sort.
+     *
+     * Ordered ASC, a capped response was the OLDEST runs ever recorded — so on
+     * a machine with more history than the page size, an agent started right
+     * now was never in the answer, and the sessions rail showed work that
+     * finished weeks ago instead. Runs also stay `running` forever (nothing
+     * sends the closing update), so those old rows never aged out of the
+     * filter on their own.
+     */
+    // rowid breaks ties. started_at has millisecond resolution, so a burst of
+    // runs recorded in the same millisecond would otherwise come back in an
+    // arbitrary order — and with a LIMIT applied, an arbitrary SUBSET.
+    sql += ' ORDER BY started_at DESC, rowid DESC';
     if (query.limit !== undefined) { sql += ' LIMIT ?'; params.push(query.limit); }
     const rows = this.database.prepare(sql).all(...params) as any[];
-    return rows.map((r) => this.mapAgentRunRow(r));
+    // Oldest-first for the caller: the page is chosen from the newest end, but
+    // consumers that render a sequence still want it in the order it happened.
+    return rows.map((r) => this.mapAgentRunRow(r)).reverse();
   }
 
-  async appendRunEvent(event: RunEvent): Promise<void> {
-    this.database.prepare(
+  /**
+   * Append an event and report WHERE it landed.
+   *
+   * Returning the position is not bookkeeping. The number is assigned inside
+   * the insert — correctly, because computing it in the route raced — but that
+   * left the caller holding an object whose `seq` is still undefined, which is
+   * the object the server then emits over the socket. Every live consumer
+   * compares events by `seq`, so a stream of undefineds collapses to one
+   * event: a Claude Code session showed a single line in the Runs panel and
+   * then nothing, for as long as it ran.
+   *
+   * Null means nothing was written. The insert is `INSERT OR IGNORE` against
+   * `UNIQUE(run_id, seq)`, so a repeat is silently dropped — and reporting a
+   * position for a row that does not exist would have the caller broadcast a
+   * duplicate to every open panel.
+   */
+  async appendRunEvent(event: RunEvent): Promise<number | null> {
+    /*
+     * The position is assigned INSIDE the insert when the caller did not give
+     * one, and that is the whole fix.
+     *
+     * It used to be computed in the route as `(await listRunEvents(id)).length`
+     * — a read, an await, then a write. Two events in flight computed the SAME
+     * number, and the insert is `INSERT OR IGNORE` against
+     * `UNIQUE(run_id, seq)`, so the second was dropped SILENTLY: the API
+     * answered 201 and emitted run:event, and the UI showed an event that
+     * vanished on the next refresh.
+     *
+     * It survived because the pi tailer is a serialized loop that never
+     * produced two at once. The Claude Code hook makes concurrency ordinary.
+     *
+     * Zero-based, matching what `.length` produced before, so existing rows
+     * and existing readers are unaffected.
+     *
+     * A SELECT-based insert is atomic within the statement, so no two writers
+     * can read the same maximum. It also replaces an O(n) read of every event
+     * on the run with a single indexed aggregate.
+     */
+    if (event.seq === undefined || event.seq === null) {
+      const written = this.database.prepare(
+        `INSERT OR IGNORE INTO run_events
+          (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
+         SELECT ?, ?, COALESCE(MAX(seq) + 1, 0), ?, ?, ?, ?, ?, ?, ?
+           FROM run_events WHERE run_id = ?`
+      ).run(
+        event.id,
+        event.runId,
+        event.ts,
+        event.lane,
+        event.kind,
+        event.tool ?? null,
+        event.text ?? null,
+        // Already a string by the time it reaches storage: the route
+        // serialises it. Stringifying again double-encoded it, so a reader
+        // doing JSON.parse got back a string instead of the object.
+        event.payload ?? null,
+        event.tokens ?? null,
+        event.runId,
+      );
+      /*
+       * Read back by ID, not by recomputing the maximum. Another writer may
+       * have appended in between, and `MAX(seq)` would then report their
+       * position as ours. The id is the only thing that identifies this row.
+       */
+      if (written.changes === 0) return null;
+      const row = this.database
+        .prepare('SELECT seq FROM run_events WHERE id = ?')
+        .get(event.id) as { seq: number } | undefined;
+      return row?.seq ?? null;
+    }
+
+    // An explicit position wins. The pi tailer knows the real order from the
+    // transcript, and that order is better than arrival order.
+    const explicit = this.database.prepare(
       `INSERT OR IGNORE INTO run_events
         (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -705,10 +1027,18 @@ export class SQLiteStorageProvider implements StorageProvider {
       event.kind,
       event.tool ?? null,
       event.text ?? null,
+      // Passed through, exactly as the auto-position branch does. It is
+      // already a string - the route serialises it - and stringifying again
+      // stored a string OF a string, so a reader doing JSON.parse got the
+      // text back instead of the object. The two branches disagreed about
+      // the same field, and this is the one the pi tailer always took.
       event.payload ?? null,
       event.tokens ?? null,
     );
+    // The position asked for, or nothing when the row was already there.
+    return explicit.changes === 0 ? null : event.seq;
   }
+
 
   async listRunEvents(runId: string): Promise<RunEvent[]> {
     const rows = this.database.prepare(
@@ -729,6 +1059,114 @@ export class SQLiteStorageProvider implements StorageProvider {
   }
 
   // ── Observability: ingestion state (resumable file-watcher offsets) ────────
+
+  /**
+   * Installation-wide settings, as stored values layered over the defaults.
+   *
+   * Key/value rather than one column per setting: a new setting then needs no
+   * migration, and a row written by a NEWER version that this one does not know
+   * about is ignored on read instead of crashing — which matters because the
+   * desktop app, the CLI and the server can be different builds against the
+   * same database.
+   *
+   * Values are JSON so a boolean stays a boolean. Storing '1'/'0' or 'true' as
+   * bare text is how a preference comes back as a truthy string and inverts
+   * itself.
+   */
+  async listTerminalSessions(projectId?: string): Promise<TerminalSession[]> {
+    const rows = (projectId
+      ? this.database.prepare(
+          'SELECT * FROM terminal_sessions WHERE project_id = ? ORDER BY opened_at'
+        ).all(projectId)
+      : this.database.prepare('SELECT * FROM terminal_sessions ORDER BY opened_at').all()
+    ) as Array<Record<string, string | null>>;
+    return rows.map(r => ({
+      id: r.id as string,
+      itemId: r.item_id as string,
+      projectId: r.project_id ?? undefined,
+      agentId: r.agent_id as string,
+      // null and undefined both mean "cannot resume this one"; normalised here
+      // so no caller has to know which of the two it got back.
+      agentSessionId: r.agent_session_id ?? undefined,
+      // SQLite has no boolean. Compared against 1 rather than coerced, so the
+      // string "0" a legacy row might hold cannot come back as true.
+      persist: Number(r.persist) === 1,
+      autoApprove: Number(r.auto_approve) === 1,
+      openedAt: r.opened_at as string,
+    }));
+  }
+
+  async recordTerminalSession(session: TerminalSession): Promise<TerminalSession> {
+    this.database.prepare(
+      'INSERT INTO terminal_sessions ' +
+      '(id, item_id, project_id, agent_id, agent_session_id, persist, auto_approve, opened_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      session.id, session.itemId, session.projectId ?? null,
+      session.agentId, session.agentSessionId ?? null,
+      session.persist ? 1 : 0, session.autoApprove ? 1 : 0,
+      session.openedAt,
+    );
+    return session;
+  }
+
+  async forgetTerminalSession(id: string): Promise<void> {
+    this.database.prepare('DELETE FROM terminal_sessions WHERE id = ?').run(id);
+  }
+
+  async getSettings(): Promise<AppSettings> {
+    const rows = this.database.prepare('SELECT key, value FROM app_settings')
+      .all() as Array<{ key: string; value: string }>;
+    // Object.create(null), not {}: a row keyed '__proto__' would otherwise set
+    // the prototype instead of an own property, and the later lookups would
+    // resolve THROUGH it — turning a stored row into a way to flip settings
+    // this function claims to ignore. Needs direct database access to exploit,
+    // but the claim in the comment above should be true, not nearly true.
+    const stored: Record<string, unknown> = Object.create(null);
+    for (const row of rows) {
+      // A corrupt row must not take the whole settings read down with it; the
+      // default is a safe answer and the user can set it again.
+      try { stored[row.key] = JSON.parse(row.value); } catch { /* keep the default */ }
+    }
+    const settings = { ...DEFAULT_APP_SETTINGS };
+    // Only keys the CURRENT build knows. Anything else in the table belongs to
+    // another version and is none of this one's business.
+    for (const key of Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettings>) {
+      const value = stored[key];
+      // `isLegalSettingValue`, not a `typeof` comparison. They agree for every
+      // boolean; they part company on an enum, where `typeof` accepts any
+      // string at all. A row saying soundTiming is 'whenever' — written by an
+      // older build, a newer one, or a hand-edited database — would otherwise
+      // come back out and behave as whichever branch the UI falls through to.
+      if (isLegalSettingValue(key, value)) {
+        (settings[key] as unknown) = value;
+      }
+    }
+    return settings;
+  }
+
+  async updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+    const write = this.database.prepare(
+      'INSERT INTO app_settings (key, value) VALUES (?, ?) ' +
+      'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    );
+    // A transaction so a multi-key write cannot land half-applied and leave the
+    // user with a settings screen showing a state they never chose. Written as
+    // explicit BEGIN/COMMIT because the driver here is node:sqlite's
+    // DatabaseSync, which has no better-sqlite3-style transaction() wrapper.
+    this.database.exec('BEGIN');
+    try {
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) continue;
+        write.run(key, JSON.stringify(value));
+      }
+      this.database.exec('COMMIT');
+    } catch (err) {
+      this.database.exec('ROLLBACK');
+      throw err;
+    }
+    return this.getSettings();
+  }
 
   async getIngestionState(sourcePath: string): Promise<IngestionState | null> {
     const row = this.database.prepare(

@@ -9,6 +9,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { Flow, RegistryFlow } from '../types';
 import { ThemeProvider } from '../ThemeContext';
+import mermaid from 'mermaid';
+
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn(() => Promise.resolve({ svg: '<svg />' })),
+  },
+}));
 
 vi.mock('../api', () => ({
   api: {
@@ -1051,6 +1059,66 @@ describe('FlowEditorModal — Community tab', () => {
     expect(screen.getByTestId('community-clone-btn')).toBeDefined();
   });
 
+  /*
+   * CGLAB-187. A community flow is authored by someone else and reaches the
+   * diagram renderer, whose SVG is injected with innerHTML. Mermaid's `loose`
+   * level skips its own URL sanitization, so untrusted flow steps could carry
+   * a `javascript:` link into the DOM. Pinned at the call site.
+   */
+  it('renders the community flow diagram at a URL-sanitizing security level, never "loose"', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.click(screen.getByTestId('community-flow-item-0'));
+    await waitFor(() => screen.getByTestId('community-preview-panel'));
+
+    await waitFor(() => expect(mermaid.initialize).toHaveBeenCalled());
+    const calls = vi.mocked(mermaid.initialize).mock.calls;
+    const config = calls[calls.length - 1][0] as { securityLevel?: string };
+    expect(config.securityLevel).not.toBe('loose');
+    expect(config.securityLevel).toBe('strict');
+  });
+
+  /*
+   * F1 from the CGLAB-187 adversarial review. A community flow's step label is
+   * untrusted and was interpolated into the Mermaid source unescaped: a `"`
+   * terminated the quoted label (blank preview) and a newline injected extra
+   * statements. At 'strict' neither becomes script, but the diagram source is
+   * data and must not be breakable by its input.
+   */
+  it('escapes untrusted community step labels before building the diagram source', async () => {
+    const EVIL: RegistryFlow = {
+      filename: 'evil.json',
+      name: 'Evil Flow',
+      author: 'attacker',
+      version: '1.0.0',
+      stepCount: 2,
+      steps: [
+        { name: 'A', label: 'x"]\n  click 1 "javascript:alert(1)"\n  ["y' },
+        { name: 'B', label: 'B' },
+      ],
+    };
+    vi.mocked(api.browseRegistry).mockResolvedValue([EVIL]);
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.click(screen.getByTestId('community-flow-item-0'));
+    await waitFor(() => screen.getByTestId('community-preview-panel'));
+    await waitFor(() => expect(mermaid.render).toHaveBeenCalled());
+
+    const renderCalls = vi.mocked(mermaid.render).mock.calls;
+    const chart = String(renderCalls[renderCalls.length - 1][1]);
+    // The label cannot start a new statement line, and its quotes are entities.
+    expect(chart).not.toMatch(/^\s*click\b/m);
+    expect(chart).toContain('&quot;');
+  });
+
   it('Install button calls installFromRegistry and switches to My Flows tab', async () => {
     render(
       <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
@@ -1342,6 +1410,42 @@ describe('FlowEditorModal — save failures surface the reason (BUG 269eeec8)', 
     await waitFor(() => expect(screen.getByTestId('publish-success-link')).toBeDefined());
   });
 
+  // CGLAB-367: a publish to the org's own registry must be visibly NOT the
+  // public one - "PR opened" alone reads the same whichever repo it went to.
+  it('names the repo the pull request was opened on', async () => {
+    vi.mocked(api.publishToRegistry).mockResolvedValue(
+      { url: 'https://github.com/acme-corp/agenfk-flows/pull/7', kind: 'pr', repo: 'acme-corp/agenfk-flows' } as any,
+    );
+    await openFlow('flow-item-flow-hub');
+    fireEvent.click(screen.getByTestId('publish-flow-btn'));
+    const link = await screen.findByTestId('publish-success-link');
+    expect(link.textContent).toContain('acme-corp/agenfk-flows');
+    expect(link.getAttribute('href')).toBe('https://github.com/acme-corp/agenfk-flows/pull/7');
+    expect(link.getAttribute('target')).toBe('_blank');
+  });
+
+  it('reports a repo owner\'s direct push as a publish, not as "already published"', async () => {
+    vi.mocked(api.publishToRegistry).mockResolvedValue(
+      { url: 'https://github.com/cglab-public/agenfk-flows/blob/main/flows/x.json', kind: 'direct', repo: 'cglab-public/agenfk-flows' } as any,
+    );
+    await openFlow('flow-item-flow-hub');
+    fireEvent.click(screen.getByTestId('publish-flow-btn'));
+    const link = await screen.findByTestId('publish-success-link');
+    expect(link.textContent).toMatch(/pushed to cglab-public\/agenfk-flows/i);
+    expect(link.textContent).not.toMatch(/already/i);
+  });
+
+  it('names the repo when the flow was already published there', async () => {
+    vi.mocked(api.publishToRegistry).mockResolvedValue(
+      { url: 'https://github.com/acme-corp/agenfk-flows/blob/main/flows/x.json', kind: 'existing', repo: 'acme-corp/agenfk-flows' } as any,
+    );
+    await openFlow('flow-item-flow-hub');
+    fireEvent.click(screen.getByTestId('publish-flow-btn'));
+    const link = await screen.findByTestId('publish-success-link');
+    expect(link.textContent).toMatch(/already/i);
+    expect(link.textContent).toContain('acme-corp/agenfk-flows');
+  });
+
   it('does not offer "Use this Flow" as a set-default action on a hub flow', async () => {
     await openFlow('flow-item-flow-hub');
 
@@ -1596,6 +1700,32 @@ describe('flow editor footer CTAs', () => {
     fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
   };
 
+/**
+ * Wait for a write to LAND, not merely to depart (BUG c3ff590a).
+ *
+ * `waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1))` resolves the
+ * moment the call goes out, while the mutation is still pending. The footer's
+ * buttons are disabled for exactly that window — `isSaveDisabled` includes
+ * `isBusy` — and `fireEvent.click` on a disabled button does nothing at all, in
+ * silence. A test that clicks the next button there sees "0 calls" and looks
+ * like a product bug.
+ *
+ * Without load the mocked promise settles in the same tick and the window is
+ * invisible; under load it opens and the click falls into it. That is the whole
+ * of this file's flakiness: the failure rate went from 0-in-6 running the file
+ * alone to 2-in-3 running the whole ui suite.
+ *
+ * The label going back to "Save"/"Saved" is the visible half of the same fact,
+ * which is the signal the bind test at the bottom of this file was already
+ * using.
+ */
+const saveSettled = async () => {
+  await waitFor(() => {
+    const btn = screen.getByTestId('save-flow-btn') as HTMLButtonElement;
+    expect(btn.disabled, 'the save is still in flight').toBe(false);
+  });
+};
+
   /** The JSON the editor would send for the current panel state. */
   const lastWrite = () => {
     const updateCall = vi.mocked(api.updateFlow).mock.calls[0];
@@ -1737,6 +1867,9 @@ describe('flow editor footer CTAs', () => {
 
     fireEvent.click(screen.getByTestId('save-flow-btn'));
     await waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1));
+    // The write has to LAND before the next button is clickable — see
+    // saveSettled. Waiting for the call alone is what made this file flaky.
+    await saveSettled();
 
     fireEvent.click(screen.getByTestId('publish-flow-btn'));
     await waitFor(() => expect(api.publishToRegistry).toHaveBeenCalledWith('created-flow'));
@@ -1785,6 +1918,10 @@ describe('flow editor footer CTAs', () => {
     fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Renamed' } });
     fireEvent.click(screen.getByTestId('save-flow-btn'));
     await waitFor(() => expect(api.updateFlow).toHaveBeenCalledTimes(1));
+
+    // The write has to LAND before the next button is clickable — see
+    // saveSettled. Waiting for the call alone is what made this file flaky.
+    await saveSettled();
 
     fireEvent.click(screen.getByTestId('use-flow-btn'));
     await waitFor(() => expect(api.setProjectFlow).toHaveBeenCalled());

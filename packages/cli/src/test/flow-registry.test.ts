@@ -42,9 +42,6 @@ vi.mock('child_process', () => ({
   spawnSync: vi.fn(),
   default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
 }));
-vi.mock('figlet', () => ({
-  default: { textSync: vi.fn().mockReturnValue('AgEnFK') },
-}));
 
 import { program } from '../index';
 import axios from 'axios';
@@ -125,6 +122,22 @@ describe('flow registry commands', () => {
         expect.stringContaining('/registry/flows/publish'),
         expect.objectContaining({ flowId: 'flow-uuid-registry-1', registry: 'my-org/my-flows' })
       );
+      logSpy.mockRestore();
+    });
+
+    it('sends allowContractRemoval when --allow-removing-checks is passed (S9 review)', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { url: 'https://x/pull/1', kind: 'pr', version: '1.0.1' } });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'publish', 'flow-uuid-registry-1', '--allow-removing-checks']);
+      expect(mockedAxios.post.mock.calls[0][1]).toMatchObject({ flowId: 'flow-uuid-registry-1', allowContractRemoval: true });
+      logSpy.mockRestore();
+    });
+
+    it('does not send allowContractRemoval without the flag', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { url: 'https://x/pull/1', kind: 'pr', version: '1.0.1' } });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'publish', 'flow-uuid-registry-1']);
+      expect(mockedAxios.post.mock.calls[0][1]).not.toHaveProperty('allowContractRemoval');
       logSpy.mockRestore();
     });
 

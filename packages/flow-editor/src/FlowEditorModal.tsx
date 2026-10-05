@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, createContext, useContext } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
 import { extractApiError } from './apiError';
 import { flowDefinitionIssues, stepIssue, withStepIds } from './flowDefinition';
+import { ContractProblems, RecordsLane, StepContractButton, StepContractDialog, TemplatePicker } from './FlowContractSection';
 import { ExitCriteriaEditorModal } from './ExitCriteriaEditorModal';
 import { estimateTokenCount } from './estimateTokens';
 
@@ -67,6 +68,9 @@ export function renderStepIcon(iconKey: string | undefined, fallback: React.Reac
 }
 import { clsx } from 'clsx';
 
+/** Colour-input default for a step without its own colour: the light accent (indigo). */
+const DEFAULT_STEP_HEX = '#5b5bd6';
+
 /**
  * Names that are reserved and cannot be used as custom step names.
  * TODO and DONE are anchor steps (always first/last in every flow).
@@ -123,7 +127,8 @@ function cloneFlow(source: Flow, newName: string): Omit<Flow, 'id' | 'createdAt'
   const [todo, done] = makeFreshAnchors();
   const middle = source.steps
     .filter(s => !s.isAnchor)
-    .map((s, i) => ({ ...s, id: generateUUID(), order: i + 1 }));
+    // CGLAB-428 review: a local copy cannot keep the hub's switched-off checks (the server refuses them).
+    .map(({ disabledChecks: _hubOnly, ...s }, i) => ({ ...s, id: generateUUID(), order: i + 1 }));
   done.order = middle.length + 1;
   return {
     name: newName,
@@ -149,6 +154,12 @@ interface FlowEditorModalProps {
   // was offering a guaranteed failure. The hub admin leaves this false: over
   // there, hub-sourced flows are exactly the ones you are meant to edit.
   hubManagedReadOnly?: boolean;
+  /**
+   * CGLAB-428: the step dialog may switch individual checks off. Only the hub
+   * admin sets this - the org's hub is the one place a safeguard may be
+   * removed; a local server refuses the field on any flow it did not sync.
+   */
+  canDisableChecks?: boolean;
   /**
    * Tab captions. Defaults to "My Flows" / "Community", which is correct for
    * the standalone client. The hub admin overrides them: its first tab is the
@@ -225,6 +236,7 @@ function serializeDefinition(
   name: string,
   description: string,
   steps: FlowStep[],
+  verifyAt: 'leaf' | 'parent' = 'leaf',
 ): string {
   const canonical = (Array.isArray(steps) ? steps : [])
     .map((s, i) => ({
@@ -235,9 +247,17 @@ function serializeDefinition(
       ...(s?.color ? { color: s.color } : {}),
       ...(s?.icon ? { icon: s.icon } : {}),
       ...(s?.isAnchor ? { isAnchor: true } : {}),
+      // CGLAB-384: a change to a role or a check is a change to the flow.
+      ...(typeof s?.role === 'string' && s.role ? { role: s.role } : {}),
+      ...(Array.isArray(s?.checks) && s.checks.length ? { checks: s.checks } : {}),
+      // CGLAB-428: so is switching a check off.
+      ...(Array.isArray(s?.disabledChecks) && s.disabledChecks.length ? { disabledChecks: s.disabledChecks } : {}),
+      ...(s?.autoCommit ? { autoCommit: true } : {}),
+      ...(s?.requireCommit ? { requireCommit: true } : {}),
     }))
     .sort((a, b) => a.order - b.order);
-  return JSON.stringify({ name, description, steps: canonical });
+  // 281adef0: where the flow runs the suite is part of it; the default is absent.
+  return JSON.stringify({ name, description, steps: canonical, ...(verifyAt === 'parent' ? { verifyAt } : {}) });
 }
 
 // ── Exit criteria summary trigger (CGLAB-109) ─────────────────────────────────
@@ -266,13 +286,13 @@ const ExitCriteriaSummary: React.FC<ExitCriteriaSummaryProps> = ({ index, value,
       className="w-full text-left px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 hover:border-slate-300 dark:hover:border-slate-500 transition-colors disabled:opacity-60 disabled:cursor-not-allowed min-h-[52px]"
     >
       {firstLine ? (
-        <span className="block text-xs text-slate-600 dark:text-slate-300 truncate">{firstLine}</span>
+        <span className="block text-small text-slate-600 dark:text-slate-300 truncate">{firstLine}</span>
       ) : (
-        <span className="block text-xs italic text-slate-400 dark:text-slate-500">
+        <span className="block text-small italic text-slate-400 dark:text-slate-500">
           No exit criteria — click to add
         </span>
       )}
-      <span className="block text-[10px] tabular-nums text-slate-400 dark:text-slate-500 mt-0.5">
+      <span className="block text-caption tabular-nums text-slate-400 dark:text-slate-500 mt-0.5">
         ~{tokens} {tokens === 1 ? 'token' : 'tokens'} (estimate){disabled ? '' : ' · edit'}
       </span>
     </button>
@@ -292,6 +312,7 @@ interface EditorPanelProps {
   onUseDefault?: () => void;    // only provided for the builtin default flow row
   canSelectFlow: boolean;       // false → hide "Use this Flow" (selection is hub-owned)
   isHubManaged: boolean;        // true → owned by the org Hub, not editable here
+  canDisableChecks: boolean;    // CGLAB-428: the step dialog may switch checks off (hub admin only)
 }
 
 const EditorPanel: React.FC<EditorPanelProps> = ({
@@ -305,6 +326,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   onUseDefault,
   canSelectFlow,
   isHubManaged,
+  canDisableChecks,
 }) => {
   // Two independent reasons this panel can't be edited: it's the built-in
   // default flow, or (BUG 269eeec8 (b)) it's owned by the org Hub and this host
@@ -318,6 +340,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  // 281adef0: 'parent' runs the project's suite once, at the top-level card.
+  const [verifyAt, setVerifyAt] = useState<'leaf' | 'parent'>('leaf');
   const [steps, setSteps] = useState<FlowStep[]>([]);
   const [saved, setSaved] = useState(false);
   // The definition as last persisted, as the editor serialises it. `saved`
@@ -343,6 +367,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     if (flow) {
       setName(flow.name);
       setDescription(flow.description ?? '');
+      setVerifyAt(flow.verifyAt === 'parent' ? 'parent' : 'leaf');
       // Filter out platform statuses — they are never part of flow definitions
       const flowSteps = [...flow.steps]
         .filter(s => {
@@ -353,10 +378,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       setSteps(flowSteps);
       // Baseline the dirty check on the SAME canonical shape the save mutation
       // sends, so a round-trip through the editor is not itself a change.
-      setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps));
+      setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps, flow.verifyAt === 'parent' ? 'parent' : 'leaf'));
     } else {
       setName('');
       setDescription('');
+      setVerifyAt('leaf');
       const [todo, done] = makeFreshAnchors();
       const blank = makeBlankStep(1);
       done.order = 2;
@@ -421,6 +447,46 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     setSteps(prev => [...prev, makeBlankStep(prev.length)]);
   }, []);
 
+  // ── Step contracts (CGLAB-384) ─────────────────────────────────────────────
+  // The server says what the draft's steps mean, with the functions that
+  // validate a save and run verify. A host without the route sees none of it.
+  const hasContract = typeof flowClient.getFlowContract === 'function';
+  // Only what the contract reads, debounced: a label or a keystroke in a name
+  // is not a new question for the server.
+  // The commit flags and isSpecial count too: the server validates where a
+  // step commit can run, which depends on both (CGLAB-388).
+  const contractKey = JSON.stringify(steps.map((s, i) => ({ id: s.id, name: s.name, order: i, isAnchor: s.isAnchor, isSpecial: s.isSpecial, role: s.role, checks: s.checks, disabledChecks: s.disabledChecks, autoCommit: s.autoCommit, requireCommit: s.requireCommit })));
+  const [askedKey, setAskedKey] = useState(contractKey);
+  useEffect(() => {
+    const t = setTimeout(() => setAskedKey(contractKey), 250);
+    return () => clearTimeout(t);
+  }, [contractKey]);
+  const { data: contract } = useQuery({
+    queryKey: ['flow-contract', askedKey],
+    queryFn: () => flowClient.getFlowContract!(JSON.parse(askedKey).map((s: FlowStep) => ({ ...s, label: s.name })) as FlowStep[]),
+    enabled: hasContract,
+    placeholderData: keepPreviousData,
+  });
+  const [contractStepIndex, setContractStepIndex] = useState<number | null>(null);
+  const stepContractOf = (index: number) => contract?.steps.find(c => c.name === steps[index]?.name);
+  const removeCheck = useCallback((index: number, checkId: string) => {
+    setSteps(prev => prev.map((s, i) => (i === index ? { ...s, checks: (s.checks ?? []).filter(c => c.id !== checkId) } : s)));
+  }, []);
+  const addWritingTestsBefore = useCallback((index: number) => {
+    setSteps(prev => {
+      const taken = new Set(prev.map(s => s.name.toUpperCase()));
+      let name = 'WRITE_TESTS';
+      for (let n = 2; taken.has(name); n++) name = `WRITE_TESTS_${n}`;
+      const added: FlowStep = { ...makeBlankStep(index), name, label: 'Write tests', role: 'test-authoring' };
+      const next = [...prev.slice(0, index), added, ...prev.slice(index)];
+      return next.map((s, i) => ({ ...s, order: i }));
+    });
+  }, []);
+  const applyTemplate = useCallback((templateSteps: FlowStep[]) => {
+    setSteps(templateSteps.map((s, i) => ({ ...s, id: generateUUID(), order: i })));
+    setContractStepIndex(null);
+  }, []);
+
   const removeStep = useCallback((index: number) => {
     setSteps(prev => {
       const next = prev.filter((_, i) => i !== index);
@@ -439,6 +505,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     const payload: Partial<Flow> = {
       name,
       description,
+      verifyAt,
       // order is authoritative from array position; ids are backfilled so a
       // flow loaded without them (MCP create_flow never sent ids) still
       // satisfies the Hub's id rule.
@@ -447,7 +514,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     return flow?.id
       ? flowClient.updateFlow(flow.id, payload)
       : flowClient.createFlow(payload);
-  }, [flow?.id, name, description, steps, flowClient]);
+  }, [flow?.id, name, description, steps, verifyAt, flowClient]);
 
   /**
    * Re-baseline the dirty check after a write.
@@ -465,6 +532,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       savedFlow.name,
       savedFlow.description ?? '',
       [...(savedFlow.steps ?? [])].sort((a, b) => a.order - b.order),
+      savedFlow.verifyAt === 'parent' ? 'parent' : 'leaf',
     ));
   }, []);
 
@@ -514,7 +582,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
    * when its serialised definition differs from the one it was loaded with or
    * last saved.
    */
-  const isDirty = persisted === null || serializeDefinition(name, description, steps) !== persisted;
+  const isDirty = persisted === null || serializeDefinition(name, description, steps, verifyAt) !== persisted;
 
   // BUG 269eeec8 (a): read the server's `{ error }` body, not Error.message —
   // the latter is only ever "Request failed with status code N".
@@ -524,7 +592,9 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // BUG 269eeec8 (c): mirror the Hub's definition contract so a payload it would
   // reject never leaves the browser, and the reason is pinned to its step.
   const definitionIssues = flowDefinitionIssues(name, steps);
-  const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0;
+  // The server's contract check: a flow it would refuse is not sent.
+  const contractInvalid = hasContract && !!contract && !contract.valid;
+  const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0 || contractInvalid;
 
   /**
    * Whether this panel can write its definition at all. The two read-only
@@ -557,7 +627,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
 
   // ── Publish to registry ──────────────────────────────────────────────────
-  const [publishResult, setPublishResult] = useState<{ url: string; kind: 'pr' | 'existing' | 'direct' } | null>(null);
+  const [publishResult, setPublishResult] = useState<{ url: string; kind: 'pr' | 'existing' | 'direct'; repo?: string } | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
 
   /**
@@ -584,9 +654,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       return registryClient.publishToRegistry!(id);
     },
     onSuccess: (data) => {
-      setPublishResult({ url: data.url, kind: data.kind ?? 'pr' });
+      setPublishResult({ url: data.url, kind: data.kind ?? 'pr', repo: data.repo });
       setPublishError(null);
       setSaved(true);
+      // A publish may assign the flow a new version (the gh path bumps it; the
+      // hub path returns the one it published). Refetch so the badge is current.
+      queryClient.invalidateQueries({ queryKey: ['flows'] });
     },
     onError: (e: unknown) => {
       setPublishError(extractApiError(e, 'Failed to publish.'));
@@ -603,14 +676,18 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           href={publishResult.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
+          className="flex items-center gap-1 text-small text-accent-ink font-semibold hover:underline"
         >
           <ExternalLink size={12} />
-          {publishResult.kind === 'pr' ? 'PR opened — view on GitHub' : 'Already published — view on registry'}
+          {publishResult.kind === 'pr'
+            ? `PR opened${publishResult.repo ? ` on ${publishResult.repo}` : ''} — view on GitHub`
+            : publishResult.kind === 'direct'
+              ? `Pushed${publishResult.repo ? ` to ${publishResult.repo}` : ''} — view on GitHub`
+              : `Already published${publishResult.repo ? ` in ${publishResult.repo}` : ''} — view on registry`}
         </a>
       )}
       {publishError && (
-        <p data-testid="publish-error" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+        <p data-testid="publish-error" className="text-small text-status-danger-text flex items-center gap-1">
           <AlertCircle size={11} />
           {publishError}
         </p>
@@ -627,12 +704,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             <span
               data-testid="hub-managed-badge"
               title="This flow is managed by your organization's Hub. Edit it in the Hub admin, or clone it to author a local copy."
-              className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"
+              className="text-small font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-canvas text-ink-secondary border border-border-soft"
             >
               Managed by Hub
             </span>
           ) : isBuiltinReadOnly ? (
-            <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
+            <span className="text-small font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
               Default (read-only)
             </span>
           ) : (
@@ -640,7 +717,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               {isActive && (
                 <span
                   data-testid="active-badge"
-                  className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"
+                  className="text-small font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-status-ok-bg text-status-ok-text"
                 >
                   Active
                 </span>
@@ -651,7 +728,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
         {isReadOnly ? (
           // Don't hardcode "Default Flow" — this branch now also renders
           // hub-managed flows, which have their own names.
-          <h3 data-testid="flow-name-heading" className="text-xl font-bold text-slate-800 dark:text-slate-100">
+          <h3 data-testid="flow-name-heading" className="text-title font-bold text-slate-800 dark:text-slate-100">
             {isHubManaged ? name || flow?.name : 'Default Flow'}
           </h3>
         ) : (
@@ -661,7 +738,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             value={name}
             onChange={e => { setName(e.target.value); setSaved(false); }}
             placeholder="Flow name…"
-            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-brand focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-colors pb-0.5"
+            className="w-full text-title font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-accent focus:outline-none placeholder-slate-400 dark:placeholder-slate-500 transition-colors pb-0.5"
           />
         )}
       </div>
@@ -671,7 +748,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
         {/* Description */}
         <div>
-          <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1 uppercase tracking-wide">
+          <label className="block text-small font-semibold text-slate-500 dark:text-slate-400 mb-1 uppercase tracking-wide">
             Description
           </label>
           <textarea
@@ -681,17 +758,35 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             rows={2}
             placeholder="Optional description of this flow"
             disabled={isReadOnly}
-            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand resize-none disabled:opacity-60 disabled:cursor-not-allowed"
+            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-canvas text-slate-800 dark:text-slate-100 text-body focus:outline-none focus:ring-2 focus:ring-focus-ring resize-none disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
+
+        {/* Where the suite runs (281adef0) */}
+        <label className="flex items-start gap-2 text-body text-slate-700 dark:text-slate-200">
+          <input
+            type="checkbox"
+            data-testid="flow-verify-at-parent"
+            checked={verifyAt === 'parent'}
+            disabled={isReadOnly}
+            onChange={e => { setVerifyAt(e.target.checked ? 'parent' : 'leaf'); setSaved(false); }}
+            className="mt-0.5"
+          />
+          <span>
+            Run the project's suite once, at the top-level card
+            <span className="block text-small text-slate-500 dark:text-slate-400">
+              A card whose parent is still open closes without its own run; the parent's verify runs it over everything. A red there cannot be pinned on one child.
+            </span>
+          </span>
+        </label>
 
         {/* Version — read-only, auto-managed */}
         {flow?.version && (
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Version</span>
+            <span className="text-small font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Version</span>
             <span
               data-testid="flow-version-badge"
-              className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+              className="inline-flex items-center px-2 py-0.5 rounded-full text-small font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
             >
               v{flow.version}
             </span>
@@ -701,20 +796,23 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
         {/* Steps */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+            <label className="text-small font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
               Steps
             </label>
+            <div className="flex items-center gap-4">
+            {!isReadOnly && hasContract && <TemplatePicker onApply={applyTemplate} />}
             {!isReadOnly && (
               <button
                 data-testid="add-step-btn"
                 type="button"
                 onClick={addStep}
-                className="flex items-center gap-1 text-xs font-semibold text-accent-text hover:opacity-80 transition-colors"
+                className="flex items-center gap-1 text-small font-semibold text-accent-ink hover:opacity-80 transition-colors"
               >
                 <Plus size={14} />
                 Add Step
               </button>
             )}
+            </div>
           </div>
 
           {/* Kanban-style: one column per step, horizontally scrollable */}
@@ -729,8 +827,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               // A reserved name has its own dedicated message below, so only
               // show the shape issue when that isn't already being reported.
               const shapeIssue = stepShowsOwnIssue(index) ? stepIssue(definitionIssues, index) : undefined;
-              const stepColor = step.color ?? '#04cc98';
-              const anchorColor = isDoneAnchor ? '#10b981' : '#94a3b8';
+              // The native colour input only accepts #rrggbb, so it gets a real hex;
+              // the column border can use the theme token.
+              const stepColor = step.color ?? 'var(--accent)';
+              const stepColorHex = step.color ?? DEFAULT_STEP_HEX;
+              const anchorColor = isDoneAnchor ? 'var(--status-ok-text)' : 'var(--text-tertiary)';
 
               return (
                 <div
@@ -747,7 +848,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                     isAnchor
                       ? 'bg-slate-100 dark:bg-slate-700/60 border-slate-300 dark:border-slate-600 opacity-80'
                       : dragOverIndex === index
-                      ? 'bg-slate-50 dark:bg-slate-800/50 border-border-brand shadow-md'
+                      ? 'bg-slate-50 dark:bg-slate-800/50 border-accent shadow-md'
                       : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
                   )}
                 >
@@ -764,14 +865,14 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         </div>
                         <div
                           data-testid={`step-color-swatch-${index}`}
-                          className="w-4 h-4 rounded shrink-0 border border-white/30"
+                          className="w-4 h-4 rounded shrink-0 border border-border-soft"
                           style={{ backgroundColor: anchorColor }}
                           title="Step color (fixed for anchor steps)"
                         />
-                        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 truncate flex-1">
+                        <span className="text-small font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 truncate flex-1">
                           {step.label}
                         </span>
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-600 text-slate-500 dark:text-slate-400 font-medium shrink-0">
+                        <span className="text-small px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-600 text-slate-500 dark:text-slate-400 font-medium shrink-0">
                           anchor
                         </span>
                       </>
@@ -781,7 +882,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         <input
                           data-testid={`step-color-${index}`}
                           type="color"
-                          value={stepColor}
+                          value={stepColorHex}
                           onChange={e => updateStep(index, { color: e.target.value })}
                           disabled={isReadOnly}
                           title="Pick step color"
@@ -800,7 +901,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             {renderStepIcon(step.icon, <Zap size={12} />)}
                           </button>
                           {openIconPickerIndex === index && !isReadOnly && (
-                            <div className="absolute top-7 left-0 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44">
+                            <div className="absolute top-7 left-0 z-50 bg-surface border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44">
                               {STEP_ICON_OPTIONS.map(opt => (
                                 <button
                                   key={opt.key}
@@ -810,7 +911,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                                   className={clsx(
                                     'w-6 h-6 flex items-center justify-center rounded transition-colors text-slate-600 dark:text-slate-300',
                                     step.icon === opt.key
-                                      ? 'bg-chip text-accent-text'
+                                      ? 'bg-accent-fill text-accent-ink'
                                       : 'hover:bg-slate-100 dark:hover:bg-slate-700'
                                   )}
                                 >
@@ -825,7 +926,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                           className={clsx(
                             'shrink-0',
                             isReadOnly
-                              ? 'text-slate-300 dark:text-slate-600'
+                              ? 'text-slate-300 dark:text-slate-500'
                               : 'cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
                           )}
                           title={isReadOnly ? undefined : 'Drag to reorder'}
@@ -839,7 +940,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             type="button"
                             onClick={() => removeStep(index)}
                             title="Remove step"
-                            className="ml-auto p-1 rounded-lg transition-colors shrink-0 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                            className="ml-auto p-1 rounded-lg transition-colors shrink-0 text-slate-400 hover:text-status-danger-text hover:bg-status-danger-bg"
                           >
                             <Trash2 size={14} />
                           </button>
@@ -852,7 +953,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                   <div className="flex-1 space-y-2 px-3 pb-3">
                     {isAnchor && isTodoAnchor && (
                       <div>
-                        <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
+                        <label className="block text-small text-slate-400 dark:text-slate-500 mb-0.5">
                           Exit Criteria
                         </label>
                         <ExitCriteriaSummary
@@ -867,7 +968,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                       <>
                         {/* Name */}
                         <div>
-                          <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
+                          <label className="block text-small text-slate-400 dark:text-slate-500 mb-0.5">
                             Name (key)
                           </label>
                           <input
@@ -878,26 +979,26 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             placeholder="e.g. in_progress"
                             disabled={isStepLocked}
                             className={clsx(
-                              'w-full px-2 py-1 rounded-md border text-xs focus:outline-none focus:ring-1 disabled:opacity-60',
+                              'w-full px-2 py-1 rounded-md border text-small focus:outline-none focus:ring-1 disabled:opacity-60',
                               hasReservedName
-                                ? 'border-red-400 focus:ring-red-400 bg-red-50 dark:bg-red-900/20 text-slate-800 dark:text-slate-100'
-                                : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-brand'
+                                ? 'border-status-danger-text/40 focus:ring-2 focus:ring-status-danger-text bg-status-danger-bg text-slate-800 dark:text-slate-100'
+                                : 'border-slate-200 dark:border-slate-600 bg-surface dark:bg-canvas text-slate-800 dark:text-slate-100 focus:ring-focus-ring'
                             )}
                           />
                           {shapeIssue && (
-                            <p data-testid={`step-name-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                            <p data-testid={`step-name-error-${index}`} className="text-small text-status-danger-text mt-0.5">
                               {shapeIssue.message}
                             </p>
                           )}
                           {hasReservedName && (
-                            <p data-testid={`step-reserved-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                            <p data-testid={`step-reserved-error-${index}`} className="text-small text-status-danger-text mt-0.5">
                               Reserved name
                             </p>
                           )}
                         </div>
                         {/* Label */}
                         <div>
-                          <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
+                          <label className="block text-small text-slate-400 dark:text-slate-500 mb-0.5">
                             Label (display)
                           </label>
                           <input
@@ -907,13 +1008,13 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             onChange={e => updateStep(index, { label: e.target.value })}
                             placeholder="e.g. In Progress"
                             disabled={isStepLocked}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
+                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-surface dark:bg-canvas text-slate-800 dark:text-slate-100 text-small focus:outline-none focus:ring-1 focus:ring-focus-ring disabled:opacity-60"
                           />
                         </div>
                         {/* Exit criteria (CGLAB-109): compact summary — the
                             popup is the full markdown editor. */}
                         <div>
-                          <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
+                          <label className="block text-small text-slate-400 dark:text-slate-500 mb-0.5">
                             Exit Criteria
                           </label>
                           <ExitCriteriaSummary
@@ -925,14 +1026,35 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         </div>
                       </>
                     )}
+                    {hasContract && contract && (
+                      <StepContractButton index={index} step={step} stepContract={stepContractOf(index)} onOpen={() => setContractStepIndex(index)} />
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
+          {hasContract && contract && (
+            <div className="space-y-3 mt-3">
+              <ContractProblems steps={steps} contract={contract} disabled={isReadOnly} onRemoveCheck={removeCheck} onAddWritingTestsBefore={addWritingTestsBefore} />
+              <RecordsLane steps={steps} contract={contract} />
+            </div>
+          )}
+          {hasContract && contract && contractStepIndex !== null && steps[contractStepIndex] && (
+            <StepContractDialog
+              step={steps[contractStepIndex]}
+              stepContract={stepContractOf(contractStepIndex)}
+              contract={contract}
+              disabled={isReadOnly}
+              canDisableChecks={canDisableChecks}
+              readOnlyNote={isHubManaged ? 'Set by your org admin: this flow can\'t be changed here.' : 'This is the built-in flow: clone it to change it.'}
+              onChange={patch => updateStep(contractStepIndex, patch)}
+              onClose={() => setContractStepIndex(null)}
+            />
+          )}
           {/* Reserved name global error */}
           {silentIssues.length > 0 && (
-            <ul data-testid="flow-definition-issues" className="text-sm text-red-600 dark:text-red-400 mt-1 list-disc pl-5">
+            <ul data-testid="flow-definition-issues" className="text-body text-status-danger-text mt-1 list-disc pl-5">
               {silentIssues.map((issue, i) => (
                 <li key={i}>
                   {issue.stepIndex === undefined
@@ -943,7 +1065,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             </ul>
           )}
           {reservedNameError && (
-            <p data-testid="reserved-name-error" className="text-sm text-red-600 dark:text-red-400 mt-1">
+            <p data-testid="reserved-name-error" className="text-body text-status-danger-text mt-1">
               One or more step names use a reserved name (TODO, DONE, BLOCKED, PAUSED, IDEAS, ARCHIVED, TRASHED).
             </p>
           )}
@@ -951,7 +1073,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
         {/* Error */}
         {errorMsg && (
-          <p data-testid="flow-editor-error" className="text-sm text-red-600 dark:text-red-400">
+          <p data-testid="flow-editor-error" className="text-body text-status-danger-text">
             {errorMsg}
           </p>
         )}
@@ -975,7 +1097,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 type="button"
                 disabled={isSaveDisabled}
                 onClick={() => saveMutation.mutate()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-body font-semibold bg-brand text-navy hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {saved ? <Check size={15} /> : <Save size={15} />}
                 {isBusy ? 'Saving…' : saved && !isDirty ? labels.saved : labels.save}
@@ -986,7 +1108,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 data-testid="clone-to-edit-btn"
                 type="button"
                 onClick={onClone}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-body font-semibold bg-brand text-navy hover:opacity-90 transition-colors"
               >
                 <CopyPlus size={15} />
                 Clone to Edit
@@ -1002,7 +1124,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 disabled={publishMutation.isPending || isSaveDisabled}
                 title={isSaveDisabled ? saveBlockedReason : 'Publish this flow to the registry'}
                 onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:text-accent-text hover:border-border-brand disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-body font-semibold border border-border-soft text-ink-secondary hover:text-accent-ink hover:border-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
                 {publishMutation.isPending ? 'Publishing…' : 'Publish'}
@@ -1013,7 +1135,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 data-testid="use-default-flow-btn"
                 type="button"
                 onClick={onUseDefault}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shadow-sm"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-body font-semibold bg-brand text-navy hover:opacity-90 transition-colors shadow-sm"
               >
                 <GitBranch size={15} />
                 {labels.useFlow}
@@ -1025,7 +1147,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 type="button"
                 disabled={isSaveDisabled}
                 onClick={() => useFlowMutation.mutate()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                // Secondary: Save is the one primary in this footer.
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-body font-semibold border border-accent text-accent-ink hover:bg-accent-fill disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 <GitBranch size={15} />
                 {labels.useFlow}
@@ -1035,7 +1158,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               data-testid="cancel-panel-btn"
               type="button"
               onClick={onClose}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-body font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
             >
               Close
             </button>
@@ -1072,19 +1195,19 @@ interface DeleteConfirmProps {
 }
 
 const DeleteConfirm: React.FC<DeleteConfirmProps> = ({ onConfirm, onCancel }) => (
-  <span className="inline-flex items-center gap-1 text-xs" data-testid="delete-confirm">
+  <span className="inline-flex items-center gap-1 text-small" data-testid="delete-confirm">
     <span className="text-slate-600 dark:text-slate-300">Delete?</span>
     <button
       data-testid="delete-confirm-yes"
       onClick={e => { e.stopPropagation(); onConfirm(); }}
-      className="px-1.5 py-0.5 rounded bg-red-600 text-white hover:bg-red-700 font-semibold"
+      className="px-1.5 py-0.5 rounded bg-status-danger-bg text-status-danger-text border border-status-danger-text/40 font-semibold"
     >
       Yes
     </button>
     <button
       data-testid="delete-confirm-no"
       onClick={e => { e.stopPropagation(); onCancel(); }}
-      className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-600 font-semibold"
+      className="px-1.5 py-0.5 rounded text-ink-secondary hover:bg-canvas"
     >
       No
     </button>
@@ -1101,10 +1224,25 @@ const FlowMermaid: React.FC<{ steps: { name: string; label: string }[] }> = ({ s
   useEffect(() => {
     if (!ref.current || steps.length === 0) return;
     const id = `mermaid-flow-${Math.random().toString(36).substring(2, 9)}`;
-    const nodes = steps.map((s, i) => `  ${i}["${s.label || s.name}"]`).join('\n');
+    /*
+     * Labels come from the community registry, so they are untrusted.
+     *
+     * An unescaped `"` terminated the quoted label and left a blank preview;
+     * a newline injected extra statements into the chart source. Neither can
+     * become script at 'strict' — the URL is sanitized and the final SVG goes
+     * through DOMPurify — but the diagram is data, not source, and is escaped
+     * as such (F1 from the CGLAB-187 adversarial review).
+     */
+    const escapeLabel = (raw: string): string =>
+      raw.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/[\r\n]+/g, ' ');
+    const nodes = steps.map((s, i) => `  ${i}["${escapeLabel(s.label || s.name)}"]`).join('\n');
     const edges = steps.slice(1).map((_, i) => `  ${i} --> ${i + 1}`).join('\n');
     const chart = `flowchart LR\n${nodes}\n${edges}`;
-    mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'default', securityLevel: 'loose' });
+    // 'strict', NEVER 'loose' (CGLAB-187): a community flow is authored by
+    // someone else, and at 'loose' Mermaid skips its own URL sanitization, so a
+    // `javascript:` link in a step would survive into the SVG this injects with
+    // innerHTML. See ReadmeModal.tsx for the desktop-escalation detail.
+    mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'default', securityLevel: 'strict' });
     mermaid.render(id, chart).then(({ svg }) => {
       if (ref.current) ref.current.innerHTML = svg;
     }).catch(() => {});
@@ -1145,55 +1283,55 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
     <div className="flex flex-col h-full" data-testid="community-preview-panel">
       <div className="px-6 pt-6 pb-4 shrink-0">
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-chip text-accent-text">
+          <span className="text-small font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent-fill text-accent-ink">
             Community
           </span>
         </div>
-        <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">{flow.name}</h3>
+        <h3 className="text-title font-bold text-slate-800 dark:text-slate-100">{flow.name}</h3>
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 pb-4 space-y-4">
         <div className="grid grid-cols-2 gap-3">
           {flow.author && (
             <div>
-              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Author</p>
-              <p className="text-sm text-slate-700 dark:text-slate-200">{flow.author}</p>
+              <p className="text-small font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Author</p>
+              <p className="text-body text-slate-700 dark:text-slate-200">{flow.author}</p>
             </div>
           )}
           {flow.version && (
             <div>
-              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Version</p>
-              <p className="text-sm text-slate-700 dark:text-slate-200">{flow.version}</p>
+              <p className="text-small font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Version</p>
+              <p className="text-body text-slate-700 dark:text-slate-200">{flow.version}</p>
             </div>
           )}
           <div>
-            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Steps</p>
-            <p className="text-sm text-slate-700 dark:text-slate-200">{flow.stepCount}</p>
+            <p className="text-small font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Steps</p>
+            <p className="text-body text-slate-700 dark:text-slate-200">{flow.stepCount}</p>
           </div>
         </div>
 
         {flow.description && (
           <div>
-            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Description</p>
-            <p className="text-sm text-slate-600 dark:text-slate-400">{flow.description}</p>
+            <p className="text-small font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Description</p>
+            <p className="text-body text-slate-600 dark:text-slate-400">{flow.description}</p>
           </div>
         )}
 
         {flow.steps && flow.steps.length > 0 ? (
           <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-3">
-            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Flow</p>
+            <p className="text-small font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Flow</p>
             <FlowMermaid steps={flow.steps} />
           </div>
         ) : (
           <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-3">
-            <p className="text-xs text-slate-500 italic">
+            <p className="text-small text-slate-500 italic">
               Step details will be available after installation.
             </p>
           </div>
         )}
 
         {installMutation.isError && (
-          <p data-testid="community-install-error" className="text-sm text-red-600 dark:text-red-400">
+          <p data-testid="community-install-error" className="text-body text-status-danger-text">
             {(installMutation.error as Error)?.message ?? 'Installation failed'}
           </p>
         )}
@@ -1205,7 +1343,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
           type="button"
           disabled={installMutation.isPending}
           onClick={() => { actionRef.current = 'install'; installMutation.mutate(flow.filename); }}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-body font-semibold bg-brand text-navy hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {installMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
           Install
@@ -1215,7 +1353,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
           type="button"
           disabled={installMutation.isPending}
           onClick={() => { actionRef.current = 'clone'; installMutation.mutate(flow.filename); }}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-body font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
         >
           <CopyPlus size={15} />
           Clone to Edit
@@ -1242,6 +1380,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   // Defaults false so the hub admin — which must edit hub-sourced flows — keeps
   // working without opting out; only the local agenfk UI sets it.
   const hubManagedReadOnly = isLegacy ? false : ((props as FlowEditorModalProps).hubManagedReadOnly ?? false);
+  // CGLAB-428: off unless the host is the hub admin.
+  const canDisableChecks = isLegacy ? false : ((props as FlowEditorModalProps).canDisableChecks ?? false);
   const tabLabels = useTabLabels();
   const { registryToolbar } = useHost();
 
@@ -1435,7 +1575,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-[calc(100vw-2rem)] h-[90vh] flex flex-row overflow-hidden">
+      <div className="bg-surface rounded-2xl shadow-2xl w-[calc(100vw-2rem)] h-[90vh] flex flex-row overflow-hidden">
 
         {/* ── LEFT SIDEBAR ──────────────────────────────────────────────────── */}
         <div
@@ -1445,8 +1585,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
           {/* Sidebar header */}
           <div className="px-4 pt-5 pb-3 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
-              <GitBranch size={16} className="text-accent-text" />
-              <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+              <GitBranch size={16} className="text-accent-ink" />
+              <span className="text-body font-semibold text-slate-700 dark:text-slate-200">
                 Flows
               </span>
             </div>
@@ -1465,9 +1605,9 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               data-testid="tab-my-flows"
               onClick={() => setActiveTab('my-flows')}
               className={clsx(
-                'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
+                'flex-1 py-2 text-small font-semibold transition-colors border-b-2 -mb-px',
                 activeTab === 'my-flows'
-                  ? 'border-brand text-accent-text'
+                  ? 'border-accent text-accent-ink'
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
@@ -1477,9 +1617,9 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               data-testid="tab-community"
               onClick={() => setActiveTab('community')}
               className={clsx(
-                'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
+                'flex-1 py-2 text-small font-semibold transition-colors border-b-2 -mb-px',
                 activeTab === 'community'
-                  ? 'border-brand text-accent-text'
+                  ? 'border-accent text-accent-ink'
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
@@ -1504,7 +1644,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                     placeholder="Search by name or author…"
                     value={communitySearch}
                     onChange={e => setCommunitySearch(e.target.value)}
-                    className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand"
+                    className="w-full pl-7 pr-2 py-1.5 text-small rounded-lg border border-slate-200 dark:border-slate-600 bg-surface text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-focus-ring"
                   />
                 </div>
               </div>
@@ -1512,15 +1652,15 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                 {isRegistryLoading ? (
                   <div className="flex flex-col items-center justify-center py-8 gap-2 text-slate-500">
                     <Loader2 size={20} className="animate-spin" />
-                    <span className="text-xs">Loading…</span>
+                    <span className="text-small">Loading…</span>
                   </div>
                 ) : isRegistryError ? (
                   <div className="flex flex-col items-center justify-center py-8 gap-2 px-3 text-center">
-                    <AlertCircle size={20} className="text-red-500" />
-                    <p className="text-xs text-red-600 dark:text-red-400">Failed to load registry.</p>
+                    <AlertCircle size={20} className="text-status-danger-text" />
+                    <p className="text-small text-status-danger-text">Failed to load registry.</p>
                   </div>
                 ) : filteredRegistryFlows.length === 0 ? (
-                  <p className="text-xs text-slate-500 text-center py-8">
+                  <p className="text-small text-slate-500 text-center py-8">
                     {communitySearch ? 'No flows match.' : 'No community flows found.'}
                   </p>
                 ) : (
@@ -1532,12 +1672,12 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       className={clsx(
                         'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
                         selectedRegistryFlow?.filename === rf.filename
-                          ? 'bg-chip text-accent-text'
+                          ? 'bg-accent-fill text-accent-ink'
                           : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                       )}
                     >
-                      <p className="text-sm font-medium truncate">{rf.name}</p>
-                      <p className="text-xs text-slate-400 dark:text-slate-500">
+                      <p className="text-body font-medium truncate">{rf.name}</p>
+                      <p className="text-small text-slate-400 dark:text-slate-500">
                         {rf.author ? `${rf.author} · ` : ''}{rf.stepCount} step{rf.stepCount !== 1 ? 's' : ''}
                       </p>
                     </div>
@@ -1559,12 +1699,12 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors group cursor-pointer',
                 selectedFlowId === BUILTIN_ID && !isNewFlow && !isEditingClone
-                  ? 'bg-chip text-accent-text'
+                  ? 'bg-accent-fill text-accent-ink'
                   : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
               )}
             >
               <div className="flex items-center justify-between gap-1">
-                <span className="text-sm font-medium truncate flex-1">Default Flow</span>
+                <span className="text-body font-medium truncate flex-1">Default Flow</span>
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     data-testid="clone-flow-btn-__builtin__"
@@ -1576,11 +1716,11 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       }
                     }}
                     title="Clone flow"
-                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
+                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-ink dark:text-slate-500 hover:bg-accent-fill"
                   >
                     <CopyPlus size={13} />
                   </button>
-                  <span className="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
+                  <span className="text-small font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
                     DEFAULT
                   </span>
                 </div>
@@ -1588,7 +1728,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
             </div>
 
             {deleteError && (
-              <p data-testid="flow-delete-error" className="text-xs text-red-600 dark:text-red-400 px-3 py-2">
+              <p data-testid="flow-delete-error" className="text-small text-status-danger-text px-3 py-2">
                 {deleteError}
               </p>
             )}
@@ -1608,7 +1748,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   className={clsx(
                     'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
                     isSelected
-                      ? 'bg-chip text-accent-text'
+                      ? 'bg-accent-fill text-accent-ink'
                       : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                   )}
                   onClick={() => {
@@ -1623,11 +1763,11 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   <div className="flex items-center gap-1">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-sm font-medium truncate">{flow.name}</span>
+                        <span className="text-body font-medium truncate">{flow.name}</span>
                         {isActive && (
                           <span
                             data-testid={`flow-active-badge-${flow.id}`}
-                            className="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 shrink-0"
+                            className="text-small font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-status-ok-bg text-status-ok-text shrink-0"
                           >
                             Active
                           </span>
@@ -1639,7 +1779,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                           onCancel={() => setConfirmDeleteId(null)}
                         />
                       ) : (
-                        <span className="text-xs text-slate-400 dark:text-slate-500">
+                        <span className="text-small text-slate-400 dark:text-slate-500">
                           {flow.steps.length} step{flow.steps.length !== 1 ? 's' : ''}
                         </span>
                       )}
@@ -1654,7 +1794,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                           handleClone(flow, flow.name);
                         }}
                         title="Clone flow"
-                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
+                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-ink dark:text-slate-500 hover:bg-accent-fill"
                       >
                         <CopyPlus size={13} />
                       </button>
@@ -1674,8 +1814,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                         className={clsx(
                           'shrink-0 p-1 rounded transition-colors',
                           isActive || isRowHubManaged
-                            ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                            : 'text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
+                            ? 'text-slate-300 dark:text-slate-500 cursor-not-allowed'
+                            : 'text-slate-300 hover:text-status-danger-text dark:text-slate-500 hover:bg-status-danger-bg'
                         )}
                       >
                         <Trash2 size={13} />
@@ -1697,10 +1837,10 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                 setClonedFlow(null);
               }}
               className={clsx(
-                'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold transition-colors',
+                'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-body font-semibold transition-colors',
                 isNewFlow
-                  ? 'bg-chip text-accent-text'
-                  : 'text-accent-text hover:bg-chip'
+                  ? 'bg-accent-fill text-accent-ink'
+                  : 'text-accent-ink hover:bg-accent-fill'
               )}
             >
               <Plus size={15} />
@@ -1722,9 +1862,9 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                 onCloneToEdit={handleCommunityClone}
               />
             ) : (
-              <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">
+              <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-500 gap-3 p-8">
                 <Globe size={40} className="opacity-30" />
-                <p className="text-sm">Select a community flow to preview it.</p>
+                <p className="text-body">Select a community flow to preview it.</p>
               </div>
             )
           ) : selectedFlowId !== null || isNewFlow || isEditingClone ? (
@@ -1733,6 +1873,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               flow={selectedFlow}
               isReadOnly={isReadOnly}
               isHubManaged={isHubManagedSelected}
+              canDisableChecks={canDisableChecks}
               projectId={projectId}
               activeFlowId={effectiveActiveFlowId}
               onSaved={handleFlowSaved}
@@ -1754,12 +1895,12 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               canSelectFlow={canSelectFlow}
             />
           ) : (
-            <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">
+            <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-500 gap-3 p-8">
               <GitBranch size={40} className="opacity-30" />
-              <p className="text-sm">Select a flow from the sidebar or create a new one.</p>
+              <p className="text-body">Select a flow from the sidebar or create a new one.</p>
               <button
                 onClick={() => { setIsNewFlow(true); setClonedFlow(null); setCreatedFlow(null); }}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-body font-semibold bg-brand text-navy hover:opacity-90 transition-colors"
               >
                 <Plus size={14} />
                 New Flow

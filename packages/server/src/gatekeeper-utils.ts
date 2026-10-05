@@ -10,6 +10,7 @@
 
 export {
   getActiveStepItems,
+  isBoundaryStep,
   decideGatekeeperAuthorization,
   resolveStepContract,
   renderStepContract,
@@ -20,6 +21,7 @@ export {
   type GatekeeperDecisionOptions,
 } from "@agenfk/core";
 
+import { isBoundaryStep } from "@agenfk/core";
 import type { GatekeeperFlow, GatekeeperItem } from "@agenfk/core";
 
 /**
@@ -29,7 +31,7 @@ import type { GatekeeperFlow, GatekeeperItem } from "@agenfk/core";
 export function getCodingStepName(activeFlow: GatekeeperFlow | null): string {
   if (!activeFlow) return 'IN_PROGRESS';
   const sorted = [...activeFlow.steps].sort((a, b) => a.order - b.order);
-  return sorted.find(s => !s.isAnchor)?.name ?? 'IN_PROGRESS';
+  return sorted.find(s => !isBoundaryStep(s))?.name ?? 'IN_PROGRESS';
 }
 
 /**

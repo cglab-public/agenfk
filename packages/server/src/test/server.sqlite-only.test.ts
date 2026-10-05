@@ -3,12 +3,30 @@
  * These tests should FAIL before the JSONStorageProvider is removed and
  * initStorage() is simplified to always use SQLite.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -29,8 +47,8 @@ const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sqlite-only-')
 fs.mkdirSync(path.join(sandboxHome, '.agenfk'), { recursive: true });
 vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
-const TEST_DB_JSON_PATH = path.resolve('./server-sqlite-only-test-db.json');
-const TEST_DB_SQLITE_PATH = path.resolve('./server-sqlite-only-test-db.sqlite');
+const TEST_DB_JSON_PATH = testDbPath('server-sqlite-only-test-db.json');
+const TEST_DB_SQLITE_PATH = testDbPath('server-sqlite-only-test-db.sqlite');
 
 describe('SQLite-only storage enforcement', () => {
   describe('when AGENFK_DB_PATH points to a .json path', () => {
@@ -49,7 +67,7 @@ describe('SQLite-only storage enforcement', () => {
     });
 
     it('GET /db/status should always report dbType=sqlite', async () => {
-      const res = await request(app).get('/db/status');
+      const res = await agent().get('/db/status');
       expect(res.status).toBe(200);
       // Must be sqlite even though env path ended in .json
       expect(res.body.dbType).toBe('sqlite');
@@ -66,14 +84,14 @@ describe('SQLite-only storage enforcement', () => {
     });
 
     it('should be fully functional with SQLite (projects endpoint)', async () => {
-      const res = await request(app).get('/projects');
+      const res = await agent().get('/projects');
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
     });
   });
 
   describe('when AGENFK_DB_PATH points to a .sqlite path', () => {
-    const SQLITE_TEST_DB = path.resolve('./server-sqlite-explicit-test-db.sqlite');
+    const SQLITE_TEST_DB = testDbPath('server-sqlite-explicit-test-db.sqlite');
 
     beforeAll(async () => {
       if (fs.existsSync(SQLITE_TEST_DB)) fs.unlinkSync(SQLITE_TEST_DB);
@@ -86,14 +104,14 @@ describe('SQLite-only storage enforcement', () => {
     });
 
     it('GET /db/status should report dbType=sqlite', async () => {
-      const res = await request(app).get('/db/status');
+      const res = await agent().get('/db/status');
       expect(res.status).toBe(200);
       expect(res.body.dbType).toBe('sqlite');
     });
   });
 
   describe('migration.json import on startup', () => {
-    const MIGRATION_DB = path.resolve('./server-migration-test-db.sqlite');
+    const MIGRATION_DB = testDbPath('server-migration-test-db.sqlite');
     const migrationPath = path.join(os.homedir(), '.agenfk', 'migration.json');
     let hadExistingMigration = false;
     let existingMigrationContent: string | null = null;
@@ -141,7 +159,7 @@ describe('SQLite-only storage enforcement', () => {
     });
 
     it('should import projects from migration.json into SQLite on startup', async () => {
-      const res = await request(app).get('/projects');
+      const res = await agent().get('/projects');
       expect(res.status).toBe(200);
       const found = res.body.find((p: any) => p.id === testProject.id);
       expect(found).toBeDefined();

@@ -6,6 +6,7 @@
  * GET /internal/hub/status — which must expose them even when the hub is NOT
  * configured (a stale-org install is exactly when carry-over is needed).
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -28,7 +29,18 @@ vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 const mod = await import('../server');
 const { app, VERIFY_TOKEN } = mod;
 
-const TEST_DB = path.resolve('./hub-org-summaries-test-db.sqlite');
+/*
+ * ONE listening server for the file (BUG 9de0c99c). `request(app)` starts and
+ * tears down an ephemeral one per call, and that churn produced `Error: Parse
+ * Error: Expected HTTP/` — a transport failure that hands the test an empty
+ * body and then surfaces as a confident wrong assertion elsewhere. Declared
+ * here because this file's `app` comes from a top-level await, not a hook.
+ */
+const __server = app.listen(0);
+const agent = () => request(__server);
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+const TEST_DB = testDbPath('hub-org-summaries-test-db.sqlite');
 
 describe('hub outbox org summaries', () => {
   beforeAll(async () => {
@@ -83,7 +95,7 @@ describe('hub outbox org summaries', () => {
 
   it('GET /internal/hub/status includes orgs even with the hub unconfigured', async () => {
     queue('s1', 'old-corp', '2026-03-01T00:00:00Z', 'item.created');
-    const res = await request(app)
+    const res = await agent()
       .get('/internal/hub/status')
       .set('x-agenfk-internal', VERIFY_TOKEN);
     expect(res.status).toBe(200);
@@ -93,7 +105,7 @@ describe('hub outbox org summaries', () => {
   });
 
   it('GET /internal/hub/status still requires the internal token', async () => {
-    const res = await request(app).get('/internal/hub/status');
+    const res = await agent().get('/internal/hub/status');
     expect(res.status).toBe(403);
   });
 });

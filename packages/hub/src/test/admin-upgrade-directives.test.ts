@@ -15,10 +15,22 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-upgrade-directives-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -29,10 +41,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 async function seedInstallation(db: any, orgId: string, installationId: string, occurredAt = '2026-05-01T10:00:00Z') {
   await db.run(
@@ -62,6 +70,8 @@ describe('Hub upgrade-directive API', () => {
       releaseExists: async (version: string) => version === '0.3.1' || version === '0.3.0-beta.22',
     } as any);
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
@@ -75,14 +85,14 @@ describe('Hub upgrade-directive API', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   describe('POST /v1/admin/upgrade', () => {
     it('rejects non-admin viewer with 403', async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieView)
         .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
@@ -90,7 +100,7 @@ describe('Hub upgrade-directive API', () => {
     });
 
     it('rejects malformed version with 400', async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.0.0; rm -rf /', scope: { type: 'all' } });
@@ -99,7 +109,7 @@ describe('Hub upgrade-directive API', () => {
     });
 
     it('rejects unknown released version with 422', async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '9.9.9', scope: { type: 'all' } });
@@ -107,7 +117,7 @@ describe('Hub upgrade-directive API', () => {
     });
 
     it('creates a directive + pending targets for every installation in scope=all', async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
@@ -124,7 +134,7 @@ describe('Hub upgrade-directive API', () => {
     });
 
     it('creates a directive scoped to a single installation', async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'installation', installationId: 'inst-1' } });
@@ -139,7 +149,7 @@ describe('Hub upgrade-directive API', () => {
     it("creates a directive scoped to a subset of installations (scope.type='installations')", async () => {
       // Seed a third installation so the subset is meaningfully smaller than 'all'.
       await seedInstallation(ctx.db, 'org-a', 'inst-3');
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({
@@ -157,19 +167,19 @@ describe('Hub upgrade-directive API', () => {
     });
 
     it("rejects scope.type='installations' with missing/empty installationIds (400)", async () => {
-      const missing = await supertest(app)
+      const missing = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'installations' } });
       expect(missing.status).toBe(400);
 
-      const empty = await supertest(app)
+      const empty = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'installations', installationIds: [] } });
       expect(empty.status).toBe(400);
 
-      const wrongType = await supertest(app)
+      const wrongType = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'installations', installationIds: 'inst-1' } });
@@ -177,7 +187,7 @@ describe('Hub upgrade-directive API', () => {
     });
 
     it("rejects scope.type='installations' when any id does not exist in the org (404)", async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({
@@ -189,14 +199,14 @@ describe('Hub upgrade-directive API', () => {
 
     it("scope.type='installations' applies the single-pending guard across the subset", async () => {
       // First directive locks inst-1.
-      const first = await supertest(app)
+      const first = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'installation', installationId: 'inst-1' } });
       expect(first.status).toBe(201);
 
       // Second directive targeting [inst-1, inst-2] must conflict on inst-1.
-      const second = await supertest(app)
+      const second = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({
@@ -210,13 +220,13 @@ describe('Hub upgrade-directive API', () => {
 
   describe('GET /v1/admin/upgrade', () => {
     it('lists directives newest-first with aggregate progress counts', async () => {
-      const create = await supertest(app)
+      const create = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
       const directiveId = create.body.directiveId;
 
-      const r = await supertest(app).get('/v1/admin/upgrade').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/admin/upgrade').set('Cookie', cookieAdmin);
       expect(r.status).toBe(200);
       expect(r.body.directives).toHaveLength(1);
       const d = r.body.directives[0];
@@ -229,20 +239,20 @@ describe('Hub upgrade-directive API', () => {
 
   describe('GET /v1/upgrade-directive (fleet poll)', () => {
     it('returns 204 when no directive is pending for the calling installation', async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .get('/v1/upgrade-directive')
         .set('Authorization', `Bearer ${fleetToken}`);
       expect(r.status).toBe(204);
     });
 
     it('returns the pending directive for the calling installation only', async () => {
-      const create = await supertest(app)
+      const create = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'installation', installationId: 'inst-1' } });
       const directiveId = create.body.directiveId;
 
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .get('/v1/upgrade-directive')
         .set('Authorization', `Bearer ${fleetToken}`);
       expect(r.status).toBe(200);
@@ -251,25 +261,25 @@ describe('Hub upgrade-directive API', () => {
     });
 
     it('does not return a directive scoped to a different installation', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'installation', installationId: 'inst-2' } });
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .get('/v1/upgrade-directive')
         .set('Authorization', `Bearer ${fleetToken}`);
       expect(r.status).toBe(204);
     });
 
     it('rejects unauthenticated requests with 401', async () => {
-      const r = await supertest(app).get('/v1/upgrade-directive');
+      const r = await supertest(__server).get('/v1/upgrade-directive');
       expect(r.status).toBe(401);
     });
   });
 
   describe('Event ingest — fleet:upgrade:* transitions directive_target state', () => {
     async function issueDirective(): Promise<string> {
-      const create = await supertest(app)
+      const create = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'installation', installationId: 'inst-1' } });
@@ -277,7 +287,7 @@ describe('Hub upgrade-directive API', () => {
     }
 
     const sendEvent = (directiveId: string, type: string, extra: Record<string, any> = {}) =>
-      supertest(app)
+      supertest(__server)
         .post('/v1/events')
         .set('Authorization', `Bearer ${fleetToken}`)
         .send({

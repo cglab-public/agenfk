@@ -49,27 +49,29 @@ jobs:
 
       - name: Bump version in all package.json files
         run: |
-          node -e "
-            const fs = require('fs');
-            const { execSync } = require('child_process');
-            const files = execSync(
-              'find . -name package.json -not -path \"*/node_modules/*\" -not -path \"*/dist/*\"',
-              { encoding: 'utf8' }
-            ).trim().split('\n');
-            files.forEach(f => {
-              const pkg = JSON.parse(fs.readFileSync(f, 'utf8'));
-              pkg.version = process.env.VERSION;
-              fs.writeFileSync(f, JSON.stringify(pkg, null, 2) + '\n');
-            });
-          "
+          # bump-version.mjs, not an inline rewrite: it also updates the
+          # internal @agenfk/* dependency refs. The inline version set only
+          # `version`, so the refs stayed on the old number, the lockfile no
+          # longer matched, and `npm ci` went looking for @agenfk/core@<old>
+          # on the public registry - a 404, on every release.
+          if [ "$(node -p "require('./package.json').version")" = "$VERSION" ]; then
+            echo "Already at $VERSION on this ref - nothing to bump."
+          else
+            node scripts/bump-version.mjs "$VERSION"
+          fi
         env:
           VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Regenerate the lockfile
+        # Same commit as the manifests, or they drift apart and the NEXT
+        # install is the one that fails.
+        run: npm install --package-lock-only --ignore-scripts
 
       - name: Commit and push version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json packages/*/package.json
+          git add package.json packages/*/package.json package-lock.json
           # The documented release flow bumps locally first (bump-version.mjs,
           # committed with the lockfile), so by the time this workflow runs the
           # manifests usually already carry the target version — `git commit`
@@ -97,7 +99,14 @@ jobs:
           if [ -n "$PREV" ]; then NOTES_ARGS+=(--notes-start-tag "$PREV"); fi
           git tag "v${VERSION}"
           git push origin "v${VERSION}"
+          # A version with a suffix (1.2.0-beta.1) is a PRE-release, and GitHub
+          # has to be told: without this it becomes "Latest" and every user
+          # following the stable channel is offered a beta.
+          case "$VERSION" in
+            *-*) PRERELEASE=(--prerelease) ;;
+            *) PRERELEASE=() ;;
+          esac
           gh release create "v${VERSION}" agenfk-dist.tar.gz \
-            --title "v${VERSION}" "${NOTES_ARGS[@]}"
+            --title "v${VERSION}" "${PRERELEASE[@]}" "${NOTES_ARGS[@]}"
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}

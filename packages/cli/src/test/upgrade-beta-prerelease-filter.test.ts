@@ -31,7 +31,6 @@ vi.mock('child_process', () => ({
   spawnSync: vi.fn(),
   default: { execSync: vi.fn(), execFileSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
 }));
-vi.mock('figlet', () => ({ default: { textSync: vi.fn().mockReturnValue('AgEnFK') } }));
 
 import axios from 'axios';
 import { fetchLatestReleaseTag } from '../index';

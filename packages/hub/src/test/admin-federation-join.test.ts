@@ -143,6 +143,19 @@ describe('child hub: join, request release, leave', () => {
       expect(enrollCalls).toHaveLength(0);
     });
 
+    it('refuses its own browsed host too, when AGENFK_HUB_PUBLIC_URL names another', async () => {
+      // A hub with two names: the canonical one is the public URL, but an admin
+      // pasting the OTHER name (the one they are browsing) is still pasting
+      // this hub.
+      app.locals.hubPublicUrl = 'https://canonical.example.com';
+      const r = await supertest(app).post('/v1/admin/federation/join')
+        .set('Cookie', adminCookie).set('Host', 'self.example.com')
+        .send({ inviteToken: joinToken('http://self.example.com', 't') });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/itself|own/i);
+      expect(enrollCalls).toHaveLength(0);
+    });
+
     it('requires an invite token', async () => {
       expect((await join({ parentUrl: PARENT })).status).toBe(400);
       expect(enrollCalls).toHaveLength(0);
@@ -170,6 +183,28 @@ describe('child hub: join, request release, leave', () => {
       await drainApp(out.app);
       await out.ctx.db.close();
       for (const s of ['', '-wal', '-shm']) { const f = TEST_DB + '2' + s; if (fs.existsSync(f)) fs.unlinkSync(f); }
+    });
+
+    it('says WHY when the parent resolves to a private address, and stores nothing (CGLAB-371)', async () => {
+      // The connect-time DNS guard refuses before a byte is sent. Its reason is
+      // this hub's own text, so it can be shown - the generic "could not be
+      // reached" would send the admin looking at the network instead.
+      const refusal = 'refusing to connect to parent.example.test: it resolves to a private or loopback address (10.0.0.5). '
+        + 'Set AGENFK_HUB_ALLOW_PRIVATE_PARENT=1 if the parent hub really is on this network.';
+      const out = await createHubApp({
+        dbPath: TEST_DB + '-dns', secretKey: SECRET, sessionSecret: 's', defaultOrgId: 'org',
+        federationClient: { async enroll() { throw Object.assign(new Error(refusal), { code: 'EPRIVATEADDR' }); } },
+      } as any);
+      await createPasswordUser(out.ctx.db, 'org', 'a@x', 'longenough1', 'admin');
+      const cookie = (await supertest(out.app).post('/auth/login').send({ email: 'a@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+      const r = await supertest(out.app).post('/v1/admin/federation/join').set('Cookie', cookie).send({ inviteToken: joinToken(PARENT, 'dns') });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toBe(refusal);
+      expect(await readParentBinding(out.ctx.db, SECRET)).toBeNull();
+      out.ctx.stopWorkers?.();
+      await drainApp(out.app);
+      await out.ctx.db.close();
+      for (const s of ['', '-wal', '-shm']) { const f = TEST_DB + '-dns' + s; if (fs.existsSync(f)) fs.unlinkSync(f); }
     });
 
     it('takes the parent URL from the token and ignores one sent alongside it', async () => {

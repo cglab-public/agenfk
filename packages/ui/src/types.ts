@@ -36,6 +36,14 @@ export interface Project {
   id: string;
   name: string;
   description?: string;
+  /**
+   * The checkout this project lives in.
+   *
+   * Optional because a project can exist without one — and that is exactly the
+   * state worth showing: with no folder an agent has nowhere to run and no
+   * worktree can be cut. The server sets it; the browser cannot.
+   */
+  projectRoot?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -83,6 +91,9 @@ export interface FlowStep {
   isAnchor?: boolean;     // True for TODO (first) and DONE (last) — cannot be deleted or reordered
   /** @deprecated Use isAnchor instead. Kept for backwards compatibility. */
   isSpecial?: boolean;
+  /** CGLAB-380: what the step is for, and the checks this flow adds to it. */
+  role?: string | null;
+  checks?: Array<{ id: string; params?: Record<string, string>; severity?: 'block' | 'warn' }> | null;
 }
 
 export interface Flow {
@@ -93,10 +104,18 @@ export interface Flow {
   steps: FlowStep[];
   createdAt: string;
   updatedAt: string;
-  // Ownership. The server sets 'hub' for flows synced from the org's Hub and
-  // refuses local mutation of them; the UI must present those as read-only
-  // (BUG 269eeec8 (b)). Absent on older payloads, so treat undefined as local.
-  source?: 'local' | 'hub' | 'community';
+  /*
+   * Ownership. The server sets 'hub' for flows synced from the org's Hub and
+   * refuses local mutation of them; the UI must present those as read-only
+   * (BUG 269eeec8 (b)). Absent on older payloads, so treat undefined as local.
+   *
+   * `parent` — a flow a parent hub dispatched to this hub, read-only here —
+   * belongs to the SHARED type in packages/flow-editor, which this copy has to
+   * accept: the UI's FlowEditorModal is a thin re-export of that component and
+   * hands it these values. The two lists drifting apart is what broke the
+   * build, and it will drift again while the type is written twice.
+   */
+  source?: 'local' | 'hub' | 'community' | 'parent';
   hubFlowId?: string;
 }
 
@@ -110,7 +129,47 @@ export interface RegistryFlow {
   steps?: { name: string; label: string }[];
 }
 
+/**
+ * A verify running on the card right now (9569b4d7). Derived by the server from
+ * its live runs at response time, never stored: after a restart there is none.
+ */
+export interface ActiveRun {
+  runId: string;
+  step: string;
+  startedAt: string;
+}
+
+/** 3aea49f1: what a running verify is doing (server: VerifyPhase, plus a wait on a person). */
+export type VerifyRunPhase =
+  | { state: 'checking' }
+  | { state: 'queued'; ahead: number }
+  | { state: 'running'; kind: 'whole' | 'affected' | 'tests-only' | 'reused'; files?: number }
+  | { state: 'waiting'; on: 'report' | 'identical-run' | 'sibling' }
+  | { state: 'awaiting-person' };
+
+/** 3aea49f1: one verify running now, in any project (GET /verify-runs, the 'verify_runs' event). */
+export interface VerifyRunEntry {
+  runId?: string;
+  itemId: string;
+  title?: string;
+  projectId?: string;
+  projectName?: string;
+  step: string;
+  startedAt: string;
+  phase: VerifyRunPhase;
+  lastLine?: string;
+}
+
+/** The run's latest output, as the board reads it while the run lasts. */
+export interface ActiveRunOutput extends ActiveRun {
+  output: string;
+}
+
 export interface AgEnFKItem {
+  /** A verify running on this card right now (9569b4d7). */
+  activeRun?: ActiveRun;
+  /** Which agent works this card. Lives on the item, not in localStorage. */
+  agentId?: string;
   id: string;
   projectId: string;
   type: ItemType;

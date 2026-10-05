@@ -1,16 +1,25 @@
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, GitBranch, Server } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { csvParam } from '../urlParams';
 import { FacetMultiselect } from '../components/FacetMultiselect';
-import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
+import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
+import { describeFilters } from '../filterSummary';
+import { MetricsTilesRow, tileTotals } from '../components/MetricsTilesRow';
+import { Badge, Button, ChipRow, DateRange, LocalTime, Page, PeriodControl, QueryState } from '../components/ui';
+import { eventTone, itemTypeClass } from '../eventTone';
 import { shortRemote } from '../components/facetSearch';
-import { mergeEventTypes } from '../eventTypes';
-import { fmtDateTime, browserTimezone } from '../dates';
+import { eventTypeLabel, mergeEventTypes } from '../eventTypes';
+import { eventFields } from '../eventDetails';
+import { EventTypeChips } from '../components/EventTypeChips';
+import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { useUrlFilters } from '../hooks/useUrlFilters';
+import { usePeopleNames } from '../hooks/usePeopleNames';
+import { PersonAvatar } from '../components/PersonName';
 import { useChildHubs } from '../hooks/useChildHubs';
 import { scrollPageToTop } from '../scroll';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
@@ -22,10 +31,69 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '90d', label: '90d' },
 ];
 
-interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
+const USER_FILTER_KEYS = ['types', 'projects', 'itemTypes', 'range', 'from', 'to'] as const;
+// A custom date range is chosen for one person; a bare visit to the next one
+// starts from the remembered preset instead.
+const USER_TRANSIENT_KEYS = ['from', 'to'] as const;
+const USER_LEGACY_KEYS = {
+  types: 'agenfk-hub:user:eventTypes',
+  projects: 'agenfk-hub:user:projects',
+  itemTypes: 'agenfk-hub:user:itemTypes',
+};
+const readRange = (v: string | null): RangeKey => (RANGES.some(r => r.key === v) ? v : '30d') as RangeKey;
+
+interface MetricsResponse {
+  bucket: string;
+  series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }>;
+  /** The period's totals from live events, on the per-person rows' rules. */
+  totals?: { events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number };
+}
 
 interface TimelineRow {
   event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; item_title: string | null; external_id: string | null; user_key: string; reporting_version: string | null; payload: any;
+  /** A link to the pull request, for a PR event on a GitHub repo. */
+  pr_url?: string | null;
+}
+
+/** An expanded event: its fields in words, the raw JSON behind a toggle. */
+function EventBody({ e }: { e: TimelineRow }) {
+  const [raw, setRaw] = useState(false);
+  const fields = eventFields(e);
+  return (
+    <div className="px-5 pb-3 pt-2 bg-canvas/60 border-t border-border-soft -mt-0.5 space-y-2">
+      {fields.length > 0 && (
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-small">
+          {fields.map((f, i) => (
+            // By position: labels come from untrusted payload keys and can repeat.
+            <Fragment key={i}>
+              <dt className="text-ink-tertiary">{f.label}</dt>
+              <dd className="text-ink-secondary min-w-0 break-words whitespace-pre-wrap">
+                {f.href
+                  ? (
+                    // The key is the link text; the destination shows on hover.
+                    <a href={f.href} title={f.href} target="_blank" rel="noopener noreferrer" className="text-accent-ink underline decoration-dotted hover:decoration-solid">
+                      {f.value}<span className="sr-only"> (opens in a new tab)</span>
+                    </a>
+                  )
+                  : f.value}
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
+      )}
+      <button
+        type="button"
+        aria-expanded={raw}
+        // Several events can be open at once: name whose JSON this is.
+        aria-label={`${raw ? 'Hide' : 'Show'} raw JSON for ${eventTypeLabel(e.type)}${e.item_title ? ` ${e.item_title}` : ''}`}
+        onClick={() => setRaw(v => !v)}
+        className="text-caption font-medium text-ink-tertiary hover:text-ink"
+      >
+        {raw ? 'Hide raw JSON' : 'Show raw JSON'}
+      </button>
+      {raw && <pre className="text-caption font-mono text-ink-secondary whitespace-pre-wrap break-words">{JSON.stringify(e.payload, null, 2)}</pre>}
+    </div>
+  );
 }
 interface EventTypesResponse { types: string[] }
 interface ProjectsResponse { projects: string[] }
@@ -33,89 +101,42 @@ interface ItemTypesResponse { itemTypes: string[]; counts?: Record<string, numbe
 
 const KNOWN_ITEM_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
 
-const formatTime = fmtDateTime;
-
-function startOfDateInput(value: string): string {
-  return new Date(`${value}T00:00:00`).toISOString();
+/** "Showing latest 200 of 1,059", or "Showing all 1,059" once everything is in. */
+function shownLine(loaded: number, total: number | undefined): string {
+  if (typeof total !== 'number') return `${loaded.toLocaleString()} shown`;
+  return loaded >= total ? `Showing all ${total.toLocaleString()}` : `Showing latest ${loaded.toLocaleString()} of ${total.toLocaleString()}`;
 }
 
-function endOfDateInput(value: string): string {
-  return new Date(`${value}T23:59:59.999`).toISOString();
-}
+/** Events fetched per page of the list. */
+const EVENTS_PAGE = 200;
+interface TimelinePage { events: TimelineRow[]; total?: number; nextBefore?: string }
 
-const TYPE_BADGE: Record<string, string> = {
-  'item.created':       'bg-chip text-accent-text border-border-brand',
-  'item.updated':       'bg-mint/40 dark:bg-brand/10 text-brand-dark dark:text-brand-light border-border-brand',
-  'item.moved':         'bg-mint/40 dark:bg-brand/10 text-brand-dark dark:text-brand-light border-border-brand',
-  'step.transitioned':  'bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
-  'validate.invoked':   'bg-chip text-ink-secondary border-border-soft',
-  'validate.passed':    'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
-  'validate.failed':    'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
-  'comment.added':      'bg-pink-50 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300 border-pink-200 dark:border-pink-800',
-  'test.logged':        'bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800',
-  'item.closed':        'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
-  'item.deleted':       'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
-};
-const DEFAULT_BADGE = 'bg-chip text-ink-secondary border-border-soft';
 
-const ITEM_TYPE_BADGE: Record<string, string> = {
-  EPIC:  'bg-mint/40 dark:bg-brand/10 text-brand-dark dark:text-brand-light border-border-brand',
-  STORY: 'bg-chip text-accent-text border-border-brand',
-  TASK:  'bg-chip text-ink-secondary border-border-soft',
-  BUG:   'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
-};
-
-function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
-  label: string;
-  options: string[];
-  selected: Set<string>;
-  onToggle: (v: string) => void;
-  onClear: () => void;
-  optionLabel?: (v: string) => string;
-}) {
-  if (options.length === 0) return null;
-  return (
-    <div>
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
-        {selected.size > 0 && (
-          <button onClick={onClear} className="text-[11px] font-medium text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400">
-            Clear ({selected.size})
-          </button>
-        )}
-      </div>
-      <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {options.map(t => {
-          const on = selected.has(t);
-          return (
-            <button
-              key={t}
-              onClick={() => onToggle(t)}
-              title={t}
-              className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate ${on
-                ? 'text-accent-text border-border-brand bg-chip'
-                : 'bg-surface border-border-soft text-ink-secondary hover:border-border-brand hover:text-accent-text'}`}
-            >
-              {optionLabel ? optionLabel(t) : t}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 export function UserDetailPage() {
   const { userKey = '' } = useParams();
   const decoded = decodeURIComponent(userKey);
+  const personName = usePeopleNames()(decoded);
 
   useEffect(() => { scrollPageToTop(); }, [userKey]);
+  // Every filter lives in the URL, so a reload or a shared link shows the same
+  // view. A bare visit opens as this browser left it (useUrlFilters).
+  const filters = useUrlFilters({ keys: USER_FILTER_KEYS, storageKey: 'agenfk-hub:user:filters', legacy: USER_LEGACY_KEYS, forget: USER_TRANSIENT_KEYS });
+  const fp = filters.params;
   // Default to "what did this user ship?" — closures only — until the dev
-  // widens the chip selection. Persisted in localStorage so a refresh
-  // restores the developer's last selection rather than snapping back.
-  const eventTypeSel = useToggleSet(['item.closed'], { storageKey: 'agenfk-hub:user:eventTypes' });
-  const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:user:projects' });
-  const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:user:itemTypes' });
+  // widens the chip selection. `types=` (present, empty) is an explicit "none".
+  const eventTypeSel = useToggleSet(fp.has('types') ? csvParam(fp, 'types') : ['item.closed']);
+  const projectSel = useToggleSet(csvParam(fp, 'projects'));
+  const itemTypeSel = useToggleSet(csvParam(fp, 'itemTypes'));
+  // The one URL writer for the chips (see useUrlFilters on why only one).
+  const { write: writeFilters } = filters;
+  useEffect(() => {
+    writeFilters({
+      types: [...eventTypeSel.set].join(','),
+      projects: projectSel.set.size ? [...projectSel.set].join(',') : null,
+      itemTypes: itemTypeSel.set.size ? [...itemTypeSel.set].join(',') : null,
+    });
+  }, [eventTypeSel.set, projectSel.set, itemTypeSel.set, writeFilters]);
   // The child hub arrives in the link, not from a picker on this page: you got
   // here by clicking a person out of a board that was already scoped, and a
   // person page aggregating them across the whole federation would quietly
@@ -133,12 +154,13 @@ export function UserDetailPage() {
   // Filters panel shows no filter that would explain it.
   const hubLabels = useChildHubs(new Set(childHubs));
 
-  const [range, setRange] = useState<RangeKey>('30d');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
+  // The period is read straight from the URL; its controls write it there.
+  const range = readRange(fp.get('range'));
+  const customStart = fp.get('from') ?? '';
+  const customEnd = fp.get('to') ?? '';
 
-  const customFromIso = useMemo(() => customStart ? startOfDateInput(customStart) : '', [customStart]);
-  const customToIso = useMemo(() => customEnd ? endOfDateInput(customEnd) : '', [customEnd]);
+  const customFromIso = useMemo(() => customStart ? startOfLocalDay(customStart) : '', [customStart]);
+  const customToIso = useMemo(() => customEnd ? endOfLocalDay(customEnd) : '', [customEnd]);
 
   // Partitioned by hub, exactly as Org does it: offering a repo or an event
   // type that belongs to a hub this page is not showing is a dead end.
@@ -178,7 +200,6 @@ export function UserDetailPage() {
     if (customFromIso) p.set('from', customFromIso);
     else p.set('from', fromIsoForRange(new Date(), range));
     if (customToIso) p.set('to', customToIso);
-    p.set('limit', '200');
     return p;
   }, [decoded, eventTypeSel.set, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso, hubCsv]);
 
@@ -199,24 +220,51 @@ export function UserDetailPage() {
     queryFn: async () => (await api.get(`/v1/metrics?${metricsQs}`)).data,
   });
 
-  const totals: MetricsTotals = (metrics.data?.series ?? []).reduce(
-    (a, r) => ({
-      events: a.events + r.events_count,
-      closed: a.closed + r.items_closed,
-      passes: a.passes + r.validate_passes,
-      fails: a.fails + r.validate_fails,
-      prsOpened: a.prsOpened + (r.prs_opened ?? 0),
-    }),
-    { events: 0, closed: 0, passes: 0, fails: 0, prsOpened: 0 },
-  );
+  const totals = tileTotals(metrics.data);
 
-  const tl = useQuery<{ events: TimelineRow[] }>({
+  // Pages of the newest events, newest first; Load more fetches the next page.
+  // The server says how many match in all, so the list never stops silently.
+  const tlPages = useInfiniteQuery<TimelinePage, Error, { pages: TimelinePage[] }, unknown[], string | null>({
     // hubCsv belongs in the KEY, not just the request: without it two hubs
     // share one cache entry and this page paints the other hub's events until a
     // background refetch lands — or forever, if that refetch errors.
     queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(','), range, customFromIso, customToIso, hubCsv ?? ''],
-    queryFn: async () => (await api.get(`/v1/timeline?${params}`)).data,
+    initialPageParam: null,
+    queryFn: async ({ pageParam }) => {
+      const p = new URLSearchParams(params);
+      p.set('limit', String(EVENTS_PAGE));
+      // A cursor from the last event shown, not an offset: events arriving in
+      // between cannot shift a shown one onto the next page.
+      if (pageParam) p.set('before', pageParam);
+      return (await api.get(`/v1/timeline?${p}`)).data;
+    },
+    getNextPageParam: (last, pages) => {
+      // A full last page always carries a cursor; stop once everything the
+      // first page counted is in, or Load more would fetch nothing.
+      const loaded = pages.reduce((n, pg) => n + pg.events.length, 0);
+      const total = pages[0].total;
+      if (typeof total === 'number' && loaded >= total) return undefined;
+      return last.nextBefore ?? undefined;
+    },
+    // The app refreshes every 30s. Once more than one page is loaded that would
+    // re-request every page in turn, so the list holds still until it is reset.
+    refetchInterval: query => ((query.state.data?.pages.length ?? 1) > 1 ? false : 30_000),
   });
+  const tl = {
+    data: tlPages.data
+      ? {
+        // De-duplicated by id as well, so an overlap can never show a row twice
+        // or reuse a React key.
+        events: [...new Map(tlPages.data.pages.flatMap(pg => pg.events).map(e => [e.event_id, e])).values()],
+        // The count comes with the first page only.
+        total: tlPages.data.pages[0].total,
+      }
+      : undefined,
+    isError: tlPages.isError,
+    error: tlPages.error,
+    isFetching: tlPages.isFetching,
+    refetch: tlPages.refetch,
+  };
 
   const types = mergeEventTypes(eventTypes.data?.types);
   const projectOptions = projects.data?.projects ?? [];
@@ -227,24 +275,29 @@ export function UserDetailPage() {
   }, [itemTypes.data]);
 
   return (
-    <div className="max-w-[1200px] mx-auto space-y-6">
+    <Page>
       {/* Carries the scope back. Org's hub facet is URL-persisted and
           deliberately not stored, so without this the trip out and back
           silently widens to every hub — the same drop, in the other direction. */}
       <Link to={`/${hubCsv ? `?${new URLSearchParams({ childHubId: hubCsv })}` : ''}`}
-        className="inline-flex items-center gap-1.5 text-[12px] text-ink-tertiary hover:text-accent-text">
+        className="inline-flex items-center gap-1.5 text-small text-ink-tertiary hover:text-accent-ink">
         <ArrowLeft className="w-3.5 h-3.5" /> Back to org
       </Link>
 
       <header className="flex items-center gap-4">
-        <div className="w-12 h-12 rounded-2xl bg-[image:var(--gradient-accent)] text-navy text-base font-bold flex items-center justify-center shadow-sm">
-          {decoded.slice(0, 2).toUpperCase()}
-        </div>
+        <PersonAvatar name={personName} userKey={decoded} size="lg" />
         <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">User</p>
-          <h1 className="mt-0.5 text-xl font-bold tracking-tight font-mono text-ink truncate">{decoded}</h1>
+          <p className="eyebrow text-accent-ink">User</p>
+          {personName ? (
+            <>
+              <h1 className="mt-0.5 text-title font-bold tracking-tight text-ink truncate">{personName}</h1>
+              <p className="font-mono text-small text-ink-tertiary truncate">{decoded}</p>
+            </>
+          ) : (
+            <h1 className="mt-0.5 text-title font-bold tracking-tight font-mono text-ink truncate">{decoded}</h1>
+          )}
           {childHubs.length > 0 && (
-            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-tertiary">
+            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-caption text-ink-tertiary">
               <Server className="w-3 h-3" />
               <span>Scoped to</span>
               {childHubs.map(id => (
@@ -258,13 +311,34 @@ export function UserDetailPage() {
         </div>
       </header>
 
-      <MetricsTilesRow totals={totals} />
+      <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} selectedTypes={eventTypeSel.set} onFilterTypes={eventTypeSel.replace} />}</QueryState>
 
-      <section className="space-y-4 p-5 bg-card-glass backdrop-blur border border-border-soft rounded-2xl">
-        <div className="flex items-center gap-2">
-          <GitBranch className="w-4 h-4 text-accent-text" />
-          <h2 className="text-sm font-semibold text-ink">Filters</h2>
-        </div>
+      {/* The period is always in view; the facets fold behind one summary line. */}
+      <PeriodControl
+        ranges={RANGES}
+        active={!customFromIso && !customToIso ? range : null}
+        onPick={key => filters.write({ range: key, from: null, to: null })}
+      >
+        <DateRange
+          from={customStart}
+          to={customEnd}
+          onChange={(from, to) => filters.write({ from: from || null, to: to || null })}
+        />
+      </PeriodControl>
+
+      <FilterAccordion
+        activeCount={[projectSel.set, itemTypeSel.set].filter(x => x.size > 0).length}
+        summary={describeFilters({
+          range,
+          from: customStart,
+          to: customEnd,
+          types: [...eventTypeSel.set],
+          projects: [...projectSel.set].map(shortRemote),
+          itemTypes: [...itemTypeSel.set],
+        })}
+        open={parseFiltersOpen(searchParams.get(FILTERS_OPEN))}
+        onOpenChange={open => filters.write({ [FILTERS_OPEN]: open ? '1' : null })}
+      >
         <FacetMultiselect
           label="Project (git remote)"
           options={projectOptions}
@@ -286,48 +360,8 @@ export function UserDetailPage() {
             return n == null ? t : `${t} (${n})`;
           }}
         />
-        <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
-        <div>
-          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary mb-1.5">Period</h3>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
-              {RANGES.map(r => (
-                <button
-                  key={r.key}
-                  onClick={() => {
-                    setRange(r.key);
-                    setCustomStart('');
-                    setCustomEnd('');
-                  }}
-                  className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key && !customFromIso && !customToIso
-                    ? 'bg-surface text-accent-text shadow-sm'
-                    : 'text-ink-tertiary hover:text-ink'}`}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
-            <label className="flex items-center gap-1.5 text-[11px] font-medium text-ink-tertiary">
-              Start
-              <input
-                type="date"
-                value={customStart}
-                onChange={e => setCustomStart(e.target.value)}
-                className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
-              />
-            </label>
-            <label className="flex items-center gap-1.5 text-[11px] font-medium text-ink-tertiary">
-              End
-              <input
-                type="date"
-                value={customEnd}
-                onChange={e => setCustomEnd(e.target.value)}
-                className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
-              />
-            </label>
-          </div>
-        </div>
-      </section>
+        <EventTypeChips options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
+      </FilterAccordion>
 
       <TimelineBar
         users={[decoded]}
@@ -337,58 +371,69 @@ export function UserDetailPage() {
         childHubs={childHubs}
         title="Activity timeline"
         range={range}
-        onRangeChange={setRange}
+        onRangeChange={r => filters.write({ range: r, from: null, to: null })}
         fromIsoOverride={customFromIso || undefined}
         toIsoOverride={customToIso || undefined}
       />
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink-secondary">Recent events</h2>
-          <span className="text-[11px] text-ink-tertiary" title={`All times in ${browserTimezone()}`}>{tl.data?.events.length ?? 0} shown · times in {browserTimezone()}</span>
+          <h2 className="text-body font-semibold text-ink-secondary">Recent events</h2>
+          <span className="text-caption text-ink-tertiary" title={`All times in ${browserTimezone() ?? 'your local time'}`}>{tl.data && tl.data.events.length > 0 && `${shownLine(tl.data.events.length, tl.data.total)} · `}times in {browserTimezone() ?? 'local time'}</span>
         </div>
-        <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
-          {(tl.data?.events ?? []).map(e => {
-            const badge = TYPE_BADGE[e.type] ?? DEFAULT_BADGE;
-            const itemBadge = e.item_type ? (ITEM_TYPE_BADGE[e.item_type] ?? DEFAULT_BADGE) : null;
-            return (
-              <details key={e.event_id} className="group">
-                <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-chip transition-colors">
-                  <ChevronDown className="w-3.5 h-3.5 text-ink-tertiary group-open:rotate-180 transition-transform shrink-0" />
-                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${badge}`}>{e.type}</span>
-                  {itemBadge && <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${itemBadge}`}>{e.item_type}</span>}
-                  {e.external_id && (
-                    <span title={`External tracker: ${e.external_id}`} className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
-                      {e.external_id}
-                    </span>
-                  )}
-                  {e.remote_url && (
-                    <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-chip text-ink-tertiary border border-border-soft max-w-[180px] truncate">
-                      <GitBranch className="w-2.5 h-2.5 shrink-0" /> {shortRemote(e.remote_url)}
-                    </span>
-                  )}
-                  <span className="text-[12px] text-ink truncate flex-1" title={e.item_id ?? undefined}>
-                    {e.item_title ?? <span className="text-ink-tertiary font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
-                  </span>
-                  {e.reporting_version && (
-                    <span
-                      title={`Emitted by AgenFK ${e.reporting_version} (X-Agenfk-Version header)`}
-                      className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0"
-                    >
-                      v{e.reporting_version}
-                    </span>
-                  )}
-                  <span className="text-[11px] text-ink-tertiary tabular-nums shrink-0">{formatTime(e.occurred_at)}</span>
-                </summary>
-                <pre className="px-5 pb-3 text-[11px] font-mono text-ink-secondary whitespace-pre-wrap break-words bg-chip/60 border-t border-border-soft -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>
-              </details>
-            );
-          })}
-          {tl.data?.events.length === 0 && (
-            <div className="px-5 py-8 text-center text-sm text-ink-tertiary">No events match the current filters.</div>
+        <QueryState
+          query={tl}
+          label="events"
+          isEmpty={data => data.events.length === 0}
+          empty={<div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-body text-ink-tertiary">No events match the current filters.</div>}
+        >
+          {data => (
+            <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
+              {data.events.map(e => {
+                return (
+                  <details key={e.event_id} className="group">
+                    <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-canvas transition-colors">
+                      <ChevronDown className="w-3.5 h-3.5 text-ink-tertiary group-open:rotate-180 transition-transform shrink-0" />
+                      <Badge tone={eventTone(e.type)} className="text-caption font-medium" title={e.type}>{eventTypeLabel(e.type)}</Badge>
+                      {e.item_type && <span className={`px-2 py-0.5 rounded-md text-caption font-mono font-semibold border ${itemTypeClass(e.item_type)}`}>{e.item_type}</span>}
+                      {e.external_id && (
+                        <span title={`External tracker: ${e.external_id}`} className="px-2 py-0.5 rounded-md text-caption font-mono border border-transparent bg-accent-fill text-accent-ink">
+                          {e.external_id}
+                        </span>
+                      )}
+                      {e.remote_url && (
+                        <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-caption font-mono bg-canvas text-ink-tertiary border border-border-soft max-w-[180px] truncate">
+                          <GitBranch className="w-2.5 h-2.5 shrink-0" /> {shortRemote(e.remote_url)}
+                        </span>
+                      )}
+                      <span className="text-small text-ink truncate flex-1" title={e.item_id ?? undefined}>
+                        {e.item_title ?? <span className="text-ink-tertiary font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
+                      </span>
+                      {e.reporting_version && (
+                        <span
+                          title={`Emitted by AgenFK ${e.reporting_version} (X-Agenfk-Version header)`}
+                          className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-caption font-mono bg-canvas text-ink-tertiary border border-border-soft shrink-0"
+                        >
+                          v{e.reporting_version}
+                        </span>
+                      )}
+                      <LocalTime value={e.occurred_at} className="text-caption text-ink-tertiary tabular-nums shrink-0" />
+                    </summary>
+                    <EventBody e={e} />
+                  </details>
+                );
+              })}
+            </div>
           )}
-        </div>
+        </QueryState>
+        {tlPages.hasNextPage && (
+          <div className="flex justify-center">
+            <Button size="sm" onClick={() => { void tlPages.fetchNextPage(); }} disabled={tlPages.isFetchingNextPage}>
+              {tlPages.isFetchingNextPage ? 'Loading…' : 'Load more'}
+            </Button>
+          </div>
+        )}
       </section>
-    </div>
+    </Page>
   );
 }
