@@ -49,7 +49,7 @@ import type { PaneTree, DropZone, SplitDirection } from '../splitTree';
 import { withItemBranches } from '../sessionBranch';
 import { NewTerminalDialog } from './NewTerminalDialog';
 import {
-  listAgentsFromBridge, readPrefsFromBridge,
+  listAgentsFromBridge, refreshAgentsFromBridge, readPrefsFromBridge,
   listEditorsFromBridge, openInEditorFromBridge,
 } from './agentBridge';
 import { SettingsPanel } from './SettingsPanel';
@@ -469,11 +469,76 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * card to cut one from, and cutting one would mean creating the card this
    * terminal exists to let the agent propose.
    */
+  /**
+   * Open a terminal for a queued request, with the agent already decided.
+   *
+   * Extracted so the dialog and the no-dialog path share ONE implementation. A
+   * second copy would be the place the two drift, and the drift would show as a
+   * terminal that opens differently depending on which way you asked for it.
+   */
+  const openPendingTerminal = React.useCallback((
+    entry: { itemId?: string; projectId?: string; title: string; agentId?: string; branchName?: string | null },
+    agentId: string,
+  ): void => {
+    // Both read from Settings rather than asked in the dialog. They are
+    // preferences, answered the same way every time, and a dialog in the path of
+    // a frequent action should only ask what actually varies — which agent.
+    const autoApprove = desktopPrefs?.autoApprove === true;
+    const persist = appSettings?.tmuxByDefault === true;
+    // Open FIRST. Recording which agent a card uses is a nicety; letting it fail
+    // must never stop the terminal from opening. Ordering is the guarantee here,
+    // not a try/catch.
+    sessionSeq.current += 1;
+    /*
+     * EXACTLY ONE of card and project, so the pane knows which directory to
+     * open. A project terminal has no card yet; sending both would fail main's
+     * exclusivity check, and sending neither would leave it with no directory at
+     * all.
+     */
+    const id = `${entry.itemId ?? entry.projectId ?? 'project'}#${sessionSeq.current}`;
+    setSessions(prev => [...prev, {
+      id,
+      ...(entry.itemId ? { itemId: entry.itemId } : { projectId: entry.projectId }),
+      title: entry.title,
+      agentId,
+      autoApprove,
+      persist,
+      openedAt: new Date().toISOString(),
+      branchName: entry.branchName,
+    }]);
+    setActiveSession(id);
+    setTerminalOpened(true);
+    setActive('terminal');
+    // Remember the choice ON THE CARD, where it belongs: the server keeps it in
+    // the item's own record, so it follows the card across machines and clients
+    // instead of living in one browser's storage. Only a card can carry it — a
+    // project terminal has no item to write it onto.
+    if (entry.itemId && agentId !== entry.agentId) {
+      void api.updateItem(entry.itemId, { agentId }).catch(() => {});
+    }
+  }, [desktopPrefs, appSettings, setActive, setActiveSession, setSessions, setTerminalOpened]);
+
   const requestProjectTerminal = React.useCallback((projectId: string, title: string): void => {
     setActiveProjectId(projectId);
     markProjectWorked(projectId);
+    /*
+     * ONE GESTURE, when the user asked for one.
+     *
+     * `askBeforeOpening` off means the dialog has nothing left to ask that a
+     * preference does not already answer — and for a PROJECT terminal that is
+     * literally true: no card, no existing session, nothing but the agent.
+     *
+     * A CARD terminal keeps its dialog, which says more than which agent runs:
+     * whether the work is already going, and whether the button means Continue
+     * or Create. Skipping THAT screen would be removing information rather than
+     * a question.
+     */
+    if (desktopPrefs?.askBeforeOpening === false) {
+      openPendingTerminal({ projectId, title }, desktopPrefs.defaultAgentId || 'shell');
+      return;
+    }
     enqueuePending({ projectId, title });
-  }, [setActiveProjectId, markProjectWorked, enqueuePending]);
+  }, [setActiveProjectId, markProjectWorked, enqueuePending, openPendingTerminal, desktopPrefs]);
 
   const requestTerminal = React.useCallback((item: AgEnFKItem): void => {
     setActiveProjectId(item.projectId);
@@ -495,13 +560,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     // agentId comes off the ITEM, which is where it lives — the server keeps it
     // in the item's own record, so it follows the card rather than the machine.
-    enqueuePending({
+    const entry = {
       itemId: item.id,
       title: item.title,
       agentId: item.agentId,
       branchName: (item as { branchName?: string | null }).branchName ?? null,
-    });
-  }, [setActiveProjectId, sessions, enqueuePending]);
+    };
+    /*
+     * ONE GESTURE, when the user asked for one — the same rule the project row
+     * follows, and GLOBAL on purpose: one switch for every terminal, not one per
+     * project and not one per card.
+     *
+     * What a card gives up when this is off. The dialog also says whether the
+     * work is ALREADY running — and that check is above, so it still wins: an
+     * open session is navigated to rather than duplicated, switch or no switch.
+     * What is actually lost is the button's wording, Continue or Create, which
+     * was a label on a screen nobody sees any more.
+     *
+     * The card's remembered agent still beats the default: somebody who chose an
+     * agent for this card meant that card.
+     */
+    if (desktopPrefs?.askBeforeOpening === false) {
+      openPendingTerminal(entry, item.agentId || desktopPrefs.defaultAgentId || 'shell');
+      return;
+    }
+    enqueuePending(entry);
+  }, [setActiveProjectId, sessions, enqueuePending, openPendingTerminal, desktopPrefs]);
 
   /**
    * Steer herdr to the pane that was clicked.
@@ -1622,6 +1706,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onToggle={toggleSidebar}
           drawsTitleBar={drawsTitleBar}
           requestTerminal={requestTerminal}
+          onOpenProjectTerminal={requestProjectTerminal}
           sessionRows={sessionRows}
           herdrProject={herdrProject}
           openPane={herdrAttachedFrom}
@@ -1635,8 +1720,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onOpenProject={projectId => { setPageProjectId(projectId); setActive('project'); }}
           onOpenFlows={() => setFlowsOpen(true)}
           onOpenTerminal={() => {
-            // Opened here, not through a dialog: the shell needs no agent and
-            // no target, so there is nothing to ask about.
+            /*
+             * THE SAME FLOW as the other two doors, when there is a project to
+             * open in: this becomes a terminal ON that project — the default
+             * agent, and the Ask before opening switch deciding whether the
+             * dialog appears. It used to bypass both and always hand back a
+             * bare shell, which is how the app grew two buttons called Open
+             * terminal that behaved differently.
+             *
+             * With NO project there is nothing to run in and no worktree to run
+             * it from, so it stays what it has always been: a shell in the
+             * user's home directory. That case is also why `shell` is the
+             * default agent — the one target needing no project, no card and no
+             * installed CLI.
+             */
+            const project = allProjects.find((p: Project) => p.id === activeProjectId);
+            if (project) { requestProjectTerminal(project.id, project.name); return; }
+            // Opened here, not through a dialog: with no project the shell needs
+            // no agent and no target, so there is nothing to ask about.
             sessionSeq.current += 1;
             const id = `${SHELL_AGENT_ID}#${sessionSeq.current}`;
             setSessions(prev => [...prev, {
@@ -2131,7 +2232,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {pending && (
         <NewTerminalDialog
           cardTitle={pending.title}
-          defaultAgentId={pending.agentId}
+          /*
+           * The CARD's remembered agent wins, then the desktop's default, then
+           * the dialog's own 'claude-code'. Card first because it is the more
+           * specific answer: somebody who chose an agent for this card meant
+           * that card.
+           */
+          defaultAgentId={pending.agentId || desktopPrefs?.defaultAgentId || undefined}
           /*
            * A card whose work is ALREADY running does not need a second
            * terminal, so the button says Continue. `sessionRows` is the right
@@ -2156,60 +2263,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             return { agentId: live.agentId, where } as const;
           })()}
           listAgents={listAgentsFromBridge}
+          refreshAgents={refreshAgentsFromBridge}
           // Shift, never clear: dismissing ONE question must not throw away the
           // rest of the wave. Clearing here was the single-slot habit surviving
           // the queue - and it fails in the direction that loses work silently.
           onClose={shiftPending}
+          // ASYNC, because the dialog awaits it: `() => void` is not assignable
+          // to its prop type, and the failure surfaces only in `tsc -b` — the
+          // package's own `tsc --noEmit` does not build the project references
+          // and stayed quiet about it.
           onCreate={async ({ agentId }) => {
-            // Both read from Settings rather than asked here. They are
-            // preferences, answered the same way every time, and a dialog in
-            // the path of a frequent action should only ask what actually
-            // varies — which agent.
-            const autoApprove = desktopPrefs?.autoApprove === true;
-            const persist = appSettings?.tmuxByDefault === true;
-            // Latch and switch BEFORE clearing `pending`, so the panel exists
-            // by the time the dialog goes away — otherwise the user watches an
-            // empty tab for a frame while the pane mounts.
-            // Open FIRST. Recording which agent a card uses is a nicety;
-            // letting it fail — or even throw synchronously, as it did when the
-            // api mock lacked the method — must never stop the terminal from
-            // opening. Ordering is the guarantee here, not the try/catch.
-            sessionSeq.current += 1;
             /*
-             * EXACTLY ONE of card and project, so the pane knows which
-             * directory to open. A project terminal has no card yet; sending
-             * both would fail main's exclusivity check, and sending neither
-             * would leave it with no directory at all.
+             * Latch and switch BEFORE clearing `pending`, so the panel exists by
+             * the time the dialog goes away — otherwise the user watches an
+             * empty tab for a frame while the pane mounts.
+             *
+             * The body lives in `openPendingTerminal`, shared with the path that
+             * skips this dialog entirely (askBeforeOpening off, project
+             * terminal), so the two cannot open a terminal differently.
              */
-            const id = `${pending.itemId ?? pending.projectId ?? 'project'}#${sessionSeq.current}`;
-            setSessions(prev => [...prev, {
-              id,
-              ...(pending.itemId ? { itemId: pending.itemId } : { projectId: pending.projectId }),
-              title: pending.title,
-              agentId,
-              autoApprove,
-              persist,
-              openedAt: new Date().toISOString(),
-              branchName: pending.branchName,
-            }]);
-            setActiveSession(id);
-            setTerminalOpened(true);
-            setActive('terminal');
+            openPendingTerminal(pending, agentId);
             shiftPending();
-
-            // Remember the choice ON THE CARD, where it belongs: the server
-            // keeps it in the item's own record, so it follows the card across
-            // machines and clients instead of living in one browser's storage.
-            // No try/catch and no cast. updateItem is async, so it cannot throw
-            // synchronously — the catch only ever swallowed a TypeError from a
-            // mock missing the method, which is exactly how this seam stayed
-            // unverified for a round. And `as never` was suppressing the one
-            // compile-time check that would catch a field rename.
-            // Only a card can carry a remembered agent; a project terminal has
-            // no item to write it onto.
-            if (pending.itemId && agentId !== pending.agentId) {
-              void api.updateItem(pending.itemId, { agentId }).catch(() => {});
-            }
           }}
         />
       )}
@@ -2274,6 +2348,11 @@ interface SidebarProps {
   openSession: (row: SessionRow) => void;
   /** Clicking a card asks the shell to open a terminal on it. */
   requestTerminal: (item: AgEnFKItem) => void;
+  /**
+   * Open a terminal ON A PROJECT — no card, so it runs in the project's own
+   * checkout. The same call the project page's Open terminal makes.
+   */
+  onOpenProjectTerminal: (projectId: string, title: string) => void;
   /** Take the board to a card. The rail's secondary affordance. */
   /**
    * Take the board to a card.
@@ -2304,7 +2383,7 @@ interface SidebarProps {
   onOpenTerminal: () => void;
 }
 
-function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenProject, onOpenFlows, onOpenTerminal, onOpenFleet }: SidebarProps) {
+function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, onOpenProjectTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenProject, onOpenFlows, onOpenTerminal, onOpenFleet }: SidebarProps) {
   /*
    * EVERY item, to tell which cards have children (the fleet launcher). Not the
    * in-flight list the rows are drawn from: a parent's children are anywhere.
@@ -2526,6 +2605,42 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
      */
     setExpandedByFilter(prev => settleIds(prev, next));
   }, [agentFilter, visible]);
+
+  /**
+   * The project row's own menu, opened with a right-click.
+   *
+   * WHERE "New card here" WENT. It was the hover `+` on the row, and the `+`
+   * now opens a terminal — the same action as the project page's Open terminal.
+   * Deleting the card action instead would have removed the only route to it
+   * from the sidebar, so it moved to the menu a pointer user already tries.
+   *
+   * The cost is discoverability, and it is a real one: a hover button is
+   * visible without being looked for, a context menu is not. What earns the
+   * trade is that the row's most frequent action became one click.
+   */
+  const [projectMenu, setProjectMenu] = React.useState<{ id: string; name: string; x: number; y: number } | null>(null);
+
+  React.useEffect(() => {
+    if (!projectMenu) return;
+    /*
+     * Dismissal on `mousedown`, not `click`, and the menu excludes itself.
+     *
+     * A `click` listener closes on the way UP, which is after the menu item's
+     * own click has run — but a `mousedown` one that did not exclude the menu
+     * would close it BEFORE the item's click fired, and every item would look
+     * broken. Asking what was pressed is what keeps both properties.
+     */
+    const onDown = (e: MouseEvent): void => {
+      if (!(e.target as Element | null)?.closest?.('[data-project-menu]')) setProjectMenu(null);
+    };
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') setProjectMenu(null); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [projectMenu]);
 
   // Collapsed is a rail, not nothing. A toggle that vanishes with the panel it
   // hides is a one-way door, and the control stays where the eye last saw it.
@@ -3014,6 +3129,13 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
                  * no way in at all.
                  */
                 onClick={() => { setActiveProjectId(project.id); onOpenProject?.(project.id); }}
+                // The secondary actions, where a pointer user looks for them.
+                // `preventDefault` because the browser's own menu offers
+                // nothing about this project and covers the screen.
+                onContextMenu={e => {
+                  e.preventDefault();
+                  setProjectMenu({ id: project.id, name: project.name, x: e.clientX, y: e.clientY });
+                }}
                 aria-current={isActive ? 'true' : undefined}
                 // Explicit, so the accessible name is the project and not
                 // "horizon-lab 3d" — the age is decoration, not identity.
@@ -3084,14 +3206,28 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
                 </span>
               </button>
               <button
-                onClick={() => requestNewItem(project.id)}
-                aria-label={`New card in ${project.name}`}
-                title="New card here"
-                // Sits beside the pin, on hover, because it is an action on
-                // this project rather than part of reading the list.
+                onClick={() => onOpenProjectTerminal(project.id, project.name)}
+                aria-label={`Open terminal in ${project.name}`}
+                title={`Open terminal in ${project.name}`}
+                /*
+                 * THE SAME ACTION as the project page's Open terminal, which is
+                 * the point: one gesture reachable from the row you are already
+                 * looking at, rather than a second way to do a similar thing.
+                 *
+                 * It used to be "New card here" — and that action moved to the
+                 * right-click menu rather than disappearing, because this button
+                 * was its only home in the sidebar.
+                 *
+                 * Sits beside the pin, on hover: an action on this project
+                 * rather than part of reading the list.
+                 */
                 className="absolute right-6 rounded p-1 text-ink-tertiary opacity-0 transition-colors hover:text-ink focus:opacity-100 group-hover:opacity-100"
               >
-                <Plus size={11} />
+                {/* A TERMINAL glyph, not a plus: the plus promises "add
+                    something", which is exactly what this button stopped
+                    doing, and the mark is the same one the sidebar's own Open
+                    terminal row uses. */}
+                <SquareTerminal size={11} />
               </button>
               <button
                 onClick={() => togglePinnedProject(project.id)}
@@ -3519,6 +3655,42 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
             accessible name either way; this is only the pointer hint. */}
         {!open && <span role="tooltip" className={RAIL_TIP}>Settings</span>}
       </div>
+
+      {projectMenu && (
+        <div
+          data-project-menu
+          role="menu"
+          aria-label={`${projectMenu.name} actions`}
+          /*
+           * FIXED, at the pointer. The sidebar is a narrow column with its own
+           * scrolling, so a menu positioned inside it would be clipped by the
+           * edge it was opened against — the same trap the agent picker's menu
+           * hit and fixed with a portal.
+           */
+          style={{ left: projectMenu.x, top: projectMenu.y }}
+          className="fixed z-[70] min-w-[190px] rounded-lg border border-border-soft bg-surface py-1 shadow-2xl"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => { requestNewItem(projectMenu.id); setProjectMenu(null); }}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] text-ink-secondary transition-colors hover:bg-canvas hover:text-ink"
+          >
+            <Plus size={12} className="shrink-0 text-ink-tertiary" /> New card here
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => { togglePinnedProject(projectMenu.id); setProjectMenu(null); }}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] text-ink-secondary transition-colors hover:bg-canvas hover:text-ink"
+          >
+            {pinned.includes(projectMenu.id)
+              ? <PinOff size={12} className="shrink-0 text-ink-tertiary" />
+              : <Pin size={12} className="shrink-0 text-ink-tertiary" />}
+            {pinned.includes(projectMenu.id) ? 'Unpin' : 'Pin to top'}
+          </button>
+        </div>
+      )}
     </aside>
   );
 }

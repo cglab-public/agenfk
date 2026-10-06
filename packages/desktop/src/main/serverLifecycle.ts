@@ -49,7 +49,8 @@ export interface ResolveServerOptions {
   /** True when a server answers on this port (a real health request). */
   probe: (port: number) => Promise<boolean>;
   /** Start our own server. Throwing here is surfaced, not swallowed. */
-  spawn: () => void;
+  /** May be async: it is awaited before the port is polled. */
+  spawn: () => void | Promise<void>;
   /** Delay between polls. */
   waitMs?: number;
   /** How many polls before giving up. */
@@ -119,7 +120,7 @@ export async function resolveServer(opts: ResolveServerOptions): Promise<Resolve
     if (round < adoptAttempts - 1) await sleep(waitMs);
   }
 
-  spawn();
+  await spawn();
 
   for (let attempt = 0; attempt < attempts; attempt++) {
     const port = readPort();

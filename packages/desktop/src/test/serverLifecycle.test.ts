@@ -150,6 +150,29 @@ describe('resolveServer — adopting an already-running server', () => {
 });
 
 describe('resolveServer — spawning our own', () => {
+  it('waits for an asynchronous spawn before polling for the port (BUG 474a8240)', async () => {
+    // The server is forked only once the fresh PATH is in hand; polling while
+    // that is still being captured would burn the wait budget on nothing.
+    let started = false;
+    let polledEarly = false;
+    const spawn = vi.fn(async () => {
+      await new Promise(r => setTimeout(r, 5));
+      started = true;
+    });
+    const result = await resolveServer({
+      readPort: () => (started ? 3000 : null),
+      probe: async (p: number) => {
+        if (!started && spawn.mock.calls.length > 0) polledEarly = true;
+        return started && p === 3000;
+      },
+      spawn,
+      waitMs: 0,
+      adoptAttempts: 1,
+    });
+    expect(result.port).toBe(3000);
+    expect(polledEarly).toBe(false);
+  });
+
   it('spawns when there is no port file at all', async () => {
     let started = false;
     const spawn = vi.fn(() => { started = true; });

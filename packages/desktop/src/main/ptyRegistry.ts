@@ -24,6 +24,8 @@ import { homedir } from 'node:os';
 import { buildTmuxShellCommand, tmuxSessionName } from './tmux.js';
 import { FlowControl } from './flowControl.js';
 import { killProcessTree } from './processTree.js';
+import { platform, type PlatformProfile } from './platform.js';
+import * as path from 'path';
 
 /** The slice of node-pty this module uses. Kept narrow so tests can stand in. */
 export interface PtyLike {
@@ -48,7 +50,8 @@ export interface PtyLike {
 
 export type PtySpawner = (
   file: string,
-  args: readonly string[],
+  /** A string is a ready-made Windows command line, passed through verbatim. */
+  args: readonly string[] | string,
   opts: { cwd: string; cols: number; rows: number; env: NodeJS.ProcessEnv },
 ) => PtyLike;
 
@@ -110,6 +113,15 @@ export interface PtyRegistryDeps {
    * persistence, rather than a failure.
    */
   readonly tmux?: { readonly available: boolean };
+  /**
+   * Where a command named by its bare name is, as a terminal opened now would
+   * find it (story 1b9d622e) - the same lookup that marks an agent Installed.
+   * Absent, or answering null, leaves the bare name, and the failure is the
+   * agent's own "not found".
+   */
+  readonly locate?: (file: string) => Promise<string | null>;
+  /** How to start what `locate` found. The running OS's profile unless a test swaps it. */
+  readonly launcher?: Pick<PlatformProfile, 'launch'>;
   /**
    * Signal a pty's whole process GROUP.
    *
@@ -452,6 +464,17 @@ export class PtyRegistry {
      * such a terminal it inherits HERDR_PANE_ID, and every attach would die on
      * startup with a message nobody would trace back to here.
      */
+    /*
+     * The executable detection found, not its bare name. On Windows the bare
+     * name never opens what npm installs: ConPTY looks for `claude` exactly,
+     * with no PATHEXT, and npm writes `claude.cmd`. Not for tmux, which runs a
+     * shell line under the pty's PATH, nor for a command that is already a path.
+     */
+    const located = !useTmux && this.deps.locate && !path.isAbsolute(file)
+      ? await this.deps.locate(file).catch(() => null)
+      : null;
+    const launcher = this.deps.launcher ?? platform;
+
     const baseEnv = buildPtyEnv(process.env, (await this.deps.loginPath?.()) ?? null);
     const env = attaching ? envWithoutHerdr(baseEnv) : baseEnv;
 
@@ -490,7 +513,8 @@ export class PtyRegistry {
          */
         throw new Error('This window was closed while the terminal was opening.');
       }
-      const pty = this.deps.spawn(file, launchArgs, { cwd, cols: req.cols, rows: req.rows, env });
+      const target = located ? launcher.launch(located, launchArgs, env) : { file, args: launchArgs };
+      const pty = this.deps.spawn(target.file, target.commandLine ?? target.args, { cwd, cols: req.cols, rows: req.rows, env });
       // The geometry a session was born with, and every correction after it.
       // A terminal whose agent draws its input box somewhere the person cannot
       // see is a size disagreement, and this is the only place both numbers

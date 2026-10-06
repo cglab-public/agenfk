@@ -18,6 +18,7 @@ import * as bridge from '../components/agentBridge';
 // created inside the factory and read back afterwards.
 vi.mock('../components/agentBridge', () => ({
   listAgentsFromBridge: vi.fn(),
+  refreshAgentsFromBridge: vi.fn(),
   proposeFromBridge: vi.fn(),
   onProposeOutputFromBridge: vi.fn(),
   addProjectFromDirectory: vi.fn(),

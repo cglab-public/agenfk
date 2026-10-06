@@ -19,7 +19,8 @@
  * looked up.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { detectAgents, __resetAgentDetectionCache, setAgentDetectionDeps, REAL_DETECTION_DEPS } from '../main/detectAgents';
+import { detectAgents, __resetAgentDetectionCache, setAgentDetectionDeps, REAL_DETECTION_DEPS, locateExecutable, DETECTION_MEMO_MS, refreshAgentDetection } from '../main/detectAgents';
+import { platform } from '../main/platform';
 import { AGENT_IDS, resolveAgentCommand } from '../main/agents';
 
 /** A `which`-alike: resolves to a path for names the test says exist. */
@@ -98,13 +99,37 @@ describe('the Finder PATH problem', () => {
     expect(agents.find(a => a.id === 'claude-code')?.installed).toBe(true);
   });
 
-  it('does not pay for the login shell when the inherited PATH already works', async () => {
-    // Spawning a login shell is slow and runs the user's rc files. Not worth
-    // it when the answer is already in hand.
-    const which = whichFinding(...AGENT_IDS.map(id => resolveAgentCommand(id).file));
-    const loginPath = vi.fn(async () => '/usr/bin');
-    await detectAgents({ which, loginPath });
-    expect(loginPath).not.toHaveBeenCalled();
+  it('consults the fresh PATH even when the inherited one already found an agent (story 1b9d622e)', async () => {
+    // The rule this replaces - "only when nothing was found" - left Claude
+    // Code "Not installed" forever on a machine whose inherited PATH happened
+    // to hold codex. The fresh PATH is memoised by the main process, so asking
+    // it every time costs a cache read, not a login shell.
+    const which = vi.fn(async (file: string, pathOverride?: string) => {
+      if (file === 'codex') return '/usr/local/bin/codex';
+      return pathOverride?.includes('/Users/me/.nvm/versions/node/v24/bin') && file === 'claude'
+        ? '/Users/me/.nvm/versions/node/v24/bin/claude'
+        : null;
+    });
+    const agents = await detectAgents({ which, loginPath: async () => '/Users/me/.nvm/versions/node/v24/bin' });
+    const byId = new Map(agents.map(a => [a.id, a.installed]));
+    expect(byId.get('codex')).toBe(true);
+    expect(byId.get('claude-code')).toBe(true);
+  });
+
+  it('keeps the inherited PATH behind the fresh one, rather than replacing it', async () => {
+    const seen: string[] = [];
+    const which = vi.fn(async (_file: string, pathOverride?: string) => { if (pathOverride) seen.push(pathOverride); return null; });
+    const before = process.env.PATH;
+    process.env.PATH = ['/inherited/bin', '/usr/bin'].join(platform.pathDelimiter);
+    try {
+      await detectAgents({ which, loginPath: async () => '/fresh/bin' });
+    } finally {
+      process.env.PATH = before;
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    for (const p of seen) {
+      expect(p.split(platform.pathDelimiter)).toEqual(['/fresh/bin', '/inherited/bin', '/usr/bin']);
+    }
   });
 
   it('survives a login shell that fails or hangs', async () => {
@@ -231,12 +256,10 @@ describe('the guard against recursive capture', () => {
  * Detection did not: every `detectAgents()` call with no deps fell through to
  * its own default and ran the capture again.
  *
- * WHEN it actually costs anything is the part worth writing down, because it
- * is the opposite of what it looks like in development: detection only reaches
- * for the login PATH when the cheap probe found NOTHING. In a terminal that
- * almost never happens, so the second capture is invisible. In the packaged
- * app it happens every time — launchd hands Electron a minimal PATH with no
- * agent on it, which is the whole reason the capture exists.
+ * Detection asks for the fresh PATH on every run (story 1b9d622e - asking only
+ * when nothing was found left an agent missing whenever another one was on the
+ * inherited PATH), so this sharing is what keeps that cheap: one capture per
+ * memo window, whoever asks.
  */
 describe('how often the login PATH is captured', () => {
   /*
@@ -299,7 +322,9 @@ describe('how often the login PATH is captured', () => {
       loginPath: async () => '/installed/by/main',
     });
     await detectAgents();
-    expect(seen).toContain('/installed/by/main');
+    // First, ahead of whatever the app inherited — merged now, not swapped in.
+    expect(seen.length).toBeGreaterThan(0);
+    for (const p of seen) expect(p.split(platform.pathDelimiter)[0]).toBe('/installed/by/main');
   });
 
   it('does not remember a detection that found nothing', async () => {
@@ -314,5 +339,83 @@ describe('how often the login PATH is captured', () => {
     await detectAgents();
     await detectAgents();
     expect(captures).toBe(2);
+  });
+});
+
+/*
+ * Detection and spawning ask the same question (story 1b9d622e).
+ *
+ * The terminal used to be handed the bare name - `claude` - while detection
+ * had found it somewhere specific. On Windows the bare name never opens
+ * (ConPTY does not apply PATHEXT, and npm installs claude.cmd); on a Mac it
+ * opens whatever the pty's PATH finds first. One function answers both.
+ */
+describe('locating an executable to open', () => {
+  it('answers with the path found on the fresh PATH', async () => {
+    const which = vi.fn(async (file: string, pathOverride?: string) =>
+      (pathOverride?.startsWith('/fresh/bin') && file === 'claude' ? '/fresh/bin/claude' : null));
+    expect(await locateExecutable('claude', { which, loginPath: async () => '/fresh/bin' })).toBe('/fresh/bin/claude');
+  });
+
+  it('uses the inherited PATH alone when there is no fresh one', async () => {
+    const which = vi.fn(async (file: string, pathOverride?: string) =>
+      (pathOverride === undefined && file === 'claude' ? '/usr/local/bin/claude' : null));
+    expect(await locateExecutable('claude', { which, loginPath: async () => null })).toBe('/usr/local/bin/claude');
+  });
+
+  it('answers null, never throws, when the lookup or the capture fails', async () => {
+    expect(await locateExecutable('claude', {
+      which: async () => { throw new Error('spawn which ENOENT'); },
+      loginPath: async () => { throw new Error('rc exploded'); },
+    })).toBeNull();
+  });
+});
+
+describe('how long a detection is trusted', () => {
+  it('re-probes once the memo has expired, so an install shows up without a restart', async () => {
+    // A detection that found something used to be kept for the whole session:
+    // installing Claude Code with the app open changed nothing until a restart.
+    let t = 1_000;
+    const now = () => t;
+    const before = whichFinding('codex');
+    await detectAgents({ which: before, loginPath: async () => null, now });
+
+    t += DETECTION_MEMO_MS + 1;
+    const after = whichFinding('codex', 'claude');
+    const agents = await detectAgents({ which: after, loginPath: async () => null, now });
+    expect(agents.find(a => a.id === 'claude-code')?.installed).toBe(true);
+  });
+
+  it('still answers from memory inside the memo window', async () => {
+    let t = 1_000;
+    const now = () => t;
+    const which = whichFinding('codex');
+    await detectAgents({ which, loginPath: async () => null, now });
+    const first = which.mock.calls.length;
+    t += DETECTION_MEMO_MS - 1;
+    await detectAgents({ which, loginPath: async () => null, now });
+    expect(which.mock.calls.length).toBe(first);
+  });
+});
+
+describe('checking again (story 1b9d622e)', () => {
+  afterEach(() => setAgentDetectionDeps(REAL_DETECTION_DEPS));
+
+  it('forgets the remembered PATH as well as the remembered answer', async () => {
+    // Forgetting only the answer re-probed with a PATH captured before the
+    // install, so "Check again" said Not installed for up to thirty seconds -
+    // the reported case exactly.
+    let path = '/before';
+    const forgetLoginPath = vi.fn(() => { path = '/after'; });
+    setAgentDetectionDeps({
+      which: async (file: string, pathOverride?: string) =>
+        (pathOverride?.startsWith('/after') && file === 'claude' ? '/after/claude' : null),
+      loginPath: async () => path,
+      forgetLoginPath,
+    });
+    expect((await detectAgents()).find(a => a.id === 'claude-code')?.installed).toBe(false);
+    refreshAgentDetection();
+    expect(forgetLoginPath).toHaveBeenCalledTimes(1);
+    expect((await detectAgents()).find(a => a.id === 'claude-code')?.installed).toBe(true);
   });
 });
