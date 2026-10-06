@@ -114,13 +114,31 @@ function taskkillPid(pid: string, result: KillResult): void {
 }
 
 /**
+ * Every process's pid and command line on Windows, through CIM. Not wmic: current
+ * Windows 11 builds no longer ship it. And on win32 even under Git Bash: node is
+ * a native process there, which its `ps` and `lsof` cannot see (#199).
+ */
+function listWindowsProcesses(): Array<{ pid: number; commandLine: string }> {
+  const json = String(execFileSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command',
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress',
+  ], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true })).trim();
+  if (!json) return [];
+  const parsed = JSON.parse(json);
+  // ConvertTo-Json prints a lone process as an object, not an array of one.
+  return (Array.isArray(parsed) ? parsed : [parsed])
+    .filter((p: any) => Number.isInteger(p?.ProcessId) && typeof p?.CommandLine === 'string')
+    .map((p: any) => ({ pid: p.ProcessId, commandLine: p.CommandLine }));
+}
+
+/**
  * Kill whatever LISTENS on a port (cross-platform). Only the listener: a board
  * open in a browser or the desktop app holds a socket on the same port, and
  * those are not ours to kill (e04dac92 review).
  */
 function killPort(port: number): KillResult {
   const result: KillResult = { killed: 0, failed: [] };
-  if (process.platform === 'win32' && !isMinGW()) {
+  if (process.platform === 'win32') {
     let output = '';
     try {
       output = execSync(`netstat -ano | findstr LISTENING`, { encoding: 'utf8', windowsHide: true });
@@ -158,17 +176,19 @@ function killPort(port: number): KillResult {
  */
 function killPattern(pattern: string): KillResult {
   const result: KillResult = { killed: 0, failed: [] };
-  if (process.platform === 'win32' && !isMinGW()) {
-    let output = '';
+  if (process.platform === 'win32') {
+    let processes: Array<{ pid: number; commandLine: string }>;
     try {
-      // Very basic pattern matching for Windows. The query's own command line
-      // (and cmd.exe's around it) holds the pattern too: leave those out.
-      output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%' and not commandline like '%wmic%'" get processid`, { encoding: 'utf8', windowsHide: true });
+      processes = listWindowsProcesses();
     } catch (e: any) {
       result.failed.push(`could not list processes: ${e?.message ?? e}`);
       return result;
     }
-    const pids = new Set(output.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l)));
+    // Windows paths take either slash and any case.
+    const wanted = pattern.replace(/\\/g, '/').toLowerCase();
+    const pids = new Set(processes
+      .filter(p => p.commandLine.replace(/\\/g, '/').toLowerCase().includes(wanted))
+      .map(p => String(p.pid)));
     for (const pid of pids) taskkillPid(pid, result);
     return result;
   }

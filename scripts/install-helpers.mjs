@@ -347,3 +347,45 @@ export function isDevCheckout(root, home = os.homedir()) {
   return !sameDirectory(root, path.join(home, '.agenfk-system'));
 }
 
+
+const SERVER_PATTERN = 'packages/server/dist/server.js';
+
+/**
+ * Is an agenfk server process alive right now? `run` is spawnSync's shape,
+ * passed in so this stays side-effect-free. Only an actual node/bun invocation
+ * of the server bin counts - not any process whose argv happens to embed the
+ * path (an editor with the file open, a `grep`/`tail`, the install's own tooling).
+ *
+ * On win32 the list comes from CIM, even under Git Bash: wmic is gone from
+ * current Windows 11, and Git Bash's `ps` cannot see a native node.exe (#199).
+ * Mirrors killPattern in packages/cli/src/index.ts, which cannot import from scripts/.
+ */
+export function serverProcessAlive(run, { platform = process.platform } = {}) {
+  const looksLikeServerCmd = (line) =>
+    line.replace(/\\/g, '/').toLowerCase().includes(SERVER_PATTERN) && /(^|[\/\\\s"])(node|node\.exe|bun|bun\.exe)([\s."]|$)/i.test(line);
+  try {
+    if (platform === 'win32') {
+      const out = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'],
+        { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+      const json = (out.stdout || '').trim();
+      if (!json) return false;
+      const parsed = JSON.parse(json);
+      // ConvertTo-Json prints a lone process as an object, not an array of one.
+      return (Array.isArray(parsed) ? parsed : [parsed])
+        .some(p => typeof p?.CommandLine === 'string' && looksLikeServerCmd(p.CommandLine));
+    }
+    const out = run('ps', ['-ax', '-o', 'command'], { encoding: 'utf8', windowsHide: true });
+    if (out.status === 0 && typeof out.stdout === 'string') {
+      return out.stdout.split('\n').some(looksLikeServerCmd);
+    }
+    // Fallback: pgrep against a node-anchored regex if ps is unavailable.
+    // Escape every regex metacharacter, not just the dot - a partial escape is
+    // the kind that quietly stops matching when the pattern changes.
+    const pgPattern = SERVER_PATTERN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pg = run('pgrep', ['-f', `(node|bun).*${pgPattern}`], { encoding: 'utf8', windowsHide: true });
+    return pg.status === 0 && (pg.stdout || '').trim().length > 0;
+  } catch {
+    return false;
+  }
+}
