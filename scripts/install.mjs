@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import readline from 'readline';
 import { writePrivateFileSync } from './private-file.mjs';
 import { runTool } from './client-cli.mjs';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -193,36 +193,8 @@ async function run() {
         // Cross-platform, mirrors the CLI's killPattern detection. This does
         // not depend on HTTP timing or hub connectivity — if the process is
         // there, we restart it onto the new code.
-        const SERVER_PATTERN = 'packages/server/dist/server.js';
-        // Only count a line as the live server if it is an actual node/bun
-        // invocation of the server bin — not just any process whose argv happens
-        // to embed the path (an editor with the file open, a `grep`/`tail`, this
-        // install's own tooling). Mirrors killPattern's grep/ps exclusion but
-        // tighter: it must look like `… node|bun … packages/server/dist/server.js`.
-        const looksLikeServerCmd = (line) =>
-            line.includes(SERVER_PATTERN) && /(^|[\/\\\s])(node|node\.exe|bun)([\s.]|$)/i.test(line);
-        function serverProcessAlive() {
-            try {
-                if (process.platform === 'win32' && !(process.env.MSYSTEM || process.env.WSL_DISTRO_NAME)) {
-                    const pat = SERVER_PATTERN.replace(/\//g, '\\\\');
-                    const out = spawnSync('wmic', ['process', 'where', `commandline like '%${pat}%'`, 'get', 'commandline'], { encoding: 'utf8', windowsHide: true });
-                    return (out.stdout || '').split('\n').some(looksLikeServerCmd);
-                }
-                const out = spawnSync('ps', ['-ax', '-o', 'command'], { encoding: 'utf8', windowsHide: true });
-                if (out.status === 0 && typeof out.stdout === 'string') {
-                    return out.stdout.split('\n').some(looksLikeServerCmd);
-                }
-                // Fallback: pgrep against a node-anchored regex if ps is unavailable.
-                // Escape every regex metacharacter, not just the dot — a partial escape is
-                // the kind that quietly stops matching when the pattern changes.
-                const pgPattern = SERVER_PATTERN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const pg = spawnSync('pgrep', ['-f', `(node|bun).*${pgPattern}`], { encoding: 'utf8', windowsHide: true });
-                return pg.status === 0 && (pg.stdout || '').trim().length > 0;
-            } catch {
-                return false;
-            }
-        }
-        if (!wasReachableBeforeInstall && serverProcessAlive()) {
+        const run = (file, args, opts) => spawnSync(file, args, { ...opts, windowsHide: true });
+        if (!wasReachableBeforeInstall && serverProcessAlive(run)) {
             wasReachableBeforeInstall = true;
         }
         // Resolve the .agenfk dir the server uses, mirroring the server's own
@@ -1724,7 +1696,7 @@ async function run() {
     if ((wasReachableBeforeInstall || upgradeInFlight) && !onlyPlatform) {
         detail(`${BLUE}Restarting API server (was running on port ${preInstallServerPort} before upgrade)...${NC}`);
         // Delegate to `agenfk up`. It internally calls killPattern (which
-        // already handles Windows via wmic and POSIX via ps/pgrep) and then
+        // handles Windows via CIM and POSIX via ps/pgrep) and then
         // spawns a fresh server. This keeps the kill logic in one place.
         try {
             // --quiet: a fleet-upgrade auto-restart must not pop a new

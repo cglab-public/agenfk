@@ -113,6 +113,31 @@ function taskkillPid(pid: string, result: KillResult): void {
   }
 }
 
+interface WindowsProcess { pid: number; name: string; commandLine: string | null }
+
+/**
+ * Every process on Windows, through CIM. Not wmic: current Windows 11 builds no
+ * longer ship it. And on win32 even under Git Bash: node is a native process
+ * there, which its `ps` and `lsof` cannot see (#199). UTF-8 out, or a non-ASCII
+ * path arrives in the console's code page.
+ */
+function listWindowsProcesses(): WindowsProcess[] {
+  const json = String(execFileSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command',
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress',
+  ], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 30_000, windowsHide: true })).trim();
+  if (!json) return [];
+  const parsed = JSON.parse(json);
+  // ConvertTo-Json prints a lone process as an object, not an array of one.
+  return (Array.isArray(parsed) ? parsed : [parsed])
+    .filter((p: any) => Number.isInteger(p?.ProcessId))
+    .map((p: any) => ({
+      pid: p.ProcessId,
+      name: typeof p.Name === 'string' ? p.Name : '',
+      commandLine: typeof p.CommandLine === 'string' ? p.CommandLine : null,
+    }));
+}
+
 /**
  * Kill whatever LISTENS on a port (cross-platform). Only the listener: a board
  * open in a browser or the desktop app holds a socket on the same port, and
@@ -120,7 +145,7 @@ function taskkillPid(pid: string, result: KillResult): void {
  */
 function killPort(port: number): KillResult {
   const result: KillResult = { killed: 0, failed: [] };
-  if (process.platform === 'win32' && !isMinGW()) {
+  if (process.platform === 'win32') {
     let output = '';
     try {
       output = execSync(`netstat -ano | findstr LISTENING`, { encoding: 'utf8', windowsHide: true });
@@ -146,32 +171,46 @@ function killPort(port: number): KillResult {
     // lsof exits 1 when nothing listens - the normal case. Without lsof there is
     // no listener to find: the server's command line carries no port (it comes
     // in AGENFK_PORT), so scanning argv could only hit someone else's process.
-    // killPattern stops the server by its path either way.
+    // killPatterns stops the server by its path either way.
   }
   for (const pid of new Set(pids)) killPid(parseInt(pid, 10), result);
   return result;
 }
 
 /**
- * Kill process by pattern (cross-platform), reporting what it killed and what
- * it could not - including not being able to list processes at all.
+ * Kill processes by pattern (cross-platform), one result per pattern, reporting
+ * what it killed and what it could not - including not being able to list
+ * processes at all.
  */
+function killPatterns(patterns: string[]): KillResult[] {
+  if (process.platform !== 'win32') return patterns.map(killPattern);
+  const results = patterns.map((): KillResult => ({ killed: 0, failed: [] }));
+  let processes: WindowsProcess[];
+  try {
+    processes = listWindowsProcesses(); // once: each listing starts PowerShell
+  } catch (e: any) {
+    results[0].failed.push(`could not list processes: ${e?.message ?? e}`);
+    return results;
+  }
+  // Only node or bun running a path, never an editor or a shell naming it
+  // (`cd packages/ui && agenfk up`). Ancestors are NOT spared: a hub upgrade's
+  // `down` runs below the very server it has to stop (server -> agenfk upgrade -> down).
+  const candidates = processes.filter(p => p.commandLine !== null && /^(node|bun)\.exe$/i.test(p.name));
+  patterns.forEach((pattern, i) => {
+    // Windows paths take either slash and any case; `packages/ui` is not `packages/ui-kit`
+    // (nor `mypackages/ui`).
+    const escaped = pattern.replace(/\\/g, '/').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const wanted = new RegExp(`(?:^|[\\s"'/])${escaped}(?![\\w.-])`, 'i');
+    for (const p of candidates) {
+      if (wanted.test(p.commandLine!.replace(/\\/g, '/'))) taskkillPid(String(p.pid), results[i]);
+    }
+  });
+  return results;
+}
+
+/** POSIX: kill the processes whose `ps -ef` line holds the pattern. */
 function killPattern(pattern: string): KillResult {
   const result: KillResult = { killed: 0, failed: [] };
-  if (process.platform === 'win32' && !isMinGW()) {
-    let output = '';
-    try {
-      // Very basic pattern matching for Windows. The query's own command line
-      // (and cmd.exe's around it) holds the pattern too: leave those out.
-      output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%' and not commandline like '%wmic%'" get processid`, { encoding: 'utf8', windowsHide: true });
-    } catch (e: any) {
-      result.failed.push(`could not list processes: ${e?.message ?? e}`);
-      return result;
-    }
-    const pids = new Set(output.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l)));
-    for (const pid of pids) taskkillPid(pid, result);
-    return result;
-  }
   let pids: number[] = [];
   try {
     const output = execSync('ps -ef', { encoding: 'utf8', windowsHide: true });
@@ -938,8 +977,7 @@ program
     const persistedApiPort = readServerPort();
     if (persistedApiPort && persistedApiPort !== DEFAULT_API_PORT) killPort(persistedApiPort);
     killPort(DEFAULT_API_PORT); // API default
-    killPattern('packages/server/dist/server.js');
-    killPattern('packages/ui');
+    killPatterns(['packages/server/dist/server.js', 'packages/ui']);
 
     // 1. Full bootstrap only if dist files are missing
     const startScript = path.join(rootDir, 'scripts', 'start-services.mjs');
@@ -982,8 +1020,7 @@ program
   .action(() => {
     // 24a7b899: the server serves the board, so stopping it stopped the board. A separate
     // vite UI an older version ran is cleared quietly - it is not a service of this one.
-    const server = killPattern('packages/server/dist/server.js');
-    const legacyUi = killPattern('packages/ui');
+    const [server, legacyUi] = killPatterns(['packages/server/dist/server.js', 'packages/ui']);
     for (const f of [...server.failed, ...legacyUi.failed]) console.log(chalk.yellow(`⚠ Could not stop ${f}`));
     if (server.killed > 0) console.log(chalk.green('✓ AgEnFK stopped'));
     else if (server.failed.length === 0) console.log(chalk.gray('AgEnFK was not running'));
@@ -1001,9 +1038,7 @@ program
 
     // Kill by pattern: the API server, UI processes an older version left, MCP servers.
     // (Not by port 5173: that is vite's default, and a user's own dev server is not ours.)
-    results.push(killPattern('packages/server/dist/server.js'));
-    results.push(killPattern('packages/ui'));
-    results.push(killPattern('packages/server/dist/index.js'));
+    results.push(...killPatterns(['packages/server/dist/server.js', 'packages/ui', 'packages/server/dist/index.js']));
 
     const killed = results.reduce((n, r) => n + r.killed, 0);
     const failed = results.flatMap(r => r.failed);
