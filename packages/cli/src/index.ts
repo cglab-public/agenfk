@@ -113,7 +113,7 @@ function taskkillPid(pid: string, result: KillResult): void {
   }
 }
 
-interface WindowsProcess { pid: number; ppid: number; name: string; commandLine: string | null }
+interface WindowsProcess { pid: number; name: string; commandLine: string | null }
 
 /**
  * Every process on Windows, through CIM. Not wmic: current Windows 11 builds no
@@ -124,7 +124,7 @@ interface WindowsProcess { pid: number; ppid: number; name: string; commandLine:
 function listWindowsProcesses(): WindowsProcess[] {
   const json = String(execFileSync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-Command',
-    '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress',
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress',
   ], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 30_000, windowsHide: true })).trim();
   if (!json) return [];
   const parsed = JSON.parse(json);
@@ -133,18 +133,9 @@ function listWindowsProcesses(): WindowsProcess[] {
     .filter((p: any) => Number.isInteger(p?.ProcessId))
     .map((p: any) => ({
       pid: p.ProcessId,
-      ppid: Number.isInteger(p.ParentProcessId) ? p.ParentProcessId : 0,
       name: typeof p.Name === 'string' ? p.Name : '',
       commandLine: typeof p.CommandLine === 'string' ? p.CommandLine : null,
     }));
-}
-
-/** This process and every process above it: the shell that ran us names our patterns too. */
-function windowsAncestors(processes: WindowsProcess[]): Set<number> {
-  const parentOf = new Map(processes.map(p => [p.pid, p.ppid]));
-  const seen = new Set<number>();
-  for (let pid: number | undefined = process.pid; pid && !seen.has(pid); pid = parentOf.get(pid)) seen.add(pid);
-  return seen;
 }
 
 /**
@@ -201,15 +192,15 @@ function killPatterns(patterns: string[]): KillResult[] {
     results[0].failed.push(`could not list processes: ${e?.message ?? e}`);
     return results;
   }
-  // Only node or bun running a path, never an editor or shell naming it, nor
-  // the shell that ran us (`cd packages/ui && agenfk up`).
-  const spared = windowsAncestors(processes);
-  const candidates = processes.filter(p =>
-    p.commandLine !== null && /^(node|bun)\.exe$/i.test(p.name) && !spared.has(p.pid));
+  // Only node or bun running a path, never an editor or a shell naming it
+  // (`cd packages/ui && agenfk up`). Ancestors are NOT spared: a hub upgrade's
+  // `down` runs below the very server it has to stop (server -> agenfk upgrade -> down).
+  const candidates = processes.filter(p => p.commandLine !== null && /^(node|bun)\.exe$/i.test(p.name));
   patterns.forEach((pattern, i) => {
-    // Windows paths take either slash and any case; `packages/ui` is not `packages/ui-kit`.
+    // Windows paths take either slash and any case; `packages/ui` is not `packages/ui-kit`
+    // (nor `mypackages/ui`).
     const escaped = pattern.replace(/\\/g, '/').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const wanted = new RegExp(`${escaped}(?![\\w.-])`, 'i');
+    const wanted = new RegExp(`(?:^|[\\s"'/])${escaped}(?![\\w.-])`, 'i');
     for (const p of candidates) {
       if (wanted.test(p.commandLine!.replace(/\\/g, '/'))) taskkillPid(String(p.pid), results[i]);
     }

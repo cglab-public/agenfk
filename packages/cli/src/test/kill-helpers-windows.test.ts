@@ -53,7 +53,7 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const SERVER = 'node C:\\Users\\dev\\agenfk\\packages\\server\\dist\\server.js';
 const MCP = 'node C:\\Users\\dev\\agenfk\\packages\\server\\dist\\index.js';
 
-/** What `Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json` prints. */
+/** What `Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json` prints; the parent pid only tells the scenario. */
 const cim = (rows: Array<[number, string | null, string?, number?]>) =>
   JSON.stringify(rows.map(([ProcessId, CommandLine, Name = 'node.exe', ParentProcessId = 1]) => ({ ProcessId, ParentProcessId, Name, CommandLine })));
 
@@ -175,16 +175,23 @@ describe.each([
     expect(taskkills()).toEqual(['taskkill /F /PID 23508']);
   });
 
-  it('never kills the shell or node process that ran it, even when its command line names the path', async () => {
-    // The caller's own node -> its parent npm (a node.exe naming the path) -> the bash above it.
+  it('spares the shell that ran it, but stops the server even when the server is its ancestor (hub upgrade)', async () => {
+    // A hub upgrade: server -> agenfk upgrade -> cmd -> agenfk down, all under the bash that started the server.
     windowsMachine({ listing: cim([
-      [process.pid, 'node agenfk.js down', 'node.exe', 600],
-      [600, 'node npm-cli.js exec -w packages/server/dist/server.js -- agenfk down', 'node.exe', 601],
-      [601, 'bash.exe -c "cd packages/ui && agenfk down"', 'bash.exe', 1],
-      [23508, SERVER],
+      [process.pid, 'node C:\\agenfk\\packages\\cli\\bin\\agenfk.js down', 'node.exe', 602],
+      [602, 'C:\\Windows\\system32\\cmd.exe /d /s /c "node packages/cli/bin/agenfk.js down"', 'cmd.exe', 603],
+      [603, 'node C:\\agenfk\\packages\\cli\\bin\\agenfk.js upgrade', 'node.exe', 23508],
+      [23508, SERVER, 'node.exe', 601],
+      [601, 'bash.exe -c "cd packages/ui && node packages/server/dist/server.js"', 'bash.exe', 1],
     ]) });
     await program.parseAsync(['node', 'agenfk', 'down']);
     expect(taskkills()).toEqual(['taskkill /F /PID 23508']);
+  });
+
+  it('needs the path to start at a boundary: xpackages/server/dist/server.js is not the server', async () => {
+    windowsMachine({ listing: cim([[800, 'node C:\\work\\xpackages\\server\\dist\\server.js']]) });
+    await program.parseAsync(['node', 'agenfk', 'down']);
+    expect(taskkills()).toEqual([]);
   });
 
   it('lists processes once for the whole command, with a timeout so a hung WMI cannot block it', async () => {
