@@ -12,35 +12,17 @@
  * the normal run on Linux.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawn, execFileSync } from 'child_process';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import type { AddressInfo } from 'net';
 import { runInstall, cleanupHome, makeHome } from './helpers/runInstaller';
+import { hookShell } from './helpers/hookShell';
 import { claudeHookCommands } from '../../../../scripts/install-helpers.mjs';
 
 const isWin = process.platform === 'win32';
-
-/** The shell Claude Code runs hooks with: Git Bash on Windows (never WSL's bash.exe), bash elsewhere. */
-function hookShell(): string {
-  if (!isWin) return 'bash';
-  const candidates = [
-    process.env.CLAUDE_CODE_GIT_BASH_PATH,
-    'C:\\Program Files\\Git\\bin\\bash.exe',
-    (() => {
-      try {
-        const git = execFileSync('where', ['git'], { encoding: 'utf8' }).split(/\r?\n/)[0].trim();
-        return path.join(path.dirname(path.dirname(git)), 'bin', 'bash.exe');
-      } catch { return undefined; }
-    })(),
-  ];
-  const found = candidates.find((c): c is string => !!c && fs.existsSync(c));
-  // Never a silent skip: without Git Bash this job cannot say whether the hooks run.
-  if (!found) throw new Error(`Git Bash not found (looked in: ${candidates.filter(Boolean).join(', ')})`);
-  return found;
-}
 
 /** A stand-in for the agenfk API: GET /items answers whatever `items` holds. */
 function stubApi(items: () => unknown[]) {
@@ -62,7 +44,7 @@ let commands: Record<string, string> = {};
 beforeAll(async () => {
   shell = hookShell();
   home = makeHome('agenfk hooks e2e & co');
-  // A whole install: `--only=<client>` is a scoped re-run that writes neither the CLI nor the hook bins.
+  // A whole install: `--only=<client>` is a scoped re-run that writes no CLI bin (and, but for claude, no hook bins).
   const r = runInstall(['--rules-scope=global'], home, undefined, isWin
     ? { ComSpec: process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe', SystemRoot: process.env.SystemRoot ?? 'C:\\Windows' }
     : {});

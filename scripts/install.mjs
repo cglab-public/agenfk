@@ -1344,7 +1344,14 @@ async function run() {
         }
     }
 
-    if (!onlyPlatform) {
+    // Also on a single-client run (`agenfk integration install|resume <client>`)
+    // for every client whose hook config points at these files: step 14 points
+    // Claude at all four, 14b-14d point Codex, Gemini and Cursor at agenfk-pr-hook.
+    // A hook whose file is missing exits 127 - non-blocking, so the guard just
+    // vanishes (#192).
+    if (!onlyPlatform || ['claude', 'codex', 'gemini', 'cursor'].some(shouldRun)) {
+        // A single-client run skips the CLI step that would otherwise create it.
+        await fs.mkdir(localBinDir, { recursive: true });
         detail(`${GREEN}[12/14] Installing agenfk-gatekeeper hook script...${NC}`);
         if (os.platform() === 'win32') {
             // Always write .cmd on Windows
