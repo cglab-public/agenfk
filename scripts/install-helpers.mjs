@@ -358,16 +358,19 @@ const SERVER_PATTERN = 'packages/server/dist/server.js';
  *
  * On win32 the list comes from CIM, even under Git Bash: wmic is gone from
  * current Windows 11, and Git Bash's `ps` cannot see a native node.exe (#199).
- * Mirrors killPattern in packages/cli/src/index.ts, which cannot import from scripts/.
+ * The CLI's killPatterns (packages/cli/src/index.ts) lists the same way; it
+ * cannot import from scripts/.
  */
 export function serverProcessAlive(run, { platform = process.platform } = {}) {
+  // Windows paths take either slash and any case; POSIX paths are what they say.
+  const asPath = (line) => (platform === 'win32' ? line.replace(/\\/g, '/').toLowerCase() : line);
   const looksLikeServerCmd = (line) =>
-    line.replace(/\\/g, '/').toLowerCase().includes(SERVER_PATTERN) && /(^|[\/\\\s"])(node|node\.exe|bun|bun\.exe)([\s."]|$)/i.test(line);
+    asPath(line).includes(SERVER_PATTERN) && /(^|[\/\\\s"])(node|node\.exe|bun|bun\.exe)([\s."]|$)/i.test(line);
   try {
     if (platform === 'win32') {
       const out = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-        'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'],
-        { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+        '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'],
+        { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 30_000, windowsHide: true });
       const json = (out.stdout || '').trim();
       if (!json) return false;
       const parsed = JSON.parse(json);

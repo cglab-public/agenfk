@@ -24,6 +24,8 @@ describe('serverProcessAlive on Windows (GitHub #199)', () => {
     expect(file).toMatch(/powershell/i);
     expect(args.join(' ')).toMatch(/Get-CimInstance\s+Win32_Process/);
     expect(run.mock.calls.flat().join(' ')).not.toMatch(/wmic/i);
+    // A hung WMI service must not hold the upgrade forever.
+    expect((run.mock.calls[0] as unknown[])[2]).toMatchObject({ timeout: expect.any(Number), windowsHide: true });
   });
 
   it('is true for node running the server, with Windows backslashes', () => {
@@ -54,5 +56,10 @@ describe('serverProcessAlive elsewhere keeps asking ps', () => {
     const run = vi.fn(() => ok('COMMAND\nnode /opt/agenfk/packages/server/dist/server.js\n'));
     expect(serverProcessAlive(run, { platform: 'linux' })).toBe(true);
     expect(run).toHaveBeenCalledWith('ps', ['-ax', '-o', 'command'], expect.objectContaining({ windowsHide: true }));
+  });
+
+  it('matches the path case-sensitively, as POSIX filesystems do', () => {
+    const run = vi.fn(() => ok('COMMAND\nnode /opt/agenfk/Packages/Server/Dist/Server.js\n'));
+    expect(serverProcessAlive(run, { platform: 'linux' })).toBe(false);
   });
 });

@@ -53,9 +53,9 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const SERVER = 'node C:\\Users\\dev\\agenfk\\packages\\server\\dist\\server.js';
 const MCP = 'node C:\\Users\\dev\\agenfk\\packages\\server\\dist\\index.js';
 
-/** What `Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json` prints. */
-const cim = (rows: Array<[number, string | null]>) =>
-  JSON.stringify(rows.map(([ProcessId, CommandLine]) => ({ ProcessId, CommandLine })));
+/** What `Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json` prints. */
+const cim = (rows: Array<[number, string | null, string?, number?]>) =>
+  JSON.stringify(rows.map(([ProcessId, CommandLine, Name = 'node.exe', ParentProcessId = 1]) => ({ ProcessId, ParentProcessId, Name, CommandLine })));
 
 /** True for the CIM process listing, however the helper spells the PowerShell call. */
 const isCimListing = (file: unknown, args: unknown) =>
@@ -152,7 +152,7 @@ describe.each([
   });
 
   it('reads a listing of a single process (ConvertTo-Json prints an object, not an array)', async () => {
-    windowsMachine({ listing: JSON.stringify({ ProcessId: 23508, CommandLine: SERVER }) });
+    windowsMachine({ listing: JSON.stringify({ ProcessId: 23508, ParentProcessId: 1, Name: 'node.exe', CommandLine: SERVER }) });
     await program.parseAsync(['node', 'agenfk', 'down']);
     expect(taskkills()).toEqual(['taskkill /F /PID 23508']);
   });
@@ -163,6 +163,36 @@ describe.each([
     expect(taskkills()).toEqual([]);
     expect(nonEmpty()).toEqual(['AgEnFK was not running']);
     expect(process.exitCode).toBeUndefined();
+  });
+
+  it('spares an editor or a shell whose command line merely names the server path', async () => {
+    windowsMachine({ listing: cim([
+      [501, '"C:\\Program Files\\Microsoft VS Code\\Code.exe" C:\\agenfk\\packages\\server\\dist\\server.js', 'Code.exe'],
+      [502, 'bash.exe -c "tail -f packages/server/dist/server.js"', 'bash.exe'],
+      [23508, SERVER],
+    ]) });
+    await program.parseAsync(['node', 'agenfk', 'down']);
+    expect(taskkills()).toEqual(['taskkill /F /PID 23508']);
+  });
+
+  it('never kills the shell or node process that ran it, even when its command line names the path', async () => {
+    // The caller's own node -> its parent npm (a node.exe naming the path) -> the bash above it.
+    windowsMachine({ listing: cim([
+      [process.pid, 'node agenfk.js down', 'node.exe', 600],
+      [600, 'node npm-cli.js exec -w packages/server/dist/server.js -- agenfk down', 'node.exe', 601],
+      [601, 'bash.exe -c "cd packages/ui && agenfk down"', 'bash.exe', 1],
+      [23508, SERVER],
+    ]) });
+    await program.parseAsync(['node', 'agenfk', 'down']);
+    expect(taskkills()).toEqual(['taskkill /F /PID 23508']);
+  });
+
+  it('lists processes once for the whole command, with a timeout so a hung WMI cannot block it', async () => {
+    windowsMachine({ listing: cim([[23508, SERVER]]) });
+    await program.parseAsync(['node', 'agenfk', 'down']);
+    const listings = mockExecFileSync.mock.calls.filter(([f, a]) => isCimListing(f, a));
+    expect(listings).toHaveLength(1);
+    expect(listings[0][2]).toMatchObject({ timeout: expect.any(Number), windowsHide: true });
   });
 
   it('does not claim "not running" when it could not list processes - it warns and fails', async () => {
@@ -189,6 +219,16 @@ describe('agenfk kill and up from Git Bash free the port through netstat (GitHub
     expect(taskkills()).toContain('taskkill /F /PID 23508');
     expect(taskkills()).toContain('taskkill /F /PID 25044');
     expect(taskkills()).not.toContain('taskkill /F /PID 31000');
+    expect(mockExecFileSync.mock.calls.filter(([f, a]) => isCimListing(f, a))).toHaveLength(1);
+  });
+
+  it("kill takes a legacy UI under packages/ui, but not another package that only starts with 'ui'", async () => {
+    windowsMachine({ listing: cim([
+      [700, 'node C:\\agenfk\\packages\\ui\\node_modules\\vite\\bin\\vite.js preview'],
+      [701, 'node C:\\other\\packages\\ui-kit\\node_modules\\vite\\bin\\vite.js'],
+    ]) });
+    await program.parseAsync(['node', 'agenfk', 'kill']);
+    expect(taskkills()).toEqual(['taskkill /F /PID 700']);
   });
 
   it('up frees port 3000 before starting, so restart cannot leave a second server on 3001', async () => {

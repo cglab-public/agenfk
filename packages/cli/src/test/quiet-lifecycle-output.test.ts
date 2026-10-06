@@ -183,7 +183,7 @@ describe('the kill helpers only kill what is ours', () => {
     });
 
     it("treats taskkill's 'not found' as already gone", async () => {
-      mockExecFileSync.mockImplementation(() => JSON.stringify([{ ProcessId: 4242, CommandLine: 'node C:\\x\\packages\\server\\dist\\server.js' }]));
+      mockExecFileSync.mockImplementation(() => JSON.stringify([{ ProcessId: 4242, ParentProcessId: 1, Name: 'node.exe', CommandLine: 'node C:\\x\\packages\\server\\dist\\server.js' }]));
       mockExecSync.mockImplementation((cmd: string) => {
         if (/^taskkill/.test(cmd)) throw Object.assign(new Error('not found'), { status: 128 });
         return '';
