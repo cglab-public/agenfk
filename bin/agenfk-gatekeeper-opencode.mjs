@@ -33,6 +33,7 @@ export default async function agenfkGatekeeperOpencode(_context) {
                     }),
                     encoding: 'utf8',
                     timeout: 2500,
+                    windowsHide: true,
                 });
 
                 const out = (result.stdout || '').trim();

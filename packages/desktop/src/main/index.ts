@@ -454,6 +454,7 @@ async function boot(): Promise<void> {
         try {
           execFileSync('git', ['rev-parse', '--verify', 'HEAD'], {
             cwd: dir, stdio: 'ignore', env: process.env,
+            windowsHide: true,
           });
           return true;
         } catch {
@@ -465,6 +466,7 @@ async function boot(): Promise<void> {
         try {
           execFileSync('git', ['rev-parse', '--git-dir'], {
             cwd: dir, stdio: 'ignore', env: process.env,
+            windowsHide: true,
           });
           return true;
         } catch {
@@ -510,6 +512,7 @@ async function boot(): Promise<void> {
             try {
               const out = execFileSync('git', ['worktree', 'list', '--porcelain'], {
                 cwd: root, env: process.env, encoding: 'utf8',
+                windowsHide: true,
               });
               let current: string | null = null;
               for (const line of out.split('\n')) {
@@ -650,6 +653,7 @@ async function boot(): Promise<void> {
           const child = execFile('git', ['-c', 'protocol.ext.allow=never', 'clone', '--progress', repo, target], {
             env: process.env,
             maxBuffer: 16 * 1024 * 1024,
+            windowsHide: true,
           }, (err, _stdout, stderr) => {
             if (err) reject(new Error(String(stderr ?? '').trim() || err.message));
             else resolve();
@@ -692,7 +696,7 @@ async function boot(): Promise<void> {
        * see createRepository.ts for why there is no second one.
        */
       const runGh = (args: readonly string[]) => new Promise<string>((resolve, reject) => {
-        execFile('gh', [...args], { env: process.env, maxBuffer: 8 * 1024 * 1024 },
+        execFile('gh', [...args], { env: process.env, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
           (err, stdout, stderr) => {
             // gh explains itself on stderr — a taken name, a missing scope, a
             // logged-out state. Its words travel; ours would only paraphrase.
@@ -774,6 +778,7 @@ async function boot(): Promise<void> {
             try {
               const out = execFileSync('git', ['worktree', 'list', '--porcelain'], {
                 cwd: root, env: process.env, encoding: 'utf8',
+                windowsHide: true,
               });
               let current: string | null = null;
               for (const line of out.split('\n')) {
@@ -877,6 +882,7 @@ async function boot(): Promise<void> {
             timeout: opts.timeoutMs,
             maxBuffer: 16 * 1024 * 1024,
             env: process.env,
+            windowsHide: true,
           }, (err: Error | null, stdout: string, stderr: string) => {
             // A non-zero exit still carries output worth reading: the answer
             // may be on stdout and the reason on stderr.

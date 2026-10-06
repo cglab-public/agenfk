@@ -85,7 +85,7 @@ export function resolveWindowsTool(name, env = process.env) {
  * not the program the shim started.
  */
 export function runTool(name, args, opts = {}) {
-    if (process.platform !== 'win32') return spawnSync(name, args, opts);
+    if (process.platform !== 'win32') return spawnSync(name, args, { windowsHide: true, ...opts });
     const file = resolveWindowsTool(name, opts.env ?? process.env);
     if (!file) {
         const error = Object.assign(new Error(`spawnSync ${name} ENOENT`), { code: 'ENOENT', syscall: `spawnSync ${name}`, path: name });

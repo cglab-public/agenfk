@@ -106,7 +106,7 @@ function killPid(pid: number, result: KillResult): void {
 function taskkillPid(pid: string, result: KillResult): void {
   if (pid === String(process.pid)) return;
   try {
-    execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+    execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', windowsHide: true });
     result.killed++;
   } catch (e: any) {
     if (e?.status !== 128) result.failed.push(`PID ${pid}: ${e?.message ?? e}`);
@@ -123,7 +123,7 @@ function killPort(port: number): KillResult {
   if (process.platform === 'win32' && !isMinGW()) {
     let output = '';
     try {
-      output = execSync(`netstat -ano | findstr LISTENING`, { encoding: 'utf8' });
+      output = execSync(`netstat -ano | findstr LISTENING`, { encoding: 'utf8', windowsHide: true });
     } catch {
       return result; // findstr exits 1 when nothing listens
     }
@@ -140,7 +140,7 @@ function killPort(port: number): KillResult {
   }
   let pids: string[] = [];
   try {
-    pids = execSync(`lsof -t -iTCP:${port} -sTCP:LISTEN`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    pids = execSync(`lsof -t -iTCP:${port} -sTCP:LISTEN`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
       .split('\n').map(p => p.trim()).filter(p => /^\d+$/.test(p));
   } catch {
     // lsof exits 1 when nothing listens - the normal case. Without lsof there is
@@ -163,7 +163,7 @@ function killPattern(pattern: string): KillResult {
     try {
       // Very basic pattern matching for Windows. The query's own command line
       // (and cmd.exe's around it) holds the pattern too: leave those out.
-      output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%' and not commandline like '%wmic%'" get processid`, { encoding: 'utf8' });
+      output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%' and not commandline like '%wmic%'" get processid`, { encoding: 'utf8', windowsHide: true });
     } catch (e: any) {
       result.failed.push(`could not list processes: ${e?.message ?? e}`);
       return result;
@@ -174,7 +174,7 @@ function killPattern(pattern: string): KillResult {
   }
   let pids: number[] = [];
   try {
-    const output = execSync('ps -ef', { encoding: 'utf8' });
+    const output = execSync('ps -ef', { encoding: 'utf8', windowsHide: true });
     for (const line of output.split('\n')) {
       if (line.includes(pattern) && !line.includes('ps -ef') && !line.includes('grep')) {
         const pid = line.trim().split(/\s+/)[1];
@@ -184,7 +184,7 @@ function killPattern(pattern: string): KillResult {
   } catch {
     // Fallback to pgrep if ps fails; pgrep exits 1 when nothing matches
     try {
-      pids = execSync(`pgrep -f "${pattern}"`, { encoding: 'utf8' }).split('\n').filter(Boolean).map(p => parseInt(p, 10));
+      pids = execSync(`pgrep -f "${pattern}"`, { encoding: 'utf8', windowsHide: true }).split('\n').filter(Boolean).map(p => parseInt(p, 10));
     } catch (e: any) {
       if (e?.status !== 1) result.failed.push(`could not list processes: ${e?.message ?? e}`);
     }
@@ -218,6 +218,7 @@ async function fetchReleaseTagByVersion(repo: string, version: string): Promise<
     return execSync(`gh release view ${tag} --repo ${repo} --json tagName --template '{{.tagName}}'`, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     }).trim();
   } catch {
     throw new Error(`Release ${tag} not found in ${repo}`);
@@ -372,7 +373,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
       'gh',
       ['release', 'list', '--repo', repo, '--limit', '100', '--json', 'tagName,isPrerelease,createdAt'],
       // A bounded wait: this also runs from bare `agenfk`, which must not hang on a stalled gh.
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, windowsHide: true },
     ).trim();
     return toReleaseRefs(JSON.parse(out || '[]'), GH_KEYS);
   };
@@ -386,7 +387,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
   const viewTag = execFileSync(
     'gh',
     ['release', 'view', '--repo', repo, '--json', 'tagName', '--template', '{{.tagName}}'],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, windowsHide: true },
   ).trim();
   // Same rule as the REST path: `gh release view` reports the newest release by
   // date, hub or not, so it is one candidate and the newest stable by version
@@ -408,13 +409,13 @@ function downloadReleaseAsset(repo: string, tag: string, pattern: string, output
   const directUrl = `https://github.com/${repo}/releases/download/${tag}/${pattern}`;
   // Try curl first — no auth required for public repos
   try {
-    execSync(`curl -fsSL "${directUrl}" -o "${outputPath}"`, { stdio: 'inherit' });
+    execSync(`curl -fsSL "${directUrl}" -o "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
     return;
   } catch {
     // Fall through to gh CLI
   }
   // Fallback: gh release download (requires gh auth login)
-  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
+  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
 }
 
 function resolveIntegrationPlatform(platform: string): string {
@@ -433,7 +434,7 @@ function resolveIntegrationPlatform(platform: string): string {
 function runIntegrationScript(scriptName: string, args: string[]) {
   const rootDir = path.resolve(__dirname, '../../..');
   const scriptPath = path.join(rootDir, 'scripts', scriptName);
-  const result = spawnSync('node', [scriptPath, ...args], { cwd: rootDir, stdio: 'inherit' });
+  const result = spawnSync('node', [scriptPath, ...args], { cwd: rootDir, stdio: 'inherit', windowsHide: true });
 
   if (result.status !== 0) {
     process.exit(result.status || 1);
@@ -727,7 +728,8 @@ program
     // Spawn the server process and pipe stdio for MCP communication
     const serverProcess = spawn('node', [serverPath], {
       stdio: 'inherit',
-      env
+      env,
+      windowsHide: true
     });
 
     serverProcess.on('exit', (code) => {
@@ -828,7 +830,7 @@ program
 
       if (servicesRunning) {
         try {
-          execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'ignore' });
+          execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'ignore', windowsHide: true });
         } catch (e) { /* ignore */ }
       }
 
@@ -840,7 +842,7 @@ program
         // --exclude: published releases up to v1.1.16-beta.4 were ~half macOS
         // AppleDouble (`._*`) entries; never let them into the install dir
         // (CGLAB-94 / issue #163).
-        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
         // `tar -xzf` deletes nothing, so the install dir keeps files this
         // version dropped — and its own commands/ cannot be asked what is
         // current, because it IS the stale thing. Hand install.mjs the archive
@@ -896,6 +898,7 @@ program
             // filesystem path is not shell-safe (see scripts/install.mjs).
             ...(distTarball ? { AGENFK_DIST_TARBALL: distTarball } : {}),
           },
+          windowsHide: true,
         });
       } catch (e: any) {
         // Before emitResult: it calls process.exit, which does NOT run pending
@@ -950,7 +953,7 @@ program
     if (!fs.existsSync(startScript) || missingDist) {
         try {
             const installFlags = options.debuglog ? ' --debuglog' : '';
-            execSync(`node scripts/install.mjs${installFlags}`, { cwd: rootDir, stdio: 'inherit' });
+            execSync(`node scripts/install.mjs${installFlags}`, { cwd: rootDir, stdio: 'inherit', windowsHide: true });
         } catch (e) {
             console.error(chalk.red('Bootstrap failed.'));
             process.exitCode = 1;
@@ -964,7 +967,7 @@ program
         // --quiet suppresses the post-start browser auto-open; the
         // start-services.mjs script reads this env var as the gate.
         if (options.quiet) startEnv.AGENFK_NO_OPEN_BROWSER = '1';
-        const start = spawn('node', ['scripts/start-services.mjs'], { cwd: rootDir, stdio: 'inherit', env: startEnv });
+        const start = spawn('node', ['scripts/start-services.mjs'], { cwd: rootDir, stdio: 'inherit', env: startEnv, windowsHide: true });
         start.on('close', (code) => {
             process.exit(code || 0);
         });
@@ -1020,7 +1023,7 @@ program
     // a warning it raises (a server it could not stop) is passed on.
     let downOut = '';
     try {
-      downOut = String(execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }) ?? '');
+      downOut = String(execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true }) ?? '');
     } catch (e: any) {
       downOut = String(e?.stdout ?? '');
     }
@@ -1033,7 +1036,7 @@ program
     // new browser tab on the user's machine.
     const upArgs = ['packages/cli/bin/agenfk.js', 'up'];
     if (options.quiet) upArgs.push('--quiet');
-    const up = spawnSync('node', upArgs, { cwd: rootDir, stdio: 'inherit' });
+    const up = spawnSync('node', upArgs, { cwd: rootDir, stdio: 'inherit', windowsHide: true });
     if (up.error || up.status !== 0) {
       console.error(chalk.red(`Failed to restart: ${up.error?.message ?? `agenfk up exited ${up.status}`}`));
       process.exitCode = 1;
@@ -1101,7 +1104,7 @@ program
     let appIsRunning = false;
     if (process.platform === 'darwin') {
       try {
-        execSync('pgrep -f "AgEnFK.app/Contents/MacOS/AgEnFK"', { stdio: 'ignore' });
+        execSync('pgrep -f "AgEnFK.app/Contents/MacOS/AgEnFK"', { stdio: 'ignore', windowsHide: true });
         appIsRunning = true;
       } catch { /* not running, which is not an error */ }
     }
@@ -1118,7 +1121,7 @@ program
       // launch would exit silently and look like this did nothing.
       console.log(chalk.cyan(`Opening the desktop app (${target.why}). Use --web for the browser.`));
       try {
-        execFileSync('open', ['-a', target.appPath], { stdio: 'ignore' });
+        execFileSync('open', ['-a', target.appPath], { stdio: 'ignore', windowsHide: true });
         return;
       } catch {
         // Falls through to the browser rather than failing: a dashboard in the
@@ -1132,16 +1135,16 @@ program
     try {
       if (isMinGW()) {
         try {
-          execSync(`cygstart "${uiUrl}"`, { stdio: 'ignore' });
+          execSync(`cygstart "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
         } catch {
-          execSync(`start "${uiUrl}"`, { stdio: 'ignore' });
+          execSync(`start "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
         }
       } else if (fs.existsSync('/proc/version') && fs.readFileSync('/proc/version', 'utf8').match(/(Microsoft|WSL)/i)) {
-        execSync(`cmd.exe /c start "${uiUrl}"`, { stdio: 'ignore' });
+        execSync(`cmd.exe /c start "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
       } else if (process.platform === 'linux') {
-        execSync(`xdg-open "${uiUrl}"`, { stdio: 'ignore' });
+        execSync(`xdg-open "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
       } else if (process.platform === 'darwin') {
-        execSync(`open "${uiUrl}"`, { stdio: 'ignore' });
+        execSync(`open "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
       }
     } catch (e) {
       // Ignore errors if browser launch fails
@@ -2802,7 +2805,7 @@ githubCommand
   .action(async (options: { owner?: string; repo?: string }) => {
     // 1. Verify gh CLI is installed and authenticated
     try {
-      execSync('gh auth status', { stdio: 'pipe' });
+      execSync('gh auth status', { stdio: 'pipe', windowsHide: true });
     } catch {
       console.error(chalk.red('\nError: GitHub CLI (gh) is not installed or not authenticated.'));
       console.log(chalk.white('  Install: https://cli.github.com/'));
@@ -2824,7 +2827,7 @@ githubCommand
     if (!owner || !repo) {
       // Try to detect from git remote
       try {
-        const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
+        const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf8', windowsHide: true }).trim();
         const match = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
         if (match) {
           owner = owner || match[1];
@@ -2854,7 +2857,7 @@ githubCommand
 
     // 4. Verify the repo exists and is accessible
     try {
-      execSync(`gh repo view ${owner}/${repo} --json name`, { stdio: 'pipe' });
+      execSync(`gh repo view ${owner}/${repo} --json name`, { stdio: 'pipe', windowsHide: true });
     } catch {
       console.error(chalk.red(`\nError: Cannot access repository ${owner}/${repo}.`));
       console.log(chalk.white('  Check that the repo exists and you have access.'));
@@ -2920,7 +2923,7 @@ githubCommand
 
     // gh CLI check
     try {
-      execSync('gh auth status', { stdio: 'pipe' });
+      execSync('gh auth status', { stdio: 'pipe', windowsHide: true });
       console.log(chalk.green('\n  GitHub CLI:    ✓ Authenticated'));
     } catch {
       console.log(chalk.yellow('\n  GitHub CLI:    ✗ Not authenticated'));
@@ -3106,7 +3109,7 @@ const AGENFK_BLOCK_RE = /\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/
 /** Returns the git repo root, falling back to process.cwd() */
 function getProjectRoot(): string {
   try {
-    return execSync('git rev-parse --show-toplevel', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    return execSync('git rev-parse --show-toplevel', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim();
   } catch {
     return process.cwd();
   }
@@ -3791,9 +3794,9 @@ async function postCheckHistory(itemId: string, prNumber: number, repo: string):
   if (!comment) return;
   if (!checkGhCli()) { console.warn(chalk.yellow('⚠️  gh is not installed: the check history was not posted on the PR.')); return; }
   // Once per PR: a second pr-register (a re-run) does not post it again.
-  const seen = spawnSync('gh', ['pr', 'view', String(prNumber), '--repo', repo, '--json', 'comments', '-q', '.comments[].body'], { encoding: 'utf8', timeout: 30_000 });
+  const seen = spawnSync('gh', ['pr', 'view', String(prNumber), '--repo', repo, '--json', 'comments', '-q', '.comments[].body'], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
   if (seen.status === 0 && (seen.stdout ?? '').includes('### AgEnFK check history')) { console.log(chalk.dim(`The check history is already on PR #${prNumber}.`)); return; }
-  const r = spawnSync('gh', ['pr', 'comment', String(prNumber), '--repo', repo, '--body', comment], { encoding: 'utf8', timeout: 30_000 });
+  const r = spawnSync('gh', ['pr', 'comment', String(prNumber), '--repo', repo, '--body', comment], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
   if (r.status !== 0) console.warn(chalk.yellow(`⚠️  Could not post the check history on the PR: ${(r.stderr || r.stdout || '').trim()}`));
   else console.log(chalk.green(`Posted the check history on PR #${prNumber}.`));
 }
@@ -4124,7 +4127,7 @@ program
         if (target) {
           driftNotice = dispatchDriftNotice({
             ...target,
-            deps: { run: args => execFileSync('git', args as string[], { encoding: 'utf8' }) },
+            deps: { run: args => execFileSync('git', args as string[], { encoding: 'utf8', windowsHide: true }) },
           });
         }
       }
@@ -4398,7 +4401,7 @@ program
       }
       if (!opened) {
         // --details: the approval is given on the card's Overview, so open it there.
-        spawnSync(process.execPath, [process.argv[1], 'ui', '--open', targetId, '--details'], { stdio: 'inherit' });
+        spawnSync(process.execPath, [process.argv[1], 'ui', '--open', targetId, '--details'], { stdio: 'inherit', windowsHide: true });
         opened = true;
       }
       await askForApproval();
@@ -4462,7 +4465,7 @@ branchCmd
         // No shell: the name must reach git as exactly one argument (no word-splitting,
         // no shell injection). Git validates the refname itself and rejects invalid names
         // (leading dash, embedded space) with a clean error.
-        execFileSync('git', ['checkout', '-b', branchName], { stdio: 'inherit' });
+        execFileSync('git', ['checkout', '-b', branchName], { stdio: 'inherit', windowsHide: true });
       } catch {
         console.error(chalk.red(`Failed to create branch. Does it already exist? Try: git checkout ${branchName}`));
         process.exit(1);
@@ -4528,7 +4531,7 @@ worktreeCmd
         // Throws if the directory is gone or is not a repository, and the
         // caller treats a throw as "do not touch" — a failed check read as
         // clean is how a tool deletes work nobody pushed.
-        const out = execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
+        const out = execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8', windowsHide: true });
         return out.trim().length > 0;
       },
     });
@@ -4557,7 +4560,7 @@ worktreeCmd
       try {
         // Through git, not rm: it also clears the .git/worktrees registration,
         // and leaving those behind is half the slowdown this is meant to fix.
-        execFileSync('git', ['worktree', 'remove', c.path], { stdio: 'ignore' });
+        execFileSync('git', ['worktree', 'remove', c.path], { stdio: 'ignore', windowsHide: true });
         removed += 1;
       } catch (e: any) {
         console.log(chalk.yellow(`  Kept ${c.path}: ${e?.message ?? 'git refused'}`));
@@ -4637,7 +4640,7 @@ branchCmd
 
       let hasRemote = false;
       try {
-        const remotes = execSync('git remote', { encoding: 'utf8' }).trim();
+        const remotes = execSync('git remote', { encoding: 'utf8', windowsHide: true }).trim();
         hasRemote = remotes.length > 0;
       } catch { /* not a git repo */ }
 
@@ -4647,7 +4650,7 @@ branchCmd
       }
 
       console.log(chalk.blue(`Pushing branch '${item.branchName}' to remote...`));
-      execSync(`git push -u origin ${item.branchName}`, { stdio: 'inherit' });
+      execSync(`git push -u origin ${item.branchName}`, { stdio: 'inherit', windowsHide: true });
       console.log(chalk.green(`✅ Branch '${item.branchName}' pushed to remote.`));
     } catch (e: any) {
       console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
@@ -4669,7 +4672,7 @@ branchCmd
       console.log(`Branch: ${chalk.cyan(item.branchName)}`);
 
       try {
-        const remoteBranches = execSync('git branch -r', { encoding: 'utf8' });
+        const remoteBranches = execSync('git branch -r', { encoding: 'utf8', windowsHide: true });
         const pushed = remoteBranches.split('\n').some(b => b.trim().endsWith(item.branchName));
         console.log(`Remote: ${pushed ? chalk.green('pushed') : chalk.yellow('not pushed yet')}`);
       } catch {
@@ -4702,7 +4705,7 @@ branchCmd
 
       // Verify the branch exists locally
       try {
-        execSync(`git rev-parse --verify --end-of-options ${branchName}`, { stdio: 'ignore' });
+        execSync(`git rev-parse --verify --end-of-options ${branchName}`, { stdio: 'ignore', windowsHide: true });
       } catch {
         console.error(chalk.red(`❌ Branch '${branchName}' does not exist locally.`));
         process.exit(1);
@@ -4721,7 +4724,7 @@ branchCmd
 
 function checkGhCli(): boolean {
   try {
-    execSync('gh --version', { stdio: 'ignore' });
+    execSync('gh --version', { stdio: 'ignore', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -4827,7 +4830,7 @@ prCmd
       console.log(chalk.blue(`Creating PR: "${prTitle}"...`));
       let output: string;
       try {
-        const result = spawnSync('gh', args, { encoding: 'utf8' });
+        const result = spawnSync('gh', args, { encoding: 'utf8', windowsHide: true });
         if (result.status !== 0) {
           console.error(chalk.red(`❌ gh pr create failed:\n${result.stderr || result.stdout}`));
           process.exit(1);
@@ -4896,7 +4899,7 @@ prCmd
       const ref = item.prNumber || item.prUrl;
       let result: any;
       try {
-        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8' });
+        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8', windowsHide: true });
         result = JSON.parse(raw);
       } catch (e: any) {
         console.error(chalk.red(`❌ gh pr view failed: ${e.message}`));
@@ -4934,7 +4937,7 @@ prCmd
       const ref = item.prNumber || item.prUrl;
       let result: any;
       try {
-        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8' });
+        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8', windowsHide: true });
         result = JSON.parse(raw);
       } catch (e: any) {
         console.error(chalk.red(`❌ gh pr view failed: ${e.message}`));

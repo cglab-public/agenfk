@@ -17,10 +17,7 @@
  * keep turning" is not answerable against a call the test cannot get between.
  */
 import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { parseGitStatus, type GitWorktreeStatus } from '@agenfk/core';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * How long a single `git status` may take.
@@ -40,10 +37,12 @@ export interface GitStatusDeps {
 }
 
 const defaultDeps: GitStatusDeps = {
-  exec: async (file, args, opts) => {
-    const { stdout } = await execFileAsync(file, args as string[], opts);
-    return stdout;
-  },
+  // Called directly rather than through promisify(execFile), so the
+  // windowsHide guard sees the options: the board refetches this every few
+  // seconds, and on Windows each unhidden git would flash a console (GH #200).
+  exec: (file, args, opts) => new Promise((resolve, reject) => {
+    execFile(file, [...args], { ...opts, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+  }),
 };
 
 /**
