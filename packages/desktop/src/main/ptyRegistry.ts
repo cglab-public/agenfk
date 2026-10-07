@@ -16,7 +16,8 @@
  * nor the reaping need real processes to test.
  */
 import { randomUUID } from 'crypto';
-import { resolveAgentCommand, canDictateSessionId, HERDR_AGENT_ID, resolveShellCommand } from './agents.js';
+import { resolveAgentCommand, canDictateSessionId, HERDR_AGENT_ID, SHELL_AGENT_ID, resolveShellCommand } from './agents.js';
+import { wslExecutable, wslLaunch, withWslEnv, type WslTarget } from './wsl.js';
 import { TitleReader, activityFromTitle } from './agentState.js';
 import { buildPtyEnv } from './ptyEnv.js';
 import { envWithoutHerdr, herdrAttachCommand } from './herdrAttach.js';
@@ -93,6 +94,16 @@ export interface PtyRegistryDeps {
    */
   readonly promptFor?: (itemId: string) => Promise<string | null>;
 
+  /**
+   * Whether this terminal runs inside a WSL distro, and which (INFRA-425).
+   *
+   * Asked with the directory the session resolved to, because a Linux path is
+   * the case that forces it: the Windows app adopts a server running in WSL,
+   * and that server answers every worktree with /home/... . Null keeps the
+   * spawn exactly as it was, which is every platform but Windows.
+   */
+  readonly wslTarget?: (req: { cwd: string }) => Promise<WslTarget | null>;
+
   /** Sends a message to one window only. */
   readonly emit: (windowId: number, channel: string, payload: unknown) => void;
   /**
@@ -153,6 +164,13 @@ export interface PtyRegistryDeps {
  * to prevent.
  */
 const RESUME_FAILURE_MS = 5_000;
+/*
+ * The same judgement through wsl.exe, which can spend most of five seconds
+ * starting a cold VM and running a login shell (nvm, mise) before the agent
+ * has even printed "No conversation found". Measured from the same moment, so
+ * the window is wider rather than differently shaped.
+ */
+const RESUME_FAILURE_MS_WSL = 20_000;
 
 export const MAX_SESSIONS_PER_WINDOW = 30;
 
@@ -470,7 +488,19 @@ export class PtyRegistry {
      * with no PATHEXT, and npm writes `claude.cmd`. Not for tmux, which runs a
      * shell line under the pty's PATH, nor for a command that is already a path.
      */
-    const located = !useTmux && this.deps.locate && !path.isAbsolute(file)
+    /*
+     * Decided BEFORE locating the executable: inside a distro the agent is found
+     * by the distro's own login shell, and a Windows `claude.cmd` would be the
+     * wrong program even if there is one.
+     */
+    const wsl = this.deps.wslTarget ? await this.deps.wslTarget({ cwd }) : null;
+    /*
+     * A plain shell in WSL is the distro's own login shell, not the platform's
+     * shell command (PowerShell) run inside it. The same for the Shell agent
+     * opened on a card.
+     */
+    const plainShell = isShell || req.agentId === SHELL_AGENT_ID;
+    const located = !wsl && !useTmux && this.deps.locate && !path.isAbsolute(file)
       ? await this.deps.locate(file).catch(() => null)
       : null;
     const launcher = this.deps.launcher ?? platform;
@@ -483,7 +513,8 @@ export class PtyRegistry {
      * is disabled" although nothing was nested: these terminals are this
      * app's, never herdr's panes.
      */
-    const env = envWithoutHerdr(baseEnv);
+    const hostEnv = envWithoutHerdr(baseEnv);
+    const env = wsl ? withWslEnv(hostEnv) : hostEnv;
 
     // Opaque and unguessable, and deliberately not derived from the item id:
     // a session id travels to the renderer, and one built from a card id would
@@ -520,8 +551,22 @@ export class PtyRegistry {
          */
         throw new Error('This window was closed while the terminal was opening.');
       }
-      const target = located ? launcher.launch(located, launchArgs, env) : { file, args: launchArgs };
-      const pty = this.deps.spawn(target.file, target.commandLine ?? target.args, { cwd, cols: req.cols, rows: req.rows, env });
+      /*
+       * In WSL the directory is wsl.exe's business (`--cd`), and the pty starts
+       * in the Windows home: a Linux path is not a directory Windows can start
+       * a process in. A session with no directory of its own opens the
+       * distro's home.
+       */
+      const target: { file: string; args: readonly string[]; commandLine?: string } = wsl
+        ? wslLaunch({
+            distro: wsl.distro,
+            cwd: isShell || attaching ? null : cwd,
+            command: plainShell ? undefined : { file, args: launchArgs },
+            exe: wslExecutable(process.env),
+          })
+        : located ? launcher.launch(located, launchArgs, env) : { file, args: launchArgs };
+      const spawnCwd = wsl ? homedir() : cwd;
+      const pty = this.deps.spawn(target.file, target.commandLine ?? target.args, { cwd: spawnCwd, cols: req.cols, rows: req.rows, env });
       // The geometry a session was born with, and every correction after it.
       // A terminal whose agent draws its input box somewhere the person cannot
       // see is a size disagreement, and this is the only place both numbers
@@ -618,7 +663,7 @@ export class PtyRegistry {
          *    then exited finished work rather than failed to start;
          *  - only ONCE, or a command that always fails becomes a spawn loop.
          */
-        const diedOnTheSpot = Date.now() - startedAt < RESUME_FAILURE_MS;
+        const diedOnTheSpot = Date.now() - startedAt < (wsl ? RESUME_FAILURE_MS_WSL : RESUME_FAILURE_MS);
         // This pty is finished either way, so its accounting goes with it —
         // before the branch, because the relaunch below replaces the map entry
         // and would otherwise strand this one's grace-period timer.
