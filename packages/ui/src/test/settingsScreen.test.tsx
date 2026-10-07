@@ -364,7 +364,7 @@ describe('the shape of it', () => {
     // appearing or vanishing is a decision somebody has to come here and make.
     // General is absent on purpose: it held only the tmux toggle.
     expect(within(rail).getAllByRole('button').map(b => b.textContent))
-      .toEqual(['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents']);
+      .toEqual(['Account', 'App', 'Appearance', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents']);
   });
 
   it('lists only sections that have something in them', async () => {
@@ -1069,7 +1069,7 @@ describe('the section menu carries an icon', () => {
     renderShell();
     await openSettingsRaw();
     const rail = await screen.findByRole('navigation', { name: /settings sections/i });
-    const labels = ['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents'];
+    const labels = ['Account', 'App', 'Appearance', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents'];
     expect(within(rail).getAllByRole('button').map(b => b.textContent)).toEqual(labels);
     // The name is what an icon actually breaks, so it is looked up by name
     // rather than read off the svg's aria-hidden.

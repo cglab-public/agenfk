@@ -470,7 +470,10 @@ describe('the options the pane builds its terminal with', () => {
       />,
     );
     await waitFor(() => expect(seen).toHaveLength(1));
-    expect(seen[0]).toBe(TERMINAL_OPTIONS);
+    // A copy of the shared options, not the object itself: terminalOptionsFor
+    // always copies, so no caller can reach the defaults every terminal shares.
+    expect(seen[0]).toEqual(TERMINAL_OPTIONS);
+    expect(seen[0]).not.toBe(TERMINAL_OPTIONS);
   });
 
   it('carries a scrollback, which is the whole point of the module', () => {

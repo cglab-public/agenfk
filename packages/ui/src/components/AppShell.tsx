@@ -49,7 +49,7 @@ import type { PaneTree, DropZone, SplitDirection } from '../splitTree';
 import { withItemBranches } from '../sessionBranch';
 import { NewTerminalDialog } from './NewTerminalDialog';
 import {
-  listAgentsFromBridge, refreshAgentsFromBridge, readPrefsFromBridge,
+  listAgentsFromBridge, refreshAgentsFromBridge, readPrefsFromBridge, onPrefsChangedFromBridge,
   listEditorsFromBridge, openInEditorFromBridge,
 } from './agentBridge';
 import { SettingsPanel } from './SettingsPanel';
@@ -295,6 +295,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Same query key the settings screen uses, so a change there is reflected
   // here without a reload. Auto-approve is desktop-owned, not on the server.
   const { data: desktopPrefs } = useQuery({ queryKey: ['desktop-prefs'], queryFn: readPrefsFromBridge });
+  /*
+   * And a change made in main, where the zoom shortcuts are handled
+   * (INFRA-425): written straight into the same cache, so Settings shows the
+   * scale the window is actually at.
+   */
+  const prefsCache = useQueryClient();
+  React.useEffect(
+    () => onPrefsChangedFromBridge(next => prefsCache.setQueryData(['desktop-prefs'], next)),
+    [prefsCache],
+  );
   // Which editors this machine has. A fact about the machine, so it is asked
   // once rather than on every focus.
   const { data: editors = [] } = useQuery({
@@ -2030,6 +2040,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 editors={editors}
                 showWorktree
                 titleBar={drawsTitleBar ? { reserveWindowControls: !sidebarOpen } : undefined}
+                terminalFontSize={desktopPrefs?.terminalFontSize}
                 onOpenInEditor={(itemId, editorId) => {
                   // Fire and forget: failing to open an editor must not
                   // disturb the terminal the user is working in.
