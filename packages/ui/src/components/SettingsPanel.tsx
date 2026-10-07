@@ -45,6 +45,7 @@ import {
   listAgentsFromBridge, refreshAgentsFromBridge,
   readPrefsFromBridge, setAutoApproveOnBridge,
   setDefaultAgentOnBridge, setAskBeforeOpeningOnBridge, setUiScaleOnBridge, setTerminalFontSizeOnBridge,
+  setWslDistroOnBridge, listWslDistrosFromBridge,
   canChooseSound, canNotifyAttention, canSetAppearance,
   currentSoundFromBridge, chooseSoundOnBridge, clearSoundOnBridge,
 } from './agentBridge';
@@ -531,6 +532,16 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
   });
   const saveTerminalFontSize = useMutation({
     mutationFn: (value: number) => setTerminalFontSizeOnBridge(value),
+    onSuccess: settled => { queryClient.setQueryData(['desktop-prefs'], settled); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
+  });
+  /*
+   * Where terminals open, on Windows with WSL (INFRA-425). The list comes from
+   * main, which read it from wsl.exe; empty means the row is not offered.
+   */
+  const { data: wslDistros = [] } = useQuery({ queryKey: ['wsl-distros'], queryFn: listWslDistrosFromBridge });
+  const saveWslDistro = useMutation({
+    mutationFn: (distro: string) => setWslDistroOnBridge(distro),
     onSuccess: settled => { queryClient.setQueryData(['desktop-prefs'], settled); },
     onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
   });
@@ -1041,6 +1052,35 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
               />
             }
           />
+          {wslDistros.length > 0 && (
+            <SettingRow
+              testId="wsl-distro-row"
+              title="Open terminals in"
+              /* Says what happens to a Linux path, because that is the case
+                 people hit first: a project that lives in WSL opens there
+                 whatever this says. */
+              description="Where a terminal starts. A WSL distro runs every terminal and agent inside Linux, with your Linux PATH. Projects that live in WSL open there either way."
+              /* Said, not just undone: a refused save otherwise snaps the select
+                 back with nothing to explain it. */
+              note={saveWslDistro.isError
+                ? 'That choice could not be saved. The distro list may have changed; open this screen again to refresh it.'
+                : undefined}
+              control={
+                <select
+                  aria-label="Open terminals in"
+                  value={prefs?.wslDistro ?? ''}
+                  disabled={saveWslDistro.isPending}
+                  onChange={e => saveWslDistro.mutate(e.target.value)}
+                  className="rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value="">Windows (PowerShell)</option>
+                  {wslDistros.map(distro => (
+                    <option key={distro} value={distro}>{`WSL: ${distro}`}</option>
+                  ))}
+                </select>
+              }
+            />
+          )}
           <HerdrRows />
         </>
       ),
@@ -1136,6 +1176,9 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
                disagree about what is installed, what a mark looks like or what
                an agent is called. Not-installed agents are refused by it. */
             <AgentPicker
+              /* Re-listed when the WSL choice changes: what is installed
+                 depends on where terminals run (INFRA-425). */
+              key={prefs?.wslDistro ?? ''}
               value={shownAgentId}
               onChange={next => saveDefaultAgent.mutate(next)}
               /* A LOADER, not the list: the picker owns its own loading state
