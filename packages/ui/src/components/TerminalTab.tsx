@@ -265,6 +265,8 @@ export interface TerminalTabProps {
    * window to drag.
    */
   readonly titleBar?: { readonly reserveWindowControls: boolean };
+  /** The font size from Settings > Appearance, for every pane (INFRA-425). */
+  readonly terminalFontSize?: number;
 }
 
 /**
@@ -337,6 +339,7 @@ export function TerminalTab({
   onOpenInEditor,
   showWorktree,
   titleBar,
+  terminalFontSize,
 }: TerminalTabProps): React.ReactElement {
   // Seeded from storage in the initializer, so there is no first paint with
   // the panel open for someone who closed it.
@@ -1010,6 +1013,7 @@ export function TerminalTab({
             onExited={code => onExited?.(session.id, code)}
             onActivity={a => onActivity?.(session.id, a)}
             onScreenActivity={a => onScreenActivity?.(session.id, a)}
+            fontSize={terminalFontSize}
           />
           </div>
           {/*

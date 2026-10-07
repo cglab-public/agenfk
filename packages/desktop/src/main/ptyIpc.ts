@@ -42,6 +42,9 @@ import { detectEditors, editorUrlFor } from './editors';
 import { detectAgents, refreshAgentDetection } from './detectAgents.js';
 import { SHELL_AGENT_ID, AGENT_IDS } from './agents.js';
 import { HIGH_WATERMARK } from './flowControl.js';
+import {
+  clampUiScale, isTerminalFontSize, isUiScale, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, UI_SCALE_MAX, UI_SCALE_MIN,
+} from './appearance';
 
 /** Minimal shape of `ipcMain` so tests need no Electron. */
 export interface IpcLike {
@@ -384,7 +387,7 @@ export function registerPtyIpc(
     return { opened: true, path: cwd };
   });
 
-  ipc.handle('prefs:set', async (_event, raw) => {
+  ipc.handle('prefs:set', async (event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;
     const key = asString(req.key, 'key');
     if (!(PREF_KEYS as readonly string[]).includes(key)) {
@@ -421,6 +424,35 @@ export function registerPtyIpc(
         throw new Error(`Preference "defaultAgentId" must be one of: ${AGENT_IDS.join(', ')}`);
       }
       return readablePrefs(writePref(prefsDir(), 'defaultAgentId', value));
+    }
+
+    /*
+     * THE TWO NUMBERS, and why they do not reopen the rule below either.
+     *
+     * A number cannot name a file or a program, which is the thing the
+     * boolean-only rule protects. It is still renderer input, so each is held
+     * to its range and REFUSED outside it rather than clamped: our own <select>
+     * never sends one, so a value out of range means something is wrong.
+     */
+    if (key === 'uiScale') {
+      if (!isUiScale(req.value)) {
+        throw new Error(`Preference "uiScale" must be a number from ${UI_SCALE_MIN} to ${UI_SCALE_MAX}.`);
+      }
+      // Snapped to the grid Settings offers, so the screen can always show it.
+      const stored = writePref(prefsDir(), 'uiScale', clampUiScale(req.value) ?? req.value);
+      // Applied to the window that asked, so the change is visible before the
+      // settings screen has even re-rendered. The SENDER, never a window id
+      // from the payload, for the reason senderWindowId gives.
+      event.sender?.setZoomFactor?.(stored.uiScale);
+      return readablePrefs(stored);
+    }
+    if (key === 'terminalFontSize') {
+      if (!isTerminalFontSize(req.value)) {
+        throw new Error(
+          `Preference "terminalFontSize" must be a whole number from ${TERMINAL_FONT_SIZE_MIN} to ${TERMINAL_FONT_SIZE_MAX}.`,
+        );
+      }
+      return readablePrefs(writePref(prefsDir(), 'terminalFontSize', req.value));
     }
 
     if (typeof DEFAULT_PREFS[key as keyof typeof DEFAULT_PREFS] !== 'boolean') {
