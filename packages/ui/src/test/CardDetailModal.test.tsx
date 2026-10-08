@@ -788,6 +788,27 @@ describe('CardDetailModal', () => {
     expect(screen.getByText(/Independent Reviews \(1\)/)).toBeDefined();
   });
 
+  // CGLAB-565: within a record, findings lead with the most serious — HIGH
+  // before MEDIUM before LOW, unlabelled last — whatever order they were
+  // recorded in.
+  it('orders findings by severity, most serious first', async () => {
+    const shuffled = {
+      ...reviewRecord,
+      findings: [
+        { title: 'no label', state: 'fixed' },
+        { title: 'medium one', state: 'fixed', severity: 'MEDIUM' },
+        { title: 'low one', state: 'rejected', severity: 'LOW', reason: 'r' },
+        { title: 'high one', state: 'fixed', severity: 'HIGH' },
+      ],
+    };
+    renderModal({ ...mockItem, reviewRecords: [shuffled] });
+    await waitFor(() => expect(screen.getByText('Test Story')).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: /Reviews/i }));
+    const list = screen.getByText('high one').closest('ul')!;
+    const titles = Array.from(list.querySelectorAll('li > div > p:first-child')).map(p => p.textContent);
+    expect(titles).toEqual(['high one', 'medium one', 'low one', 'no label']);
+  });
+
   it('renders reviewer identity, range and findings for each record', async () => {
     renderModal({ ...mockItem, reviewRecords: [reviewRecord] });
     await waitFor(() => expect(screen.getByText('Test Story')).toBeDefined());

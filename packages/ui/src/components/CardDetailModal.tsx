@@ -36,6 +36,10 @@ interface CardDetailModalProps {
 
 type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'checks' | 'tests' | 'reviews' | 'usage' | 'runs';
 
+/** CGLAB-565: findings read top-down, so the most serious lead the list. Unlabelled ones rank last. */
+const severityRank = (f: { severity?: 'HIGH' | 'MEDIUM' | 'LOW' }): number =>
+  f.severity === 'HIGH' ? 3 : f.severity === 'MEDIUM' ? 2 : f.severity === 'LOW' ? 1 : 0;
+
 export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, pricesData, onClose, onSelectItem, onAddItem, onDeleteItem, onUpdateItem, projectName, flowName }) => {
   const isNew = !item.id;
   // Agent runs drive the conditional "Runs" tab — only shown when orchestration
@@ -878,7 +882,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                       </div>
                       {rec.findings.length > 0 ? (
                         <ul className="divide-y divide-slate-100 dark:divide-slate-800">
-                          {rec.findings.map((f, i) => (
+                          {[...rec.findings].sort((a, b) => severityRank(b) - severityRank(a)).map((f, i) => (
                             <li key={i} className="px-4 py-2 flex items-start gap-2">
                               <span className={clsx(
                                 "text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase shrink-0",
