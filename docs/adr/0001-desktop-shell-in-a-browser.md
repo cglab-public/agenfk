@@ -146,7 +146,7 @@ Electron app:
 - `fullScreen` — whether the window is full screen. Absent, the shell reads
   the window as windowed, so on a `darwin` stub the macOS title bar always
   draws; full screen dropping it is checked in the Electron app.
-- `wsl` — the WSL distros a terminal may open in, on Windows. Absent, Settings
+- `wsl`: the WSL distros a terminal may open in, on Windows. Absent, Settings
   does not offer the choice; opening terminals in a distro is checked in the
   Windows app.
 
