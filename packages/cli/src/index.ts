@@ -4185,7 +4185,7 @@ reviewCmd
   .description('Record an independent review of a card. The server reads the reviewer\'s identity from --transcript (a session log under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions), so the reviewer must not be the author. MCP: record_review.')
   .requiredOption('--transcript <path>', 'The REVIEWER\'s session log, e.g. a Claude Code sub-agent\'s <session>/subagents/agent-<id>.jsonl')
   .requiredOption('--range <from..to>', 'The commits the review covered')
-  .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "reason"? } ([] when nothing was found)')
+  .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "severity"?: "HIGH"|"MEDIUM"|"LOW", "reason"? } ([] when nothing was found)')
   .action(async (id, options) => {
     let findings: unknown;
     try { findings = JSON.parse(options.findings); } catch {

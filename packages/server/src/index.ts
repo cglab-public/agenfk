@@ -470,7 +470,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: "Each finding and its fate: fixed, or rejected with a reason. [] when nothing was found.",
               items: {
                 type: "object",
-                properties: { title: { type: "string" }, state: { type: "string", enum: ["fixed", "rejected"] }, reason: { type: "string" } },
+                properties: { title: { type: "string" }, state: { type: "string", enum: ["fixed", "rejected"] }, severity: { type: "string", enum: ["HIGH", "MEDIUM", "LOW"], description: "How serious the finding is; the reviewer's judgement." }, reason: { type: "string" } },
                 required: ["title", "state"],
               },
             },
