@@ -334,7 +334,7 @@ export function TerminalPane({
       if (renderer || attaching || cancelled || lostContext || !isShown(host)) return;
       if (!acquireWebglSlot(holder)) return;
       attaching = true;
-      let addon: RendererLike | null = null;
+      let addon: RendererLike | null;
       try {
         addon = await (createRendererAddon ?? defaultRenderer)();
       } catch {
