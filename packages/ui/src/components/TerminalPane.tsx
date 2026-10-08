@@ -20,7 +20,12 @@ import { SHELL_AGENT_ID } from '../agentIds';
 import { Terminal as XTerm, type ITerminalAddon, type Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { terminalOptionsFor } from '../terminalOptions';
+import { terminalOptionsFor, TERMINAL_FONT_FACE, TERMINAL_FONT_FAMILY } from '../terminalOptions';
+import {
+  acquireWebglSlot, forgetWebglHolder, holdsWebglSlot, loseContexts, offerHiddenSlot, releaseWebglSlot,
+  webglHolders, webglUsable, type WebglHolder,
+} from '../webglRenderer';
+import { loadAllTerminalFaces } from '../terminalFont';
 import type { ITerminalOptions } from '@xterm/xterm';
 
 /** The slice of the preload surface this component uses. */
@@ -56,6 +61,31 @@ export interface TerminalBridge {
 interface FitLike extends ITerminalAddon {
   fit(): void;
 }
+
+/**
+ * A renderer addon: WebGL in the app, anything with the same shape in a test.
+ * `onContextLoss` is optional because only the GPU renderers have a context
+ * to lose.
+ */
+interface RendererLike extends ITerminalAddon {
+  onContextLoss?(cb: () => void): { dispose(): void };
+  /** Drop glyphs drawn before the real font arrived. WebGL only. */
+  clearTextureAtlas?(): void;
+}
+
+/*
+ * The real renderer, imported when first needed: a page with no terminals
+ * (the browser dashboard) never downloads it, and a machine where WebGL cannot
+ * start never constructs it — see webglRenderer.ts for why that matters.
+ */
+const defaultRenderer = async (): Promise<RendererLike | null> => {
+  if (!webglUsable()) return null;
+  const { WebglAddon } = await import('@xterm/addon-webgl');
+  return new WebglAddon();
+};
+
+/** On screen: a display:none ancestor leaves an element with no boxes at all. */
+const isShown = (el: HTMLElement): boolean => el.isConnected && el.getClientRects().length > 0;
 
 export interface TerminalPaneProps {
   /**
@@ -137,6 +167,12 @@ export interface TerminalPaneProps {
    */
   readonly createTerminal?: (options: ITerminalOptions) => Terminal;
   readonly createFitAddon?: () => FitLike;
+  /**
+   * Builds the renderer (INFRA-425). WebGL by default; null keeps xterm's own
+   * DOM renderer. A seam for the same reason `createFitAddon` is one: jsdom has
+   * no WebGL, and the fallback is the behaviour worth asserting.
+   */
+  readonly createRendererAddon?: () => RendererLike | null | Promise<RendererLike | null>;
   readonly bridge?: TerminalBridge;
 }
 
@@ -162,6 +198,7 @@ export function TerminalPane({
   fontSize,
   createTerminal,
   createFitAddon,
+  createRendererAddon,
   bridge,
 }: TerminalPaneProps): React.ReactElement {
   const hostRef = React.useRef<HTMLDivElement>(null);
@@ -246,6 +283,119 @@ export function TerminalPane({
     term.loadAddon(fit);
     term.open(host);
     try { fit.fit(); } catch { /* no layout under jsdom */ }
+
+    /*
+     * WebGL, where it can (INFRA-425).
+     *
+     * The DOM renderer draws box drawing and block elements — herdr's whole
+     * frame — as font glyphs, with seams between cells. WebGL draws those as
+     * shapes (xterm's custom glyphs). Braille is not among them: it still comes
+     * from a font, the fallback stack, under either renderer. Where WebGL2
+     * does not start at full speed (WSLg, most VMs) every terminal stays on the
+     * DOM renderer; see webglRenderer.ts for that and for the context budget.
+     *
+     * NEVER at the cost of the terminal: no WebGL, a spent budget, a failed
+     * activation or a lost context all leave xterm on its DOM renderer, which
+     * is what every terminal had before. A pane that lost its context stays
+     * there: a driver that loses one tends to lose the next.
+     */
+    let renderer: RendererLike | null = null;
+    let rendererCanvases: HTMLCanvasElement[] = [];
+    let attaching = false;
+    let lostContext = false;
+    const canvasesIn = (): HTMLCanvasElement[] => Array.from(host.querySelectorAll('canvas'));
+    const dropRenderer = (): void => {
+      const r = renderer;
+      if (!r) return;
+      renderer = null;
+      const canvases = rendererCanvases;
+      rendererCanvases = [];
+      /*
+       * Blink off across the dispose: xterm 5.5's WebGL renderer does not
+       * dispose its cursor-blink timer, and on a focused terminal that timer
+       * keeps the renderer — and its context — alive for good. Turning the
+       * option off runs the renderer's own clear() first.
+       */
+      const blink = term.options?.cursorBlink === true;
+      try { if (blink) term.options.cursorBlink = false; } catch { /* fake terminal */ }
+      try { r.dispose(); } catch { /* gone with its context */ }
+      try { if (blink) term.options.cursorBlink = true; } catch { /* fake terminal */ }
+      // After the dispose, so the addon's own context-lost listener is gone.
+      loseContexts(canvases);
+    };
+    const holder: WebglHolder = {
+      shown: isShown(host),
+      lastShown: Date.now(),
+      release: () => dropRenderer(),
+      retry: () => { void attachRenderer(); },
+      clearAtlas: () => renderer?.clearTextureAtlas?.(),
+    };
+    const attachRenderer = async (): Promise<void> => {
+      if (renderer || attaching || cancelled || lostContext || !isShown(host)) return;
+      if (!acquireWebglSlot(holder)) return;
+      attaching = true;
+      let addon: RendererLike | null = null;
+      try {
+        addon = await (createRendererAddon ?? defaultRenderer)();
+      } catch {
+        addon = null;
+      } finally {
+        attaching = false;
+      }
+      // Evicted while loading counts as gone: see holdsWebglSlot.
+      if (!addon || cancelled || termRef.current !== term || !holdsWebglSlot(holder)) {
+        releaseWebglSlot(holder);
+        try { addon?.dispose(); } catch { /* never activated */ }
+        return;
+      }
+      const before = new Set(canvasesIn());
+      try {
+        term.loadAddon(addon);
+      } catch {
+        releaseWebglSlot(holder);
+        try { addon.dispose(); } catch { /* half-activated: the manager drops it */ }
+        return;
+      }
+      renderer = addon;
+      rendererCanvases = canvasesIn().filter(c => !before.has(c));
+      const attached = addon;
+      addon.onContextLoss?.(() => {
+        if (renderer !== attached) return;
+        lostContext = true;
+        dropRenderer();
+        releaseWebglSlot(holder);
+      });
+    };
+    void attachRenderer();
+    cleanups.push(() => {
+      try { term.blur(); } catch { /* not focusable under jsdom */ }
+      dropRenderer();
+      forgetWebglHolder(holder);
+    });
+
+    /*
+     * The cell is measured with whatever font is there when the terminal
+     * opens; if the bundled face was not loaded yet, a fallback with a
+     * different width set the column count. Measured again once it is.
+     *
+     * Set away and back because xterm only re-measures when the option
+     * CHANGES, and assigning the same stack is not a change.
+     */
+    const fonts = (document as Document & {
+      fonts?: { load(font: string): Promise<unknown>; check?(font: string): boolean } & Partial<Iterable<FontFace>>;
+    }).fonts;
+    const spec = `${term.options?.fontSize ?? 12}px ${TERMINAL_FONT_FACE}`;
+    if (typeof fonts?.load === 'function' && !(typeof fonts.check === 'function' && fonts.check(spec))) {
+      void fonts.load(spec).then(() => {
+        if (cancelled || termRef.current !== term) return;
+        term.options.fontFamily = 'monospace';
+        term.options.fontFamily = TERMINAL_FONT_FAMILY;
+        if (resizeRef.current) resizeRef.current();
+        else try { fit.fit(); } catch { /* no layout under jsdom */ }
+      }).catch(() => { /* the fallback stack is still a usable terminal */ });
+    }
+    // Every Unicode range of the face, once per page; see terminalFont.ts.
+    void loadAllTerminalFaces(fonts, () => { for (const h of webglHolders()) h.clearAtlas?.(); });
 
     // Subscribe BEFORE spawning: output can arrive between the session being
     // created in the main process and the promise resolving here, and a
@@ -383,6 +533,17 @@ export function TerminalPane({
     let lastRun = 0;
     const DEBOUNCE_MS = 60;
     const onGeometryChange = (): void => {
+      // Shown or hidden is a geometry change too. Hidden KEEPS its renderer;
+      // shown takes one if it has none (webglRenderer.ts, rule 2).
+      const wasShown = holder.shown;
+      holder.shown = isShown(host);
+      if (holder.shown) {
+        holder.lastShown = Date.now();
+        void attachRenderer();
+      } else if (wasShown && renderer) {
+        // Its slot can now be taken by a shown pane that was turned away.
+        offerHiddenSlot();
+      }
       const now = Date.now();
       if (now - lastRun >= DEBOUNCE_MS) {
         lastRun = now;
@@ -417,7 +578,14 @@ export function TerminalPane({
       // nothing to open. The shell is the one caller that names no target on
       // purpose — it runs in the user's home directory.
       setError('This terminal has no card and no project, so there is nowhere to open it.');
-      return;
+      // Torn down like any other pane: returning nothing here leaked the
+      // terminal, its observer and, now, any renderer it had taken.
+      return () => {
+        cancelled = true;
+        for (const off of cleanups) off();
+        term.dispose();
+        termRef.current = null;
+      };
     }
     api.spawn({
       /*
@@ -501,7 +669,7 @@ export function TerminalPane({
     // conversation id after the fact must not kill the agent and start a
     // second one in the worktree. The pane is keyed by session id in
     // TerminalTab, so a different session still mounts its own pane and spawns.
-  }, [agentId, autoApprove, persist, resume, bridge, createTerminal, createFitAddon]);
+  }, [agentId, autoApprove, persist, resume, bridge, createTerminal, createFitAddon, createRendererAddon]);
 
   /*
    * A new font size, applied to the terminal that is already open.
