@@ -228,6 +228,19 @@ describe('CGLAB-381: review records', () => {
     }
   });
 
+  it('accepts a severity on a finding and refuses one that is not HIGH, MEDIUM or LOW (CGLAB-565)', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const t = claudeSubagentTranscript('sess-D2', 'agentD2', FUTURE);
+    const ok = await record(id, { transcript: t, range: `${base}..${tip}`, findings: [{ title: 'x', state: 'fixed', severity: 'HIGH' }] });
+    expect(ok.status).toBe(201);
+    expect(ok.body.findings[0].severity).toBe('HIGH');
+    for (const bad of ['CRITICAL', 'high', 2]) {
+      const res = await record(id, { transcript: t, range: `${base}..${tip}`, findings: [{ title: 'x', state: 'fixed', severity: bad }] });
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+  });
+
   it('requires the internal token', async () => {
     const { dir } = makeRepo();
     const id = await cardIn(dir);

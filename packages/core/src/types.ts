@@ -442,6 +442,18 @@ export interface ReviewRecord {
   executedAt: Date;
 }
 
+/** An independent review of a card (CGLAB-381); the reviewer is read from its transcript. */
+export interface ReviewRecord381 {
+  id: string;
+  at: string;
+  reviewer: { client: string; sessionId: string; agentId: string | null; transcript: string };
+  range: { from: string; to: string };
+  findings: Array<{ title: string; state: 'fixed' | 'rejected'; severity?: 'HIGH' | 'MEDIUM' | 'LOW'; reason?: string }>;
+  tree?: string | null;
+  unreviewed?: unknown;
+  unreviewedNotJudged?: unknown;
+}
+
 export interface HistoryRecord {
   id: string;
   fromStatus: Status;
@@ -595,16 +607,11 @@ export interface BaseItem {
   assignee?: string;
   context?: ContextItem[];
   reviews?: ReviewRecord[];
+  /** Independent reviews of this card (CGLAB-381); the reviewer is read from its transcript. Server-written only. */
+  reviewRecords?: ReviewRecord381[];
   tests?: TestRecord[];
   /** Server-written only; PUT /items/:id never accepts it (CGLAB-379). */
   stepRecords?: StepRecord[];
-  /** Independent reviews of this card (CGLAB-381). Server-written only; the reviewer is read from its transcript. */
-  reviewRecords?: Array<{
-    id: string; at: string;
-    reviewer: { client: string; sessionId: string; agentId: string | null; transcript: string };
-    range: { from: string; to: string };
-    findings: Array<{ title: string; state: 'fixed' | 'rejected'; reason?: string }>;
-  }>;
   /** The last verify's check results (CGLAB-380). Server-written only. */
   lastChecks?: { step: string; at: string; blocked: boolean; results: StepCheckResult[] };
   history?: HistoryRecord[];

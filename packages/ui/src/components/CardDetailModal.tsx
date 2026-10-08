@@ -1,6 +1,6 @@
 import React from 'react';
 import { cardFullTimestamp } from '../cardDates';
-import { AgEnFKItem, ItemType, Status } from '../types';
+import { AgEnFKItem, ItemType, Status, ReviewRecord381 } from '../types';
 import {
   X, Layout, Tag, AlignLeft, Zap,
   Clock, Calendar, FileText, ArrowLeft, Plus,
@@ -35,6 +35,10 @@ interface CardDetailModalProps {
 }
 
 type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'checks' | 'tests' | 'reviews' | 'usage' | 'runs';
+
+/** CGLAB-565: findings read top-down, so the most serious lead the list. Unlabelled ones rank last. */
+const severityRank = (f: { severity?: 'HIGH' | 'MEDIUM' | 'LOW' }): number =>
+  f.severity === 'HIGH' ? 3 : f.severity === 'MEDIUM' ? 2 : f.severity === 'LOW' ? 1 : 0;
 
 export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, pricesData, onClose, onSelectItem, onAddItem, onDeleteItem, onUpdateItem, projectName, flowName }) => {
   const isNew = !item.id;
@@ -132,7 +136,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length, hidden: isNew },
     { id: 'checks', label: 'Checks', icon: <ListChecks size={14} />, hidden: isNew },
     { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.tests?.length, hidden: isNew },
-    { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, hidden: true },
+    // CGLAB-565: review records (CGLAB-381) are server-written; the tab shows
+    // only when the card actually carries one.
+    { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, badge: item.reviewRecords?.length, hidden: isNew || !item.reviewRecords?.length },
     { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: isNew || !item.tokenUsage?.length },
     { id: 'runs', label: 'Agent Runs', icon: <Zap size={14} />, badge: agentRuns.length, hidden: isNew || !agentRuns.length },
   ].filter(t => !t.hidden);
@@ -843,6 +849,79 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 </div>
               )}
               {/* v8 ignore stop */}
+            </div>
+          )}
+
+          {activeTab === 'reviews' && (
+            <div className="animate-in slide-in-from-bottom-2 duration-300 space-y-6">
+              <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+                Independent Reviews ({item.reviewRecords?.length || 0})
+              </h4>
+              {item.reviewRecords && item.reviewRecords.length > 0 ? (
+                <div className="space-y-4">
+                  {[...item.reviewRecords].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()).map((rec: ReviewRecord381) => (
+                    <div key={rec.id} className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+                      <div className="px-4 py-2 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-100/50 dark:bg-slate-900/30">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <ShieldCheck size={13} className="text-brand shrink-0" />
+                          <span className="text-xs font-medium text-slate-700 dark:text-slate-300 truncate">
+                            {rec.reviewer.client}
+                            {rec.reviewer.agentId ? ` (${rec.reviewer.agentId})` : ''}
+                            <span className="text-slate-400 dark:text-slate-500 font-mono text-[10px] ml-1">{rec.reviewer.sessionId}</span>
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0">
+                          {new Date(rec.at).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="px-4 py-2 border-b border-slate-100 dark:border-slate-800">
+                        <span className="text-[10px] uppercase tracking-widest text-slate-400 dark:text-slate-500 mr-2">Range</span>
+                        <code className="text-[11px] font-mono text-slate-600 dark:text-slate-400">
+                          {rec.range.from.slice(0, 8)}..{rec.range.to.slice(0, 8)}
+                        </code>
+                      </div>
+                      {rec.findings.length > 0 ? (
+                        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                          {[...rec.findings].sort((a, b) => severityRank(b) - severityRank(a)).map((f, i) => (
+                            <li key={i} className="px-4 py-2 flex items-start gap-2">
+                              <span className={clsx(
+                                "text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase shrink-0",
+                                f.state === 'fixed'
+                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                                  : "bg-rose-100 text-red-700 dark:bg-rose-900/30 dark:text-red-400"
+                              )}>
+                                {f.state}
+                              </span>
+                              {f.severity && (
+                                <span className={clsx(
+                                  "text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase shrink-0",
+                                  f.severity === 'HIGH'
+                                    ? "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400"
+                                    : f.severity === 'MEDIUM'
+                                      ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                                      : "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400"
+                                )}>
+                                  {f.severity}
+                                </span>
+                              )}
+                              <div className="min-w-0">
+                                <p className="text-xs text-slate-700 dark:text-slate-300">{f.title}</p>
+                                {f.reason && <p className="text-[11px] text-slate-400 dark:text-slate-500">{f.reason}</p>}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="px-4 py-2 text-[11px] text-slate-400 dark:text-slate-500 italic">No findings — nothing to fix.</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12 bg-slate-50 dark:bg-slate-950 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
+                  <p className="text-slate-400 text-sm italic">No reviews recorded for this card.</p>
+                </div>
+              )}
             </div>
           )}
 

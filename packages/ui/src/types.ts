@@ -64,6 +64,17 @@ export interface ReviewRecord {
   executedAt: string;
 }
 
+export interface ReviewRecord381 {
+  id: string;
+  at: string;
+  reviewer: { client: string; sessionId: string; agentId: string | null; transcript: string };
+  range: { from: string; to: string };
+  findings: Array<{ title: string; state: 'fixed' | 'rejected'; severity?: 'HIGH' | 'MEDIUM' | 'LOW'; reason?: string }>;
+  tree?: string | null;
+  unreviewed?: unknown;
+  unreviewedNotJudged?: unknown;
+}
+
 export interface HistoryRecord {
   id: string;
   fromStatus: Status;
@@ -180,6 +191,8 @@ export interface AgEnFKItem {
   tokenUsage?: TokenUsage[];
   context?: ContextItem[];
   reviews?: ReviewRecord[];
+  /** Independent reviews of this card (CGLAB-381); the reviewer is read from its transcript. Server-written only. */
+  reviewRecords?: ReviewRecord381[];
   tests?: TestRecord[];
   history?: HistoryRecord[];
   comments?: CommentRecord[];
