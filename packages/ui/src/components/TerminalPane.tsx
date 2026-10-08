@@ -196,7 +196,9 @@ export function TerminalPane({
    * it in Settings would restart every agent in every open terminal.
    */
   const fontSizeRef = React.useRef(fontSize);
-  fontSizeRef.current = fontSize;
+  // Updated in an effect, declared BEFORE the spawning one so it runs first:
+  // writing a ref while rendering is what React's rules forbid.
+  React.useEffect(() => { fontSizeRef.current = fontSize; }, [fontSize]);
   /** The pane's own refit-and-tell-the-pty, for the font size effect below. */
   const resizeRef = React.useRef<(() => void) | null>(null);
 
