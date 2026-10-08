@@ -69,7 +69,7 @@ export interface ReviewRecord381 {
   at: string;
   reviewer: { client: string; sessionId: string; agentId: string | null; transcript: string };
   range: { from: string; to: string };
-  findings: Array<{ title: string; state: 'fixed' | 'rejected'; reason?: string }>;
+  findings: Array<{ title: string; state: 'fixed' | 'rejected'; severity?: 'HIGH' | 'MEDIUM' | 'LOW'; reason?: string }>;
   tree?: string | null;
   unreviewed?: unknown;
   unreviewedNotJudged?: unknown;

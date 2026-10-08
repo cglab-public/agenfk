@@ -888,6 +888,18 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                               )}>
                                 {f.state}
                               </span>
+                              {f.severity && (
+                                <span className={clsx(
+                                  "text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase shrink-0",
+                                  f.severity === 'HIGH'
+                                    ? "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400"
+                                    : f.severity === 'MEDIUM'
+                                      ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                                      : "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400"
+                                )}>
+                                  {f.severity}
+                                </span>
+                              )}
                               <div className="min-w-0">
                                 <p className="text-xs text-slate-700 dark:text-slate-300">{f.title}</p>
                                 {f.reason && <p className="text-[11px] text-slate-400 dark:text-slate-500">{f.reason}</p>}

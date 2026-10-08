@@ -776,8 +776,8 @@ describe('CardDetailModal', () => {
     reviewer: { client: 'claude', sessionId: 'sess-1', agentId: 'agent-9', transcript: '/tmp/t.jsonl' },
     range: { from: 'aaa1111', to: 'bbb2222' },
     findings: [
-      { title: 'SQL injection in handler', state: 'fixed', reason: 'parameterized' },
-      { title: 'Logging secrets', state: 'rejected', reason: 'not secrets' },
+      { title: 'SQL injection in handler', state: 'fixed', severity: 'HIGH', reason: 'parameterized' },
+      { title: 'Logging secrets', state: 'rejected', severity: 'LOW', reason: 'not secrets' },
     ],
   };
 
@@ -797,8 +797,10 @@ describe('CardDetailModal', () => {
     expect(screen.getByText(/bbb2222/)).toBeDefined();
     expect(screen.getByText('SQL injection in handler')).toBeDefined();
     expect(screen.getByText(/^fixed$/i)).toBeDefined();
+    expect(screen.getByText('HIGH')).toBeDefined();
     expect(screen.getByText('Logging secrets')).toBeDefined();
     expect(screen.getByText(/^rejected$/i)).toBeDefined();
+    expect(screen.getByText('LOW')).toBeDefined();
   });
 
   it('hides the Reviews tab when the card has no review records', async () => {
