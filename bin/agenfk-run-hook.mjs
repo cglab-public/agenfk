@@ -172,7 +172,12 @@ export function noteMatchesProject(note, projectId) {
  * on POST /agent-runs. Attributing an agent's work to the wrong card is worse
  * than recording none, so no note means no run.
  */
-async function activeItem(readActiveWork, sessionId, projectId) {
+/**
+ * Exported for tests (CGLAB-570's session-isolation spec): it is the exact
+ * seam a tool call crosses before a run is opened. `readActiveWork` is
+ * injected, so the test can stand in for the dist reader without a server.
+ */
+export async function activeItem(readActiveWork, sessionId, projectId) {
   const work = readActiveWork(sessionId);
   if (!work?.itemId) return null;
   if (!noteMatchesProject(work, projectId)) return null;
