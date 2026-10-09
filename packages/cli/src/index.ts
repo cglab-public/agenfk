@@ -4083,6 +4083,7 @@ program
   .option('--role <role>', 'Role label (planning|coding|review|testing|closing); defaults to the role of the step the card is on')
   .option('--item-id <id>', 'Specific item ID to check against')
   .option('--json', 'Output as JSON')
+  .option('--session <id>', 'Harness session id to key the active-work note on (defaults to AGENFK_SESSION_ID, then CLAUDE_CODE_SESSION_ID)')
   .action(async (options) => {
     try {
       const { data: items } = await axios.get(`${API_URL}/items`);
@@ -4172,8 +4173,21 @@ program
       // reads it instead of guessing, because `?active=true` can return dozens
       // of items across projects and attributing work to the wrong card is
       // worse than recording none.
+      //
+      // CGLAB-570: the note is KEYED to this session when one is known. The
+      // explicit flag wins; otherwise the env the harness sets for us —
+      // AGENFK_SESSION_ID, then Claude Code's CLAUDE_CODE_SESSION_ID (set in
+      // Bash tool subprocesses, matching the session_id hooks receive). A
+      // keyed note is the common path now: the run recorder STRICTLY refuses
+      // the shared note for sessions it can name, so a sessionless gatekeeper
+      // run records nothing rather than capturing every other session's runs
+      // for the TTL.
       if (decision.authorized && decision.task?.id) {
-        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId });
+        const sessionId = options.session
+          || process.env.AGENFK_SESSION_ID
+          || process.env.CLAUDE_CODE_SESSION_ID
+          || undefined;
+        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId }, sessionId);
       }
 
       // 37a292a7: what leaving this step will run, so the agent does not run the
