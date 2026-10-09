@@ -22,6 +22,7 @@ import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
 import { buildPrBody, prRegisterComment, readDisabledChecks, type GateEvent, type CustomCheckRow, type TreeWarningRow } from './humanGates.js';
 import { registryFlowToLocal } from './registryFlowFile.js';
+import { ghPrCreateArgs } from './prArgs.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
@@ -4823,6 +4824,7 @@ prCmd
   .option('--title <title>', 'PR title (defaults to item title)')
   .option('--body <body>', 'PR body/description')
   .option('--draft', 'Create as a draft PR')
+  .option('--base <branch>', 'Target branch of the PR (passed to gh pr create --base). Defaults to gh\'s own detection. Use this when the item branch was cut from a non-default base, e.g. beta.')
   .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (e.g. claude-opus-4-8, glm-5.2) — recorded on the pr.opened hub event. Never copy an example; report your own model.')
   .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (claude-code, pi, cursor, codex, gemini, opencode) — recorded on the pr.opened hub event.')
   .option('--no-detect-model', 'Do not read the harness session log; report --model exactly as given')
@@ -4838,7 +4840,8 @@ prCmd
         process.exit(1);
       }
       const prTitle = options.title || item.title;
-      const args = ['pr', 'create', '--title', prTitle];
+      // Arg assembly is a pure helper (prArgs.ts) so the flags that reach gh
+      // — --base in particular (CGLAB-571) — are pinned by a test.
       // A person's approvals and overrides go on the PR, so a reviewer sees what was let through (CGLAB-382).
       let gateEvents: GateEvent[] = [];
       try { gateEvents = (await axios.get(`${API_URL}/items/${itemId}/gate-events`)).data ?? []; } catch (e: any) {
@@ -4859,8 +4862,12 @@ prCmd
       const disabled = await readDisabledChecks(() => axios.get(`${API_URL}/items/${itemId}/disabled-checks`));
       if (disabled.failed) console.warn(chalk.yellow(`⚠️  Could not read the checks the org's hub switched off (${disabled.failed}); the PR body will not list them.`));
       const disabledChecks = disabled.rows;
-      args.push('--body', buildPrBody(options.body || item.description || '', gateEvents, customChecks, warnings, disabledChecks));
-      if (options.draft) args.push('--draft');
+      const args = ghPrCreateArgs({
+        title: prTitle,
+        body: buildPrBody(options.body || item.description || '', gateEvents, customChecks, warnings, disabledChecks),
+        draft: options.draft,
+        base: options.base,
+      });
 
       console.log(chalk.blue(`Creating PR: "${prTitle}"...`));
       let output: string;
