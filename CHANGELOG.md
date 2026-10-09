@@ -2,6 +2,68 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.36] — 2026-10-07
+
+Pre-release, cut from the `beta` line (PR #217). Cumulative over `2.0.0-beta.35`.
+
+### Reviews
+
+- **Review findings carry a severity, rendered as a chip in the Reviews tab (CGLAB-565).** `record_review` accepts an optional `severity` (`HIGH` | `MEDIUM` | `LOW`) per finding; the card detail modal's new Reviews tab lists findings most serious first, and the schema, CLI help and rule bundles advertise the field.
+
+## [2.0.0-beta.35] — 2026-10-06
+
+Pre-release, cut from the `beta` line (PRs #207, #209, #210, #213). Cumulative over `2.0.0-beta.34`.
+
+### Windows
+
+- **Every child process is spawned hidden (#200, PR #207, thanks @Caldas).** The background API server has no
+  console, so each console child it started got a new, visible window that stole keyboard focus - every
+  `agenfk verify`, close commit and git probe flashed a CMD window. All 170 runtime `child_process` call sites
+  now pass `windowsHide: true` (a no-op on macOS and Linux), and a guard test fails the build on any new one
+  that does not.
+- **Hook wrappers are written on a single-client install (#192, PR #209, thanks @Caldas).** `agenfk integration
+  install|resume <client>` skipped writing the `~/.local/bin` wrappers its hooks point at, so a missing
+  wrapper exited 127 and the guard silently disappeared.
+- **`agenfk down/up/kill` find the native server (#199, PR #210, thanks @Caldas).** Under Git Bash the kill
+  helpers took the POSIX branch and never saw the native `node.exe`, and PowerShell/cmd relied on `wmic`,
+  which current Windows 11 no longer ships. `down` no longer reports "not running" while the server holds the
+  port, and `restart` no longer starts a second server beside the first.
+
+### Desktop (PR #213)
+
+- **Installed agents are found, and opened, on the PATH a fresh terminal would have (CGLAB-164).** The agent
+  picker said "Not installed" for CLIs the user had: a Finder-launched Mac app gets launchd's minimal PATH,
+  and a Windows app keeps the PATH it started with. Each OS profile now provides that fresh PATH (login shell
+  on Unix; the Machine and User Path on Windows) and the terminal opens exactly the path detection found. On
+  Windows an npm `.cmd` shim runs through `cmd.exe /d /v:off /s /c` with its arguments escaped for both
+  parses, so a card's text cannot start a second command. **Check again** in the picker re-detects and
+  re-reads the PATH, so an agent installed with the app open shows up without a restart.
+- **The server the desktop starts gets that PATH too.** Settings > Account said the GitHub CLI was not
+  installed with `gh` in `/opt/homebrew/bin`; the server had been forked with `/usr/bin:/bin:/usr/sbin:/sbin`.
+- Sidebar: the project's `+` opens a terminal with a default agent chosen in Settings (Shell by default), and
+  "Ask before opening" applies to every terminal.
+- Known limit: through npm's `claude.cmd` on Windows, cmd.exe's 8191-character command line can reject a very
+  long first prompt; the native `claude.exe` is unaffected.
+
+## [2.0.0-beta.34] — 2026-10-05
+
+Pre-release, cut from the `beta` line (PR #205). Cumulative over `2.0.0-beta.33`.
+
+### Board / verify
+
+- **A dirty tree shared with live cards warns instead of blocking a card's start (aa98ccf4).** `tree-clean`
+  counted every uncommitted file in the tree as the starting card's own, so a live sibling's work in a shared
+  tree forced serializing siblings — the starting card stayed blocked until the other closed. When the server
+  resolves other live cards in the same tree (anchors, DONE, inactive and `isSpecial` boundaries excluded),
+  `tree-clean` now warns and names them instead of blocking; the dirt is not attributable, and the post-claims
+  stance (26c059f6) never blocks a card on its siblings. The exit side stays guarded by the ownerless-staged
+  close refusal.
+
+### Docs
+
+- `docs/RELEASES.md`: how the `beta`/`main` release model works — channels, cutting betas, hub deploys,
+  graduation to stable, hotfix rules.
+
 ## [2.0.0-beta.33] — 2026-10-05
 
 Pre-release, cut from the `beta` line (carried by PR #194). Cumulative over `2.0.0-beta.32`.

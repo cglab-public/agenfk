@@ -37,6 +37,11 @@ export interface AgentPickerProps {
   readonly value: string;
   readonly onChange: (agentId: string) => void;
   readonly listAgents: () => Promise<AgentInfo[]>;
+  /**
+   * Detect again, ignoring what is remembered. Absent, there is no "Check
+   * again": a browser has nothing to look for.
+   */
+  readonly refreshAgents?: () => Promise<AgentInfo[]>;
 }
 
 /** How to get each agent. Shown on the rows the user cannot pick. */
@@ -70,7 +75,7 @@ const SHELL_FALLBACK: AgentInfo[] = [{ id: 'shell', label: 'Shell', installed: t
  */
 export const SEARCHABLE_AT = 8;
 
-export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): React.ReactElement {
+export function AgentPicker({ value, onChange, listAgents, refreshAgents }: AgentPickerProps): React.ReactElement {
   const [open, setOpen] = React.useState(false);
   /*
    * Where the menu goes on SCREEN, because it no longer lives inside the
@@ -144,6 +149,21 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
   const [agents, setAgents] = React.useState<AgentInfo[] | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [query, setQuery] = React.useState('');
+  const [checking, setChecking] = React.useState(false);
+
+  /*
+   * Someone who installs an agent with the app open - the reported case - had
+   * no way to make the picker look again short of a restart. A failure keeps
+   * the list it had: "nothing changed" is truer than an empty picker.
+   */
+  const checkAgain = (): void => {
+    if (!refreshAgents || checking) return;
+    setChecking(true);
+    refreshAgents()
+      .then(found => setAgents(found))
+      .catch(() => {})
+      .finally(() => setChecking(false));
+  };
 
   // On mount, not on open: the trigger shows the chosen agent's label, and
   // waiting for the first click to find out what it is means the button reads
@@ -294,8 +314,18 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
 
           {missing.length > 0 && (
             <div role="group" aria-label="Not installed">
-              <div className="px-2.5 pb-1 pt-2.5 text-xs font-medium text-ink-tertiary">
-                Not installed
+              <div className="flex items-center justify-between px-2.5 pb-1 pt-2.5 text-xs font-medium text-ink-tertiary">
+                <span>Not installed</span>
+                {refreshAgents && (
+                  <button
+                    type="button"
+                    onClick={checkAgain}
+                    disabled={checking}
+                    className="rounded px-1.5 py-0.5 text-accent-ink hover:bg-canvas disabled:opacity-60"
+                  >
+                    {checking ? 'Checking…' : 'Check again'}
+                  </button>
+                )}
               </div>
               {missing.map(a => <Row key={a.id} agent={a} />)}
             </div>

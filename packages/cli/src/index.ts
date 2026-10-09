@@ -23,6 +23,7 @@ import { followValidateRun } from './verifyRun.js';
 import { subagentTranscripts } from './reviewTranscripts.js';
 import { buildPrBody, prRegisterComment, readDisabledChecks, type GateEvent, type CustomCheckRow, type TreeWarningRow } from './humanGates.js';
 import { registryFlowToLocal } from './registryFlowFile.js';
+import { ghPrCreateArgs } from './prArgs.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
@@ -107,11 +108,36 @@ function killPid(pid: number, result: KillResult): void {
 function taskkillPid(pid: string, result: KillResult): void {
   if (pid === String(process.pid)) return;
   try {
-    execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+    execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', windowsHide: true });
     result.killed++;
   } catch (e: any) {
     if (e?.status !== 128) result.failed.push(`PID ${pid}: ${e?.message ?? e}`);
   }
+}
+
+interface WindowsProcess { pid: number; name: string; commandLine: string | null }
+
+/**
+ * Every process on Windows, through CIM. Not wmic: current Windows 11 builds no
+ * longer ship it. And on win32 even under Git Bash: node is a native process
+ * there, which its `ps` and `lsof` cannot see (#199). UTF-8 out, or a non-ASCII
+ * path arrives in the console's code page.
+ */
+function listWindowsProcesses(): WindowsProcess[] {
+  const json = String(execFileSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command',
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress',
+  ], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 30_000, windowsHide: true })).trim();
+  if (!json) return [];
+  const parsed = JSON.parse(json);
+  // ConvertTo-Json prints a lone process as an object, not an array of one.
+  return (Array.isArray(parsed) ? parsed : [parsed])
+    .filter((p: any) => Number.isInteger(p?.ProcessId))
+    .map((p: any) => ({
+      pid: p.ProcessId,
+      name: typeof p.Name === 'string' ? p.Name : '',
+      commandLine: typeof p.CommandLine === 'string' ? p.CommandLine : null,
+    }));
 }
 
 /**
@@ -121,10 +147,10 @@ function taskkillPid(pid: string, result: KillResult): void {
  */
 function killPort(port: number): KillResult {
   const result: KillResult = { killed: 0, failed: [] };
-  if (process.platform === 'win32' && !isMinGW()) {
+  if (process.platform === 'win32') {
     let output = '';
     try {
-      output = execSync(`netstat -ano | findstr LISTENING`, { encoding: 'utf8' });
+      output = execSync(`netstat -ano | findstr LISTENING`, { encoding: 'utf8', windowsHide: true });
     } catch {
       return result; // findstr exits 1 when nothing listens
     }
@@ -141,41 +167,55 @@ function killPort(port: number): KillResult {
   }
   let pids: string[] = [];
   try {
-    pids = execSync(`lsof -t -iTCP:${port} -sTCP:LISTEN`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    pids = execSync(`lsof -t -iTCP:${port} -sTCP:LISTEN`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
       .split('\n').map(p => p.trim()).filter(p => /^\d+$/.test(p));
   } catch {
     // lsof exits 1 when nothing listens - the normal case. Without lsof there is
     // no listener to find: the server's command line carries no port (it comes
     // in AGENFK_PORT), so scanning argv could only hit someone else's process.
-    // killPattern stops the server by its path either way.
+    // killPatterns stops the server by its path either way.
   }
   for (const pid of new Set(pids)) killPid(parseInt(pid, 10), result);
   return result;
 }
 
 /**
- * Kill process by pattern (cross-platform), reporting what it killed and what
- * it could not - including not being able to list processes at all.
+ * Kill processes by pattern (cross-platform), one result per pattern, reporting
+ * what it killed and what it could not - including not being able to list
+ * processes at all.
  */
+function killPatterns(patterns: string[]): KillResult[] {
+  if (process.platform !== 'win32') return patterns.map(killPattern);
+  const results = patterns.map((): KillResult => ({ killed: 0, failed: [] }));
+  let processes: WindowsProcess[];
+  try {
+    processes = listWindowsProcesses(); // once: each listing starts PowerShell
+  } catch (e: any) {
+    results[0].failed.push(`could not list processes: ${e?.message ?? e}`);
+    return results;
+  }
+  // Only node or bun running a path, never an editor or a shell naming it
+  // (`cd packages/ui && agenfk up`). Ancestors are NOT spared: a hub upgrade's
+  // `down` runs below the very server it has to stop (server -> agenfk upgrade -> down).
+  const candidates = processes.filter(p => p.commandLine !== null && /^(node|bun)\.exe$/i.test(p.name));
+  patterns.forEach((pattern, i) => {
+    // Windows paths take either slash and any case; `packages/ui` is not `packages/ui-kit`
+    // (nor `mypackages/ui`).
+    const escaped = pattern.replace(/\\/g, '/').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const wanted = new RegExp(`(?:^|[\\s"'/])${escaped}(?![\\w.-])`, 'i');
+    for (const p of candidates) {
+      if (wanted.test(p.commandLine!.replace(/\\/g, '/'))) taskkillPid(String(p.pid), results[i]);
+    }
+  });
+  return results;
+}
+
+/** POSIX: kill the processes whose `ps -ef` line holds the pattern. */
 function killPattern(pattern: string): KillResult {
   const result: KillResult = { killed: 0, failed: [] };
-  if (process.platform === 'win32' && !isMinGW()) {
-    let output = '';
-    try {
-      // Very basic pattern matching for Windows. The query's own command line
-      // (and cmd.exe's around it) holds the pattern too: leave those out.
-      output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%' and not commandline like '%wmic%'" get processid`, { encoding: 'utf8' });
-    } catch (e: any) {
-      result.failed.push(`could not list processes: ${e?.message ?? e}`);
-      return result;
-    }
-    const pids = new Set(output.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l)));
-    for (const pid of pids) taskkillPid(pid, result);
-    return result;
-  }
   let pids: number[] = [];
   try {
-    const output = execSync('ps -ef', { encoding: 'utf8' });
+    const output = execSync('ps -ef', { encoding: 'utf8', windowsHide: true });
     for (const line of output.split('\n')) {
       if (line.includes(pattern) && !line.includes('ps -ef') && !line.includes('grep')) {
         const pid = line.trim().split(/\s+/)[1];
@@ -185,7 +225,7 @@ function killPattern(pattern: string): KillResult {
   } catch {
     // Fallback to pgrep if ps fails; pgrep exits 1 when nothing matches
     try {
-      pids = execSync(`pgrep -f "${pattern}"`, { encoding: 'utf8' }).split('\n').filter(Boolean).map(p => parseInt(p, 10));
+      pids = execSync(`pgrep -f "${pattern}"`, { encoding: 'utf8', windowsHide: true }).split('\n').filter(Boolean).map(p => parseInt(p, 10));
     } catch (e: any) {
       if (e?.status !== 1) result.failed.push(`could not list processes: ${e?.message ?? e}`);
     }
@@ -219,6 +259,7 @@ async function fetchReleaseTagByVersion(repo: string, version: string): Promise<
     return execSync(`gh release view ${tag} --repo ${repo} --json tagName --template '{{.tagName}}'`, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     }).trim();
   } catch {
     throw new Error(`Release ${tag} not found in ${repo}`);
@@ -373,7 +414,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
       'gh',
       ['release', 'list', '--repo', repo, '--limit', '100', '--json', 'tagName,isPrerelease,createdAt'],
       // A bounded wait: this also runs from bare `agenfk`, which must not hang on a stalled gh.
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, windowsHide: true },
     ).trim();
     return toReleaseRefs(JSON.parse(out || '[]'), GH_KEYS);
   };
@@ -387,7 +428,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
   const viewTag = execFileSync(
     'gh',
     ['release', 'view', '--repo', repo, '--json', 'tagName', '--template', '{{.tagName}}'],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, windowsHide: true },
   ).trim();
   // Same rule as the REST path: `gh release view` reports the newest release by
   // date, hub or not, so it is one candidate and the newest stable by version
@@ -409,13 +450,13 @@ function downloadReleaseAsset(repo: string, tag: string, pattern: string, output
   const directUrl = `https://github.com/${repo}/releases/download/${tag}/${pattern}`;
   // Try curl first — no auth required for public repos
   try {
-    execSync(`curl -fsSL "${directUrl}" -o "${outputPath}"`, { stdio: 'inherit' });
+    execSync(`curl -fsSL "${directUrl}" -o "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
     return;
   } catch {
     // Fall through to gh CLI
   }
   // Fallback: gh release download (requires gh auth login)
-  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
+  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
 }
 
 function resolveIntegrationPlatform(platform: string): string {
@@ -434,7 +475,7 @@ function resolveIntegrationPlatform(platform: string): string {
 function runIntegrationScript(scriptName: string, args: string[]) {
   const rootDir = path.resolve(__dirname, '../../..');
   const scriptPath = path.join(rootDir, 'scripts', scriptName);
-  const result = spawnSync('node', [scriptPath, ...args], { cwd: rootDir, stdio: 'inherit' });
+  const result = spawnSync('node', [scriptPath, ...args], { cwd: rootDir, stdio: 'inherit', windowsHide: true });
 
   if (result.status !== 0) {
     process.exit(result.status || 1);
@@ -728,7 +769,8 @@ program
     // Spawn the server process and pipe stdio for MCP communication
     const serverProcess = spawn('node', [serverPath], {
       stdio: 'inherit',
-      env
+      env,
+      windowsHide: true
     });
 
     serverProcess.on('exit', (code) => {
@@ -829,7 +871,7 @@ program
 
       if (servicesRunning) {
         try {
-          execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'ignore' });
+          execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'ignore', windowsHide: true });
         } catch (e) { /* ignore */ }
       }
 
@@ -841,7 +883,7 @@ program
         // --exclude: published releases up to v1.1.16-beta.4 were ~half macOS
         // AppleDouble (`._*`) entries; never let them into the install dir
         // (CGLAB-94 / issue #163).
-        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
         // `tar -xzf` deletes nothing, so the install dir keeps files this
         // version dropped — and its own commands/ cannot be asked what is
         // current, because it IS the stale thing. Hand install.mjs the archive
@@ -897,6 +939,7 @@ program
             // filesystem path is not shell-safe (see scripts/install.mjs).
             ...(distTarball ? { AGENFK_DIST_TARBALL: distTarball } : {}),
           },
+          windowsHide: true,
         });
       } catch (e: any) {
         // Before emitResult: it calls process.exit, which does NOT run pending
@@ -936,8 +979,7 @@ program
     const persistedApiPort = readServerPort();
     if (persistedApiPort && persistedApiPort !== DEFAULT_API_PORT) killPort(persistedApiPort);
     killPort(DEFAULT_API_PORT); // API default
-    killPattern('packages/server/dist/server.js');
-    killPattern('packages/ui');
+    killPatterns(['packages/server/dist/server.js', 'packages/ui']);
 
     // 1. Full bootstrap only if dist files are missing
     const startScript = path.join(rootDir, 'scripts', 'start-services.mjs');
@@ -951,7 +993,7 @@ program
     if (!fs.existsSync(startScript) || missingDist) {
         try {
             const installFlags = options.debuglog ? ' --debuglog' : '';
-            execSync(`node scripts/install.mjs${installFlags}`, { cwd: rootDir, stdio: 'inherit' });
+            execSync(`node scripts/install.mjs${installFlags}`, { cwd: rootDir, stdio: 'inherit', windowsHide: true });
         } catch (e) {
             console.error(chalk.red('Bootstrap failed.'));
             process.exitCode = 1;
@@ -965,7 +1007,7 @@ program
         // --quiet suppresses the post-start browser auto-open; the
         // start-services.mjs script reads this env var as the gate.
         if (options.quiet) startEnv.AGENFK_NO_OPEN_BROWSER = '1';
-        const start = spawn('node', ['scripts/start-services.mjs'], { cwd: rootDir, stdio: 'inherit', env: startEnv });
+        const start = spawn('node', ['scripts/start-services.mjs'], { cwd: rootDir, stdio: 'inherit', env: startEnv, windowsHide: true });
         start.on('close', (code) => {
             process.exit(code || 0);
         });
@@ -980,8 +1022,7 @@ program
   .action(() => {
     // 24a7b899: the server serves the board, so stopping it stopped the board. A separate
     // vite UI an older version ran is cleared quietly - it is not a service of this one.
-    const server = killPattern('packages/server/dist/server.js');
-    const legacyUi = killPattern('packages/ui');
+    const [server, legacyUi] = killPatterns(['packages/server/dist/server.js', 'packages/ui']);
     for (const f of [...server.failed, ...legacyUi.failed]) console.log(chalk.yellow(`⚠ Could not stop ${f}`));
     if (server.killed > 0) console.log(chalk.green('✓ AgEnFK stopped'));
     else if (server.failed.length === 0) console.log(chalk.gray('AgEnFK was not running'));
@@ -999,9 +1040,7 @@ program
 
     // Kill by pattern: the API server, UI processes an older version left, MCP servers.
     // (Not by port 5173: that is vite's default, and a user's own dev server is not ours.)
-    results.push(killPattern('packages/server/dist/server.js'));
-    results.push(killPattern('packages/ui'));
-    results.push(killPattern('packages/server/dist/index.js'));
+    results.push(...killPatterns(['packages/server/dist/server.js', 'packages/ui', 'packages/server/dist/index.js']));
 
     const killed = results.reduce((n, r) => n + r.killed, 0);
     const failed = results.flatMap(r => r.failed);
@@ -1021,7 +1060,7 @@ program
     // a warning it raises (a server it could not stop) is passed on.
     let downOut = '';
     try {
-      downOut = String(execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }) ?? '');
+      downOut = String(execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true }) ?? '');
     } catch (e: any) {
       downOut = String(e?.stdout ?? '');
     }
@@ -1034,7 +1073,7 @@ program
     // new browser tab on the user's machine.
     const upArgs = ['packages/cli/bin/agenfk.js', 'up'];
     if (options.quiet) upArgs.push('--quiet');
-    const up = spawnSync('node', upArgs, { cwd: rootDir, stdio: 'inherit' });
+    const up = spawnSync('node', upArgs, { cwd: rootDir, stdio: 'inherit', windowsHide: true });
     if (up.error || up.status !== 0) {
       console.error(chalk.red(`Failed to restart: ${up.error?.message ?? `agenfk up exited ${up.status}`}`));
       process.exitCode = 1;
@@ -1102,7 +1141,7 @@ program
     let appIsRunning = false;
     if (process.platform === 'darwin') {
       try {
-        execSync('pgrep -f "AgEnFK.app/Contents/MacOS/AgEnFK"', { stdio: 'ignore' });
+        execSync('pgrep -f "AgEnFK.app/Contents/MacOS/AgEnFK"', { stdio: 'ignore', windowsHide: true });
         appIsRunning = true;
       } catch { /* not running, which is not an error */ }
     }
@@ -1119,7 +1158,7 @@ program
       // launch would exit silently and look like this did nothing.
       console.log(chalk.cyan(`Opening the desktop app (${target.why}). Use --web for the browser.`));
       try {
-        execFileSync('open', ['-a', target.appPath], { stdio: 'ignore' });
+        execFileSync('open', ['-a', target.appPath], { stdio: 'ignore', windowsHide: true });
         return;
       } catch {
         // Falls through to the browser rather than failing: a dashboard in the
@@ -1133,16 +1172,16 @@ program
     try {
       if (isMinGW()) {
         try {
-          execSync(`cygstart "${uiUrl}"`, { stdio: 'ignore' });
+          execSync(`cygstart "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
         } catch {
-          execSync(`start "${uiUrl}"`, { stdio: 'ignore' });
+          execSync(`start "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
         }
       } else if (fs.existsSync('/proc/version') && fs.readFileSync('/proc/version', 'utf8').match(/(Microsoft|WSL)/i)) {
-        execSync(`cmd.exe /c start "${uiUrl}"`, { stdio: 'ignore' });
+        execSync(`cmd.exe /c start "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
       } else if (process.platform === 'linux') {
-        execSync(`xdg-open "${uiUrl}"`, { stdio: 'ignore' });
+        execSync(`xdg-open "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
       } else if (process.platform === 'darwin') {
-        execSync(`open "${uiUrl}"`, { stdio: 'ignore' });
+        execSync(`open "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
       }
     } catch (e) {
       // Ignore errors if browser launch fails
@@ -2803,7 +2842,7 @@ githubCommand
   .action(async (options: { owner?: string; repo?: string }) => {
     // 1. Verify gh CLI is installed and authenticated
     try {
-      execSync('gh auth status', { stdio: 'pipe' });
+      execSync('gh auth status', { stdio: 'pipe', windowsHide: true });
     } catch {
       console.error(chalk.red('\nError: GitHub CLI (gh) is not installed or not authenticated.'));
       console.log(chalk.white('  Install: https://cli.github.com/'));
@@ -2825,7 +2864,7 @@ githubCommand
     if (!owner || !repo) {
       // Try to detect from git remote
       try {
-        const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
+        const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf8', windowsHide: true }).trim();
         const match = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
         if (match) {
           owner = owner || match[1];
@@ -2855,7 +2894,7 @@ githubCommand
 
     // 4. Verify the repo exists and is accessible
     try {
-      execSync(`gh repo view ${owner}/${repo} --json name`, { stdio: 'pipe' });
+      execSync(`gh repo view ${owner}/${repo} --json name`, { stdio: 'pipe', windowsHide: true });
     } catch {
       console.error(chalk.red(`\nError: Cannot access repository ${owner}/${repo}.`));
       console.log(chalk.white('  Check that the repo exists and you have access.'));
@@ -2921,7 +2960,7 @@ githubCommand
 
     // gh CLI check
     try {
-      execSync('gh auth status', { stdio: 'pipe' });
+      execSync('gh auth status', { stdio: 'pipe', windowsHide: true });
       console.log(chalk.green('\n  GitHub CLI:    ✓ Authenticated'));
     } catch {
       console.log(chalk.yellow('\n  GitHub CLI:    ✗ Not authenticated'));
@@ -3107,7 +3146,7 @@ const AGENFK_BLOCK_RE = /\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/
 /** Returns the git repo root, falling back to process.cwd() */
 function getProjectRoot(): string {
   try {
-    return execSync('git rev-parse --show-toplevel', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    return execSync('git rev-parse --show-toplevel', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim();
   } catch {
     return process.cwd();
   }
@@ -3792,9 +3831,9 @@ async function postCheckHistory(itemId: string, prNumber: number, repo: string):
   if (!comment) return;
   if (!checkGhCli()) { console.warn(chalk.yellow('⚠️  gh is not installed: the check history was not posted on the PR.')); return; }
   // Once per PR: a second pr-register (a re-run) does not post it again.
-  const seen = spawnSync('gh', ['pr', 'view', String(prNumber), '--repo', repo, '--json', 'comments', '-q', '.comments[].body'], { encoding: 'utf8', timeout: 30_000 });
+  const seen = spawnSync('gh', ['pr', 'view', String(prNumber), '--repo', repo, '--json', 'comments', '-q', '.comments[].body'], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
   if (seen.status === 0 && (seen.stdout ?? '').includes('### AgEnFK check history')) { console.log(chalk.dim(`The check history is already on PR #${prNumber}.`)); return; }
-  const r = spawnSync('gh', ['pr', 'comment', String(prNumber), '--repo', repo, '--body', comment], { encoding: 'utf8', timeout: 30_000 });
+  const r = spawnSync('gh', ['pr', 'comment', String(prNumber), '--repo', repo, '--body', comment], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
   if (r.status !== 0) console.warn(chalk.yellow(`⚠️  Could not post the check history on the PR: ${(r.stderr || r.stdout || '').trim()}`));
   else console.log(chalk.green(`Posted the check history on PR #${prNumber}.`));
 }
@@ -4046,6 +4085,7 @@ program
   .option('--role <role>', 'Role label (planning|coding|review|testing|closing); defaults to the role of the step the card is on')
   .option('--item-id <id>', 'Specific item ID to check against')
   .option('--json', 'Output as JSON')
+  .option('--session <id>', 'Harness session id to key the active-work note on (defaults to AGENFK_SESSION_ID, then CLAUDE_CODE_SESSION_ID)')
   .action(async (options) => {
     try {
       const { data: items } = await axios.get(`${API_URL}/items`);
@@ -4125,7 +4165,7 @@ program
         if (target) {
           driftNotice = dispatchDriftNotice({
             ...target,
-            deps: { run: args => execFileSync('git', args as string[], { encoding: 'utf8' }) },
+            deps: { run: args => execFileSync('git', args as string[], { encoding: 'utf8', windowsHide: true }) },
           });
         }
       }
@@ -4135,8 +4175,21 @@ program
       // reads it instead of guessing, because `?active=true` can return dozens
       // of items across projects and attributing work to the wrong card is
       // worse than recording none.
+      //
+      // CGLAB-570: the note is KEYED to this session when one is known. The
+      // explicit flag wins; otherwise the env the harness sets for us —
+      // AGENFK_SESSION_ID, then Claude Code's CLAUDE_CODE_SESSION_ID (set in
+      // Bash tool subprocesses, matching the session_id hooks receive). A
+      // keyed note is the common path now: the run recorder STRICTLY refuses
+      // the shared note for sessions it can name, so a sessionless gatekeeper
+      // run records nothing rather than capturing every other session's runs
+      // for the TTL.
       if (decision.authorized && decision.task?.id) {
-        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId });
+        const sessionId = options.session
+          || process.env.AGENFK_SESSION_ID
+          || process.env.CLAUDE_CODE_SESSION_ID
+          || undefined;
+        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId }, sessionId);
       }
 
       // 37a292a7: what leaving this step will run, so the agent does not run the
@@ -4186,7 +4239,7 @@ reviewCmd
   .description('Record an independent review of a card. The server reads the reviewer\'s identity from --transcript (a session log under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions), so the reviewer must not be the author. MCP: record_review.')
   .requiredOption('--transcript <path>', 'The REVIEWER\'s session log, e.g. a Claude Code sub-agent\'s <session>/subagents/agent-<id>.jsonl')
   .option('--range <from..to>', 'The commits the review covered. Leave it out (or pass auto) and the server uses where the card began, up to HEAD - uncommitted work included')
-  .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "reason"? } ([] when nothing was found)')
+  .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "severity"?: "HIGH"|"MEDIUM"|"LOW", "reason"? } ([] when nothing was found)')
   .action(async (id, options) => {
     let findings: unknown;
     try { findings = JSON.parse(options.findings); } catch {
@@ -4424,7 +4477,7 @@ program
       }
       if (!opened) {
         // --details: the approval is given on the card's Overview, so open it there.
-        spawnSync(process.execPath, [process.argv[1], 'ui', '--open', targetId, '--details'], { stdio: 'inherit' });
+        spawnSync(process.execPath, [process.argv[1], 'ui', '--open', targetId, '--details'], { stdio: 'inherit', windowsHide: true });
         opened = true;
       }
       await askForApproval();
@@ -4488,7 +4541,7 @@ branchCmd
         // No shell: the name must reach git as exactly one argument (no word-splitting,
         // no shell injection). Git validates the refname itself and rejects invalid names
         // (leading dash, embedded space) with a clean error.
-        execFileSync('git', ['checkout', '-b', branchName], { stdio: 'inherit' });
+        execFileSync('git', ['checkout', '-b', branchName], { stdio: 'inherit', windowsHide: true });
       } catch {
         console.error(chalk.red(`Failed to create branch. Does it already exist? Try: git checkout ${branchName}`));
         process.exit(1);
@@ -4554,7 +4607,7 @@ worktreeCmd
         // Throws if the directory is gone or is not a repository, and the
         // caller treats a throw as "do not touch" — a failed check read as
         // clean is how a tool deletes work nobody pushed.
-        const out = execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
+        const out = execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8', windowsHide: true });
         return out.trim().length > 0;
       },
     });
@@ -4583,7 +4636,7 @@ worktreeCmd
       try {
         // Through git, not rm: it also clears the .git/worktrees registration,
         // and leaving those behind is half the slowdown this is meant to fix.
-        execFileSync('git', ['worktree', 'remove', c.path], { stdio: 'ignore' });
+        execFileSync('git', ['worktree', 'remove', c.path], { stdio: 'ignore', windowsHide: true });
         removed += 1;
       } catch (e: any) {
         console.log(chalk.yellow(`  Kept ${c.path}: ${e?.message ?? 'git refused'}`));
@@ -4663,7 +4716,7 @@ branchCmd
 
       let hasRemote = false;
       try {
-        const remotes = execSync('git remote', { encoding: 'utf8' }).trim();
+        const remotes = execSync('git remote', { encoding: 'utf8', windowsHide: true }).trim();
         hasRemote = remotes.length > 0;
       } catch { /* not a git repo */ }
 
@@ -4673,7 +4726,7 @@ branchCmd
       }
 
       console.log(chalk.blue(`Pushing branch '${item.branchName}' to remote...`));
-      execSync(`git push -u origin ${item.branchName}`, { stdio: 'inherit' });
+      execSync(`git push -u origin ${item.branchName}`, { stdio: 'inherit', windowsHide: true });
       console.log(chalk.green(`✅ Branch '${item.branchName}' pushed to remote.`));
     } catch (e: any) {
       console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
@@ -4695,7 +4748,7 @@ branchCmd
       console.log(`Branch: ${chalk.cyan(item.branchName)}`);
 
       try {
-        const remoteBranches = execSync('git branch -r', { encoding: 'utf8' });
+        const remoteBranches = execSync('git branch -r', { encoding: 'utf8', windowsHide: true });
         const pushed = remoteBranches.split('\n').some(b => b.trim().endsWith(item.branchName));
         console.log(`Remote: ${pushed ? chalk.green('pushed') : chalk.yellow('not pushed yet')}`);
       } catch {
@@ -4728,7 +4781,7 @@ branchCmd
 
       // Verify the branch exists locally
       try {
-        execSync(`git rev-parse --verify --end-of-options ${branchName}`, { stdio: 'ignore' });
+        execSync(`git rev-parse --verify --end-of-options ${branchName}`, { stdio: 'ignore', windowsHide: true });
       } catch {
         console.error(chalk.red(`❌ Branch '${branchName}' does not exist locally.`));
         process.exit(1);
@@ -4747,7 +4800,7 @@ branchCmd
 
 function checkGhCli(): boolean {
   try {
-    execSync('gh --version', { stdio: 'ignore' });
+    execSync('gh --version', { stdio: 'ignore', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -4811,6 +4864,7 @@ prCmd
   .option('--title <title>', 'PR title (defaults to item title)')
   .option('--body <body>', 'PR body/description')
   .option('--draft', 'Create as a draft PR')
+  .option('--base <branch>', 'Target branch of the PR (passed to gh pr create --base). Defaults to gh\'s own detection. Use this when the item branch was cut from a non-default base, e.g. beta.')
   .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (e.g. claude-opus-4-8, glm-5.2) — recorded on the pr.opened hub event. Never copy an example; report your own model.')
   .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (claude-code, pi, cursor, codex, gemini, opencode) — recorded on the pr.opened hub event.')
   .option('--no-detect-model', 'Do not read the harness session log; report --model exactly as given')
@@ -4826,7 +4880,8 @@ prCmd
         process.exit(1);
       }
       const prTitle = options.title || item.title;
-      const args = ['pr', 'create', '--title', prTitle];
+      // Arg assembly is a pure helper (prArgs.ts) so the flags that reach gh
+      // — --base in particular (CGLAB-571) — are pinned by a test.
       // A person's approvals and overrides go on the PR, so a reviewer sees what was let through (CGLAB-382).
       let gateEvents: GateEvent[] = [];
       try { gateEvents = (await axios.get(`${API_URL}/items/${itemId}/gate-events`)).data ?? []; } catch (e: any) {
@@ -4847,13 +4902,17 @@ prCmd
       const disabled = await readDisabledChecks(() => axios.get(`${API_URL}/items/${itemId}/disabled-checks`));
       if (disabled.failed) console.warn(chalk.yellow(`⚠️  Could not read the checks the org's hub switched off (${disabled.failed}); the PR body will not list them.`));
       const disabledChecks = disabled.rows;
-      args.push('--body', buildPrBody(options.body || item.description || '', gateEvents, customChecks, warnings, disabledChecks));
-      if (options.draft) args.push('--draft');
+      const args = ghPrCreateArgs({
+        title: prTitle,
+        body: buildPrBody(options.body || item.description || '', gateEvents, customChecks, warnings, disabledChecks),
+        draft: options.draft,
+        base: options.base,
+      });
 
       console.log(chalk.blue(`Creating PR: "${prTitle}"...`));
       let output: string;
       try {
-        const result = spawnSync('gh', args, { encoding: 'utf8' });
+        const result = spawnSync('gh', args, { encoding: 'utf8', windowsHide: true });
         if (result.status !== 0) {
           console.error(chalk.red(`❌ gh pr create failed:\n${result.stderr || result.stdout}`));
           process.exit(1);
@@ -4922,7 +4981,7 @@ prCmd
       const ref = item.prNumber || item.prUrl;
       let result: any;
       try {
-        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8' });
+        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8', windowsHide: true });
         result = JSON.parse(raw);
       } catch (e: any) {
         console.error(chalk.red(`❌ gh pr view failed: ${e.message}`));
@@ -4960,7 +5019,7 @@ prCmd
       const ref = item.prNumber || item.prUrl;
       let result: any;
       try {
-        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8' });
+        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8', windowsHide: true });
         result = JSON.parse(raw);
       } catch (e: any) {
         console.error(chalk.red(`❌ gh pr view failed: ${e.message}`));

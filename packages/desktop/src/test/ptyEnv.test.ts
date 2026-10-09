@@ -20,7 +20,8 @@
  *    could still fail.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { buildPtyEnv, mergePath, LOGIN_CAPTURE_GUARD, parseEnvDump } from '../main/ptyEnv';
+import { buildPtyEnv, mergePath, LOGIN_CAPTURE_GUARD, parseEnvDump, readFreshPath } from '../main/ptyEnv';
+import { profileFor } from '../main/platform';
 
 describe('the terminal type', () => {
   it('declares 256 colours instead of letting node-pty fall back to plain xterm', () => {
@@ -259,6 +260,45 @@ describe('merging a login shell PATH', () => {
     expect(mergePath('', '/usr/bin')).toBe('/usr/bin');
     expect(mergePath('/usr/bin', '')).toBe('/usr/bin');
     expect(mergePath(null, null)).toBe('');
+  });
+});
+
+describe('the PATH on Windows (story 1b9d622e)', () => {
+  const win = profileFor('win32');
+
+  it('merges with ; — a : split cuts C:\\ in half', () => {
+    expect(mergePath('C:\\Users\\c\\AppData\\Roaming\\npm;C:\\Windows', 'C:\\Windows;C:\\tools', ';'))
+      .toBe('C:\\Users\\c\\AppData\\Roaming\\npm;C:\\Windows;C:\\tools');
+  });
+
+  it('replaces the Path the app was started with instead of adding a second PATH beside it', () => {
+    // Windows spells it Path, and treats names case-insensitively. A block
+    // carrying both Path and PATH leaves which one the agent sees to chance.
+    const env = buildPtyEnv({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows' }, 'C:\\npm', win);
+    const keys = Object.keys(env).filter(k => k.toUpperCase() === 'PATH');
+    expect(keys).toEqual(['Path']);
+    expect(env.Path).toBe('C:\\npm;C:\\Windows');
+  });
+
+  it('leaves Path and PATH as two variables on a Unix, where they are', () => {
+    const env = buildPtyEnv({ Path: 'odd', PATH: '/usr/bin' }, '/opt/bin', profileFor('linux'));
+    expect(env.Path).toBe('odd');
+    expect(env.PATH).toBe('/opt/bin:/usr/bin');
+  });
+});
+
+describe('reading what the fresh-PATH command printed', () => {
+  it('takes PATH out of a login shell\'s env dump, chatter and all', () => {
+    expect(readFreshPath('env', 'Welcome back!\nHOME=/Users/me\nPATH=/opt/homebrew/bin:/usr/bin\n')).toBe('/opt/homebrew/bin:/usr/bin');
+  });
+
+  it('takes the printed PATH as-is when the command prints only that', () => {
+    expect(readFreshPath('path', 'C:\\Windows;C:\\npm\r\n')).toBe('C:\\Windows;C:\\npm');
+  });
+
+  it('answers null for nothing printed', () => {
+    expect(readFreshPath('path', '  \r\n')).toBeNull();
+    expect(readFreshPath('env', 'no assignments here')).toBeNull();
   });
 });
 

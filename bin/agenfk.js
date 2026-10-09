@@ -101,7 +101,7 @@ function fetchLatestTag(repo, beta = false) {
   // so a list that fails (rate limit, a page past maxBuffer) never throws away
   // a good /releases/latest. maxBuffer: the 100-release list is ~0.6 MB today
   // and grows with every release's notes; execSync's default is 1 MB.
-  const run = (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024 });
+  const run = (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024, windowsHide: true });
   const curlJson = (url) => JSON.parse(run(`curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`));
   // --beta INCLUDES stable: once 2.0.0 ships, 2.0.0-beta.23 is not the newest
   // thing a beta user should get (the CLI's resolveReleaseTag does the same).
@@ -165,7 +165,7 @@ function fetchLatestTag(repo, beta = false) {
 // non-zero exit; we translate that into an explicit error + non-zero exit code.
 function runInstaller(cwd) {
   try {
-    execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}${withMcp ? ' --with-mcp' : ''}${noMcp ? ' --no-mcp' : ''}${debuglog ? ' --debuglog' : ''}`, { cwd, stdio: 'inherit' });
+    execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}${withMcp ? ' --with-mcp' : ''}${noMcp ? ' --no-mcp' : ''}${debuglog ? ' --debuglog' : ''}`, { cwd, stdio: 'inherit', windowsHide: true });
   } catch {
     console.error(`\n${YELLOW}❌ AgEnFK installation failed — the setup step did not complete.${RESET}`);
     console.error(`${YELLOW}   Re-run with --debuglog to see every step:${RESET}`);
@@ -178,11 +178,11 @@ function runInstaller(cwd) {
 function downloadAsset(repo, tag, pattern, outputPath) {
   const url = `https://github.com/${repo}/releases/download/${tag}/${pattern}`;
   try {
-    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit' });
+    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
     return;
   } catch {}
   // Fallback: gh CLI
-  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
+  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
 }
 
 
@@ -240,7 +240,7 @@ if (isNpxCache) {
     if (fs.cpSync) {
       fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true, filter: copyFilter });
     } else {
-      execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(INSTALL_DIR)}/`, { stdio: 'inherit', shell: true });
+      execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(INSTALL_DIR)}/`, { stdio: 'inherit', shell: true, windowsHide: true });
       sweepMacMetadata(INSTALL_DIR);
     }
   } else {
@@ -248,7 +248,7 @@ if (isNpxCache) {
     if (fs.cpSync) {
       fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true, filter: copyFilter });
     } else {
-      execSync(`cp -r ${JSON.stringify(REPO_ROOT)} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+      execSync(`cp -r ${JSON.stringify(REPO_ROOT)} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true, windowsHide: true });
       sweepMacMetadata(INSTALL_DIR);
     }
   }
@@ -278,7 +278,7 @@ if (isNpxCache) {
         const archive = path.join(INSTALL_DIR, 'agenfk-dist.tar.gz');
         try {
         downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', archive);
-        execSync(`tar ${tarFlags} "${toPosixPath(archive)}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+        execSync(`tar ${tarFlags} "${toPosixPath(archive)}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
         // Prune against the ARCHIVE, not against REPO_ROOT. REPO_ROOT is the
         // npx git ref (the default branch); the tarball is fetchLatestTag,
         // which is a DIFFERENT ref — betas are cut from release/vX.Y.Z-beta.N
@@ -288,7 +288,7 @@ if (isNpxCache) {
         try {
           if (isUpdate) {
             const listFlags = process.platform === 'win32' ? '--force-local -tzf' : '-tzf';
-            const listing = execSync(`tar ${listFlags} "${toPosixPath(archive)}"`, { encoding: 'utf8' })
+            const listing = execSync(`tar ${listFlags} "${toPosixPath(archive)}"`, { encoding: 'utf8', windowsHide: true })
               .split('\n').filter(Boolean);
             reportPrune(pruneInstallDirAgainstManifest(INSTALL_DIR, listing));
             prunedAgainstArchive = true;
@@ -351,7 +351,7 @@ if (isNpxCache) {
     try {
       const latestTag = fetchLatestTag(REPO, isBeta);
       downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
-      execSync(`tar ${tarFlags} "${toPosixPath(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(REPO_ROOT)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+      execSync(`tar ${tarFlags} "${toPosixPath(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(REPO_ROOT)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
       fs.unlinkSync(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
     } catch (e) {
       console.error(`Failed to download pre-built binary: ${e.message}`);

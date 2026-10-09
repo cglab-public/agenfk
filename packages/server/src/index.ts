@@ -470,7 +470,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: "Each finding and its fate: fixed, or rejected with a reason. [] when nothing was found.",
               items: {
                 type: "object",
-                properties: { title: { type: "string" }, state: { type: "string", enum: ["fixed", "rejected"] }, reason: { type: "string" } },
+                properties: { title: { type: "string" }, state: { type: "string", enum: ["fixed", "rejected"] }, severity: { type: "string", enum: ["HIGH", "MEDIUM", "LOW"], description: "How serious the finding is; the reviewer's judgement." }, reason: { type: "string" } },
                 required: ["title", "state"],
               },
             },
@@ -945,7 +945,7 @@ async function callToolHandler(request: any): Promise<any> {
         const branchHint = task?.worktreeChoice
           ? `\nℹ️ This card runs in a tree it chose (${task.worktreeChoice === 'root' ? 'the project root' : task.worktreeChoice}); its branch is not switched there.`
           : resolveBranchHint(task, {
-            run: args => execFileSync('git', args, { encoding: 'utf8' }),
+            run: args => execFileSync('git', args, { encoding: 'utf8', windowsHide: true }),
           });
 
         /*
@@ -963,7 +963,7 @@ async function callToolHandler(request: any): Promise<any> {
          */
         const driftTarget = driftTargets(task, allItems, project?.projectRoot);
         const driftNotice = driftTarget
-          ? dispatchDriftNotice({ ...driftTarget, deps: { run: args => execFileSync('git', args, { encoding: 'utf8' }) } })
+          ? dispatchDriftNotice({ ...driftTarget, deps: { run: args => execFileSync('git', args, { encoding: 'utf8', windowsHide: true }) } })
           : '';
 
         // 37a292a7: what leaving this step will run - advice, so a failed read never stops the authorization.

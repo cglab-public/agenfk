@@ -14,6 +14,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { platform, type PlatformProfile } from './platform.js';
+import { mergePath, pathKeyOf } from './ptyEnv.js';
 
 export interface FsReader {
   exists(p: string): boolean;
@@ -58,4 +60,31 @@ export function resolveDbPath(opts: ResolveDbPathOptions = {}): string {
   }
 
   return path.join(homedir, '.agenfk-system', '.agenfk', 'db.sqlite');
+}
+
+/**
+ * The environment the server is forked with (BUG 474a8240).
+ *
+ * The server runs tools by name - `gh` for the GitHub account, among others -
+ * so its PATH is the one that decides whether they exist. Inherited as-is, an
+ * app opened from the Finder hands it launchd's /usr/bin:/bin:/usr/sbin:/sbin,
+ * and Settings reported the GitHub CLI missing with gh in /opt/homebrew/bin.
+ * The fresh PATH leads, the inherited one follows - the same merge the
+ * terminals get.
+ */
+export function buildServerEnv(
+  base: NodeJS.ProcessEnv,
+  opts: { uiDir: string; dbPath: string; freshPath: string | null },
+  profile: Pick<PlatformProfile, 'pathDelimiter' | 'envKeysIgnoreCase'> = platform,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  if (opts.freshPath) {
+    const key = pathKeyOf(env, profile);
+    env[key] = mergePath(opts.freshPath, env[key], profile.pathDelimiter);
+  }
+  // One origin for everything (CGLAB-165).
+  env.AGENFK_SERVE_UI = opts.uiDir;
+  // Never let the database location depend on how the app was launched.
+  env.AGENFK_DB_PATH = opts.dbPath;
+  return env;
 }

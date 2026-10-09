@@ -12,8 +12,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import * as path from 'path';
 
-const { mockExecSync, mockSpawn, mockSpawnSync } = vi.hoisted(() => ({
+const { mockExecSync, mockExecFileSync, mockSpawn, mockSpawnSync } = vi.hoisted(() => ({
   mockExecSync: vi.fn(),
+  mockExecFileSync: vi.fn(),
   mockSpawn: vi.fn(),
   mockSpawnSync: vi.fn(),
 }));
@@ -34,9 +35,10 @@ vi.mock('@agenfk/telemetry', () => ({
 vi.mock('axios');
 vi.mock('child_process', () => ({
   execSync: mockExecSync,
+  execFileSync: mockExecFileSync,
   spawn: mockSpawn,
   spawnSync: mockSpawnSync,
-  default: { execSync: mockExecSync, spawn: mockSpawn, spawnSync: mockSpawnSync },
+  default: { execSync: mockExecSync, execFileSync: mockExecFileSync, spawn: mockSpawn, spawnSync: mockSpawnSync },
 }));
 vi.mock('inquirer', () => ({ default: { prompt: vi.fn() } }));
 
@@ -76,6 +78,7 @@ beforeEach(() => {
   errSpy = vi.spyOn(console, 'error').mockImplementation(capture);
   killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
   mockExecSync.mockReset();
+  mockExecFileSync.mockReset();
   mockSpawn.mockReset().mockImplementation(fakeChild);
   mockSpawnSync.mockReset().mockReturnValue({ status: 0 });
 });
@@ -89,7 +92,16 @@ afterEach(() => {
 
 const nonEmpty = () => out.join('\n').split('\n').map((l) => l.trim()).filter(Boolean);
 
+/** The cases it is called in are the POSIX path (`ps -ef`, `lsof`), whatever the host; Windows is pinned on its own. */
+function onPosix() {
+  const realPlatform = process.platform;
+  beforeEach(() => { Object.defineProperty(process, 'platform', { value: 'linux' }); });
+  afterEach(() => { Object.defineProperty(process, 'platform', { value: realPlatform }); });
+}
+
 describe('agenfk down', () => {
+  onPosix();
+
   it('prints one line when it stopped the server, and really killed it', async () => {
     mockExecSync.mockImplementation((cmd: string) => (cmd === 'ps -ef' ? psListing(true) : ''));
     await program.parseAsync(['node', 'agenfk', 'down']);
@@ -114,6 +126,8 @@ describe('agenfk down', () => {
 });
 
 describe('agenfk kill', () => {
+  onPosix();
+
   it('prints one line saying how many it killed', async () => {
     mockExecSync.mockImplementation((cmd: string) => (cmd === 'ps -ef' ? psListing(true) : ''));
     await program.parseAsync(['node', 'agenfk', 'kill']);
@@ -129,6 +143,8 @@ describe('agenfk kill', () => {
 });
 
 describe('the kill helpers only kill what is ours', () => {
+  onPosix();
+
   it('kills the process LISTENING on the port, never a browser or the desktop app connected to it', async () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (cmd === 'ps -ef') return psListing(false);
@@ -144,7 +160,11 @@ describe('the kill helpers only kill what is ours', () => {
 
   describe('on native Windows', () => {
     const realPlatform = process.platform;
-    beforeEach(() => { Object.defineProperty(process, 'platform', { value: 'win32' }); });
+    beforeEach(() => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      // Processes are listed through CIM (#199); kill-helpers-windows.test.ts covers that listing.
+      mockExecFileSync.mockImplementation(() => '[]');
+    });
     afterEach(() => { Object.defineProperty(process, 'platform', { value: realPlatform }); });
 
     it('kills a listener once (IPv4 + IPv6 lines), not a port that merely starts with the same digits', async () => {
@@ -154,7 +174,6 @@ describe('the kill helpers only kill what is ours', () => {
           '  TCP    [::]:3000              [::]:0                 LISTENING       900',
           '  TCP    0.0.0.0:30001          0.0.0.0:0              LISTENING       901',
         ].join('\r\n');
-        if (/^wmic /.test(cmd)) return 'ProcessId\r\n';
         return '';
       });
       await program.parseAsync(['node', 'agenfk', 'kill']);
@@ -163,12 +182,9 @@ describe('the kill helpers only kill what is ours', () => {
       expect(nonEmpty()).toEqual(['✓ Killed 1 AgEnFK process']);
     });
 
-    it("leaves the query's own wmic process out, and treats taskkill's 'not found' as already gone", async () => {
+    it("treats taskkill's 'not found' as already gone", async () => {
+      mockExecFileSync.mockImplementation(() => JSON.stringify([{ ProcessId: 4242, ParentProcessId: 1, Name: 'node.exe', CommandLine: 'node C:\\x\\packages\\server\\dist\\server.js' }]));
       mockExecSync.mockImplementation((cmd: string) => {
-        if (/^wmic /.test(cmd)) {
-          expect(cmd).toMatch(/and not commandline like '%wmic%'/);
-          return 'ProcessId\r\n4242\r\n';
-        }
         if (/^taskkill/.test(cmd)) throw Object.assign(new Error('not found'), { status: 128 });
         return '';
       });
@@ -206,6 +222,8 @@ describe('agenfk restart', () => {
 });
 
 describe('agenfk up', () => {
+  onPosix();
+
   it('prints nothing of its own before handing over to the service script (which prints the one line)', async () => {
     mockExecSync.mockImplementation((cmd: string) => (cmd === 'ps -ef' ? psListing(false) : ''));
     await program.parseAsync(['node', 'agenfk', 'up', '--quiet']);

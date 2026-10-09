@@ -40,11 +40,15 @@ export interface FileReader {
 /**
  * Where the note lives.
  *
- * Keyed by session when one is known, because a single shared file collides
- * across concurrent sessions: this repo explicitly supports parallel agents on
- * different cards, and an unkeyed note lets session A's first tool call open a
- * run against session B's card. The unkeyed path remains as a fallback for a
- * writer that has no session id — the gatekeeper CLI, which cannot see one.
+ * Keyed by session (CGLAB-570), because a single shared file collides across
+ * concurrent sessions: this repo explicitly supports parallel agents on
+ * different cards, and an unkeyed note let session A's first tool call open a
+ * run against session B's card for the whole TTL. The gatekeeper now plumbs
+ * the harness session id, so the KEYED note is the common path. The shared
+ * file remains only for a sessionless reader — a harness that exposes no
+ * session id at all — never as a fallback for a session whose keyed note is
+ * missing: that fallback is precisely the misattribution this file exists to
+ * prevent.
  */
 export const activeWorkPath = (sessionId?: string): string => {
   const dir = path.join(os.homedir(), '.agenfk');
@@ -55,11 +59,13 @@ export const activeWorkPath = (sessionId?: string): string => {
 
 const readerFor = (sessionId?: string): FileReader => ({
   read: () => {
-    // A session-specific note always wins; the shared one is the fallback for
-    // a gatekeeper run that had no session to key on.
-    if (sessionId) {
-      try { return fs.readFileSync(activeWorkPath(sessionId), 'utf8'); } catch { /* fall through */ }
-    }
+    // STRICT when a session is known (CGLAB-570): a missing keyed note means
+    // no note — never the shared one. Falling back here is how one session's
+    // card captured every other session's tool calls for the TTL; a run on
+    // the wrong card is worse than no run, which is the rule this recorder
+    // lives by. The shared file is read only when there is NO session id —
+    // a harness that cannot name its session is the one case it is safe for.
+    if (sessionId) return fs.readFileSync(activeWorkPath(sessionId), 'utf8');
     return fs.readFileSync(activeWorkPath(), 'utf8');
   },
 });

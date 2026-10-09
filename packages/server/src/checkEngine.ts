@@ -149,6 +149,13 @@ export interface EngineContext {
   testPaths: string[];
   /** Paths the checks never count as the card's changes (the test report the capture writes). */
   ignoredPaths: string[];
+  /**
+   * aa98ccf4: other live cards (not inactive, not DONE, not an anchor) whose
+   * resolved tree is the SAME tree as this card's. When present, tree-clean
+   * warns instead of blocking on a dirty tree: the dirt is not attributable,
+   * and the post-claims stance (26c059f6) never blocks a card on its siblings.
+   */
+  liveTreeMates?: Array<{ id: string; title: string; status: string }>;
   /** Checks enforced by the project verify command on this transition, not judged here. */
   deferToCommand: string[];
   /**
@@ -228,6 +235,12 @@ interface Verdict {
   detail: string;
   /** Unavailable only because the card predates checks: warn, never block. */
   soft?: boolean;
+  /**
+   * Situational downgrade: an evaluator that would block but has a reason not
+   * to on THIS verdict (aa98ccf4: a dirty tree shared with live cards) says so
+   * here; the blocking computation honours it over the check's static severity.
+   */
+  severity?: 'warn';
   produces?: Partial<Record<RecordName, unknown>>;
   meta?: CheckMeta;
 }
@@ -426,6 +439,18 @@ export const EVALUATORS: Record<string, Evaluator> = {
     const entries = porcelain.split('\n').filter(l => l.trim()).map(l => ({ line: l.trim(), file: l.slice(3).split(' -> ').pop()!.replace(/^"|"$/g, '') }));
     const mine = new Set(cardsOwn(ctx, entries.map(e => e.file)));
     const dirty = entries.filter(e => mine.has(e.file)).map(e => e.line);
+    if (dirty.length && ctx.liveTreeMates?.length) {
+      // aa98ccf4: the tree is shared with other live cards, so the dirt is not
+      // attributable — it may be theirs, not this card's. Warn, never block:
+      // that is the post-claims stance (26c059f6 removed CLAIM CONFLICT). The
+      // exit side is guarded by the ownerless-staged close refusal.
+      const mates = ctx.liveTreeMates.map(m => `[${m.id.substring(0, 8)}] "${m.title}"`).join(', ');
+      return {
+        outcome: 'fail',
+        severity: 'warn',
+        detail: `uncommitted changes: ${list(dirty)}. ${ctx.liveTreeMates.length === 1 ? 'Another live card shares' : `${ctx.liveTreeMates.length} other live cards share`} this tree (${mates}) and their uncommitted work is not distinguishable from this card's, so this warns instead of blocking. Stage and commit per card on close - a close is refused while files are staged that no live card claims.`,
+      };
+    }
     return dirty.length
       ? { outcome: 'fail', detail: `uncommitted changes: ${list(dirty)}. Commit or stash them before starting.` }
       : { outcome: 'pass', detail: 'clean' };
@@ -854,13 +879,13 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
     const verdict: Verdict = evaluate
       ? (() => { try { return evaluate(ctx, c.params); } catch (e: any) { return { outcome: 'unavailable' as const, detail: `the check itself failed: ${e?.message ?? e}` }; } })()
       : { outcome: 'unavailable', detail: `'${c.id}' is not implemented on this server` };
-    const blocks = c.severity === 'block' && (verdict.outcome === 'fail' || (verdict.outcome === 'unavailable' && !verdict.soft));
+    const blocks = (verdict.severity ?? c.severity) === 'block' && (verdict.outcome === 'fail' || (verdict.outcome === 'unavailable' && !verdict.soft));
     // A person's override lifts the block; the verdict itself stays on record.
     // It covers the verdict it was given against: a different failure needs its own.
     const o = blocks ? ctx.overrides?.[c.id] : undefined;
     // 5a8d22e6 changed the no-report detail: an override given against the old wording still covers it.
     const overridden = o && (o.detail === undefined || o.detail === verdict.detail || (verdict.meta?.code === 'NO_TEST_REPORT' && o.detail === LEGACY_NO_REPORT_DETAIL)) ? o : undefined;
-    results.push({ ...base, outcome: verdict.outcome, detail: verdict.detail, blocking: blocks && !overridden, ...(overridden ? { overridden } : {}), ...(c.id.startsWith('agent-check:') ? { agentReported: true } : {}), ...(verdict.meta ? { meta: verdict.meta } : {}) });
+    results.push({ ...base, outcome: verdict.outcome, detail: verdict.detail, blocking: blocks && !overridden, ...(overridden ? { overridden } : {}), ...(verdict.severity ? { severity: verdict.severity } : {}), ...(c.id.startsWith('agent-check:') ? { agentReported: true } : {}), ...(verdict.meta ? { meta: verdict.meta } : {}) });
     if (verdict.outcome === 'pass' && verdict.produces) Object.assign(produced, verdict.produces);
   }
   return { results, blocked: results.some(r => r.blocking), produced };

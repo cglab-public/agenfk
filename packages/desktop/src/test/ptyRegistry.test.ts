@@ -21,7 +21,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PtyRegistry, MAX_SESSIONS_PER_WINDOW } from '../main/ptyRegistry';
 import { HIGH_WATERMARK } from '../main/flowControl';
 import * as os from 'os';
-import { platform, accountShell } from '../main/platform';
+import { platform, accountShell, profileFor } from '../main/platform';
 
 interface FakePty {
   pid: number;
@@ -1265,5 +1265,65 @@ describe('a shell with no target', () => {
     expect(spawned[0].cwd).toBe(os.homedir());
     // No card means no run to follow.
     expect(runs).toHaveLength(0);
+  });
+});
+
+/*
+ * The terminal opens what detection found (story 1b9d622e).
+ *
+ * It used to be handed the bare name. On Windows that never opens anything an
+ * npm install made - ConPTY looks for `claude` by exact name, with no PATHEXT,
+ * and npm writes `claude.cmd` - so the picker could say Installed and the
+ * terminal still die with "File not found".
+ */
+describe('opening the agent detection located', () => {
+  const regWith = (locate: (file: string) => Promise<string | null>, launcher?: Parameters<typeof profileFor>[0]) =>
+    new PtyRegistry({
+      spawn: spawner as never,
+      resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
+      emit: () => {},
+      locate,
+      ...(launcher ? { launcher: profileFor(launcher) } : {}),
+    });
+
+  it('spawns the located path, with the agent\'s own arguments', async () => {
+    const locate = vi.fn(async (file: string) => (file === 'claude' ? '/Users/me/.nvm/versions/node/v24/bin/claude' : null));
+    await regWith(locate).spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
+    expect(locate).toHaveBeenCalledWith('claude');
+    expect(spawned[0].file).toBe('/Users/me/.nvm/versions/node/v24/bin/claude');
+    expect(spawned[0].args).toContain('--session-id');
+  });
+
+  it('falls back to the bare name when nothing was located, so the failure is the agent\'s own', async () => {
+    await regWith(async () => null).spawn({ itemId: 'i1', agentId: 'codex', windowId: 1, cols: 80, rows: 24 });
+    expect(spawned[0].file).toBe('codex');
+  });
+
+  it('does not look up a command that is already a path', async () => {
+    const locate = vi.fn(async () => '/elsewhere/sh');
+    await regWith(locate).spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    expect(locate).not.toHaveBeenCalled();
+    expect(spawned[0].file).toBe(platform.shellAgent(process.env, accountShell()).file);
+  });
+
+  it('opens the located path again when a failed resume starts fresh', async () => {
+    const reg = regWith(async (file: string) => (file === 'claude' ? '/opt/homebrew/bin/claude' : null));
+    await reg.spawn({
+      itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24,
+      agentSessionId: '3f2504e0-4f89-11d3-9a0c-0305e82c3301', resume: true,
+    });
+    spawned[0].pty.emitExit!(1);
+    expect(spawned).toHaveLength(2);
+    expect(spawned[1].file).toBe('/opt/homebrew/bin/claude');
+  });
+
+  it('runs an npm .cmd through cmd.exe on Windows, as one pre-escaped command line', async () => {
+    // node-pty takes a string as a ready-made Windows command line. Handing
+    // it an array would have it re-quote our escaping.
+    await regWith(async () => 'C:\\Users\\c\\AppData\\Roaming\\npm\\claude.cmd', 'win32')
+      .spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
+    expect(spawned[0].file.toLowerCase()).toMatch(/cmd\.exe$/);
+    expect(typeof spawned[0].args).toBe('string');
+    expect(String(spawned[0].args)).toMatch(/^\/d \/v:off \/s \/c "C:\\Users\\c\\AppData\\Roaming\\npm\\claude\.cmd /);
   });
 });

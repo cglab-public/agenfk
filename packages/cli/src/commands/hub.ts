@@ -11,6 +11,7 @@ function readGitConfig(key: string): string | null {
   try {
     return execFileSync('git', ['config', '--get', key], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1500,
+      windowsHide: true,
     }).trim() || null;
   } catch {
     return null;
@@ -412,7 +413,7 @@ export function registerHubCommands(program: Command): void {
       console.log('  ' + chalk.underline(start.verificationUri));
       if (opts.open !== false) {
         const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start ""' : 'xdg-open';
-        exec(`${opener} ${JSON.stringify(start.verificationUri)}`, () => { /* best-effort */ });
+        exec(`${opener} ${JSON.stringify(start.verificationUri)}`, { windowsHide: true }, () => { /* best-effort */ });
       }
 
       const interval = Math.max(1, Number(start.interval) || 2);
@@ -539,11 +540,12 @@ export function registerHubCommands(program: Command): void {
           const rootDir = path.resolve(__dirname, '../../../..');
           console.log(chalk.blue('Restarting local API server so it picks up the new hub config...'));
           try {
-            execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit' });
+            execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit', windowsHide: true });
           } catch { /* may already be down */ }
           try {
             const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], {
               cwd: rootDir, detached: true, stdio: 'inherit',
+              windowsHide: true,
             });
             start.unref();
             console.log(chalk.green('✓ Restarted local API server.'));
@@ -760,11 +762,12 @@ export function registerHubCommands(program: Command): void {
       const rootDir = path.resolve(__dirname, '../../../..');
       console.log(chalk.blue('Restarting local API server so it picks up the new hub config...'));
       try {
-        execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit' });
+        execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit', windowsHide: true });
       } catch { /* may already be down */ }
       try {
         const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], {
           cwd: rootDir, detached: true, stdio: 'inherit',
+          windowsHide: true,
         });
         start.unref();
         console.log(chalk.green('✓ Restarted local API server.'));

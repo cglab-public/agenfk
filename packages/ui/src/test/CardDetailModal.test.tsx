@@ -766,6 +766,69 @@ describe('CardDetailModal', () => {
     // The old under-title "Status:" line is gone.
     expect(screen.queryByText(/^Status:/)).toBeNull();
   });
+
+  // CGLAB-565: the CGLAB-381 review records were server-written but never
+  // shown — the tab was hard-hidden. A card with reviewRecords now shows the
+  // tab, the reviewer identity and each finding.
+  const reviewRecord = {
+    id: 'rec1',
+    at: '2026-10-08T12:00:00.000Z',
+    reviewer: { client: 'claude', sessionId: 'sess-1', agentId: 'agent-9', transcript: '/tmp/t.jsonl' },
+    range: { from: 'aaa1111', to: 'bbb2222' },
+    findings: [
+      { title: 'SQL injection in handler', state: 'fixed', severity: 'HIGH', reason: 'parameterized' },
+      { title: 'Logging secrets', state: 'rejected', severity: 'LOW', reason: 'not secrets' },
+    ],
+  };
+
+  it('shows a Reviews tab when the card carries review records', async () => {
+    renderModal({ ...mockItem, reviewRecords: [reviewRecord] });
+    await waitFor(() => expect(screen.getByText('Test Story')).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: /Reviews/i }));
+    expect(screen.getByText(/Independent Reviews \(1\)/)).toBeDefined();
+  });
+
+  // CGLAB-565: within a record, findings lead with the most serious — HIGH
+  // before MEDIUM before LOW, unlabelled last — whatever order they were
+  // recorded in.
+  it('orders findings by severity, most serious first', async () => {
+    const shuffled = {
+      ...reviewRecord,
+      findings: [
+        { title: 'no label', state: 'fixed' },
+        { title: 'medium one', state: 'fixed', severity: 'MEDIUM' },
+        { title: 'low one', state: 'rejected', severity: 'LOW', reason: 'r' },
+        { title: 'high one', state: 'fixed', severity: 'HIGH' },
+      ],
+    };
+    renderModal({ ...mockItem, reviewRecords: [shuffled] });
+    await waitFor(() => expect(screen.getByText('Test Story')).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: /Reviews/i }));
+    const list = screen.getByText('high one').closest('ul')!;
+    const titles = Array.from(list.querySelectorAll('li > div > p:first-child')).map(p => p.textContent);
+    expect(titles).toEqual(['high one', 'medium one', 'low one', 'no label']);
+  });
+
+  it('renders reviewer identity, range and findings for each record', async () => {
+    renderModal({ ...mockItem, reviewRecords: [reviewRecord] });
+    await waitFor(() => expect(screen.getByText('Test Story')).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: /Reviews/i }));
+    expect(screen.getByText(/claude/)).toBeDefined();
+    expect(screen.getByText(/sess-1/)).toBeDefined();
+    expect(screen.getByText(/bbb2222/)).toBeDefined();
+    expect(screen.getByText('SQL injection in handler')).toBeDefined();
+    expect(screen.getByText(/^fixed$/i)).toBeDefined();
+    expect(screen.getByText('HIGH')).toBeDefined();
+    expect(screen.getByText('Logging secrets')).toBeDefined();
+    expect(screen.getByText(/^rejected$/i)).toBeDefined();
+    expect(screen.getByText('LOW')).toBeDefined();
+  });
+
+  it('hides the Reviews tab when the card has no review records', async () => {
+    renderModal({ ...mockItem });
+    await waitFor(() => expect(screen.getByText('Test Story')).toBeDefined());
+    expect(screen.queryByRole('button', { name: /Reviews/i })).toBeNull();
+  });
 });
 
 /**

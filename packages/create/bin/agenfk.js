@@ -29,7 +29,7 @@ ${RESET}`);
 console.log(`${BLUE}=== AgEnFK Installer ===${RESET}\n`);
 
 // Check git is available
-const gitCheck = spawnSync('git', ['--version'], { encoding: 'utf8' });
+const gitCheck = spawnSync('git', ['--version'], { encoding: 'utf8', windowsHide: true });
 if (gitCheck.status !== 0) {
   console.error('Error: git is required but not found. Please install git and try again.');
   process.exit(1);
@@ -72,7 +72,7 @@ function fetchLatestTag(repo) {
   // GitHub's own answer first, the list best-effort (the CLI's order): a list
   // that fails never throws away a good /releases/latest. maxBuffer: the
   // 100-release list grows with every release's notes; the default is 1 MB.
-  const run = (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024 });
+  const run = (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024, windowsHide: true });
   const curlJson = (url) => JSON.parse(run(`curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`));
   const viaApi = () => {
     const tags = [];
@@ -104,11 +104,11 @@ function fetchLatestTag(repo) {
 function downloadAsset(repo, tag, pattern, outputPath) {
   const url = `https://github.com/${repo}/releases/download/${tag}/${pattern}`;
   try {
-    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit' });
+    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
     return;
   } catch {}
   // Fallback: gh CLI
-  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
+  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
 }
 
 // Archive kept alive until install.mjs has run. `tar -xzf` deletes nothing, so
@@ -136,13 +136,13 @@ if (fs.existsSync(INSTALL_DIR)) {
 
   if (isGitRepo) {
     console.log('Pulling latest changes...');
-    execSync('git pull', { cwd: INSTALL_DIR, stdio: 'inherit' });
+    execSync('git pull', { cwd: INSTALL_DIR, stdio: 'inherit', windowsHide: true });
   } else if (!shouldRebuild) {
     console.log(`${GREEN}Updating pre-built binary from GitHub...${RESET}`);
     try {
       const latestTag = fetchLatestTag(REPO_NAME);
       downloadAsset(REPO_NAME, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
-      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
+      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit', windowsHide: true });
       distTarball = path.join(INSTALL_DIR, 'agenfk-dist.tar.gz');
     } catch (e) {
       console.error(`Failed to update pre-built binary: ${e.message}`);
@@ -160,17 +160,17 @@ if (fs.existsSync(INSTALL_DIR)) {
     try {
       const latestTag = fetchLatestTag(REPO_NAME);
       downloadAsset(REPO_NAME, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
-      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
+      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit', windowsHide: true });
       fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
     } catch (e) {
       try { fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')); } catch { /* not there */ }
       console.error(`Failed to download pre-built binary: ${e.message}`);
       console.log(`${BLUE}Falling back to git clone...${RESET}`);
-      execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+      execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true, windowsHide: true });
     }
   } else {
     console.log(`Cloning AgEnFK to ${INSTALL_DIR} ...`);
-    execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+    execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true, windowsHide: true });
   }
 }
 
@@ -183,6 +183,7 @@ try {
     // Path via env, never interpolated into the command string: a filesystem
     // path is not shell-safe (see scripts/install.mjs).
     env: { ...process.env, ...(tarballEnv ? { AGENFK_DIST_TARBALL: tarballEnv } : {}) },
+    windowsHide: true,
   });
 } finally {
   if (distTarball) { try { fs.unlinkSync(distTarball); } catch { /* already gone */ } }

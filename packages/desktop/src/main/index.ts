@@ -17,7 +17,7 @@ import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
-import { resolveDbPath } from './serverEnv.js';
+import { resolveDbPath, buildServerEnv } from './serverEnv.js';
 import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
@@ -30,11 +30,11 @@ import { registerPtyIpc } from './ptyIpc.js';
 import { resolveWorktree } from './worktree.js';
 import { cardPrompt } from './cardPrompt.js';
 import { httpPost } from './httpPost.js';
-import { captureLoginPath } from './ptyEnv.js';
+import { captureLoginPath, mergePath, pathKeyOf } from './ptyEnv.js';
 import { adoptFailureChoice, resolveBrowserUi } from './adoptFailure.js';
 import { EDITORS } from './editors.js';
 import { detectTmux, type TmuxStatus } from './tmux.js';
-import { whichOnPath, setAgentDetectionDeps } from './detectAgents.js';
+import { whichOnPath, setAgentDetectionDeps, locateExecutable } from './detectAgents.js';
 import { makeEmit } from './windowEmit.js';
 import { wireFullScreen, answerFullScreenQuery } from './windowFullScreen.js';
 import { makeLoginPathCache } from './loginPathCache.js';
@@ -73,6 +73,30 @@ let ptyRegistry: PtyRegistry | null = null;
  * capture still in flight. Null means no successful capture yet.
  */
 let loginPath: string | null = null;
+/*
+ * The captured PATH, re-captured when the memo is no longer trustworthy.
+ *
+ * Both halves of that sentence are scar tissue. A single memoised promise
+ * turned a boot optimisation into a session-long pin, so a PATH that
+ * changed while the app was open was never seen again — hence the expiry.
+ * And the expiry without a single flight meant N concurrent spawns each
+ * forked their own login shell — hence loginPathCache.
+ *
+ * Module-level since BUG 474a8240: the server is forked with it too, and the
+ * server starts before anything else in boot.
+ */
+const currentLoginPath = makeLoginPathCache({
+  capture: () => captureLoginPath().then(p => { loginPath = p; return p; }),
+});
+// Comfortably past captureLoginPath's own 5s timeout; this is a backstop
+// for the spawn paths, not a second policy.
+const LOGIN_PATH_DEADLINE_MS = 8_000;
+/** The fresh PATH, or null once the deadline passes - never a hang. */
+const loginPathWithin = (): Promise<string | null> => {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), LOGIN_PATH_DEADLINE_MS); });
+  return Promise.race([currentLoginPath(), deadline]).finally(() => clearTimeout(timer));
+};
 /**
  * Whether sessions can survive the app closing.
  *
@@ -114,7 +138,7 @@ function fail(title: string, detail: string): void {
   dialog.showErrorBox(title, detail);
 }
 
-function startServer(): void {
+async function startServer(): Promise<void> {
   const { serverEntry, uiDir } = resolveDesktopPaths({
     dirname: __dirname,
     resourcesPath: process.resourcesPath,
@@ -122,18 +146,14 @@ function startServer(): void {
   });
   const dbPath = resolveDbPath();
   weSpawnedTheServer = true;
+  // Before the fork: the server runs tools like `gh` by name (BUG 474a8240).
+  const freshPath = await loginPathWithin();
 
   serverChild = utilityProcess.fork(serverEntry, [], {
     // cwd is explicit because the server's own fallback derives the database
     // from it. Launched from Finder that would be "/" — see serverEnv.ts.
     cwd: path.dirname(serverEntry),
-    env: {
-      ...process.env,
-      // One origin for everything (CGLAB-165).
-      AGENFK_SERVE_UI: uiDir,
-      // Never let the database location depend on how the app was launched.
-      AGENFK_DB_PATH: dbPath,
-    },
+    env: buildServerEnv(process.env, { uiDir, dbPath, freshPath }),
     stdio: 'inherit',
   });
   console.log(`[DESKTOP] Starting AgEnFK server (db: ${dbPath})`);
@@ -273,6 +293,12 @@ function openExternally(raw: string): void {
 }
 
 async function boot(): Promise<void> {
+  /*
+   * The fresh PATH, started FIRST so it is captured while the adopt probes
+   * run: a server we fork waits for it (BUG 474a8240), and starting it inside
+   * startServer put the whole login shell in front of a cold launch.
+   */
+  void currentLoginPath();
   try {
     server = await resolveServer({
       readPort: readServerPort,
@@ -337,7 +363,9 @@ async function boot(): Promise<void> {
     // does not start".
     try {
       /*
-       * ONE capture, shared, and the window does not wait for it.
+       * ONE capture, shared. The window waits for it only when this app forks
+       * the server, which needs it (BUG 474a8240) - and it was started at the
+       * top of boot, so it has been running during the adopt probes.
        *
        * Both halves were wrong before. The comment here claimed detection and
        * spawning shared one capture — spawning did, detection did not: it fell
@@ -352,25 +380,10 @@ async function boot(): Promise<void> {
        * and detection is handed the same one. Otherwise a terminal opened in
        * the first second would get a degraded PATH.
        */
-      // Comfortably past captureLoginPath's own 5s timeout; this is a backstop
-      // for the spawn path, not a second policy.
-      const LOGIN_PATH_DEADLINE_MS = 8_000;
-      /*
-       * The captured PATH, re-captured when the memo is no longer trustworthy.
-       *
-       * Both halves of that sentence are scar tissue. A single memoised promise
-       * turned a boot optimisation into a session-long pin, so a PATH that
-       * changed while the app was open was never seen again — hence the expiry.
-       * And the expiry without a single flight meant N concurrent spawns each
-       * forked their own login shell — hence loginPathCache.
-       */
-      const currentLoginPath = makeLoginPathCache({
-        capture: () => captureLoginPath().then(p => { loginPath = p; return p; }),
-      });
-      // Kick it off now, so the value is usually ready before anything asks.
+      // Started at the top of boot; this joins it, or reuses its value.
       void currentLoginPath();
 
-      setAgentDetectionDeps({ which: whichOnPath, loginPath: currentLoginPath });
+      setAgentDetectionDeps({ which: whichOnPath, loginPath: currentLoginPath, forgetLoginPath: currentLoginPath.forget });
       /*
        * Probed against the LOGIN PATH, like agent detection one line above.
        *
@@ -454,6 +467,7 @@ async function boot(): Promise<void> {
         try {
           execFileSync('git', ['rev-parse', '--verify', 'HEAD'], {
             cwd: dir, stdio: 'ignore', env: process.env,
+            windowsHide: true,
           });
           return true;
         } catch {
@@ -465,6 +479,7 @@ async function boot(): Promise<void> {
         try {
           execFileSync('git', ['rev-parse', '--git-dir'], {
             cwd: dir, stdio: 'ignore', env: process.env,
+            windowsHide: true,
           });
           return true;
         } catch {
@@ -475,6 +490,9 @@ async function boot(): Promise<void> {
       const port = new URL(server.url).port ? Number(new URL(server.url).port) : DEFAULT_API_PORT;
       ptyRegistry = new PtyRegistry({
         spawn: spawnPty as never,
+        // The lookup that marks an agent Installed, so the picker and the
+        // terminal cannot disagree about where it is (story 1b9d622e).
+        locate: file => locateExecutable(file),
         /*
          * The card, in its own words, as the first thing the agent is told.
          * Read from the server here so the text is the CARD's — the renderer
@@ -510,6 +528,7 @@ async function boot(): Promise<void> {
             try {
               const out = execFileSync('git', ['worktree', 'list', '--porcelain'], {
                 cwd: root, env: process.env, encoding: 'utf8',
+                windowsHide: true,
               });
               let current: string | null = null;
               for (const line of out.split('\n')) {
@@ -617,10 +636,7 @@ async function boot(): Promise<void> {
          * failure from "the spawn has the wrong PATH", and not one to inherit
          * silently.
          */
-        loginPath: () => Promise.race([
-          currentLoginPath(),
-          new Promise<null>(resolve => setTimeout(() => resolve(null), LOGIN_PATH_DEADLINE_MS)),
-        ]),
+        loginPath: loginPathWithin,
         tmux: { available: tmuxStatus.available },
         // To that window only, and never to a destroyed one. See windowEmit.ts
         // for why the guard matters more than it looks: this runs inside a
@@ -650,6 +666,7 @@ async function boot(): Promise<void> {
           const child = execFile('git', ['-c', 'protocol.ext.allow=never', 'clone', '--progress', repo, target], {
             env: process.env,
             maxBuffer: 16 * 1024 * 1024,
+            windowsHide: true,
           }, (err, _stdout, stderr) => {
             if (err) reject(new Error(String(stderr ?? '').trim() || err.message));
             else resolve();
@@ -692,7 +709,7 @@ async function boot(): Promise<void> {
        * see createRepository.ts for why there is no second one.
        */
       const runGh = (args: readonly string[]) => new Promise<string>((resolve, reject) => {
-        execFile('gh', [...args], { env: process.env, maxBuffer: 8 * 1024 * 1024 },
+        execFile('gh', [...args], { env: process.env, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
           (err, stdout, stderr) => {
             // gh explains itself on stderr — a taken name, a missing scope, a
             // logged-out state. Its words travel; ours would only paraphrase.
@@ -774,6 +791,7 @@ async function boot(): Promise<void> {
             try {
               const out = execFileSync('git', ['worktree', 'list', '--porcelain'], {
                 cwd: root, env: process.env, encoding: 'utf8',
+                windowsHide: true,
               });
               let current: string | null = null;
               for (const line of out.split('\n')) {
@@ -868,56 +886,70 @@ async function boot(): Promise<void> {
           return res.body;
         },
         printCommand: printCommandFor,
-        run: (file, args, opts) => new Promise((resolve, reject) => {
-          // execFile, never a shell: the objective is a sentence a person
-          // typed, and it reaches argv as one argument rather than as
-          // something a shell gets to interpret.
-          const child = execFile(file, [...args], {
-            cwd: opts.cwd,
-            timeout: opts.timeoutMs,
-            maxBuffer: 16 * 1024 * 1024,
-            env: process.env,
-          }, (err: Error | null, stdout: string, stderr: string) => {
-            // A non-zero exit still carries output worth reading: the answer
-            // may be on stdout and the reason on stderr.
-            if (err && !String(stdout ?? '').trim()) {
-              reject(new Error(String(stderr ?? '').trim() || err.message));
-              return;
-            }
-            resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
-          });
-
-          /*
-           * EOF ON STDIN, IMMEDIATELY. execFile opens a pipe and leaves it
-           * open, so a CLI that reads stdin before answering waits on input
-           * that is never coming — the run looks identical to a slow model
-           * until the timeout fires minutes later. A one-shot question has
-           * nothing to type; saying so is what lets the agent get on with it.
-           */
-          child.stdin?.end();
-
-          /*
-           * What it is saying WHILE it says it. The screen used to show a
-           * spinner and the word "working", which cannot distinguish thinking
-           * from stuck from a login prompt nobody can see.
-           */
-          const forward = (stream: 'stdout' | 'stderr') => (chunk: unknown) => {
-            for (const line of String(chunk).split(/[\r\n]+/)) {
-              if (!line.trim()) continue;
-              /*
-               * To the window that asked. There is exactly one for this
-               * question — the panel that started it — and if it has gone,
-               * nobody is waiting for these lines.
-               */
-              const target = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.id : null;
-              if (target !== null) {
-                emitToWindow(target, 'agents:proposeOutput', { stream, line: line.trim() });
+        run: async (file, args, opts) => {
+          // Where the terminal would find it, opened the way the terminal
+          // opens it: on Windows an npm .cmd needs cmd.exe (story 1b9d622e).
+          const located = await locateExecutable(file);
+          const launchAs = located ? platform.launch(located, args, process.env) : { file, args, commandLine: undefined };
+          // And with that same PATH: an npm-installed agent is a script that
+          // finds `node` on PATH, and the app's own PATH may not have it.
+          const pathKey = pathKeyOf(process.env);
+          const freshPath = await currentLoginPath();
+          const env = freshPath ? { ...process.env, [pathKey]: mergePath(freshPath, process.env[pathKey]) } : process.env;
+          return new Promise((resolve, reject) => {
+            // execFile, never a shell: the objective is a sentence a person
+            // typed, and it reaches argv as one argument rather than as
+            // something a shell gets to interpret. The one exception is a .cmd,
+            // whose command line `launch` has already escaped for cmd.exe.
+            const child = execFile(launchAs.file, launchAs.commandLine ? [launchAs.commandLine] : [...launchAs.args], {
+              cwd: opts.cwd,
+              timeout: opts.timeoutMs,
+              maxBuffer: 16 * 1024 * 1024,
+              env,
+              windowsHide: true,
+              windowsVerbatimArguments: Boolean(launchAs.commandLine),
+            }, (err: Error | null, stdout: string, stderr: string) => {
+              // A non-zero exit still carries output worth reading: the answer
+              // may be on stdout and the reason on stderr.
+              if (err && !String(stdout ?? '').trim()) {
+                reject(new Error(String(stderr ?? '').trim() || err.message));
+                return;
               }
-            }
-          };
-          child.stdout?.on('data', forward('stdout'));
-          child.stderr?.on('data', forward('stderr'));
-        }),
+              resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+            });
+
+            /*
+             * EOF ON STDIN, IMMEDIATELY. execFile opens a pipe and leaves it
+             * open, so a CLI that reads stdin before answering waits on input
+             * that is never coming — the run looks identical to a slow model
+             * until the timeout fires minutes later. A one-shot question has
+             * nothing to type; saying so is what lets the agent get on with it.
+             */
+            child.stdin?.end();
+
+            /*
+             * What it is saying WHILE it says it. The screen used to show a
+             * spinner and the word "working", which cannot distinguish thinking
+             * from stuck from a login prompt nobody can see.
+             */
+            const forward = (stream: 'stdout' | 'stderr') => (chunk: unknown) => {
+              for (const line of String(chunk).split(/[\r\n]+/)) {
+                if (!line.trim()) continue;
+                /*
+                 * To the window that asked. There is exactly one for this
+                 * question — the panel that started it — and if it has gone,
+                 * nobody is waiting for these lines.
+                 */
+                const target = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.id : null;
+                if (target !== null) {
+                  emitToWindow(target, 'agents:proposeOutput', { stream, line: line.trim() });
+                }
+              }
+            };
+            child.stdout?.on('data', forward('stdout'));
+            child.stderr?.on('data', forward('stderr'));
+          });
+        },
       }),
       // No one-shot door any more: choosing a folder must not BE the
       // decision. See folderDoor below.

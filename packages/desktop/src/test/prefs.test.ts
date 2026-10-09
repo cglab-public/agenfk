@@ -198,3 +198,72 @@ describe('cloneDirOrDefault', () => {
     expect(readPrefs(dir).cloneDir).toBe('');
   });
 });
+
+/**
+ * The default agent, and whether opening a terminal asks first.
+ *
+ * Here for exactly the reason `autoApprove` is, and the argument is one line
+ * long: the default agent decides WHICH BINARY every terminal the desktop
+ * spawns runs. That is argv. The server's `/settings` is unauthenticated on
+ * loopback, so a value stored there would let any page open on this machine
+ * choose the program this app starts next — one step short of the shell string
+ * that already sits behind VERIFY_TOKEN.
+ *
+ * What is deliberately NOT here: `herdr`. It is in `agentLabels.ts` only because
+ * it is rendered beside agents; it is an attach, not a CLI this app starts, and
+ * it brings its own tabs. It cannot be a default the open-dialog honours.
+ */
+describe('the default agent', () => {
+  it('starts on the shell, the one agent every machine has', () => {
+    /*
+     * NOT 'claude-code'. `detectAgents.ts` keeps ALWAYS_AVAILABLE =
+     * new Set(['shell']) and `agents.ts` resolves it per platform — the
+     * account's login shell on Unix, an absolute PowerShell on Windows — so the
+     * shell is the only id that cannot name a program the person does not have.
+     * Every other choice is a CLI somebody may not have installed yet, and a
+     * default that names one fails on a fresh machine.
+     */
+    expect(DEFAULT_PREFS.defaultAgentId).toBe('shell');
+  });
+
+  it('keeps the agent it is given, across a restart', () => {
+    writePref(dir, 'defaultAgentId', 'pi');
+    expect(readPrefs(dir).defaultAgentId).toBe('pi');
+  });
+
+  it('refuses a non-string', () => {
+    expect(() => writePref(dir, 'defaultAgentId', 7 as never)).toThrow(/must be string/i);
+  });
+
+  it('ignores a stored value of the wrong type', () => {
+    // A hand-edited or half-written file: the answer is "nobody chose", not a
+    // crash and not a guess at which agent the object meant.
+    fs.writeFileSync(file(), JSON.stringify({ defaultAgentId: { id: 'pi' } }));
+    expect(readPrefs(dir).defaultAgentId).toBe('shell');
+  });
+
+  it('does not disturb autoApprove when it is written', () => {
+    // The failure a read-modify-write gets wrong, and the one that costs the
+    // most here: choosing an agent must not take an agent's prompts away.
+    writePref(dir, 'autoApprove', true);
+    writePref(dir, 'defaultAgentId', 'codex');
+    expect(readPrefs(dir).autoApprove).toBe(true);
+  });
+});
+
+describe('whether opening a terminal asks first', () => {
+  it('starts ON, so an upgrade opens terminals the way it always did', () => {
+    // The same promise tmuxByDefault makes: an install that predates this must
+    // not start skipping a screen because of a default we chose for it.
+    expect(DEFAULT_PREFS.askBeforeOpening).toBe(true);
+  });
+
+  it('can be turned off, and stays off', () => {
+    writePref(dir, 'askBeforeOpening', false);
+    expect(readPrefs(dir).askBeforeOpening).toBe(false);
+  });
+
+  it('refuses a non-boolean', () => {
+    expect(() => writePref(dir, 'askBeforeOpening', 'no' as never)).toThrow(/must be boolean/i);
+  });
+});

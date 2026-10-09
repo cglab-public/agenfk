@@ -124,7 +124,7 @@ function isRemovableWorktree(target: string): boolean {
 }
 
 const git = (cwd: string, args: string[]): string =>
-  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 
 /**
  * Absolute path with symlinks resolved, so two spellings of the same directory

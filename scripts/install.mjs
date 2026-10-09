@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import readline from 'readline';
 import { writePrivateFileSync } from './private-file.mjs';
 import { runTool } from './client-cli.mjs';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -140,7 +140,7 @@ async function run() {
             const persistedPort = fs.readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
             if (persistedPort) serverPort = persistedPort;
         } catch { /* ignore */ }
-        const serverCheck = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${serverPort}/`], { encoding: 'utf8' });
+        const serverCheck = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${serverPort}/`], { encoding: 'utf8', windowsHide: true });
         const serverReachable = serverCheck.status === 0 && serverCheck.stdout.trim() !== '000';
         debugLog(`server on localhost:${serverPort}:`, serverReachable ? `REACHABLE (HTTP ${serverCheck.stdout.trim()})` : 'NOT REACHABLE');
         wasReachableBeforeInstall = serverReachable;
@@ -157,7 +157,7 @@ async function run() {
             const persistedPort = readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
             if (persistedPort) probePort = persistedPort;
         } catch { /* ignore */ }
-        const probe = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${probePort}/`], { encoding: 'utf8' });
+        const probe = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${probePort}/`], { encoding: 'utf8', windowsHide: true });
         if (probe.status === 0 && probe.stdout.trim() !== '000') {
             wasReachableBeforeInstall = true;
             preInstallServerPort = probePort;
@@ -193,36 +193,8 @@ async function run() {
         // Cross-platform, mirrors the CLI's killPattern detection. This does
         // not depend on HTTP timing or hub connectivity — if the process is
         // there, we restart it onto the new code.
-        const SERVER_PATTERN = 'packages/server/dist/server.js';
-        // Only count a line as the live server if it is an actual node/bun
-        // invocation of the server bin — not just any process whose argv happens
-        // to embed the path (an editor with the file open, a `grep`/`tail`, this
-        // install's own tooling). Mirrors killPattern's grep/ps exclusion but
-        // tighter: it must look like `… node|bun … packages/server/dist/server.js`.
-        const looksLikeServerCmd = (line) =>
-            line.includes(SERVER_PATTERN) && /(^|[\/\\\s])(node|node\.exe|bun)([\s.]|$)/i.test(line);
-        function serverProcessAlive() {
-            try {
-                if (process.platform === 'win32' && !(process.env.MSYSTEM || process.env.WSL_DISTRO_NAME)) {
-                    const pat = SERVER_PATTERN.replace(/\//g, '\\\\');
-                    const out = spawnSync('wmic', ['process', 'where', `commandline like '%${pat}%'`, 'get', 'commandline'], { encoding: 'utf8' });
-                    return (out.stdout || '').split('\n').some(looksLikeServerCmd);
-                }
-                const out = spawnSync('ps', ['-ax', '-o', 'command'], { encoding: 'utf8' });
-                if (out.status === 0 && typeof out.stdout === 'string') {
-                    return out.stdout.split('\n').some(looksLikeServerCmd);
-                }
-                // Fallback: pgrep against a node-anchored regex if ps is unavailable.
-                // Escape every regex metacharacter, not just the dot — a partial escape is
-                // the kind that quietly stops matching when the pattern changes.
-                const pgPattern = SERVER_PATTERN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const pg = spawnSync('pgrep', ['-f', `(node|bun).*${pgPattern}`], { encoding: 'utf8' });
-                return pg.status === 0 && (pg.stdout || '').trim().length > 0;
-            } catch {
-                return false;
-            }
-        }
-        if (!wasReachableBeforeInstall && serverProcessAlive()) {
+        const run = (file, args, opts) => spawnSync(file, args, { ...opts, windowsHide: true });
+        if (!wasReachableBeforeInstall && serverProcessAlive(run)) {
             wasReachableBeforeInstall = true;
         }
         // Resolve the .agenfk dir the server uses, mirroring the server's own
@@ -341,12 +313,12 @@ async function run() {
         warn(`Pre-built artifacts missing — re-downloading ${tag}...`);
         try {
             // Try curl first
-            const curlResult = spawnSync('curl', ['-fsSL', '-o', tmpFile, url], { stdio: 'pipe' });
+            const curlResult = spawnSync('curl', ['-fsSL', '-o', tmpFile, url], { stdio: 'pipe', windowsHide: true });
             if (curlResult.status !== 0) {
                 // gh CLI fallback
                 const tmpDir = path.dirname(tmpFile);
                 const ghResult = spawnSync('gh', ['release', 'download', tag, '--repo', REPO,
-                    '--pattern', 'agenfk-dist.tar.gz', '-D', tmpDir, '--clobber'], { stdio: 'pipe' });
+                    '--pattern', 'agenfk-dist.tar.gz', '-D', tmpDir, '--clobber'], { stdio: 'pipe', windowsHide: true });
                 if (ghResult.status !== 0) return false;
                 const ghFile = path.join(tmpDir, 'agenfk-dist.tar.gz');
                 if (existsSync(ghFile)) renameSync(ghFile, tmpFile);
@@ -358,7 +330,7 @@ async function run() {
             const tarArgs = os.platform() === 'win32'
                 ? ['--force-local', '-xzf', toPosixPath(tmpFile), '-C', toPosixPath(rootDir)]
                 : ['-xzf', tmpFile, '-C', rootDir];
-            const tarResult = spawnSync('tar', tarArgs, { stdio: childStdio, encoding: 'utf8', maxBuffer: childMaxBuffer });
+            const tarResult = spawnSync('tar', tarArgs, { stdio: childStdio, encoding: 'utf8', maxBuffer: childMaxBuffer, windowsHide: true });
             if (tarResult.status !== 0) { if (childOutput(tarResult)) console.error(childOutput(tarResult)); return false; }
             // This extraction is an overlay like any other, and it holds the
             // only authoritative listing this run will ever see — the finally
@@ -502,7 +474,7 @@ async function run() {
                 // POSIX path. Without these the prune silently degrades to a
                 // "Skipped:" line on Windows and the leak stays open there.
                 const listFlags = process.platform === 'win32' ? '--force-local -tzf' : '-tzf';
-                const listing = execSync(`tar ${listFlags} "${toPosixPath(tarball)}"`, { encoding: 'utf8' })
+                const listing = execSync(`tar ${listFlags} "${toPosixPath(tarball)}"`, { encoding: 'utf8', windowsHide: true })
                     .split('\n').filter(Boolean);
                 const { removed, failed } = pruneInstallDirAgainstManifest(rootDir, listing);
                 for (const rel of removed) detail(`  Pruned (no longer shipped): ${rel}`);
@@ -548,6 +520,7 @@ async function run() {
             encoding: 'utf8',
             maxBuffer: childMaxBuffer,
             shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
+            windowsHide: true,
         });
         if (npmCiResult.status !== 0) {
             if (childOutput(npmCiResult)) console.log(childOutput(npmCiResult));
@@ -739,7 +712,7 @@ async function run() {
         detail(`${GREEN}[4/14] Initializing configuration...${NC}`);
         const localConfigDir = path.join(rootDir, '.agenfk');
         if (!existsSync(localConfigDir)) {
-            spawnSync(process.execPath, [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'init'], { stdio: childStdio });
+            spawnSync(process.execPath, [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'init'], { stdio: childStdio, windowsHide: true });
         }
     }
 
@@ -1343,7 +1316,14 @@ async function run() {
         }
     }
 
-    if (!onlyPlatform) {
+    // Also on a single-client run (`agenfk integration install|resume <client>`)
+    // for every client whose hook config points at these files: step 14 points
+    // Claude at all four, 14b-14d point Codex, Gemini and Cursor at agenfk-pr-hook.
+    // A hook whose file is missing exits 127 - non-blocking, so the guard just
+    // vanishes (#192).
+    if (!onlyPlatform || ['claude', 'codex', 'gemini', 'cursor'].some(shouldRun)) {
+        // A single-client run skips the CLI step that would otherwise create it.
+        await fs.mkdir(localBinDir, { recursive: true });
         detail(`${GREEN}[12/14] Installing agenfk-gatekeeper hook script...${NC}`);
         if (os.platform() === 'win32') {
             // Always write .cmd on Windows
@@ -1716,7 +1696,7 @@ async function run() {
     if ((wasReachableBeforeInstall || upgradeInFlight) && !onlyPlatform) {
         detail(`${BLUE}Restarting API server (was running on port ${preInstallServerPort} before upgrade)...${NC}`);
         // Delegate to `agenfk up`. It internally calls killPattern (which
-        // already handles Windows via wmic and POSIX via ps/pgrep) and then
+        // handles Windows via CIM and POSIX via ps/pgrep) and then
         // spawns a fresh server. This keeps the kill logic in one place.
         try {
             // --quiet: a fleet-upgrade auto-restart must not pop a new
@@ -1725,7 +1705,7 @@ async function run() {
             const child = spawn(
                 'node',
                 [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'restart', '--quiet'],
-                { cwd: rootDir, detached: true, stdio: 'ignore' },
+                { cwd: rootDir, detached: true, stdio: 'ignore', windowsHide: true },
             );
             // BUG 2f491181: install.mjs is now the SOLE owner of the post-
             // upgrade restart (the CLI no longer fires a fallback `up`). A

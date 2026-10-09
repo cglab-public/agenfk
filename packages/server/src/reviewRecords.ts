@@ -44,6 +44,8 @@ export interface TranscriptIdentity extends Identity {
 export interface Finding {
   title: string;
   state: 'fixed' | 'rejected';
+  /** How serious the finding is; the reviewer's judgement, optional. */
+  severity?: 'HIGH' | 'MEDIUM' | 'LOW';
   reason?: string;
 }
 
@@ -190,14 +192,15 @@ export function readTranscriptIdentity(file: string): TranscriptIdentity {
 
 /** Findings as recorded: each fixed, or rejected with a reason. Throws on anything else. */
 export function parseFindings(value: unknown): Finding[] {
-  if (!Array.isArray(value)) throw new Error('findings must be a list of { title, state: fixed|rejected, reason? } (an empty list when the review found nothing)');
+  if (!Array.isArray(value)) throw new Error("findings must be a list of { title, state: fixed|rejected, severity?: HIGH|MEDIUM|LOW, reason? } (an empty list when the review found nothing)");
   return value.map((f, i) => {
     if (!f || typeof f !== 'object') throw new Error(`finding ${i + 1} must be an object`);
-    const { title, state, reason } = f as any;
+    const { title, state, severity, reason } = f as any;
     if (typeof title !== 'string' || !title.trim()) throw new Error(`finding ${i + 1} needs a title`);
     if (state !== 'fixed' && state !== 'rejected') throw new Error(`finding '${title}' must be fixed or rejected (was ${JSON.stringify(state)})`);
     if (state === 'rejected' && (typeof reason !== 'string' || !reason.trim())) throw new Error(`finding '${title}' is rejected without a reason`);
-    return { title, state, ...(typeof reason === 'string' && reason.trim() ? { reason } : {}) };
+    if (severity !== undefined && severity !== 'HIGH' && severity !== 'MEDIUM' && severity !== 'LOW') throw new Error(`finding '${title}' severity must be HIGH, MEDIUM or LOW (was ${JSON.stringify(severity)})`);
+    return { title, state, ...(severity ? { severity } : {}), ...(typeof reason === 'string' && reason.trim() ? { reason } : {}) };
   });
 }
 

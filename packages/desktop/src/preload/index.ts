@@ -154,9 +154,33 @@ export interface AgenfkEditorsApi {
   open(itemId: string, editorId: string): Promise<{ opened: boolean; path: string }>;
 }
 
+/**
+ * The slice of preferences the renderer may read.
+ *
+ * Deliberately NOT the whole file: `customSoundPath` is a path, and this surface
+ * has no business handing one over — `sounds.read` answers with BYTES for
+ * exactly that reason. Narrowed in main as well, so this type is the truth
+ * rather than a promise about a wider object.
+ */
+export interface AgenfkPrefs {
+  readonly autoApprove: boolean;
+  readonly defaultAgentId: string;
+  readonly askBeforeOpening: boolean;
+}
+
 export interface AgenfkPrefsApi {
-  get(): Promise<{ autoApprove: boolean }>;
-  setAutoApprove(value: boolean): Promise<{ autoApprove: boolean }>;
+  get(): Promise<AgenfkPrefs>;
+  setAutoApprove(value: boolean): Promise<AgenfkPrefs>;
+  /**
+   * The agent a new terminal starts with, or '' to clear the choice.
+   *
+   * A STRING crosses this bridge here, and nowhere else in this file. It is safe
+   * for one reason and not for a general one: main checks it against its own
+   * agent table (`AGENT_IDS`), so the renderer picks from a vocabulary instead
+   * of supplying a program to run. Anything else is refused there.
+   */
+  setDefaultAgent(agentId: string): Promise<AgenfkPrefs>;
+  setAskBeforeOpening(value: boolean): Promise<AgenfkPrefs>;
 }
 
 /**
@@ -273,6 +297,15 @@ const prefs: AgenfkPrefsApi = {
   // The value is normalised to a real boolean here as well as in main: the
   // renderer is our own bundle, but it is also the part an XSS would control.
   setAutoApprove: value => ipcRenderer.invoke('prefs:set', { key: 'autoApprove', value: value === true }),
+  // `String()` rather than the value as given: main refuses a non-string, and a
+  // refusal here would look like a broken settings screen rather than a bad
+  // argument. Main still checks it against the agent vocabulary — this only
+  // guarantees the TYPE it is checking.
+  setDefaultAgent: agentId => ipcRenderer.invoke('prefs:set', { key: 'defaultAgentId', value: String(agentId) }),
+  // Normalised for the same reason as autoApprove, and it matters more here:
+  // main refuses a non-boolean for THIS key rather than coercing it, because
+  // coerced junk would turn the confirmation OFF.
+  setAskBeforeOpening: value => ipcRenderer.invoke('prefs:set', { key: 'askBeforeOpening', value: value === true }),
 };
 
 const editors: AgenfkEditorsApi = {

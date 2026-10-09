@@ -436,6 +436,7 @@ function runHookScript(script: string, argv: string[], stdin: unknown): any | nu
       input: JSON.stringify(stdin),
       encoding: 'utf8',
       timeout: 2000,
+      windowsHide: true,
     });
     const out = (res.stdout || '').trim();
     if (!out) return null;
