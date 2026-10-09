@@ -7,7 +7,7 @@
  * one summary line that says what is applied; the period (and PR overview's
  * PR search) stay in an always-visible toolbar.
  */
-import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -180,6 +180,46 @@ describe('user page opens on data', () => {
     expect(screen.getByText('30 days · Item closed · all projects')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '30d', pressed: true })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Item created' })).not.toBeInTheDocument();
+  });
+});
+
+describe('the whole filter header toggles the fold', () => {
+  it('Org: clicking the summary line toggles, not just the link', async () => {
+    renderAt('/');
+    fireEvent.click(await screen.findByText('30 days · Item closed · all projects'));
+    expect(await screen.findByRole('button', { name: 'Item created' })).toBeInTheDocument();
+    fireEvent.click(screen.getByText('30 days · Item closed · all projects'));
+    expect(await screen.findByRole('button', { name: 'Edit filters' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('Org: clicking the active-count badge toggles too', async () => {
+    renderAt('/?projects=acme%2Fapi');
+    // Scoped to the header: /active/ alone could match body copy.
+    fireEvent.click(within(await screen.findByTestId('filter-header')).getByText(/active/));
+    expect(await screen.findByRole('button', { name: 'Item created' })).toBeInTheDocument();
+  });
+
+  it('a row click toggles exactly once (no double-fire regression)', async () => {
+    renderAt('/');
+    fireEvent.click(await screen.findByTestId('filter-header'));
+    expect(await screen.findByRole('button', { name: 'Hide filters' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('PR overview: clicking the summary line toggles', async () => {
+    renderAt('/prs');
+    fireEvent.click(await screen.findByText('30 days · all projects'));
+    expect(await screen.findByRole('button', { name: 'Hide filters' })).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByText('30 days · all projects'));
+    expect(await screen.findByRole('button', { name: 'Edit filters' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('stays keyboard-accessible: the button activation still toggles', async () => {
+    renderAt('/');
+    const row = await screen.findByTestId('filter-header');
+    // Keyboard users activate the button; the resulting click bubbles to the
+    // row, which is where the toggle now lives.
+    fireEvent.click(within(row).getByRole('button', { name: 'Edit filters' }));
+    expect(await screen.findByRole('button', { name: 'Item created' })).toBeInTheDocument();
   });
 });
 

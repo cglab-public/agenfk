@@ -53,7 +53,15 @@ export function FilterAccordion({
   return (
     <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl overflow-hidden">
       <h2 id={headingId} className="sr-only">Filters</h2>
-      <div className="flex items-center gap-2.5 px-5 py-2.5">
+      {/* The whole row toggles: a click anywhere in the header area expands
+          or contracts the fold — the 'Edit filters' link is just its visible
+          handle. The button keeps the keyboard/AT semantics (Enter/Space,
+          aria-expanded); its click bubbles here, so the toggle happens once. */}
+      <div
+        onClick={toggle}
+        data-testid="filter-header"
+        className="flex items-center gap-2.5 px-5 py-2.5 cursor-pointer select-none"
+      >
         <SlidersHorizontal className="w-4 h-4 text-ink-tertiary shrink-0" aria-hidden="true" />
         {/* Wrapped, not truncated: collapsed, the summary is all there is to read. */}
         <p data-filter-summary className="min-w-0 flex-1 break-words text-small text-ink-secondary">{summary}</p>
@@ -67,7 +75,6 @@ export function FilterAccordion({
         )}
         <button
           type="button"
-          onClick={toggle}
           aria-expanded={open}
           aria-controls={bodyId}
           className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-small font-semibold text-accent-ink hover:bg-accent-fill/40 transition-colors"
