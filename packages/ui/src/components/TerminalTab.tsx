@@ -34,6 +34,17 @@ import { WorktreePanel } from './WorktreePanel';
 import { useGitStatus, type WorktreeView } from '../gitStatus';
 import { Columns2, X, Plus, GitBranch, FileDiff } from 'lucide-react';
 import { TerminalPane } from './TerminalPane';
+import { cockpitGadgets, type CockpitGadgetId, type CockpitSnapshot } from '../cockpit';
+import { onCockpitTogglesChanged, readCockpitToggles } from '../cockpitPrefs';
+
+/** What each gadget is, for its tooltip and its mark. */
+const COCKPIT_LABELS: Readonly<Record<CockpitGadgetId, string>> = {
+  git: 'Git branch', aws: 'AWS profile and session expiry', k8s: 'Kubernetes context',
+  tf: 'Terraform workspace', ctx: "Agent's context window used", cost: "Agent session cost (list price)",
+};
+const COCKPIT_ICONS: Readonly<Record<CockpitGadgetId, string>> = {
+  git: '⎇', aws: '☁', k8s: '⎈', tf: '▦', ctx: '▤', cost: '◈',
+};
 import { HERDR_AGENT_ID } from '../herdrTreeRows';
 import { EmptyState } from './EmptyState';
 import { AgentIcon } from './AgentIcon';
@@ -344,6 +355,33 @@ export function TerminalTab({
   // Seeded from storage in the initializer, so there is no first paint with
   // the panel open for someone who closed it.
   const [panelOpen, setPanelOpen] = React.useState<boolean>(() => readWorktreeOpen());
+  /*
+   * The cockpit each pane last reported, by session (INFRA-425). Kept here
+   * because the header belongs to the tab, and the probe to the pane that knows
+   * its session id.
+   */
+  const [cockpits, setCockpits] = React.useState<Record<string, CockpitSnapshot>>({});
+  /*
+   * The clock the gadgets are judged against (an AWS countdown), taken when a
+   * report arrives rather than read while rendering: rendering must be pure,
+   * and a countdown only needs to be as fresh as the last refresh.
+   */
+  const [cockpitNow, setCockpitNow] = React.useState(() => Date.now());
+  /*
+   * A closed terminal's cockpit goes with it, pruned when the next report
+   * arrives rather than by an effect that sets state on every session change.
+   */
+  const openSessionIds = React.useRef<ReadonlySet<string>>(new Set());
+  React.useEffect(() => { openSessionIds.current = new Set(sessions.map(x => x.id)); }, [sessions]);
+  const reportCockpit = React.useCallback((sessionId: string, snap: CockpitSnapshot) => {
+    setCockpits(prev => {
+      const kept = Object.fromEntries(Object.entries(prev).filter(([id]) => openSessionIds.current.has(id)));
+      return { ...kept, [sessionId]: snap };
+    });
+    setCockpitNow(Date.now());
+  }, []);
+  const [cockpitToggles, setCockpitToggles] = React.useState(() => readCockpitToggles());
+  React.useEffect(() => onCockpitTogglesChanged(() => setCockpitToggles(readCockpitToggles())), []);
 
   /*
    * Whether two terminals fit right now (CGLAB-192).
@@ -465,6 +503,8 @@ export function TerminalTab({
   const anyNarrow = layout.panes.some(p => p.narrow);
   const rectFor = new Map(layout.panes.map(p => [p.sessionId, p]));
   const current = sessions.find(s => s.id === activeId);
+  const cockpit = current ? cockpits[current.id] : undefined;
+  const gadgets = cockpit ? cockpitGadgets(cockpit, cockpitNow, cockpitToggles) : [];
 
   /*
    * A herdr attach hides this bar entirely, for a stronger reason than the
@@ -835,11 +875,31 @@ export function TerminalTab({
           {current?.projectName && <span className="text-ink-tertiary">{current.projectName} / </span>}
           {current?.title}
         </span>
-        {current?.branchName ? (
+        {/* The cockpit (INFRA-425): git, AWS, kube, Terraform, context, cost.
+            When it knows the branch, it replaces the branch chip below. */}
+        {gadgets.length > 0 && (
+          <span data-testid="cockpit" className="ml-auto flex min-w-0 shrink items-center gap-3 font-mono text-[11px]">
+            {gadgets.map(g => (
+              <span
+                key={g.id}
+                data-testid={`cockpit-${g.id}`}
+                title={COCKPIT_LABELS[g.id]}
+                className={clsx(
+                  'truncate',
+                  g.tone === 'danger' ? 'text-status-danger-text' : g.tone === 'warn' ? 'text-status-warn-text' : 'text-ink-secondary',
+                )}
+              >
+                <span className="text-ink-tertiary">{COCKPIT_ICONS[g.id]} </span>{g.text}
+                {g.caveat && <span data-testid={`cockpit-${g.id}-caveat`} title={g.caveat} className="text-ink-tertiary"> ?</span>}
+              </span>
+            ))}
+          </span>
+        )}
+        {gadgets.some(g => g.id === 'git') ? null : current?.branchName ? (
           <span
             title={current.branchName}
             data-testid="session-branch"
-            className="ml-auto flex min-w-0 shrink items-center gap-1.5 rounded-lg border border-border-soft bg-canvas px-2 py-0.5"
+            className={clsx('flex min-w-0 shrink items-center gap-1.5 rounded-lg border border-border-soft bg-canvas px-2 py-0.5', gadgets.length === 0 && 'ml-auto')}
           >
             <GitBranch size={11} className="shrink-0 text-ink-tertiary" />
             <span className="truncate font-mono text-[11px] text-ink">{current.branchName}</span>
@@ -847,7 +907,7 @@ export function TerminalTab({
         ) : (
           // Said, not hidden. A card with no branch yet is a worktree that has
           // not been created, and that is worth knowing BEFORE you type.
-          <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-tertiary">no branch yet</span>
+          <span className={clsx('shrink-0 font-mono text-[11px] text-ink-tertiary', gadgets.length === 0 && 'ml-auto')}>no branch yet</span>
         )}
 
         {/* Its OWN group, separated from the editor button by a divider.
@@ -1014,6 +1074,7 @@ export function TerminalTab({
             onActivity={a => onActivity?.(session.id, a)}
             onScreenActivity={a => onScreenActivity?.(session.id, a)}
             fontSize={terminalFontSize}
+            onCockpit={snap => reportCockpit(session.id, snap)}
           />
           </div>
           {/*

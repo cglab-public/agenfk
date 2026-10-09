@@ -26,6 +26,7 @@ import {
   webglHolders, webglUsable, type WebglHolder,
 } from '../webglRenderer';
 import { loadAllTerminalFaces } from '../terminalFont';
+import type { CockpitSnapshot } from '../cockpit';
 import type { ITerminalOptions } from '@xterm/xterm';
 
 /** The slice of the preload surface this component uses. */
@@ -56,6 +57,8 @@ export interface TerminalBridge {
   /** The agent published its own state via the terminal title. Optional: an
    *  older preload does not have it, and the pane must still work. */
   onActivity?(sessionId: string, cb: (e: { sessionId: string; activity: 'working' | 'blocked' | 'idle' }) => void): () => void;
+  /** The session's cockpit (INFRA-425). Optional: an older preload has none. */
+  cockpit?(sessionId: string): Promise<unknown>;
 }
 
 interface FitLike extends ITerminalAddon {
@@ -161,6 +164,13 @@ export interface TerminalPaneProps {
    * new one: that would kill the agent running in it.
    */
   readonly fontSize?: number;
+
+  /**
+   * The cockpit of this terminal, every refresh (INFRA-425). Asked from the
+   * pane because only the pane knows its session id, and only while it is on
+   * screen: thirty hidden terminals must not each run a probe every 15s.
+   */
+  readonly onCockpit?: (snapshot: CockpitSnapshot) => void;
   /**
    * Builds the terminal. Receives the options the real path would use, so a
    * test can assert on them — see TerminalPane.test.ts.
@@ -179,6 +189,10 @@ export interface TerminalPaneProps {
 const defaultBridge = (): TerminalBridge | null =>
   (window as unknown as { agenfkDesktop?: { terminal?: TerminalBridge } }).agenfkDesktop?.terminal ?? null;
 
+/** The first cockpit after the session starts, then every refresh. */
+const COCKPIT_FIRST_MS = 1500;
+const COCKPIT_REFRESH_MS = 15_000;
+
 /** At most one liveness report per this many ms, however fast output arrives. */
 const OUTPUT_REPORT_MS = 2000;
 
@@ -196,6 +210,7 @@ export function TerminalPane({
   onActivity,
   onScreenActivity,
   fontSize,
+  onCockpit,
   createTerminal,
   createFitAddon,
   createRendererAddon,
@@ -226,6 +241,12 @@ export function TerminalPane({
   const pendingAck = React.useRef(0);
   const ackQueued = React.useRef(false);
   const sessionRef = React.useRef<string | null>(null);
+  // Kept current in an effect, not during render: the poll below reads it
+  // later, and writing a ref while rendering is what React's rules forbid.
+  /** Set when the process ends: the cockpit stops asking about a dead session. */
+  const exitedRef = React.useRef(false);
+  const onCockpitRef = React.useRef(onCockpit);
+  React.useEffect(() => { onCockpitRef.current = onCockpit; }, [onCockpit]);
   const termRef = React.useRef<Terminal | null>(null);
   /*
    * Read through a ref at creation for the same reason `agentIdRef` is: the
@@ -506,6 +527,7 @@ export function TerminalPane({
       // Said out loud: without it the terminal simply stops responding, which
       // is indistinguishable from a hang.
       setExitCode(code);
+      exitedRef.current = true;
       // And told upwards. A session whose process is gone must stop counting
       // as running immediately — that is a fact, not something to age out of
       // a liveness window.
@@ -689,6 +711,40 @@ export function TerminalPane({
     term.options.fontSize = size;
     resizeRef.current?.();
   }, [fontSize]);
+
+  /*
+   * The cockpit, while this pane is on screen (INFRA-425). Asked once the
+   * session exists and then every COCKPIT_REFRESH_MS; a hidden pane (no client
+   * rects under a display:none ancestor) skips its turn rather than running a
+   * probe nobody sees.
+   */
+  React.useEffect(() => {
+    const api = bridge ?? defaultBridge();
+    if (typeof api?.cockpit !== 'function') return;
+    let stopped = false;
+    let busy = false;
+    let askedFor: string | null = null;
+    const ask = (): void => {
+      const session = sessionRef.current;
+      // A new session in this pane (the spawn effect re-ran): start afresh.
+      if (session && session !== askedFor) { askedFor = session; stopped = false; exitedRef.current = false; }
+      const host = hostRef.current;
+      // Not while one is in flight, not for a session that has exited, and not
+      // for a pane nobody can see.
+      if (stopped || busy || exitedRef.current || !session || !host || host.getClientRects().length === 0) return;
+      busy = true;
+      void api.cockpit!(session).then(snap => {
+        if (!stopped && snap && sessionRef.current === session) onCockpitRef.current?.(snap as CockpitSnapshot);
+      }).catch(() => {
+        // The session is gone from main (it exited): stop asking for it, until
+        // the pane has a new one.
+        if (sessionRef.current === session) exitedRef.current = true;
+      }).finally(() => { busy = false; });
+    };
+    const first = setTimeout(ask, COCKPIT_FIRST_MS);
+    const every = setInterval(ask, COCKPIT_REFRESH_MS);
+    return () => { stopped = true; clearTimeout(first); clearInterval(every); };
+  }, [bridge]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-black/95">
