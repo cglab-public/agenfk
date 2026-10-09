@@ -128,6 +128,12 @@ export interface AgenfkTerminalApi {
    * closes the app and loses an agent mid-run.
    */
   sessionPersistence(): Promise<{ available: boolean; hint?: string; warning?: string }>;
+  /**
+   * The cockpit of one of this window's sessions (INFRA-425): git, AWS, kube
+   * and Terraform where it runs, and its agent's context and cost. Main
+   * resolves where the session runs; this names only the session.
+   */
+  cockpit(sessionId: string): Promise<unknown>;
 }
 
 /**
@@ -297,6 +303,7 @@ const terminal: AgenfkTerminalApi = {
   onActivity: (sessionId, cb) => demux.on('pty:activity', sessionId, cb as never),
   listAgents: () => ipcRenderer.invoke('agents:list'),
   sessionPersistence: () => ipcRenderer.invoke('sessions:persistence'),
+  cockpit: sessionId => ipcRenderer.invoke('cockpit:get', { sessionId }),
   refreshAgents: () => ipcRenderer.invoke('agents:refresh'),
   // One question to one agent. Ids and a sentence in, what it printed out.
   propose: req => ipcRenderer.invoke('agents:propose', req),

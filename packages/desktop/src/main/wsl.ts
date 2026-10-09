@@ -193,12 +193,13 @@ export function parseProbe(stdout: string, asked: readonly string[]): Set<string
 }
 
 /*
- * The variables WSL must carry across. wsl.exe passes nothing from the Windows
+ * The variables WSL must carry across. AGENFK_SESSION is the cockpit's marker
+ * (INFRA-425): without it a terminal in WSL could not be told from any other. wsl.exe passes nothing from the Windows
  * environment unless WSLENV names it, so without these a terminal inside the
  * distro falls back to a TERM with no truecolor and every agent TUI draws in
  * sixteen colours. `/u`: Windows to Linux only.
  */
-const FORWARDED = ['TERM', 'COLORTERM', 'TERM_PROGRAM'];
+const FORWARDED = ['TERM', 'COLORTERM', 'TERM_PROGRAM', 'AGENFK_SESSION'];
 
 /** The environment for wsl.exe: as given, plus the terminal type in WSLENV. */
 export function withWslEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

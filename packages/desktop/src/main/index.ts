@@ -12,6 +12,7 @@ import { app, BrowserWindow, dialog, ipcMain, Notification, shell, utilityProces
 import * as path from 'path';
 import * as os from 'os';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
+import * as fsp from 'fs/promises';
 import { execFile, execFileSync } from 'node:child_process';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { adoptPortRange, portFileWithin } from './adoptPorts.js';
@@ -45,6 +46,8 @@ import { SOUND_EXTENSIONS } from './customSound.js';
 import { showAttentionNotice } from './attentionNotice.js';
 import { platform, runningOn } from './platform.js';
 import { chooseWslTarget, parseDistroList, parseProbe, wslExecutable, wslLaunch, WSL_PROBE_SCRIPT } from './wsl.js';
+import { CockpitService, type CockpitContext } from './cockpit/service.js';
+import { COCKPIT_PROBE_SCRIPT } from './cockpit/probe.js';
 
 /**
  * What the sound picker offers.
@@ -257,6 +260,69 @@ async function defaultDistroRunning(): Promise<boolean> {
       (err, stdout) => resolve(!err && parseDistroList(stdout).includes(byDefault)));
   });
 }
+
+/*
+ * The cockpit (INFRA-425). The probe runs where the terminal runs: /bin/sh
+ * locally, or /bin/sh inside the distro through `wsl.exe --exec` - NOT the
+ * login wrapper the terminals use, which would run the person's interactive
+ * .bashrc every refresh; git is in /usr/bin and wsl.exe sets HOME. A Windows
+ * directory has no POSIX shell to ask, so its cockpit shows only what the
+ * agent's transcript says.
+ */
+const wslHomes = new Map<string, Promise<string | null>>();
+const distroOf = async (ctx: CockpitContext): Promise<string | null> =>
+  ctx.wsl ? (ctx.wsl.distro ?? (await listWslDistros())[0] ?? null) : null;
+const cockpitService = new CockpitService({
+  probe: (ctx, args) => new Promise(resolve => {
+    const done = (err: Error | null, stdout: string | Buffer): void => resolve(err ? '' : String(stdout));
+    if (ctx.wsl) {
+      const where = [...(ctx.wsl.distro ? ['--distribution', ctx.wsl.distro] : []), '--cd', ctx.cwd ?? '~'];
+      execFile(wslExecutable(process.env), [...where, '--exec', '/bin/sh', '-c', COCKPIT_PROBE_SCRIPT, 'cockpit', ...args],
+        { encoding: 'utf8', timeout: 8000, windowsHide: true, env: wslEnv() }, done);
+      return;
+    }
+    if (runningOn === 'win32') { resolve(''); return; }
+    execFile('/bin/sh', ['-c', COCKPIT_PROBE_SCRIPT, 'cockpit', ...args],
+      { encoding: 'utf8', timeout: 5000, cwd: ctx.cwd ?? os.homedir() }, done);
+  }),
+  home: async ctx => {
+    if (!ctx.wsl) return os.homedir();
+    const distro = await distroOf(ctx);
+    if (!distro) return null;
+    let home = wslHomes.get(distro);
+    if (!home) {
+      home = new Promise(resolve => {
+        execFile(wslExecutable(process.env), ['--distribution', distro, '--exec', '/bin/sh', '-c', 'printf %s "$HOME"'],
+          { encoding: 'utf8', timeout: 8000, windowsHide: true, env: wslEnv() },
+          (err, stdout) => resolve(err || !stdout.startsWith('/') ? null : stdout.trim()));
+      });
+      wslHomes.set(distro, home);
+      // A failure is not remembered: the VM may only have been cold.
+      void home.then(h => { if (h === null) wslHomes.delete(distro); });
+    }
+    return home;
+  },
+  hostPath: async (ctx, p) => {
+    const distro = await distroOf(ctx);
+    if (!distro) return p;
+    return `\\\\wsl.localhost\\${distro}${p.replace(/\//g, '\\')}`;
+  },
+  fs: {
+    readdir: dir => fsp.readdir(dir),
+    stat: async file => { const st = await fsp.stat(file); return { size: st.size, mtimeMs: st.mtimeMs }; },
+    read: async (file, offset, length) => {
+      const handle = await fsp.open(file, 'r');
+      try {
+        const buf = Buffer.alloc(length);
+        const { bytesRead } = await handle.read(buf, 0, length, offset);
+        return buf.subarray(0, bytesRead);
+      } finally {
+        await handle.close();
+      }
+    },
+    readText: file => fsp.readFile(file, 'utf8').catch(() => null),
+  },
+});
 
 export function createWindow(url: string): BrowserWindow {
   const win = new BrowserWindow({
@@ -606,6 +672,7 @@ async function boot(): Promise<void> {
       const port = new URL(server.url).port ? Number(new URL(server.url).port) : DEFAULT_API_PORT;
       ptyRegistry = new PtyRegistry({
         spawn: spawnPty as never,
+        onSessionEnd: sessionId => cockpitService.forget(sessionId),
         /*
          * WSL, on Windows (INFRA-425): where the person chose a distro, and
          * wherever a Linux path leaves no other way in. Read per spawn, so a
@@ -1138,7 +1205,9 @@ async function boot(): Promise<void> {
             cloneDirOrDefault(readPrefs(app.getPath('userData')), os.homedir()), onLine),
           addProject: addProjectAt,
         }, line => console.log(`[CREATE] ${line}`)),
-      }, runningOn === 'win32' ? { distros: listWslDistros } : undefined);
+      }, runningOn === 'win32' ? { distros: listWslDistros } : undefined, {
+        snapshot: async (sessionId, windowId) => cockpitService.snapshot(sessionId, ptyRegistry!.describe(sessionId, windowId)),
+      });
     } catch (e) {
       console.warn('[DESKTOP] Terminals unavailable:', (e as Error).message);
     }

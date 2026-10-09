@@ -207,6 +207,9 @@ describe('the channels that exist', () => {
       // Settings can offer them. The CHOICE goes through prefs:set, which
       // checks the name against this same list (INFRA-425).
       'wsl:distros',
+      // One session's cockpit (INFRA-425). The renderer names a session it
+      // owns; where it runs comes from the registry, ownership-checked.
+      'cockpit:get',
     ].sort());
   });
 });
