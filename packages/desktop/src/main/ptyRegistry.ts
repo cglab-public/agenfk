@@ -18,6 +18,8 @@
 import { randomUUID } from 'crypto';
 import { resolveAgentCommand, canDictateSessionId, HERDR_AGENT_ID, SHELL_AGENT_ID, resolveShellCommand } from './agents.js';
 import { wslExecutable, wslLaunch, withWslEnv, type WslTarget } from './wsl.js';
+import type { CockpitContext } from './cockpit/service.js';
+import { EnvReportReader } from './cockpit/envReport.js';
 import { TitleReader, activityFromTitle } from './agentState.js';
 import { buildPtyEnv } from './ptyEnv.js';
 import { envWithoutHerdr, herdrAttachCommand } from './herdrAttach.js';
@@ -103,6 +105,8 @@ export interface PtyRegistryDeps {
    * spawn exactly as it was, which is every platform but Windows.
    */
   readonly wslTarget?: (req: { cwd: string }) => Promise<WslTarget | null>;
+  /** A session is gone: let the cockpit drop what it kept for it (INFRA-425). */
+  readonly onSessionEnd?: (sessionId: string) => void;
 
   /** Sends a message to one window only. */
   readonly emit: (windowId: number, channel: string, payload: unknown) => void;
@@ -222,6 +226,10 @@ interface Session {
   readonly windowId: number;
   /** Bytes in flight to this session's terminal. See flowControl.ts. */
   readonly flow: FlowControl;
+  /** Where it runs and what runs in it, for the cockpit (INFRA-425). */
+  readonly context: Omit<CockpitContext, 'reported'>;
+  /** What the terminal's shell reports about itself (cockpit/envReport.ts). */
+  readonly envReport: EnvReportReader;
 }
 
 /**
@@ -566,7 +574,13 @@ export class PtyRegistry {
           })
         : located ? launcher.launch(located, launchArgs, env) : { file, args: launchArgs };
       const spawnCwd = wsl ? homedir() : cwd;
-      const pty = this.deps.spawn(target.file, target.commandLine ?? target.args, { cwd: spawnCwd, cols: req.cols, rows: req.rows, env });
+      /*
+       * The terminal's marker (INFRA-425): every process started in it inherits
+       * this, so the cockpit can find the newest one and read the AWS profile
+       * the agent actually runs with. An opaque id, like the session id it is.
+       */
+      const markedEnv = { ...env, AGENFK_SESSION: sessionId };
+      const pty = this.deps.spawn(target.file, target.commandLine ?? target.args, { cwd: spawnCwd, cols: req.cols, rows: req.rows, env: markedEnv });
       // The geometry a session was born with, and every correction after it.
       // A terminal whose agent draws its input box somewhere the person cannot
       // see is a size disagreement, and this is the only place both numbers
@@ -580,7 +594,14 @@ export class PtyRegistry {
        * from it. The renderer's part is to say what it has drawn.
        */
       const flow = new FlowControl({ pause: () => pty.pause(), resume: () => pty.resume() });
-      this.sessions.set(sessionId, { pty, windowId: req.windowId, flow });
+      const envReport = new EnvReportReader(sessionId);
+      this.sessions.set(sessionId, {
+        pty, windowId: req.windowId, flow, envReport,
+        context: {
+          cwd: isShell || attaching ? null : cwd, agentId: req.agentId, agentSessionId, wsl,
+          tmux: useTmux, spawnedAt: Date.now(), resumed: req.resume === true,
+        },
+      });
       // The run exists from the moment the process does, so the tailer has
       // something to follow. The AGENT's id, not this registry's handle: the
       // transcript is named after the id the agent was given.
@@ -620,6 +641,8 @@ export class PtyRegistry {
         // Only to the owner. Broadcasting would put one card's shell output —
         // including whatever the agent prints — into every open window.
         this.deps.emit(req.windowId, 'pty:data', { sessionId, data });
+        // A tap like the title reader: the shell's own AWS/KUBECONFIG report.
+        envReport.feed(data);
 
 
         /*
@@ -705,6 +728,7 @@ export class PtyRegistry {
         // Dropped first so a later write cannot reach a dead pty, then the
         // window is told, or the tab simply stops responding and looks hung.
         this.sessions.delete(sessionId);
+        this.deps.onSessionEnd?.(sessionId);
         this.deps.emit(req.windowId, 'pty:exit', { sessionId, exitCode });
       });
     };
@@ -725,6 +749,16 @@ export class PtyRegistry {
     // bare "sessionId" meant — sending a pty handle to `--resume` would
     // silently start a fresh conversation.
     return { sessionId, agentSessionId };
+  }
+
+  /**
+   * Where a session runs and what runs in it, for the window that owns it —
+   * the cockpit's only way in. Ownership-checked like write and resize, so a
+   * window cannot learn another window's directories by naming its sessions.
+   */
+  describe(sessionId: string, windowId: number): CockpitContext {
+    const session = this.own(sessionId, windowId);
+    return { ...session.context, reported: session.envReport.current() };
   }
 
   private own(sessionId: string, windowId: number): Session {
@@ -777,6 +811,7 @@ export class PtyRegistry {
      * relying on the timing of somebody else's callback.
      */
     this.sessions.delete(sessionId);
+    this.deps.onSessionEnd?.(sessionId);
     this.reap(session);
   }
 
@@ -797,6 +832,7 @@ export class PtyRegistry {
       // Delete first, for the reason `kill` gives: a synchronous exit must not
       // find its own session still registered.
       this.sessions.delete(id);
+      this.deps.onSessionEnd?.(id);
       this.reap(session);
     }
   }
@@ -806,6 +842,7 @@ export class PtyRegistry {
     this.globalGeneration += 1;
     for (const [id, session] of [...this.sessions]) {
       this.sessions.delete(id);
+      this.deps.onSessionEnd?.(id);
       this.reap(session);
     }
   }

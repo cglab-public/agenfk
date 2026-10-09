@@ -174,6 +174,10 @@ export function registerPtyIpc(
   wsl?: {
     distros: () => Promise<string[]>;
   },
+  /** The cockpit under a terminal's tabs (INFRA-425). */
+  cockpit?: {
+    snapshot: (sessionId: string, windowId: number) => Promise<unknown>;
+  },
 ): void {
   ipc.handle('pty:spawn', async (event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;
@@ -374,6 +378,17 @@ export function registerPtyIpc(
    * how the settings screen knows not to offer the choice at all.
    */
   ipc.handle('wsl:distros', async () => (wsl ? wsl.distros() : []));
+
+  /*
+   * One terminal's cockpit. The renderer names a SESSION and nothing else;
+   * where it runs comes from the registry, for the window that sent this —
+   * the same ownership rule as write and resize.
+   */
+  ipc.handle('cockpit:get', async (event, raw) => {
+    if (!cockpit) return null;
+    const req = (raw ?? {}) as Record<string, unknown>;
+    return cockpit.snapshot(asString(req.sessionId, 'sessionId'), senderWindowId(event));
+  });
 
   /*
    * Editors. The renderer names a CARD and an editor ID — never a path and

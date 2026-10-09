@@ -37,6 +37,8 @@
 import React from 'react';
 import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN } from '../terminalOptions';
 import { desktopInfo } from '../desktop';
+import { COCKPIT_GADGETS, ENV_REPORT_SNIPPET, type CockpitGadgetId } from '../cockpit';
+import { readCockpitToggles, writeCockpitToggle } from '../cockpitPrefs';
 import { clsx } from 'clsx';
 import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, FolderCog, ShieldCheck, ArrowLeft, ALargeSmall, type LucideIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -229,6 +231,63 @@ function Alert({
 function Command({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
     <code className="rounded bg-canvas px-1 py-px font-mono text-[11px]">{children}</code>
+  );
+}
+
+/**
+ * Which gadgets the cockpit under the terminal tabs shows (INFRA-425). A view
+ * choice for this screen, kept in this browser like the sidebar's own.
+ */
+/**
+ * Why the AWS profile may lag, and the lines that fix it. Shown as a note,
+ * not applied: they go in the person's own rc file, which this app does not
+ * edit.
+ */
+function CockpitShellNote(): React.ReactElement {
+  const [copied, setCopied] = React.useState(false);
+  return (
+    <span>
+      A profile changed with <code>export</code> in an open shell only shows once the shell reports it. Add these lines to
+      your <code>~/.bashrc</code> or <code>~/.zshrc</code>, not <code>~/.profile</code>, which <code>/bin/sh</code> also reads (they run only in AgEnFK terminals):
+      <pre data-testid="cockpit-snippet" className="mt-1 overflow-x-auto rounded bg-canvas p-2 font-mono text-[11px]">{ENV_REPORT_SNIPPET}</pre>
+      <button
+        type="button"
+        className="text-[12px] text-accent-ink underline"
+        onClick={() => { void navigator.clipboard?.writeText(ENV_REPORT_SNIPPET).then(() => setCopied(true), () => {}); }}
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </span>
+  );
+}
+
+function CockpitRow(): React.ReactElement {
+  const [toggles, setToggles] = React.useState(() => readCockpitToggles());
+  const names: Readonly<Record<CockpitGadgetId, string>> = {
+    git: 'Git', aws: 'AWS', k8s: 'Kubernetes', tf: 'Terraform', ctx: 'Context', cost: 'Cost',
+  };
+  return (
+    <SettingRow
+      testId="cockpit-row"
+      title="Cockpit"
+      description="What the bar under the terminal tabs shows for the terminal on screen: the git branch, the AWS profile and its session expiry, the Kubernetes context and Terraform workspace where it runs, and its agent's context and cost. Production profiles and contexts are shown in red."
+      note={<CockpitShellNote />}
+      control={
+        <div className="flex flex-wrap justify-end gap-x-3 gap-y-1">
+          {COCKPIT_GADGETS.map(id => (
+            <label key={id} className="flex items-center gap-1.5 text-[13px] text-ink-secondary">
+              <input
+                type="checkbox"
+                aria-label={`Cockpit: ${names[id]}`}
+                checked={toggles[id]}
+                onChange={e => setToggles(writeCockpitToggle(id, e.target.checked))}
+              />
+              {names[id]}
+            </label>
+          ))}
+        </div>
+      }
+    />
   );
 }
 
@@ -1081,6 +1140,7 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
               }
             />
           )}
+          <CockpitRow />
           <HerdrRows />
         </>
       ),
