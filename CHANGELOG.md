@@ -8,7 +8,7 @@ Pre-release, cut from the `beta` line (PR #217). Cumulative over `2.0.0-beta.35`
 
 ### Framework
 
-- **Reviews are visible: a Reviews tab on the card detail modal.** Independent review records (CGLAB-381)
+- **Reviews are visible: a Reviews tab on the card detail modal.** Independent review records
   were server-written but never shown. The tab renders each record — reviewer client/agent/session, the
   commit range reviewed, and each finding with its fate — newest first, and only on cards that carry one.
 - **Findings can carry a severity** (`HIGH` / `MEDIUM` / `LOW`), validated by `record_review` and rendered

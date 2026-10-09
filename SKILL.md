@@ -100,7 +100,7 @@ enforced by the server. Each workflow tool name in this skill maps to a CLI comm
 
 | Tool name (this skill) | `agenfk` CLI command |
 |------------------------|----------------------|
-| `workflow_gatekeeper(intent, itemId?)` | `agenfk gatekeeper --intent "<intent>" [--item-id <id>] [--role <planning\|coding\|review\|testing\|closing>] [--json]` |
+| `workflow_gatekeeper(intent, itemId?)` | `agenfk gatekeeper --intent "<intent>" [--item-id <id>] [--role <planning\|coding\|review\|testing\|closing>] [--session <harness-session-id>] [--json]` — keys the active-work note to the session so concurrent sessions cannot capture each other's runs (CGLAB-570). The session id is `--session`, else `AGENFK_SESSION_ID` (the harness-agnostic contract), else the harness own var when it exposes one (Claude Code: `CLAUDE_CODE_SESSION_ID`) — pass `--session` only when neither is set |
 | `list_projects()` | `agenfk list-projects --json` |
 | *(get current project id)* | `agenfk current-project [--json]` — prints the current project id resolved from the nearest `.agenfk/project.json` (walking up from the cwd); `--json` adds the project name/description from the server when reachable. No MCP equivalent — CLI only. |
 | `create_project(name)` | `agenfk create-project "<name>" [-d/--description <desc>]` |

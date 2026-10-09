@@ -22,6 +22,7 @@ import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
 import { buildPrBody, prRegisterComment, readDisabledChecks, type GateEvent, type CustomCheckRow, type TreeWarningRow } from './humanGates.js';
 import { registryFlowToLocal } from './registryFlowFile.js';
+import { ghPrCreateArgs } from './prArgs.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
@@ -4083,6 +4084,7 @@ program
   .option('--role <role>', 'Role label (planning|coding|review|testing|closing); defaults to the role of the step the card is on')
   .option('--item-id <id>', 'Specific item ID to check against')
   .option('--json', 'Output as JSON')
+  .option('--session <id>', 'Harness session id to key the active-work note on (defaults to AGENFK_SESSION_ID, then CLAUDE_CODE_SESSION_ID)')
   .action(async (options) => {
     try {
       const { data: items } = await axios.get(`${API_URL}/items`);
@@ -4172,8 +4174,21 @@ program
       // reads it instead of guessing, because `?active=true` can return dozens
       // of items across projects and attributing work to the wrong card is
       // worse than recording none.
+      //
+      // CGLAB-570: the note is KEYED to this session when one is known. The
+      // explicit flag wins; otherwise the env the harness sets for us —
+      // AGENFK_SESSION_ID, then Claude Code's CLAUDE_CODE_SESSION_ID (set in
+      // Bash tool subprocesses, matching the session_id hooks receive). A
+      // keyed note is the common path now: the run recorder STRICTLY refuses
+      // the shared note for sessions it can name, so a sessionless gatekeeper
+      // run records nothing rather than capturing every other session's runs
+      // for the TTL.
       if (decision.authorized && decision.task?.id) {
-        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId });
+        const sessionId = options.session
+          || process.env.AGENFK_SESSION_ID
+          || process.env.CLAUDE_CODE_SESSION_ID
+          || undefined;
+        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId }, sessionId);
       }
 
       // 37a292a7: what leaving this step will run, so the agent does not run the
@@ -4823,6 +4838,7 @@ prCmd
   .option('--title <title>', 'PR title (defaults to item title)')
   .option('--body <body>', 'PR body/description')
   .option('--draft', 'Create as a draft PR')
+  .option('--base <branch>', 'Target branch of the PR (passed to gh pr create --base). Defaults to gh\'s own detection. Use this when the item branch was cut from a non-default base, e.g. beta.')
   .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (e.g. claude-opus-4-8, glm-5.2) — recorded on the pr.opened hub event. Never copy an example; report your own model.')
   .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (claude-code, pi, cursor, codex, gemini, opencode) — recorded on the pr.opened hub event.')
   .option('--no-detect-model', 'Do not read the harness session log; report --model exactly as given')
@@ -4838,7 +4854,8 @@ prCmd
         process.exit(1);
       }
       const prTitle = options.title || item.title;
-      const args = ['pr', 'create', '--title', prTitle];
+      // Arg assembly is a pure helper (prArgs.ts) so the flags that reach gh
+      // — --base in particular (CGLAB-571) — are pinned by a test.
       // A person's approvals and overrides go on the PR, so a reviewer sees what was let through (CGLAB-382).
       let gateEvents: GateEvent[] = [];
       try { gateEvents = (await axios.get(`${API_URL}/items/${itemId}/gate-events`)).data ?? []; } catch (e: any) {
@@ -4859,8 +4876,12 @@ prCmd
       const disabled = await readDisabledChecks(() => axios.get(`${API_URL}/items/${itemId}/disabled-checks`));
       if (disabled.failed) console.warn(chalk.yellow(`⚠️  Could not read the checks the org's hub switched off (${disabled.failed}); the PR body will not list them.`));
       const disabledChecks = disabled.rows;
-      args.push('--body', buildPrBody(options.body || item.description || '', gateEvents, customChecks, warnings, disabledChecks));
-      if (options.draft) args.push('--draft');
+      const args = ghPrCreateArgs({
+        title: prTitle,
+        body: buildPrBody(options.body || item.description || '', gateEvents, customChecks, warnings, disabledChecks),
+        draft: options.draft,
+        base: options.base,
+      });
 
       console.log(chalk.blue(`Creating PR: "${prTitle}"...`));
       let output: string;
