@@ -2,6 +2,47 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.37] — 2026-10-09
+
+Pre-release, cut from the `beta` line (PRs #218, #219, #220, #206). Cumulative over `2.0.0-beta.36`.
+
+### Agent-run attribution
+
+- **Agent runs are no longer misattributed across concurrent sessions.** `agenfk gatekeeper` now keys the
+  active-work note to the harness session (`--session`, else `AGENFK_SESSION_ID`, else
+  `CLAUDE_CODE_SESSION_ID`), and the run-recorder hook no longer falls back to the shared note for named
+  sessions — no keyed note, no run. One session's card can no longer capture every other session's tool
+  calls for the TTL.
+
+### CLI
+
+- **`agenfk pr create --base <branch>`** chooses the PR's target branch (pass-through to
+  `gh pr create --base`). A branch cut from `beta` no longer opens its PR against `main` by accident. Arg
+  assembly is a pinned pure helper.
+
+### Reviews
+
+- **The review range is the server's to work out.** `review record` may omit `--range` (or pass `auto`):
+  the server fills in where the card's work began, up to HEAD, uncommitted work included. Explicit ranges
+  are checked exactly as before.
+- **The reviewer's brief is written by the server.** `agenfk review brief <id>` (MCP: `review_brief`,
+  GET `/items/:id/review-brief`) hands an independent reviewer the range, the files changed, the tree's
+  warnings with their answers, the author's evidence labelled as claims, the tests already run and the
+  independence rules. The verify reply on a review step points the agent at it.
+- **Flow contract lint.** Flows whose exit criteria ask for a check the step does not carry are flagged
+  in the flow editor on save and on verify. Warnings only — nothing is refused and nothing is switched on.
+
+### Desktop
+
+- **Tag-pushed releases ship the framework dist bundle.** A `desktop-v*` tag now attaches
+  `agenfk-dist.tar.gz` alongside the installers, so a release cut without the manual Release workflow no
+  longer leaves `agenfk upgrade` 404ing into a source build.
+
+### Windows
+
+- **Every child process is spawned hidden.** All runtime `child_process` call sites pass
+  `windowsHide: true`; a guard test fails the build on any new one that does not.
+
 ## [2.0.0-beta.36] — 2026-10-08
 
 Pre-release, cut from the `beta` line (PR #217). Cumulative over `2.0.0-beta.35`.
