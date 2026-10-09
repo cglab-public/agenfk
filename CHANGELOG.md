@@ -22,19 +22,19 @@ Pre-release, cut from the `beta` line (PRs #218, #219, #220, #206). Cumulative o
 
 ### Reviews
 
-- **The review range is the server's to work out.** `review record` may omit `--range` (or pass `auto`):
+- **The review range is the server's to work out** (PR #206, thanks @gabrielnov). `review record` may omit `--range` (or pass `auto`):
   the server fills in where the card's work began, up to HEAD, uncommitted work included. Explicit ranges
   are checked exactly as before.
-- **The reviewer's brief is written by the server.** `agenfk review brief <id>` (MCP: `review_brief`,
+- **The reviewer's brief is written by the server** (PR #206, thanks @gabrielnov). `agenfk review brief <id>` (MCP: `review_brief`,
   GET `/items/:id/review-brief`) hands an independent reviewer the range, the files changed, the tree's
   warnings with their answers, the author's evidence labelled as claims, the tests already run and the
   independence rules. The verify reply on a review step points the agent at it.
-- **Flow contract lint.** Flows whose exit criteria ask for a check the step does not carry are flagged
+- **Flow contract lint** (PR #206, thanks @gabrielnov). Flows whose exit criteria ask for a check the step does not carry are flagged
   in the flow editor on save and on verify. Warnings only — nothing is refused and nothing is switched on.
 
 ### Desktop
 
-- **Tag-pushed releases ship the framework dist bundle.** A `desktop-v*` tag now attaches
+- **Tag-pushed releases ship the framework dist bundle** (PR #218, thanks @gabrielnov). A `desktop-v*` tag now attaches
   `agenfk-dist.tar.gz` alongside the installers, so a release cut without the manual Release workflow no
   longer leaves `agenfk upgrade` 404ing into a source build.
 
