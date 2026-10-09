@@ -466,6 +466,84 @@ export function flowChecksErrors(steps: unknown): string[] {
   return errors;
 }
 
+/** A step whose words ask for something its checks do not enforce (CGLAB-457). */
+export interface FlowContractWarning {
+  /** The step; null for a warning about the whole flow. */
+  step: string | null;
+  kind: 'review' | 'approval' | 'no-contracts';
+  message: string;
+}
+
+// An independent review, however a flow words it - "review it in a separate adversarial agent", "an
+// independent reviewer", "reviewed independently", "a second pair of eyes" - within one clause, and naming
+// a review: "a separate agent per task" is not one, nor is "a separate test step".
+const QUALIFIER = String.raw`\b(?:independent|independently|adversarial|separate|outside|peer|second[- ]pair)\b`;
+const REVIEW_NOUN = String.raw`\b(?:review|reviews|reviewed|reviewer|reviewers)\b`;
+// "Review ... in a separate agent" counts only when the qualifier names who reviews - not "a separate test step".
+const REVIEWER = String.raw`\b(?:agent|agents|reviewer|reviewers|model|models|session|engineer|engineers|person|people|party|parties|someone|somebody)\b`;
+const ASKS_REVIEW = new RegExp([
+  `${QUALIFIER}[^.,;]{0,60}${REVIEW_NOUN}`, // "an independent review", "a separate reviewer"
+  `${REVIEW_NOUN}[^.,;]{0,60}${QUALIFIER}[^.,;]{0,30}${REVIEWER}`, // "review it in a separate agent"
+  `${REVIEW_NOUN}[^.,;]{0,40}${REVIEWER}[^.,;]{0,20}${QUALIFIER}`, // "reviewed by someone independent"
+  `${REVIEW_NOUN}[^.,;]{0,15}\\bindependently\\b`, // "reviewed independently"
+  `\\bindependently\\b[^.,;]{0,40}${REVIEW_NOUN}`, // "independently review"
+  `${REVIEW_NOUN}\\s+(?:must|should|needs?\\s+to|has\\s+to|is|are|be)\\s+(?:be\\s+)?(?:an?\\s+)?${QUALIFIER}`, // "the reviewer must be independent"
+  String.raw`\bsecond\s+pair\s+of\s+eyes\b`, // the idiom, not naming a review
+].join('|'), 'i');
+// A step named for review: REVIEW, CODE_REVIEW, CodeReview, PeerReview - not PREVIEW or OVERVIEW (the 'p' before it).
+const REVIEW_NAME = /(?<![Pp])review/i;
+// A person's go-ahead: "the user must give you the go-ahead", "a human signs off" - not "developer-approved", and
+// not "ask the user to confirm the key", which asks for information.
+const ASKS_APPROVAL = /\b(?:user|person|human|developer)(?:'s)?\s[^.,;]{0,60}\b(?:go-ahead|approv\w*|sign(?:s|ed)?[- ]off)\b|\bgo-ahead\b/i;
+// ...and not where the sentence says none is needed - "no approval is needed", "approval is not required",
+// "without waiting for approval". A demand worded with a negation ("do not proceed until...") still asks.
+const APPROVAL_WORD = String.raw`(?:approv\w*|go-ahead|sign[- ]off)`;
+const DENIES_APPROVAL = new RegExp([
+  String.raw`\bno\b[^.,;]{0,30}\b${APPROVAL_WORD}[^.,;]{0,20}\b(?:is|are)\s+(?:needed|required|necessary)\b`,
+  String.raw`\b${APPROVAL_WORD}\s+(?:is|are)\s+not\s+(?:needed|required|necessary)\b`,
+  // "without waiting for approval" - not "without the user's approval", which demands it.
+  String.raw`\bwithout\s+(?:needing|waiting\s+for|asking\s+for|requiring)\s+(?:an?\s+|any\s+)?${APPROVAL_WORD}`,
+].join('|'), 'i');
+const asksApproval = (criteria: string) => criteria.split(/(?<=[.!?;])\s+|\n+/).some(s => ASKS_APPROVAL.test(s) && !DENIES_APPROVAL.test(s));
+
+/**
+ * CGLAB-457: what a flow's exit criteria ask for and its checks do not
+ * enforce. The criteria are prose an agent honours; the role and checks are
+ * what the server holds a card to. A hub-delivered TDD Flow asked for an
+ * independent review and a person's go-ahead in prose alone, and every card
+ * left those steps on the agent's word with nothing saying so.
+ *
+ * Warnings only: a flow is never refused for them and nothing is switched on.
+ * A check the org's hub switched off (`disabledChecks`) counts as present -
+ * that is the org's decision, not a gap.
+ */
+export function flowContractWarnings(steps: unknown): FlowContractWarning[] {
+  if (!Array.isArray(steps)) return [];
+  const list = ordered(steps.filter((s): s is AnyStep => !!s && typeof s === 'object' && typeof (s as AnyStep).name === 'string'));
+  if (!list.length) return [];
+  if (!hasStepContracts(list)) {
+    return [{ step: null, kind: 'no-contracts', message: 'No step carries a role or a check: the server enforces nothing beyond the branch check, and that only warns. Give each step the role that matches its work.' }];
+  }
+  const out: FlowContractWarning[] = [];
+  const last = list[list.length - 1];
+  for (const s of list) {
+    // A terminal step is never left, so nothing it asks for is checked on leaving it.
+    if (s === last && (last.isAnchor || last.isSpecial)) continue;
+    const name = String(s.name);
+    const criteria = typeof (s as { exitCriteria?: unknown }).exitCriteria === 'string' ? (s as { exitCriteria: string }).exitCriteria : '';
+    const carries = (id: string) => [...resolveStepChecks(list, name), ...disabledStepChecks(list, name)].some(c => c.id === id);
+    if ((REVIEW_NAME.test(name) || ASKS_REVIEW.test(criteria)) && !carries('review-record')) {
+      // A step has one role: swapping a coding step's for 'review' would drop its own checks.
+      const fix = isRole(s.role) ? `add the review-record check to it (its '${s.role}' role stays)` : "give the step role 'review'";
+      out.push({ step: name, kind: 'review', message: `Step ${name} reads as a review step (its name or its exit criteria), but it has no 'review' role or review-record check, so no review is recorded or checked and an agent can leave it on its word alone: ${fix}.` });
+    }
+    if (asksApproval(criteria) && !carries('human-approval')) {
+      out.push({ step: name, kind: 'approval', message: `Step ${name}: its exit criteria ask for a person's go-ahead, but the step has no human-approval check, so an agent can leave it without one. Add the human-approval check to the step.` });
+    }
+  }
+  return out;
+}
+
 /**
  * PUT semantics for step contracts: a step that OMITS `role` or `checks` keeps
  * the stored value for the step with the same id; an explicit `null` (or an

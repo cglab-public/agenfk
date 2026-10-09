@@ -176,13 +176,17 @@ export interface EngineContext {
     childCount: number;
     /** Children that carry a review record of their own. */
     childrenReviewed: number;
-    records: Array<{ reviewer: { client: string; sessionId: string; agentId: string | null; edits?: string[]; advancedCards?: boolean }; range: { from: string; to: string }; tree?: string | null; unreviewed?: { lines: number; files: string[] }; unreviewedNotJudged?: string }>;
+    records: Array<{ at?: string; reviewer: { client: string; sessionId: string; agentId: string | null; edits?: string[]; advancedCards?: boolean }; range: { from: string; to: string }; tree?: string | null; unreviewed?: { lines: number; files: string[] }; unreviewedNotJudged?: string }>;
     /** The tree's content state now (null when unreadable or not the card being verified). */
     currentTree?: string | null;
     /** Every author identity recorded on the card and its descendants. */
     authors: Array<{ client: string; sessionId: string; agentId: string | null }>;
     /** HEAD when the card's work began (its first step's exit record). */
     startHead: string | null;
+    /** The card, so a refusal can name the commands to run on it (CGLAB-457). */
+    itemId?: string;
+    /** Where an automatic range would start: the start of the card's tree (CGLAB-457). */
+    rangeFrom?: string;
     /** Close commits of the card's descendants. */
     descendantCommits: string[];
     /** This server's version: the CLI that can record a review (CGLAB-385). */
@@ -335,27 +339,60 @@ export function judgeReview(r: ReviewEvidence, root: string | null, git: (args: 
     // An agenfk older than the review checks sends no actor either (S9 row A4),
     // so say what makes the check real, not only that it cannot run.
     if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: `no independent review is recorded, and no author identity either: this harness, or an agenfk older than ${r.agenfkVersion ?? 'this server'}, cannot record a checkable review. Review the change independently all the same. With Claude Code, Codex or pi, upgrade (agenfk upgrade) and record it with agenfk review record; otherwise a person can override this check on the board.` };
-    return { outcome: 'fail', detail: `no independent review is recorded. Have a separate agent review the diff, then: agenfk review record <id> --transcript <reviewer session log> --range <from>..<to> --findings <json>. That command needs agenfk ${r.agenfkVersion ?? 'of this server\'s version'} or later (agenfk upgrade); otherwise a person can override this check on the board.` };
+    // CGLAB-457: the commands to run, on this card, with the range the server would fill in.
+    const id = r.itemId ?? '<id>';
+    const start = r.rangeFrom ?? r.startHead;
+    const range = start
+      ? `the range defaults to ${start.slice(0, 12)}..HEAD, uncommitted work included`
+      : 'this card has no recorded start commit, so pass --range <from>..<to>';
+    return { outcome: 'fail', detail: `no independent review is recorded. Give a separate agent the reviewer's brief (agenfk review brief ${id}); when it reports, record its review: agenfk review record ${id} --transcript <the reviewer's session log> --findings '<json>' (${range}). Those commands need agenfk ${r.agenfkVersion ?? 'of this server\'s version'} or later (agenfk upgrade); otherwise a person can override this check on the board.` };
   }
   const who = `${rec.reviewer.client} session ${rec.reviewer.sessionId}${rec.reviewer.agentId ? `, agent ${rec.reviewer.agentId}` : ''}`;
   const same = (a: { sessionId: string; agentId: string | null }, b: { sessionId: string; agentId: string | null }) => a.sessionId === b.sessionId && (a.agentId ?? null) === (b.agentId ?? null);
   if (r.authors.some(a => same(a, rec.reviewer))) return { outcome: 'fail', detail: `not independent: the reviewer (${who}) is an author of this card` };
   if (!root) return { outcome: 'unavailable', detail: 'the card has no tree to check the review against' };
-  if (rec.reviewer.advancedCards) return { outcome: 'fail', detail: `not independent: the reviewer (${who}) ran agenfk verify, so it is an author, not a reviewer` };
+  if (rec.reviewer.advancedCards) return { outcome: 'fail', detail: `not independent: the reviewer (${who}) ran agenfk verify, so it is an author, not a reviewer. Have a new reviewer review it from the brief (agenfk review brief ${r.itemId ?? '<id>'}), which tells it never to advance a card.` };
   // Resolved through symlinks, even for a file that no longer exists.
   const inTree = (rec.reviewer.edits ?? []).filter(f => insideRoot(root, path.resolve(root, f)) !== null);
   if (inTree.length) return { outcome: 'fail', detail: `not independent: the reviewer (${who}) edited the card's tree (${list(inTree)}), so it is an author, not a reviewer` };
   const isAncestor = (a: string, b: string) => { try { git(['-C', root, 'merge-base', '--is-ancestor', a, b]); return true; } catch { return false; } };
   if (r.startHead && !isAncestor(rec.range.from, r.startHead)) {
-    return { outcome: 'fail', detail: `the review starts at ${rec.range.from.slice(0, 12)}, after the card's work began at ${r.startHead.slice(0, 12)}: it does not cover all of it` };
+    return { outcome: 'fail', detail: `the review starts at ${rec.range.from.slice(0, 12)}, after the card's work began at ${r.startHead.slice(0, 12)}: it does not cover all of it. Omit --range to record ${r.startHead.slice(0, 12)}..HEAD.` };
   }
   const missed = r.descendantCommits.filter(c => !isAncestor(c, rec.range.to));
   if (missed.length) return { outcome: 'fail', detail: `the review ends at ${rec.range.to.slice(0, 12)} and misses work committed later: ${list(missed.map(c => c.slice(0, 12)))}. Review again over the whole range.` };
-  if (opts.bindTree && rec.tree && r.currentTree && rec.tree !== r.currentTree) {
-    return { outcome: 'fail', detail: 'the tree changed after the review was recorded: fix the findings first, then record the review of the final tree' };
-  }
+  if (opts.bindTree && rec.tree && r.currentTree && rec.tree !== r.currentTree) return treeMovedVerdict(rec, r.currentTree, root, git);
   if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: 'no author identity is recorded for this card (advanced by an older agenfk or an unknown harness), so independence cannot be shown. Upgrade agenfk (agenfk upgrade) so verify records who advanced it, or a person can override this check on the board.' };
   return { outcome: 'pass', detail: `reviewed by ${who} over ${rec.range.from.slice(0, 12)}..${rec.range.to.slice(0, 12)}` };
+}
+
+/**
+ * CGLAB-457: the tree a review was recorded for (`<HEAD>:<files hash>`) is not
+ * the tree now. Say which way it moved - a commit, or files edited since - and
+ * name what moved, so the author knows what the reviewer has not read.
+ */
+function treeMovedVerdict(rec: { at?: string; tree?: string | null }, currentTree: string, root: string, git: (args: string[]) => string): Verdict {
+  const headOf = (state: string) => state.split(':')[0];
+  const was = headOf(rec.tree ?? ''), now = headOf(currentTree);
+  if (was && now && was !== now) {
+    return { outcome: 'fail', detail: `the tree changed after the review was recorded: a commit (${now.slice(0, 12)}) was made since. Have the reviewer read it (the same one given a new message, or a new one), then record the review again.` };
+  }
+  const since = rec.at ? Date.parse(rec.at) : NaN;
+  let changed: string[] = [];
+  try {
+    const top = git(['-C', root, 'rev-parse', '--show-toplevel']).trim();
+    // -z: paths unquoted; a rename's entry is followed by its old path, which is skipped.
+    const entries = git(['-C', root, 'status', '--porcelain', '-z']).split('\0');
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (e.length < 4) continue;
+      if (/^[RC]/.test(e)) i++;
+      const f = e.slice(3);
+      try { if (Number.isNaN(since) || fs.statSync(path.join(top, f)).mtimeMs > since) changed.push(f); } catch { changed.push(f); }
+    }
+  } catch { /* git could not say: the plain refusal below still holds */ }
+  const what = changed.length ? ` (${list(changed)})` : '';
+  return { outcome: 'fail', detail: `the tree changed after the review was recorded${what}: fix the findings first, then record the review of the final tree` };
 }
 
 /**

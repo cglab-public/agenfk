@@ -68,9 +68,10 @@ describe('verify command', () => {
     const names = program.commands.map(c => c.name());
     expect(names).not.toContain('test');
     // `review` is only the group for `review record` (CGLAB-381), which
-    // records an independent review and moves nothing.
+    // records an independent review and moves nothing, and `review brief`
+    // (CGLAB-457), a read of the reviewer's brief.
     const review = program.commands.find(c => c.name() === 'review');
-    if (review) expect(review.commands.map(c => c.name())).toEqual(['record']);
+    if (review) expect(review.commands.map(c => c.name())).toEqual(['record', 'brief']);
   });
 
   it('should POST evidence to /validate without GET or PUT', async () => {

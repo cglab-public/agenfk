@@ -464,7 +464,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             itemId: { type: "string" },
             transcript: { type: "string", description: "Path of the reviewer's session log, under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions." },
-            range: { type: "string", description: "<from>..<to>: the commits the review covered." },
+            range: { type: "string", description: "<from>..<to>: the commits the review covered. Leave it out (or pass auto) and the server uses where the card began, up to HEAD - uncommitted work included." },
             findings: {
               type: "array",
               description: "Each finding and its fate: fixed, or rejected with a reason. [] when nothing was found.",
@@ -475,7 +475,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               },
             },
           },
-          required: ["itemId", "transcript", "range", "findings"],
+          required: ["itemId", "transcript", "findings"],
+        },
+      },
+      {
+        name: "review_brief",
+        description: "The brief to give an independent reviewer of a card on its review step (CGLAB-457): the range to review, the files changed, the tree's warnings and their answers, the author's evidence labelled as claims, the tests already run, what the server runs on leaving the step, and the rules that keep the reviewer independent. Pass its text to the reviewer as its prompt. Read-only. CLI: agenfk review brief.",
+        inputSchema: {
+          type: "object",
+          properties: { itemId: { type: "string" } },
+          required: ["itemId"],
         },
       },
       {
@@ -1107,13 +1116,22 @@ async function callToolHandler(request: any): Promise<any> {
         const { data } = await api.get('/token-events', { params });
         return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
       }
+      case "review_brief": {
+        const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
+        try {
+          const { data } = await api.get(`/items/${itemId}/review-brief`);
+          return { content: [{ type: "text", text: data.text }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
+        }
+      }
       case "record_review": {
         const { itemId, transcript, range, findings } = z.object({
-          itemId: z.string(), transcript: z.string(), range: z.string(), findings: z.array(z.any()),
+          itemId: z.string(), transcript: z.string(), range: z.string().optional(), findings: z.array(z.any()),
         }).parse(request.params.arguments);
         try {
-          const { data } = await api.post(`/items/${itemId}/review-records`, { transcript, range, findings }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
-          return { content: [{ type: "text", text: `✅ Review recorded by ${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}: ${data.findings.length} finding(s).` }] };
+          const { data } = await api.post(`/items/${itemId}/review-records`, { transcript, range: range ?? 'auto', findings }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: `✅ Review recorded by ${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}${data.range?.from && data.range?.to ? ` over ${String(data.range.from).slice(0, 12)}..${String(data.range.to).slice(0, 12)}` : ''}: ${data.findings.length} finding(s).` }] };
         } catch (error: any) {
           return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
         }

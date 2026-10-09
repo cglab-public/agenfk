@@ -51,6 +51,8 @@ export interface ResolvedCheck {
 export interface FlowContract {
   valid: boolean;
   errors: string[];
+  /** CGLAB-457: what the steps' words ask for and their checks do not enforce - never a block on Save (absent from an older server). */
+  warnings?: Array<{ step: string | null; kind: string; message: string }>;
   /** `onLeave`: what verify runs to leave the step (absent from an older server: use `checks`). */
   steps: Array<{ name: string; role: string | null; checks: ResolvedCheck[]; /** CGLAB-428: switched off (absent from an older server). */ disabled?: ResolvedCheck[]; onLeave?: ResolvedCheck[]; terminal?: boolean; produces: string[]; consumes?: string[]; /** Leaving the step makes a step commit (absent from an older server). */ commitsOnLeave?: 'auto' | 'required' | null }>;
   roles: Array<{ id: string; builtins: StepCheckRef[] }>;
