@@ -2,13 +2,23 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [2.0.0-beta.36] — 2026-10-07
+## [2.0.0-beta.36] — 2026-10-08
 
 Pre-release, cut from the `beta` line (PR #217). Cumulative over `2.0.0-beta.35`.
 
-### Reviews
+### Framework
 
-- **Review findings carry a severity, rendered as a chip in the Reviews tab (CGLAB-565).** `record_review` accepts an optional `severity` (`HIGH` | `MEDIUM` | `LOW`) per finding; the card detail modal's new Reviews tab lists findings most serious first, and the schema, CLI help and rule bundles advertise the field.
+- **Reviews are visible: a Reviews tab on the card detail modal.** Independent review records
+  were server-written but never shown. The tab renders each record — reviewer client/agent/session, the
+  commit range reviewed, and each finding with its fate — newest first, and only on cards that carry one.
+- **Findings can carry a severity** (`HIGH` / `MEDIUM` / `LOW`), validated by `record_review` and rendered
+  as a chip; findings within a review are ordered most-serious-first. Records without severity render
+  unchanged, and unknown fields are stripped server-side.
+- **Severity is advertised to reviewers**: the `record_review` MCP schema, the `agenfk review record`
+  `--findings` help and the shipped rule bundles document the field.
+- **Tag-pushed releases now ship the framework dist bundle.** A `desktop-v*` tag used to attach only the
+  installers, so a release cut without the manual Release workflow left `agenfk upgrade` 404ing into a
+  source build. The desktop workflow now packages and uploads `agenfk-dist.tar.gz` too.
 
 ## [2.0.0-beta.35] — 2026-10-06
 
