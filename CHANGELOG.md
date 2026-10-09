@@ -2,6 +2,14 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.36] — 2026-10-07
+
+Pre-release, cut from the `beta` line (PR #217). Cumulative over `2.0.0-beta.35`.
+
+### Reviews
+
+- **Review findings carry a severity, rendered as a chip in the Reviews tab (CGLAB-565).** `record_review` accepts an optional `severity` (`HIGH` | `MEDIUM` | `LOW`) per finding; the card detail modal's new Reviews tab lists findings most serious first, and the schema, CLI help and rule bundles advertise the field.
+
 ## [2.0.0-beta.35] — 2026-10-06
 
 Pre-release, cut from the `beta` line (PRs #207, #209, #210, #213). Cumulative over `2.0.0-beta.34`.
