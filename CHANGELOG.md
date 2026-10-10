@@ -2,7 +2,7 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [2.0.0-beta.38] — 2026-10-10
+## [2.0.0-beta.39] — 2026-10-10
 
 Pre-release, cut from the `beta` line. Cumulative over `2.0.0-beta.37`.
 
