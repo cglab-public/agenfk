@@ -460,6 +460,10 @@ export interface HistoryRecord {
   toStatus: Status;
   timestamp: Date;
   user?: string; // Optional for future use
+  /** CGLAB-608: flow that was active when the transition happened. */
+  flowId?: string;
+  /** CGLAB-608: flow revision current at transition time — the score counts only stamped events. */
+  flowRevision?: number;
 }
 
 export interface CommentRecord {

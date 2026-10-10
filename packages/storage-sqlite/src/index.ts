@@ -565,6 +565,31 @@ export class SQLiteStorageProvider implements StorageProvider {
       .run();
   }
 
+  /**
+   * CGLAB-608: the flow stamp for a transition out of the given project —
+   * the project's flowId plus its CURRENT revision, captured at event time.
+   * Projects without a resolvable flow+revision (none, dangling flowId, or a
+   * flow with no revisions yet) transition UNSTAMPED and are simply not
+   * scored. Deliberately synchronous: an await here would be updateItem's
+   * first yield point and turn its read-modify-write into a lost-update
+   * window on the whole item blob.
+   */
+  private currentFlowStamp(projectId: string): { flowId?: string; flowRevision?: number } {
+    const projRow = this.database
+      .prepare('SELECT data FROM projects WHERE id = ?')
+      .get(projectId) as { data: string } | undefined;
+    if (!projRow) return {};
+    const flowId = (JSON.parse(projRow.data) as Project).flowId;
+    if (!flowId) return {};
+    const revRow = this.database
+      .prepare('SELECT revision FROM flow_revisions WHERE flow_id = ? ORDER BY revision DESC LIMIT 1')
+      .get(flowId) as { revision: number } | undefined;
+    // A dangling or revision-less flow stamps nothing: the effective flow is
+    // unresolvable, and a half-stamp would let the score claim a flow that
+    // never gated the move.
+    return revRow ? { flowId, flowRevision: revRow.revision } : {};
+  }
+
   private parseProject(data: string): Project {
     const p = JSON.parse(data);
     return { ...p, createdAt: new Date(p.createdAt), updatedAt: new Date(p.updatedAt) };
@@ -622,11 +647,13 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async createItem(item: AgEnFKItem): Promise<AgEnFKItem> {
     if (!item.history) item.history = [];
+    const stamp = this.currentFlowStamp(item.projectId);
     item.history.push({
       id: uuidv4(),
       fromStatus: 'TODO' as Status,
       toStatus: item.status,
       timestamp: new Date(),
+      ...stamp,
     });
     this.database.prepare(
       'INSERT INTO items (id, project_id, type, status, parent_id, data) VALUES (?, ?, ?, ?, ?, ?)'
@@ -641,12 +668,14 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (!existing) throw new Error(`Item ${id} not found`);
 
     if (updates.status !== undefined && updates.status !== existing.status) {
+      const stamp = this.currentFlowStamp(existing.projectId);
       const history = existing.history || [];
       history.push({
         id: uuidv4(),
         fromStatus: existing.status,
         toStatus: updates.status,
         timestamp: new Date(),
+        ...stamp,
       });
       updates.history = history;
     }
