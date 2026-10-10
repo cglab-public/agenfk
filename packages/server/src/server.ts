@@ -17,7 +17,7 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -3614,6 +3614,42 @@ app.get("/items/:id/warnings", asyncHandler(async (req: any, res: any) => {
   const root: any = await storage.getItem(req.params.id);
   if (!root) return res.status(404).json({ error: 'Item not found' });
   res.json(await treeWarningsOf(root));
+}));
+
+/** CGLAB-609: resolve the revisions every stamped event names — not just the project's current flow, which is mutable. */
+async function revisionsForHistories(histories: Array<any[] | undefined>): Promise<any[]> {
+  const out: any[] = [];
+  for (const flowId of flowIdsInHistories(histories as any)) {
+    out.push(...(await storage.listFlowRevisions(flowId)));
+  }
+  return out;
+}
+
+/** CGLAB-609: flow adherence for one item — versioned events only. */
+app.get("/items/:id/flow-adherence", asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  res.json(computeFlowAdherence(item.history, await revisionsForHistories([item.history])));
+}));
+
+/** CGLAB-609: flow adherence across a project's items — versioned events only. */
+app.get("/projects/:id/flow-adherence", asyncHandler(async (req: any, res: any) => {
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  // History only: skip per-test-result hydration the score never reads.
+  const items = await storage.listItems({ projectId: req.params.id, hydrate: false } as any);
+  const revisions = await revisionsForHistories(items.map((it: any) => it.history));
+  const perItem: Record<string, unknown> = {};
+  const total = { judged: 0, compliant: 0, unresolved: 0, unstamped: 0 };
+  for (const it of items) {
+    const a = computeFlowAdherence((it as any).history, revisions);
+    perItem[it.id] = a;
+    total.judged += a.judged;
+    total.compliant += a.compliant;
+    total.unresolved += a.unresolved;
+    total.unstamped += a.unstamped;
+  }
+  res.json({ ...total, score: total.judged ? total.compliant / total.judged : null, perItem });
 }));
 
 /** The card's check history, newest first (4a428bb0). */

@@ -17,6 +17,7 @@ export * from './circuitBreaker';
 export * from './baseDrift';
 export * from './dispatch';
 export * from './flowChecks';
+export * from './flowAdherence';
 export * from './flowPresets';
 export * from './flowContract';
 export * from './registryFlow';
