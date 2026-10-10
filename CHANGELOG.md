@@ -2,6 +2,17 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.38] — 2026-10-10
+
+Pre-release, cut from the `beta` line. Cumulative over `2.0.0-beta.37`.
+
+### Flow adherence score (CGLAB-607–610)
+
+- **Immutable flow revisions**: every flow write lands as a new revision (`flow_revisions` table); legacy blob-only databases are backfilled to revision 1 on init. `getFlow`/`listFlows` serve the newest revision stamped with its number; `listFlowRevisions` exposes the history. Writes are transactional so the blob and the newest revision cannot disagree.
+- **Transition events carry their flow version**: every item history entry (including the initial one) is stamped with `flowId` + `flowRevision` at transition time — verify, board drags, propagation and rollbacks alike. Projects without a resolvable flow transition unstamped.
+- **Flow adherence score, versioned events only**: `computeFlowAdherence` in core judges each stamped transition against the flow revision it names; unstamped and unresolvable-revision events are excluded from both numerator and denominator (backwards compatible). Exposed via `GET /items/:id/flow-adherence` and `GET /projects/:id/flow-adherence`.
+- **Adherence in the board UI**: an Adherence tab on the card detail modal — score %, judged counts, explicit no-score and error states, live refresh.
+
 ## [2.0.0-beta.37] — 2026-10-09
 
 Pre-release, cut from the `beta` line (PRs #218, #219, #220, #206). Cumulative over `2.0.0-beta.36`.
