@@ -2,6 +2,15 @@ import axios from 'axios';
 import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput, VerifyRunEntry } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 import { API_URL } from './apiUrl';
 
+/** CGLAB-609: the server's flow-adherence verdict for a card or project. */
+export interface FlowAdherence {
+  judged: number;
+  compliant: number;
+  score: number | null;
+  unresolved: number;
+  unstamped: number;
+}
+
 /** One check's verdict on a verify (CGLAB-380), as the server records it. */
 export interface StepCheckResult {
   id: string;
@@ -445,6 +454,11 @@ export const api = {
   /** The card's history of checks, approvals and overrides, newest first (5ee2c3b1). */
   getCheckHistory: async (id: string): Promise<CheckHistoryEntry[]> => {
     const { data } = await axios.get(`${API_URL}/items/${id}/check-history`);
+    return data;
+  },
+  /** CGLAB-609: the card's flow adherence, from versioned events only. */
+  getFlowAdherence: async (id: string): Promise<FlowAdherence> => {
+    const { data } = await axios.get(`${API_URL}/items/${id}/flow-adherence`);
     return data;
   },
   /** A person's go-ahead for the card's current step. The board header is what the server accepts. */

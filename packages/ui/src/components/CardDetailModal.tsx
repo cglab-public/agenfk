@@ -4,7 +4,7 @@ import { AgEnFKItem, ItemType, Status, ReviewRecord381 } from '../types';
 import {
   X, Layout, Tag, AlignLeft, Zap,
   Clock, Calendar, FileText, ArrowLeft, Plus,
-  Loader2, ShieldCheck, FlaskConical, ListChecks, Copy, Check, Pencil, Trash2, ExternalLink
+  Loader2, ShieldCheck, FlaskConical, ListChecks, Copy, Check, Pencil, Trash2, ExternalLink, Gauge
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
@@ -20,6 +20,7 @@ import { ItemTypeSquare, ItemTypeBadge, itemTypeHint } from './ItemTypeSquare';
 import { ItemTypePicker } from './ItemTypePicker';
 import { StepChecksPanel } from './StepChecksPanel';
 import { CheckHistoryTab } from './CheckHistoryTab';
+import { FlowAdherenceTab } from './FlowAdherenceTab';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -34,7 +35,7 @@ interface CardDetailModalProps {
   flowName?: string;
 }
 
-type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'checks' | 'tests' | 'reviews' | 'usage' | 'runs';
+type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'checks' | 'adherence' | 'tests' | 'reviews' | 'usage' | 'runs';
 
 /** CGLAB-565: findings read top-down, so the most serious lead the list. Unlabelled ones rank last. */
 const severityRank = (f: { severity?: 'HIGH' | 'MEDIUM' | 'LOW' }): number =>
@@ -135,6 +136,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     { id: 'subitems', label: 'Subitems', icon: <Layout size={14} />, badge: subitems.length, hidden: isNew || (item.type === ItemType.TASK && subitems.length === 0) },
     { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length, hidden: isNew },
     { id: 'checks', label: 'Checks', icon: <ListChecks size={14} />, hidden: isNew },
+    // CGLAB-610: the flow-adherence score, from versioned events only.
+    { id: 'adherence', label: 'Adherence', icon: <Gauge size={14} />, hidden: isNew },
     { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.tests?.length, hidden: isNew },
     // CGLAB-565: review records (CGLAB-381) are server-written; the tab shows
     // only when the card actually carries one.
@@ -971,6 +974,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
           )}
 
           {activeTab === 'checks' && <CheckHistoryTab itemId={item.id} />}
+          {activeTab === 'adherence' && <FlowAdherenceTab itemId={item.id} />}
 
           {activeTab === 'usage' && item.tokenUsage && (
             <div className="animate-in slide-in-from-bottom-2 duration-300">
