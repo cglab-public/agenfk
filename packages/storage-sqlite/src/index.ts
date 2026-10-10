@@ -309,6 +309,13 @@ export class SQLiteStorageProvider implements StorageProvider {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS flow_revisions (
+        flow_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (flow_id, revision)
+      );
       CREATE TABLE IF NOT EXISTS ingestion_state (
         source_path TEXT PRIMARY KEY,
         last_offset INTEGER NOT NULL,
@@ -361,6 +368,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     `);
     this.migrateFlowsTable();
     this.migrateTerminalSessionsTable();
+    this.backfillFlowRevisions();
   }
 
   // ── Hub outbox helpers ─────────────────────────────────────────────────────
@@ -540,6 +548,21 @@ export class SQLiteStorageProvider implements StorageProvider {
       ALTER TABLE flows_new RENAME TO flows;
       COMMIT;
     `);
+  }
+
+  /**
+   * CGLAB-607: a build older than flow revisions wrote rows into `flows` with
+   * no revision history. Backfill each such flow's current blob as revision 1,
+   * so the first edit after the upgrade lands as revision 2, not 1.
+   */
+  private backfillFlowRevisions(): void {
+    this.database
+      .prepare(
+        `INSERT INTO flow_revisions (flow_id, revision, data, created_at)
+         SELECT f.id, 1, f.data, datetime('now') FROM flows f
+         WHERE NOT EXISTS (SELECT 1 FROM flow_revisions r WHERE r.flow_id = f.id)`
+      )
+      .run();
   }
 
   private parseProject(data: string): Project {
@@ -734,35 +757,106 @@ export class SQLiteStorageProvider implements StorageProvider {
   }
 
   async createFlow(flow: Flow): Promise<Flow> {
-    this.database.prepare(
-      'INSERT INTO flows (id, data) VALUES (?, ?)'
-    ).run(flow.id, JSON.stringify(flow));
+    const blob = JSON.stringify(flow);
+    this.database.exec('BEGIN');
+    try {
+      this.database.prepare(
+        'INSERT INTO flows (id, data) VALUES (?, ?)'
+      ).run(flow.id, blob);
+      this.database.prepare(
+        'INSERT INTO flow_revisions (flow_id, revision, data) VALUES (?, 1, ?)'
+      ).run(flow.id, blob);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
     return flow;
   }
 
   async updateFlow(id: string, updates: Partial<Flow>): Promise<Flow> {
     const existing = await this.getFlow(id);
     if (!existing) throw new Error(`Flow ${id} not found`);
-    const updated = { ...existing, ...updates, updatedAt: new Date() };
-    this.database.prepare('UPDATE flows SET data = ? WHERE id = ?').run(
-      JSON.stringify(updated), id
-    );
+    // getFlow stamps the revision number for readers; it must not leak into
+    // the stored blob, where it would go stale and propagate forward. The
+    // same goes for a caller passing a previously-read full Flow as updates.
+    const { revision: _stamped, ...flowWithoutRevision } = existing as Flow & { revision?: number };
+    const { revision: _passed, ...updatesWithoutRevision } = updates as Partial<Flow> & { revision?: number };
+    const updated = { ...flowWithoutRevision, ...updatesWithoutRevision, updatedAt: new Date() } as Flow & { revision?: number };
+    const blob = JSON.stringify(updated);
+    // One transaction: blob and revision row must agree, or a crash between
+    // the two writes would leave the newest content unreadable (getFlow
+    // serves revisions first).
+    this.database.exec('BEGIN');
+    try {
+      this.database.prepare('UPDATE flows SET data = ? WHERE id = ?').run(blob, id);
+      // CGLAB-607: every edit is a new immutable revision; the old ones stay.
+      this.database
+        .prepare(
+          'INSERT INTO flow_revisions (flow_id, revision, data) VALUES (?, (SELECT COALESCE(MAX(revision), 0) + 1 FROM flow_revisions WHERE flow_id = ?), ?)'
+        )
+        .run(id, id, blob);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
     return updated;
   }
 
   async deleteFlow(id: string): Promise<boolean> {
-    const result = this.database.prepare('DELETE FROM flows WHERE id = ?').run(id) as { changes: number };
-    return result.changes > 0;
+    this.database.exec('BEGIN');
+    try {
+      const result = this.database.prepare('DELETE FROM flows WHERE id = ?').run(id) as { changes: number };
+      if (result.changes > 0) {
+        this.database.prepare('DELETE FROM flow_revisions WHERE flow_id = ?').run(id);
+      }
+      this.database.exec('COMMIT');
+      return result.changes > 0;
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
   }
 
   async getFlow(id: string): Promise<Flow | null> {
+    // CGLAB-607: serve the newest revision, stamped with its number. A flow
+    // row with no revisions (read before backfill) falls back to the blob.
+    const revRow = this.database
+      .prepare('SELECT revision, data FROM flow_revisions WHERE flow_id = ? ORDER BY revision DESC LIMIT 1')
+      .get(id) as { revision: number; data: string } | undefined;
+    if (revRow) return { ...this.parseFlow(revRow.data), revision: revRow.revision } as Flow;
     const row = this.database.prepare('SELECT data FROM flows WHERE id = ?').get(id) as { data: string } | undefined;
     return row ? this.parseFlow(row.data) : null;
   }
 
+  async listFlowRevisions(id: string): Promise<Array<{ revision: number; flow: Flow; createdAt: Date }>> {
+    const rows = this.database
+      .prepare('SELECT revision, data, created_at FROM flow_revisions WHERE flow_id = ? ORDER BY revision ASC')
+      .all(id) as Array<{ revision: number; data: string; created_at: string }>;
+    return rows.map((r) => ({
+      revision: r.revision,
+      flow: this.parseFlow(r.data),
+      // created_at is written by SQLite datetime('now') — UTC 'YYYY-MM-DD
+      // HH:MM:SS' with no zone. The Z suffix marks it as UTC; if a future
+      // writer ever stores full ISO-8601 here, normalize before parsing.
+      createdAt: new Date(r.created_at + 'Z'),
+    }));
+  }
+
   async listFlows(): Promise<Flow[]> {
-    const rows = this.database.prepare('SELECT data FROM flows').all() as { data: string }[];
-    return rows.map(r => this.parseFlow(r.data));
+    // Read the newest revision per flow (not the blob) and stamp it, so
+    // listFlows and getFlow can never disagree (CGLAB-607). Single query —
+    // no N+1.
+    const rows = this.database
+      .prepare(
+        `SELECT f.id AS fid, r.revision, r.data
+         FROM flows f
+         JOIN flow_revisions r ON r.flow_id = f.id
+         WHERE r.revision = (SELECT MAX(revision) FROM flow_revisions WHERE flow_id = f.id)`
+      )
+      .all() as Array<{ fid: string; revision: number; data: string }>;
+    return rows.map((r) => ({ ...this.parseFlow(r.data), revision: r.revision }) as Flow);
   }
 
   // ── Observability: token events ─────────────────────────────────────────────

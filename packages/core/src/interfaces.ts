@@ -5,6 +5,7 @@ import {
   Project,
   PauseSnapshot,
   Flow,
+  FlowRevision,
   TokenEvent,
   TokenEventQuery,
   IngestionState,
@@ -84,6 +85,8 @@ export interface StorageProvider extends AgEnFKPlugin {
   deleteFlow(id: string): Promise<boolean>;
   getFlow(id: string): Promise<Flow | null>;
   listFlows(): Promise<Flow[]>;
+  /** CGLAB-607: all immutable revisions of a flow, oldest first. */
+  listFlowRevisions(id: string): Promise<FlowRevision[]>;
 
   // Observability — token events (server-side ingestion of per-client session logs)
   insertTokenEvent(event: TokenEvent): Promise<void>;

@@ -740,6 +740,15 @@ export interface Flow {
   origin?: 'registry';
   /** Where the project's suite runs: every card's final step ('leaf', default) or once at the top-level card ('parent'). See verifyAt.ts. */
   verifyAt?: 'leaf' | 'parent';
+  /** CGLAB-607: which immutable revision this read came from (max revision when served current). */
+  revision?: number;
+}
+
+/** CGLAB-607: one immutable historical revision of a flow. */
+export interface FlowRevision {
+  revision: number;
+  flow: Flow;
+  createdAt: Date;
 }
 
 export interface PauseSnapshot {
