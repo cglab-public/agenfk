@@ -57,7 +57,13 @@ import os from 'node:os';
 interface PiModel { provider?: string; id?: string }
 interface PiEvent {
   toolName?: string;
-  input?: { command?: string; cmd?: string; path?: string; file_path?: string; [k: string]: unknown };
+  input?: {
+    command?: string; cmd?: string; path?: string; file_path?: string;
+    // omp's ast_edit carries its targets in `paths` (a write to the xd://ast_edit
+    // device); NotebookEdit uses `notebook_path`.
+    paths?: unknown[]; notebook_path?: string;
+    [k: string]: unknown;
+  };
   model?: PiModel;
   [k: string]: unknown;
 }
@@ -89,6 +95,96 @@ export interface PiExtensionDeps {
 }
 
 const HOOK_DIR = path.join(os.homedir(), '.agenfk', 'bin');
+
+// ── Hook runtime resolution ──────────────────────────────────────────────────
+
+/**
+ * The runtime used to execute the ~/.agenfk/bin/*.mjs hooks.
+ *
+ * Under pi this is `process.execPath`, the Node binary pi runs under. That
+ * assumption breaks on a Bun standalone host (the omp fork): there
+ * `process.execPath` is the HOST binary, so spawning it re-enters the host with
+ * the script as an argument, hangs until the timeout, and the extension then
+ * fails open on every mutating tool. Resolve a real runtime instead:
+ *
+ *   1. `AGENFK_NODE` — an explicit override, for unusual installs.
+ *   2. `node` on PATH — the normal case, and what pi itself brought.
+ *   3. `process.execPath` — only on a Node host, where it is trustworthy.
+ *
+ * On a Bun host with neither override nor `node`, the result is null and the
+ * enforcing caller fails CLOSED (a block verdict) instead of silently
+ * disabling AgEnFK. Memoised by `hookRuntimeFor`.
+ */
+export function resolveHookRuntime(
+  env: Record<string, string | undefined> = process.env,
+  versions: Record<string, string | undefined> = process.versions as unknown as Record<string, string | undefined>,
+  probe: (cmd: string) => boolean = probeRuntime,
+): string | null {
+  const override = (env.AGENFK_NODE ?? '').trim();
+  if (override && probe(override)) return override;
+  if (probe('node')) return 'node';
+  // A Bun host can run the ESM hooks, but only when the binary is plain Bun;
+  // the standalone app binary is not, so it is never a candidate.
+  if (versions.bun && probe('bun')) return 'bun';
+  if (!versions.bun) return process.execPath;
+  return null;
+}
+
+/** True when `cmd` runs and reports a version. Cheap, side-effect free. */
+function probeRuntime(cmd: string): boolean {
+  try {
+    const res = spawnSync(cmd, ['--version'], { encoding: 'utf8', timeout: 1000, windowsHide: true });
+    return res.status === 0 || Boolean((res.stdout || '').trim());
+  } catch {
+    return false;
+  }
+}
+
+let hookRuntime: string | null | undefined;
+/** The memoised hook runtime, or null when the hooks cannot run on this host. */
+function hookRuntimeFor(): string | null {
+  if (hookRuntime === undefined) {
+    try { hookRuntime = resolveHookRuntime(); } catch { hookRuntime = null; }
+  }
+  return hookRuntime;
+}
+
+const HOOK_RUNTIME_MISSING =
+  'AgEnFK cannot enforce the workflow: no Node runtime was found for the hooks. ' +
+  'Set AGENFK_NODE or put `node` on PATH. Refusing this destructive tool rather than failing open.';
+
+// ── Tool target resolution ───────────────────────────────────────────────────
+
+/**
+ * The mutating tools the hosts expose. pi sends edit/write; the omp fork adds
+ * ast_edit, apply_patch, multiedit, str_replace, move, delete, notebook. All of
+ * them are gated, because the gatekeeper is a workflow gate, not a syntax gate.
+ */
+const GATED_WRITE_TOOLS = new Set([
+  'edit', 'write', 'ast_edit', 'apply_patch', 'multiedit', 'str_replace',
+  'move', 'delete', 'notebook', 'create',
+]);
+
+/**
+ * The real workspace path a mutating tool is about to touch, or undefined when
+ * the call carries none. `xd://…` names a tool device, not a file (omp's
+ * ast_edit arrives as a write to `xd://ast_edit`), so it is skipped and the
+ * first real entry of `paths` is used instead. `local://` is unwrapped to its
+ * workspace path.
+ */
+export function gateTargetPath(input: Record<string, unknown> | undefined | null): string | undefined {
+  if (!input) return undefined;
+  const many = Array.isArray(input.paths) ? input.paths : [];
+  for (const raw of [input.path, input.file_path, input.notebook_path, ...many]) {
+    if (typeof raw !== 'string') continue;
+    const candidate = raw.trim();
+    if (!candidate) continue;
+    if (candidate.startsWith('local://')) return candidate.slice('local://'.length);
+    if (candidate.includes('://')) continue; // a device, not a file
+    return candidate;
+  }
+  return undefined;
+}
 
 // ── Pure helpers (exported for tests) ────────────────────────────────────────
 
@@ -429,10 +525,13 @@ export function injectDeterministicModel(command: string, model: string | null):
 // ── Delegation to the shared decision scripts ────────────────────────────────
 
 function runHookScript(script: string, argv: string[], stdin: unknown): any | null {
+  // A resolved runtime, not process.execPath: on a Bun standalone host the latter
+  // is the host binary and the spawn would re-enter it. Enforcing callers check
+  // `hookRuntimeFor()` themselves and fail closed; this is the last guard.
+  const runtime = hookRuntimeFor();
+  if (!runtime) return null;
   try {
-    // process.execPath is the Node binary pi itself is running under — more
-    // reliable than 'node' from PATH (pi may be launched with a minimal PATH).
-    const res = spawnSync(process.execPath, [path.join(HOOK_DIR, script), ...argv], {
+    const res = spawnSync(runtime, [path.join(HOOK_DIR, script), ...argv], {
       input: JSON.stringify(stdin),
       encoding: 'utf8',
       timeout: 2000,
@@ -477,12 +576,16 @@ export function defaultDeps(): PiExtensionDeps {
   };
 
   return {
-    gatekeeperVerdict: (filePath) =>
-      filePath
-        ? runHookScript('agenfk-gatekeeper.mjs', [], { tool: 'edit', tool_input: { file_path: filePath } })
-        : null,
+    gatekeeperVerdict: (filePath) => {
+      if (!filePath) return null;
+      // Fail closed: a write with no runtime is denied, not waved through.
+      if (!hookRuntimeFor()) return { decision: 'block', reason: HOOK_RUNTIME_MISSING };
+      return runHookScript('agenfk-gatekeeper.mjs', [], { tool: 'edit', tool_input: { file_path: filePath } });
+    },
     // The enforcer blocks only the routes around the server (direct DB reads,
-    // curl/wget to localhost); the agenfk CLI is always allowed.
+    // curl/wget to localhost); the agenfk CLI is always allowed. Bash and read
+    // stay advisory when there is no runtime: a missing hook should not brick the
+    // whole shell, only the workflow gate that the gatekeeper already enforces.
     enforcerVerdict: (command) =>
       command
         ? runHookScript('agenfk-mcp-enforcer.mjs', ['--client', 'pi'], { tool: 'Bash', tool_input: { command } })
@@ -538,8 +641,8 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
   pi.on('tool_call', (event, ctx) => {
     try {
       const name = event?.toolName;
-      if (name === 'edit' || name === 'write') {
-        const filePath = event?.input?.path ?? event?.input?.file_path;
+      if (GATED_WRITE_TOOLS.has(String(name))) {
+        const filePath = gateTargetPath(event?.input as Record<string, unknown> | undefined);
         const v = deps.gatekeeperVerdict(filePath);
         if (v && v.decision === 'block') return { block: true, reason: v.reason };
       } else if (name === 'bash') {
