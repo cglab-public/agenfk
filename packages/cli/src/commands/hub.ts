@@ -6,6 +6,19 @@ import * as os from 'os';
 import * as path from 'path';
 import { exec, execFileSync, execSync, spawn } from 'child_process';
 import { getApiUrl, getInstallationId } from '@agenfk/telemetry';
+import {
+  parseDeadletterLines,
+  deadletterReasonOf,
+  deadletterIndicator,
+  indicatorHint,
+  refusalHint,
+  validateRequeueFilters,
+  type DeadletterEntry,
+  type DeadletterLine,
+  type DeadletterIndicator,
+  type RequeueFilters,
+  type RequeueSummary,
+} from '@agenfk/core';
 
 function readGitConfig(key: string): string | null {
   try {
@@ -55,14 +68,11 @@ function auditFile(): string { return path.join(os.homedir(), '.agenfk', 'hub-au
 
 interface HubConfig { url: string; token: string; orgId: string }
 
-/** One line of ~/.agenfk/hub-deadletter.jsonl (written by the server flusher). */
-export interface DeadletterEntry {
-  eventId?: string | null;
-  occurredAt?: string;
-  deadletteredAt?: string;
-  reason?: string;
-  payload?: { orgId?: unknown; [k: string]: unknown } | string | null;
-}
+// One line of ~/.agenfk/hub-deadletter.jsonl (written by the server flusher),
+// and one physical line of the file: an unparseable line keeps entry null and
+// is preserved verbatim through partial discards (review F2). Shared with the
+// server's requeue (#223).
+export type { DeadletterEntry } from '@agenfk/core';
 
 export interface DeadletterOrgSummary {
   org: string;
@@ -75,17 +85,6 @@ export interface DeadletterOrgSummary {
 function deadletterOrgOf(e: DeadletterEntry): string {
   const orgId = (e?.payload && typeof e.payload === 'object') ? (e.payload as any).orgId : undefined;
   return typeof orgId === 'string' && orgId.length > 0 ? orgId : '(unknown)';
-}
-
-/**
- * One physical line of the deadletter file. `entry` is null for lines that do
- * not parse — the flusher writes deadletter lines because the outbox row is
- * about to be DELETED, so an unparseable line may still be the last copy of
- * something. It is preserved verbatim through partial discards (review F2).
- */
-interface DeadletterLine {
-  raw: string;
-  entry: DeadletterEntry | null;
 }
 
 /**
@@ -128,22 +127,30 @@ export function filterDeadletterForDiscard(entries: DeadletterEntry[], opts: { o
  * Line-level discard filter (review F2): unparseable lines are nobody's org,
  * so --org preserves them; --all (typed confirmation covers the whole file)
  * does not.
+ *
+ * --reason narrows to those refusal reasons (with --org: lines matching both),
+ * and --unparseable removes the unreadable lines — so the lines a requeue can
+ * never move go without taking requeueable events with them (#223).
  */
-export function filterDeadletterLinesForDiscard(lines: DeadletterLine[], opts: { org?: string; all?: boolean }): DeadletterLine[] {
+export function filterDeadletterLinesForDiscard(
+  lines: DeadletterLine[],
+  opts: { org?: string; all?: boolean; reasons?: string[]; unparseable?: boolean },
+): DeadletterLine[] {
   if (opts.all) return [];
-  if (opts.org) return lines.filter(l => l.entry === null || deadletterOrgOf(l.entry) !== opts.org);
-  return lines;
+  const selects = !!opts.org || !!opts.reasons?.length;
+  return lines.filter(l => {
+    if (l.entry === null) return !opts.unparseable;
+    if (!selects) return true;
+    const orgMatches = !opts.org || deadletterOrgOf(l.entry) === opts.org;
+    const reasonMatches = !opts.reasons?.length || opts.reasons.includes(deadletterReasonOf(l.entry));
+    return !(orgMatches && reasonMatches);
+  });
 }
 
 function readDeadletterLines(): DeadletterLine[] {
   let raw: string;
   try { raw = fs.readFileSync(deadletterFile(), 'utf8'); } catch { return []; }
-  const out: DeadletterLine[] = [];
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    try { out.push({ raw: line, entry: JSON.parse(line) }); } catch { out.push({ raw: line, entry: null }); }
-  }
-  return out;
+  return parseDeadletterLines(raw);
 }
 
 function writeDeadletterLines(kept: DeadletterLine[]): void {
@@ -226,6 +233,133 @@ async function rewriteOutboxAndAudit(from: string, to: string, verifyToken: stri
     process.exit(1);
   }
   return rewritten;
+}
+
+/** "a (2), b (1)": a count map, largest first. */
+function countList(counts: Record<string, number>): string {
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} (${n})`).join(', ');
+}
+
+/** The refusal indicator from the deadletter file itself, for when the local server cannot be asked. */
+function localDeadletterIndicator(): DeadletterIndicator {
+  return deadletterIndicator(readDeadletterLines());
+}
+
+/**
+ * The sticky `Refused` line of `hub status` (#223). It reads the deadletter
+ * file, so unlike `Last error` it does not clear on the next flush: only a
+ * requeue or a discard that empties the file clears it.
+ */
+function printRefusals(ind: DeadletterIndicator | undefined): void {
+  if (!ind || !(Number(ind.count) > 0)) return;
+  const byCount = Object.entries(ind.reasons ?? {}).sort((a, b) => b[1] - a[1]);
+  const parts = byCount.map(([r, n]) => `${r} ${n}`);
+  if (ind.unparseable > 0) parts.push(`unparseable ${ind.unparseable}`);
+  const line = `Refused:   ${ind.count} since ${ind.since ?? '?'} (${parts.join(', ')})`;
+  console.log(ind.actionable > 0 ? chalk.red(line) : chalk.yellow(line));
+  // Nothing actionable (hidden_user only): still say what those lines are.
+  const hint = indicatorHint(ind) ?? (byCount[0] ? refusalHint(byCount[0][0]) : null);
+  if (hint) console.log(chalk.gray(`  → ${hint}`));
+}
+
+/** Why a deadletter line was left out of a requeue, for the summary. */
+function describeExclusion(cause: string): string {
+  if (cause === 'unparseable') return 'unparseable lines (only `agenfk hub deadletter discard --all` removes them)';
+  if (cause === 'unreplayable') return 'lines without a usable eventId — they cannot be sent again';
+  if (cause === 'org') return 'stamped with another org than --org';
+  if (cause === 'type') return 'other event types than --type';
+  if (cause === 'since') return 'older than --since';
+  const reason = cause.startsWith('reason:') ? cause.slice('reason:'.length) : cause;
+  return `${reason} — left out unless named with --reason ${reason}`;
+}
+
+/** The requeue's dry-run summary: what moves, what stays and why, and what will still need a carry-over. */
+function printRequeueSummary(summary: RequeueSummary, excluded: Array<[string, number]>, configuredOrg: string): void {
+  console.log(`About to requeue ${chalk.bold(String(summary.count))} event(s) from the deadletter, ${summary.firstAt} .. ${summary.lastAt}`);
+  console.log(`  reasons:       ${countList(summary.byReason)}`);
+  console.log(`  types:         ${countList(summary.byType)}`);
+  console.log(`  orgs:          ${countList(summary.byOrg)}`);
+  console.log(`  installations: ${countList(summary.byInstallation)}`);
+  if (excluded.length > 0) {
+    console.log(chalk.gray('  Left in the deadletter:'));
+    for (const [cause, n] of excluded) console.log(chalk.gray(`    ${describeExclusion(cause)}: ${n}`));
+  }
+  for (const [org, n] of Object.entries(summary.byOrg)) {
+    if (org === configuredOrg || org === '(none)') continue;
+    console.log(chalk.yellow(
+      `  ${n} event(s) are stamped with org "${org}": they will wait in the outbox as stale rows. `
+      + `Move them with \`agenfk hub carry-over --from ${org} --to ${configuredOrg}\`.`,
+    ));
+  }
+}
+
+/** What /v1/ping told us, or why it could not. */
+export type HubPingResult =
+  | { ok: true; data: { orgId?: unknown; installationId?: unknown; [k: string]: unknown } }
+  | { ok: false; status: number | null; message: string };
+
+/**
+ * Will the hub accept the selected events under this machine's key? (#223)
+ *
+ * A bound key refuses every event whose installationId is not its own
+ * (foreign_installation), so requeueing into a wrong binding only sends the
+ * same events straight back to the deadletter. `abort` lists what makes the
+ * requeue pointless (overridable with --force); `warn` lists what could not
+ * be checked.
+ */
+export function requeueBindingVerdict(
+  ping: HubPingResult,
+  cfg: { orgId: string },
+  summary: Pick<RequeueSummary, 'byInstallation'>,
+  localInstallationId: string,
+): { abort: string[]; warn: string[] } {
+  const abort: string[] = [];
+  const warn: string[] = [];
+  if (!ping.ok) {
+    if (ping.status === 401 || ping.status === 403) {
+      abort.push(`The hub refused this machine's key (HTTP ${ping.status}). Ask a hub admin for a new invite and run \`agenfk hub join\`.`);
+    } else {
+      warn.push(`Could not reach the hub (${ping.message}), so it cannot verify the key's binding. The events wait in the outbox until the hub answers.`);
+    }
+    return { abort, warn };
+  }
+  if (ping.data.orgId !== cfg.orgId) {
+    abort.push(`The hub answers for org "${String(ping.data.orgId)}", but ~/.agenfk/hub.json says "${cfg.orgId}". Fix the hub configuration first (\`agenfk hub status\`).`);
+    return { abort, warn };
+  }
+  if (!('installationId' in ping.data)) {
+    warn.push('This hub does not report key bindings (an older hub), so it cannot verify that it will accept these events.');
+    return { abort, warn };
+  }
+  const bound = ping.data.installationId;
+  if (bound === null || bound === undefined) {
+    warn.push('This machine\'s key is not bound to an installation, so the hub cannot be checked ahead; it judges each event as it arrives.');
+    return { abort, warn };
+  }
+  if (bound !== localInstallationId) {
+    abort.push(
+      `This machine's hub key is bound to installation ${String(bound)}, but this machine is ${localInstallationId}. `
+      + 'The hub refuses every event from another installation under this key. Ask a hub admin for a new invite, '
+      + 'run `agenfk hub join`, then requeue.',
+    );
+    return { abort, warn };
+  }
+  const foreign = Object.entries(summary.byInstallation ?? {}).filter(([inst]) => inst !== bound);
+  if (foreign.length > 0) {
+    const n = foreign.reduce((acc, [, c]) => acc + c, 0);
+    abort.push(
+      `${n} selected event(s) were recorded by ${foreign.map(([i, c]) => `${i} (${c})`).join(', ')}, but this key is bound to ${String(bound)}: `
+      + 'the hub refuses them one by one. Narrow the selection, or pass --force to send them anyway.',
+    );
+  }
+  return { abort, warn };
+}
+
+/** "a,b" and repeated flags alike: commander's variadic values, split on commas. */
+function splitList(values: string[] | undefined): string[] | undefined {
+  if (!values) return undefined;
+  const out = values.flatMap(v => v.split(',')).map(v => v.trim()).filter(Boolean);
+  return out.length > 0 ? out : undefined;
 }
 
 /**
@@ -568,6 +702,8 @@ export function registerHubCommands(program: Command): void {
       const cfg = readHubConfig();
       if (!cfg) {
         console.log(chalk.gray('Hub: not configured (no ~/.agenfk/hub.json).'));
+        // Refusals outlive a logout: the events are still not on the hub.
+        printRefusals(localDeadletterIndicator());
         return;
       }
       console.log(`Hub URL:   ${cfg.url}`);
@@ -576,6 +712,7 @@ export function registerHubCommands(program: Command): void {
       const verifyToken = readVerifyToken();
       if (!verifyToken) {
         console.log(chalk.yellow('  (cannot reach local server: ~/.agenfk/verify-token missing)'));
+        printRefusals(localDeadletterIndicator());
         return;
       }
       try {
@@ -595,6 +732,7 @@ export function registerHubCommands(program: Command): void {
         if (data.deadletterDepth !== undefined) {
           console.log(`Deadlettered: ${data.deadletterDepth}${Number(data.deadletterDepth) > 0 ? chalk.yellow(' (hub-rejected, preserved — see `agenfk hub deadletter`)') : ''}`);
         }
+        printRefusals(data.deadletter ?? localDeadletterIndicator());
         console.log(`Last flush: ${data.lastFlushAt ?? 'never'}`);
         console.log(`Last error: ${data.lastError ?? 'none'}`);
         console.log(`Halted:    ${data.halted ? 'YES (hub rejected us repeatedly)' : 'no'}`);
@@ -606,6 +744,7 @@ export function registerHubCommands(program: Command): void {
         }
       } catch (e: any) {
         console.log(chalk.gray(`  (API server not reachable: ${e?.message ?? 'unknown error'})`));
+        printRefusals(localDeadletterIndicator());
       }
     });
 
@@ -884,22 +1023,26 @@ export function registerHubCommands(program: Command): void {
       if (corrupt > 0) {
         console.log(chalk.yellow(`  ${corrupt} unparseable line(s) — preserved on --org discards, removed only by --all.`));
       }
-      console.log(chalk.gray(`Total: ${lines.length} line(s) in ${deadletterFile()} — discard with \`agenfk hub deadletter discard\`.`));
+      console.log(chalk.gray(`Total: ${lines.length} line(s) in ${deadletterFile()} — discard with \`agenfk hub deadletter discard\`, `
+        + 'or once the cause is fixed, send them again with `agenfk hub deadletter requeue`.'));
     });
 
   deadletter
     .command('discard')
     .description('Permanently remove deadlettered entries (see `agenfk hub deadletter`)')
     .option('--org <orgId>', 'Discard only entries stamped with this org')
+    .option('--reason <reason...>', 'Discard only entries refused for these reasons (e.g. hidden_user, invalid)')
+    .option('--unparseable', 'Discard the lines that cannot be read')
     .option('--all', 'Discard every deadlettered entry')
     .option('--yes', 'Skip the interactive confirmation (scripted use)')
-    .action(async (opts: { org?: string; all?: boolean; yes?: boolean }) => {
-      if (!opts.org && !opts.all) {
-        console.error(chalk.red('Choose --org <orgId> or --all.'));
+    .action(async (opts: { org?: string; reason?: string[]; unparseable?: boolean; all?: boolean; yes?: boolean }) => {
+      const reasons = splitList(opts.reason);
+      if (!opts.org && !opts.all && !reasons && !opts.unparseable) {
+        console.error(chalk.red('Choose --org <orgId> or --all (or narrow with --reason <reason...> / --unparseable).'));
         process.exit(1);
         return;
       }
-      const target = { org: opts.org, all: !!opts.all };
+      const target = { org: opts.org, all: !!opts.all, reasons, unparseable: !!opts.unparseable };
       const lines = readDeadletterLines();
       if (lines.length === 0) {
         console.log(chalk.gray('Nothing to discard.'));
@@ -921,6 +1064,27 @@ export function registerHubCommands(program: Command): void {
           console.log(chalk.gray('Aborted — nothing was discarded.'));
           return;
         }
+      } else if (reasons && !opts.yes) {
+        // --reason exists to clear what a requeue can never move. Naming a
+        // reason that CAN be requeued deletes exactly the events requeue exists
+        // to save, so that needs a person's yes (#223).
+        const keptNow = new Set(filterDeadletterLinesForDiscard(lines, target));
+        const requeueable = lines.filter(l => !keptNow.has(l) && l.entry !== null
+          && !['hidden_user', 'invalid'].includes(deadletterReasonOf(l.entry))).length;
+        if (requeueable > 0) {
+          console.log(chalk.red.bold(
+            `About to permanently discard ${requeueable} event(s) that \`agenfk hub deadletter requeue\` could still send to the hub — this cannot be undone.`,
+          ));
+          if (refuseWithoutTty('--yes')) {
+            process.exit(1);
+            return;
+          }
+          const answer = await askLine("Type 'discard' to confirm, or anything else to abort: ");
+          if (answer !== 'discard') {
+            console.log(chalk.gray('Aborted — nothing was discarded.'));
+            return;
+          }
+        }
       }
       // Re-read IMMEDIATELY before writing (review F1): the flusher appends on
       // its own timer — anything that landed during the confirmation prompt is
@@ -935,6 +1099,149 @@ export function registerHubCommands(program: Command): void {
       }
       writeDeadletterLines(kept);
       console.log(chalk.green(`✓ Discarded ${removed} deadlettered entr${removed === 1 ? 'y' : 'ies'}; ${kept.length} remain.`));
+    });
+
+  deadletter
+    .command('requeue')
+    .description('Put deadlettered events back in the outbox, with their original eventId and occurredAt, so the next flush sends them again (#223)')
+    .option('--reason <reason...>', 'Only these refusal reasons (default: all but hidden_user, org_mismatch and invalid)')
+    .option('--org <orgId>', 'Only events stamped with this org (required for --reason org_mismatch)')
+    .option('--type <type...>', 'Only these event types (e.g. pr.opened)')
+    .option('--since <iso>', 'Only events that occurred at or after this date/time')
+    .option('--force', 'Requeue even when the hub binding check says the hub will refuse them again')
+    .option('--yes', 'Skip the interactive confirmation (scripted use)')
+    .action(async (opts: { reason?: string[]; org?: string; type?: string[]; since?: string; force?: boolean; yes?: boolean }) => {
+      const cfg = readHubConfig();
+      if (!cfg) {
+        console.error(chalk.red('Hub not configured (no ~/.agenfk/hub.json). Join it first: `agenfk hub join <url> <invite>`.'));
+        process.exit(1);
+        return;
+      }
+      const verifyToken = readVerifyToken();
+      if (!verifyToken) {
+        console.error(chalk.red('Cannot reach the local server: ~/.agenfk/verify-token is missing. Run `agenfk up` first.'));
+        process.exit(1);
+        return;
+      }
+      const raw: Record<string, unknown> = {};
+      if (splitList(opts.reason)) raw.reasons = splitList(opts.reason);
+      if (opts.org !== undefined) raw.org = opts.org;
+      if (splitList(opts.type)) raw.types = splitList(opts.type);
+      if (opts.since !== undefined) raw.since = opts.since;
+      const parsed = validateRequeueFilters(raw);
+      if (!parsed.ok) {
+        console.error(chalk.red(parsed.error));
+        process.exit(1);
+        return;
+      }
+      const filters: RequeueFilters = parsed.filters;
+      const headers = { 'x-agenfk-internal': verifyToken };
+
+      // 1. Dry run: what would move, and what stays.
+      let dry: any;
+      try {
+        ({ data: dry } = await axios.post(`${getApiUrl()}/internal/hub/requeue-deadletter`, { filters, dryRun: true }, { headers, timeout: 15_000 }));
+      } catch (e: any) {
+        console.error(chalk.red(`Could not ask the local server: ${e?.response?.data?.error ?? e?.message ?? e}`));
+        process.exit(1);
+        return;
+      }
+      const summary: RequeueSummary = dry.summary;
+      const excluded = Object.entries((dry.excluded ?? {}) as Record<string, number>);
+      if (!(summary?.count > 0)) {
+        console.log(chalk.gray('Nothing to requeue.'));
+        for (const [cause, n] of excluded) console.log(chalk.gray(`  ${describeExclusion(cause)}: ${n}`));
+        return;
+      }
+
+      printRequeueSummary(summary, excluded, cfg.orgId);
+
+      // 2. Will the hub take them? Checked against what the hub says about
+      //    this key, not against what this machine believes.
+      let ping: HubPingResult;
+      try {
+        const { data } = await axios.get(`${cfg.url}/v1/ping`, {
+          headers: { Authorization: `Bearer ${cfg.token}`, 'X-Installation-Id': 'cli-requeue' },
+          timeout: 10_000,
+        });
+        ping = { ok: true, data: data ?? {} };
+      } catch (e: any) {
+        ping = { ok: false, status: e?.response?.status ?? null, message: e?.response?.status ? `HTTP ${e.response.status}` : (e?.message ?? String(e)) };
+      }
+      const verdict = requeueBindingVerdict(ping, cfg, summary, getInstallationId());
+      for (const w of verdict.warn) console.log(chalk.yellow(`  ! ${w}`));
+      if (verdict.abort.length > 0) {
+        for (const a of verdict.abort) console.error(chalk.red(`  ✗ ${a}`));
+        if (!opts.force) {
+          console.error(chalk.red('Not requeued: the hub would refuse these events again. Fix the above, or pass --force.'));
+          process.exit(1);
+          return;
+        }
+        console.log(chalk.yellow('  --force: requeueing anyway; refused events go straight back to the deadletter.'));
+      }
+
+      // 3. Confirm.
+      if (!opts.yes) {
+        if (refuseWithoutTty('--yes')) {
+          process.exit(1);
+          return;
+        }
+        const answer = await askLine(`Requeue these ${summary.count} event(s)? [y/N] `);
+        if (!/^y(es)?$/i.test(answer)) {
+          console.log(chalk.gray('Aborted — nothing was requeued.'));
+          return;
+        }
+      }
+
+      // 4. The real run, limited to the events just confirmed: the server
+      //    re-reads the file, and refusals the flusher appended while the
+      //    prompt was open have not been through the binding check above.
+      let result: any;
+      try {
+        ({ data: result } = await axios.post(
+          `${getApiUrl()}/internal/hub/requeue-deadletter`,
+          { filters, dryRun: false, eventIds: dry.eventIds ?? [] },
+          { headers, timeout: 30_000 },
+        ));
+      } catch (e: any) {
+        const body = e?.response?.data;
+        console.error(chalk.red(`Requeue failed: ${body?.error ?? e?.message ?? e}`));
+        if (typeof body?.inserted === 'number') {
+          console.error(chalk.yellow(
+            `  ${body.inserted} event(s) were already put back in the outbox and are still in the deadletter. `
+            + 'Run the same command again to finish: the outbox ignores what it already holds, and the hub dedups by eventId.',
+          ));
+        }
+        process.exit(1);
+        return;
+      }
+      const requeued = Number(result?.requeued ?? 0);
+      const moved = Number(result?.summary?.count ?? requeued);
+      if (moved !== summary.count) {
+        console.log(chalk.yellow(`  Note: the summary showed ${summary.count} event(s) but ${moved} were requeued — the deadletter changed between the two calls.`));
+      }
+      if (Number(result?.excluded?.unconfirmed) > 0) {
+        console.log(chalk.gray(`  ${result.excluded.unconfirmed} more were refused while you confirmed; run the requeue again to review them.`));
+      }
+      let osUser = 'unknown';
+      try { osUser = os.userInfo().username; } catch { /* no passwd entry (containers) */ }
+      try {
+        appendHubAuditLine({
+          at: new Date().toISOString(), action: 'deadletter-requeue', filters, requeued, eventIds: result?.eventIds ?? [], osUser,
+          // A --force that overrode the binding check is part of what happened.
+          ...(verdict.abort.length > 0 ? { force: true, overridden: verdict.abort } : {}),
+        });
+      } catch (ae: any) {
+        console.error(chalk.red.bold(`!! REQUEUE SUCCEEDED (${requeued} event(s)) BUT THE AUDIT LINE FAILED TO WRITE: ${ae?.message ?? ae}`));
+        console.error(chalk.red(`   Append it manually to ${auditFile()} before anyone reads this output as "nothing happened".`));
+        process.exit(1);
+        return;
+      }
+      console.log(chalk.green(`✓ Requeued ${requeued} event(s) (audited); ${result?.remaining ?? '?'} line(s) remain in the deadletter.`));
+      if (Number(result?.alreadyQueued) > 0) {
+        console.log(chalk.gray(`  ${result.alreadyQueued} were already in the outbox from an earlier run.`));
+      }
+      console.log(chalk.gray('  Run `agenfk hub flush` to send them now, or wait for the next flush.'));
     });
 
   hub

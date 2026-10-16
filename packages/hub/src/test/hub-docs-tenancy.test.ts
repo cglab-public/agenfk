@@ -83,6 +83,23 @@ describe('HUB_ARCHITECTURE org-tenancy section stays true to the code (CGLAB-117
     expect(CLI_HUB).toMatch(/--carry-over/);
     expect(DOCS).toMatch(/repoint[^\n]*--carry-over|--carry-over[^\n]*repoint/);
   });
+
+  // #223
+  it('documents deadletter requeue with its real flags and its audit action', () => {
+    expect(CLI_HUB).toContain(".command('requeue')");
+    expect(DOCS).toContain('agenfk hub deadletter requeue');
+    for (const flag of ['--reason', '--org', '--type', '--since', '--force', '--yes']) {
+      expect(CLI_HUB).toContain(`'${flag}`);
+      expect(DOCS).toContain(flag);
+    }
+    expect(CLI_HUB).toContain("action: 'deadletter-requeue'");
+    expect(DOCS).toContain('deadletter-requeue');
+  });
+
+  it('documents that /v1/ping reports the key binding the requeue checks', () => {
+    expect(EVENTS_ROUTE).toMatch(/installationId: req\.hubApiKey!\.installationId \?\? null/);
+    expect(DOCS).toMatch(/\/v1\/ping[^\n]*installationId/);
+  });
 });
 
 describe('release self-documentation', () => {

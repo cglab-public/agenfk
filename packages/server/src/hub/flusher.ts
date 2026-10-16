@@ -5,6 +5,7 @@ import * as path from 'path';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { HubConfig, FlusherStatus } from './types.js';
 import { PENDING_ORG } from './hubClient.js';
+import { readDeadletterIndicator } from './deadletter.js';
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 500;
@@ -22,9 +23,10 @@ const MAX_BACKOFF_MS = 5 * 60_000;
  * Where hub-rejected events are preserved before their outbox rows are
  * deleted (CGLAB-117). Same idiom as hubClient.ts's HUB_CONFIG_PATH; the CLI
  * `hub deadletter` commands duplicate this path expression (packages/cli/src/
- * commands/hub.ts deadletterFile) — the packages share no module, so rename
- * here and the CLI reader must move with it (hub-carryover-deadletter.test.ts
- * pins the literal against drift).
+ * commands/hub.ts deadletterFile) — the line format is shared through
+ * @agenfk/core (hubDeadletter.ts), the path is not, so rename here and the CLI
+ * reader must move with it (hub-carryover-deadletter.test.ts pins the literal
+ * against drift).
  */
 export function defaultDeadletterPath(): string {
   return path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl');
@@ -156,7 +158,9 @@ export class Flusher {
       ...this.status,
       outboxDepth: this.storage.hubOutboxCount(),
       staleOrgDepth,
-      deadletterDepth: countJsonlLines(this.deadletterPath),
+      // The same count as the sticky refusal indicator (#223), from its cache:
+      // this runs on every CLI command, and two counts of one file must agree.
+      deadletterDepth: readDeadletterIndicator(this.deadletterPath).count,
       // Surfaced so the CLI can warn about an install that is stuck WITHOUT
       // being halted — a retired hub URL answering 404 HTML now backs off
       // forever instead of halting, and would otherwise be invisible.
@@ -417,14 +421,5 @@ export class Flusher {
     // applies only on creation; chmod covers the pre-existing-file case.
     fs.appendFileSync(this.deadletterPath, lines.join('\n') + '\n', { mode: 0o600 });
     try { fs.chmodSync(this.deadletterPath, 0o600); } catch { /* best effort */ }
-  }
-}
-
-/** Line count of a JSONL file; 0 when it does not exist yet. */
-function countJsonlLines(filePath: string): number {
-  try {
-    return fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean).length;
-  } catch {
-    return 0;
   }
 }

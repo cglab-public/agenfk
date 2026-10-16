@@ -3,8 +3,14 @@ import { DB } from './db.js';
 export interface RecomputeOptions {
   /** Recompute every event-day on or after this 'YYYY-MM-DD', ignoring the anchor. */
   since?: string;
-  /** Recompute the entire history. Wins over `since`. */
+  /** Recompute the entire history. Wins over `days` and `since`. */
   full?: boolean;
+  /**
+   * Recompute exactly these 'YYYY-MM-DD' days. Wins over `since`. For ingest's
+   * backdated repair (#223): a batch of old events touches a few past days, and
+   * `since` would rescan every day from the oldest one up to today.
+   */
+  days?: string[];
   /**
    * Limit the repair to one org. Without it a single tenant's identity merge
    * recomputes every other tenant's days too — a large, tenant-crossing write
@@ -40,7 +46,9 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
   }
   const orgFilter = opts.orgId ? ' AND org_id = ?' : '';
   const orgParam = opts.orgId ? [opts.orgId] : [];
-  const days = from
+  const days = !opts.full && opts.days
+    ? [...new Set(opts.days)].sort().map(day => ({ day }))
+    : from
     ? await db.all<{ day: string }>(
       `SELECT DISTINCT date(occurred_at) AS day
        FROM events
@@ -119,6 +127,44 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
     });
   }
   return { days: days.length };
+}
+
+/**
+ * The UTC calendar day of an event instant, as SQLite's date(occurred_at)
+ * computes it for the rollups (an offset timestamp late in the evening belongs
+ * to the next UTC day). Falls back to the leading date for an unparseable one.
+ */
+export function utcDayOf(occurredAt: string): string {
+  // No offset means UTC to SQLite (and to Postgres' ::timestamptz on a UTC
+  // hub); Date.parse would read it as the host's local time instead.
+  const hasOffset = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(occurredAt);
+  const dateTime = /^\d{4}-\d{2}-\d{2}[T ]\d/.test(occurredAt);
+  const t = Date.parse(hasOffset || !dateTime ? occurredAt : `${occurredAt.replace(' ', 'T')}Z`);
+  return Number.isNaN(t) ? occurredAt.slice(0, 10) : new Date(t).toISOString().slice(0, 10);
+}
+
+/**
+ * Roll up the days, among `days`, that fall before the latest rolled-up day —
+ * the ones the forward-only timer will never revisit (#223). Days at or after
+ * that anchor are the timer's. With no anchor yet, the timer's first run rolls
+ * up the whole history, so there is nothing to do here either.
+ *
+ * The anchor is capped at today (UTC): occurredAt is client-supplied, and one
+ * event dated in the future would otherwise push the global anchor ahead and
+ * make every live batch from every tenant pay for a recompute of its own day.
+ * Live traffic is today's, so it never triggers this; only genuinely backdated
+ * events do.
+ */
+export async function recomputeBackdatedDays(db: DB, orgId: string, days: Iterable<string>): Promise<{ days: number }> {
+  const candidates = [...new Set(days)];
+  if (candidates.length === 0) return { days: 0 };
+  const latest = (await db.get<{ day: string | null }>(`SELECT MAX(day) AS day FROM rollups_daily`))?.day ?? null;
+  if (!latest) return { days: 0 };
+  const today = new Date().toISOString().slice(0, 10);
+  const anchor = latest < today ? latest : today;
+  const backdated = candidates.filter(d => d < anchor);
+  if (backdated.length === 0) return { days: 0 };
+  return recomputeRollups(db, { days: backdated, orgId });
 }
 
 export function startRollupTimer(db: DB, intervalMs: number = 5 * 60_000): NodeJS.Timeout {

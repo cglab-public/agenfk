@@ -74,7 +74,17 @@ describe('hub /v1 events', () => {
   it('ping returns ok with valid token', async () => {
     const r = await supertest(__server).get('/v1/ping').set('Authorization', `Bearer ${token}`);
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ ok: true, orgId: 'org' });
+    // installationId null: an org-wide key is bound to no machine (#223).
+    expect(r.body).toEqual({ ok: true, orgId: 'org', installationId: null });
+  });
+
+  // #223: `agenfk hub deadletter requeue` checks the binding before resending,
+  // because a bound key refuses every event from any other installation.
+  it('ping reports the installation a bound key is bound to', async () => {
+    const bound = await issueApiKey(ctx.db, 'org', 'bound', { installationId: 'inst-7' });
+    const r = await supertest(__server).get('/v1/ping').set('Authorization', `Bearer ${bound}`);
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ ok: true, orgId: 'org', installationId: 'inst-7' });
   });
 
   it('rejects revoked token', async () => {

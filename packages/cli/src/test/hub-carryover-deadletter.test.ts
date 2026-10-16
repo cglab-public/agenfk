@@ -111,4 +111,15 @@ describe('hub deadletter wiring (source scan)', () => {
     expect(discard).toMatch(/opts\.yes/);
     expect(discard).toMatch(/discard all|readline|question/);
   });
+
+  // #223. Behaviour lives in hub-deadletter-requeue.test.ts; this pins wiring.
+  it('requeue declares its filters, --force and --yes, and goes through the local server', () => {
+    const requeue = getSection(HUB_SRC, ".command('requeue'");
+    expect(requeue.length).toBeGreaterThan(0);
+    for (const opt of ['--reason <reason...>', '--org <orgId>', '--type <type...>', '--since <iso>', '--force', '--yes']) {
+      expect(requeue).toContain(`.option('${opt}'`);
+    }
+    expect(requeue).toMatch(/\/internal\/hub\/requeue-deadletter/);
+    expect(requeue).toMatch(/\/v1\/ping/);
+  });
 });

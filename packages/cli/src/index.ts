@@ -30,15 +30,7 @@ import { toonEncode } from './toon.js';
 import { releaseHint } from './releaseHint.js';
 import { ensureLocalIgnored, stripLegacyProjectId, readLegacyProjectId, projectFileTracked, writeLocalProjectId, LOCAL_FILE_REL } from './localProject.js';
 import { upgradeExtractCommand, tarVersionText } from './tarFlags.js';
-
-/**
- * Consecutive delivery failures before the startup banner warns. A halted
- * flusher warns immediately; this covers the stuck-but-not-halted case (moved
- * hub URL, proxy in the way) that used to be invisible. Three cycles is a
- * couple of minutes at the default 30s interval — long enough to ride out a
- * laptop waking up, short enough to notice before the outbox grows.
- */
-const STUCK_FAILURE_THRESHOLD = 3;
+import { hubBannerMessages } from './hubBanner.js';
 
 const program = new Command();
 const API_URL = getApiUrl();
@@ -665,16 +657,18 @@ program.hook('preAction', (thisCommand, actionCommand) => {
     command: actionCommand.name(),
     version: CURRENT_VERSION,
   });
-  // Surface a one-line warning when the local hub flusher has given up on
-  // delivery (5 consecutive 4xx, typically a revoked or rotated token).
+  // Surface hub trouble in a line each: a flusher that has given up or is
+  // stuck, and events the hub refused that are still in the deadletter (#223).
   // Synchronous, best-effort: no top-level await, swallow every error.
-  void warnIfHubFlusherHalted();
+  void warnAboutHub();
 });
 
-async function warnIfHubFlusherHalted(): Promise<void> {
+async function warnAboutHub(): Promise<void> {
   try {
     const hubConfigPath = path.join(os.homedir(), '.agenfk', 'hub.json');
-    if (!fs.existsSync(hubConfigPath)) return;
+    // Refusals outlive a logout (#223): a deadletter alone is reason to ask.
+    const deadletterPath = path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl');
+    if (!fs.existsSync(hubConfigPath) && !fs.existsSync(deadletterPath)) return;
     const verifyTokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
     if (!fs.existsSync(verifyTokenPath)) return;
     const verifyToken = fs.readFileSync(verifyTokenPath, 'utf8').trim();
@@ -683,21 +677,7 @@ async function warnIfHubFlusherHalted(): Promise<void> {
     const { data } = await axiosLib.get(`${getApiUrl()}/internal/hub/status`, {
       headers: { 'x-agenfk-internal': verifyToken }, timeout: 1500,
     });
-    if (data?.halted) {
-      console.error(chalk.yellow(
-        `⚠ Hub flusher halted (last error: ${data.lastError ?? 'unknown'}). ` +
-        `Run \`agenfk hub status\` for details, or \`agenfk hub login --url <hub>\` to re-authenticate — \n  that now takes effect immediately, without restarting the server.`
-      ));
-    } else if (Number(data?.consecutiveFailures) >= STUCK_FAILURE_THRESHOLD) {
-      // A hub that has moved, or a proxy in the way, no longer halts — it backs
-      // off and retries forever. Without this the outbox would grow silently
-      // while `agenfk hub status` reported a cheerful "Halted: no".
-      console.error(chalk.yellow(
-        `⚠ Hub events are not being delivered — ${data.consecutiveFailures} consecutive failures, ` +
-        `${data.outboxDepth ?? '?'} queued (last error: ${data.lastError ?? 'unknown'}). ` +
-        `Run \`agenfk hub status\`; if the hub moved, \`agenfk hub repoint --url <hub>\`.`
-      ));
-    }
+    for (const message of hubBannerMessages(data)) console.error(message);
   } catch {
     // Local server not running, banner not relevant.
   }

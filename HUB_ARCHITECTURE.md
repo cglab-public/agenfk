@@ -578,6 +578,50 @@ loud `lastError` and escalating backoff.
 `agenfk hub deadletter discard --org X | --all` removes entries —
 re-reading the file immediately before writing, writing atomically
 (tmp + rename), and preserving unparseable lines on `--org` discards.
+`--reason <reason...>` (alone or with `--org`) and `--unparseable` remove
+exactly the lines a requeue can never move — `hidden_user`, `invalid`,
+unreadable lines — without taking requeueable events with them.
+
+**`agenfk hub deadletter requeue`** (#223) puts refused events back in
+the outbox once the cause is fixed — typically after re-onboarding with
+`agenfk hub join` — so the next flush sends them again **with their
+original `eventId`, `occurredAt` and payload**. The hub's ingest is
+`INSERT OR IGNORE` per `eventId`, so a duplicate resend is harmless, and
+the events land on the days they happened.
+
+- **Selection.** `--reason <reason...>`, `--org <orgId>`,
+  `--type <type...>` and `--since <iso>` narrow it. By default every
+  reason except `hidden_user` (an admin's decision, not a fault),
+  `org_mismatch` and `invalid` (refused identically on resend) is
+  selected. `org_mismatch` lines are only taken with `--org`: they come
+  back with their stale stamp, as stale-org rows, and `hub carry-over`
+  remains the only way to rewrite it. Unparseable lines, raw-string
+  payloads and lines whose `eventId` differs from the payload's are never
+  requeued — the outbox key must equal the payload's `eventId`, or a
+  later refusal could not be matched to its row.
+- **Binding check.** Before anything moves, the CLI calls `/v1/ping`,
+  which reports the key's bound `installationId`. It refuses (unless
+  `--force`) when the hub answers for another org, rejects the key, or
+  the key is bound to another installation than this machine or than the
+  one that recorded the selected events — the hub would refuse them all
+  again. An unbound key, an older hub or an unreachable one only warn.
+- **Order.** The local server (the outbox's only writer) runs
+  `POST /internal/hub/requeue-deadletter` (verify-token gated): outbox
+  insert **first**, deadletter rewrite **second**, in one synchronous
+  block so the flusher's own appends cannot interleave. A failure between
+  the two leaves an event in both places — never in neither — and the
+  same command run again finishes the job. Events the hub refuses again
+  simply go back to the deadletter; nothing retries on its own.
+- **Confirmation and audit.** A dry run prints the selection (count,
+  range, reasons, types, orgs, installations, what stays and why); the
+  run asks `[y/N]` (`--yes` skips; a non-TTY run refuses). The real run
+  moves only the `eventIds` that were confirmed — refusals appended while
+  the prompt was open wait for the next run — and the route never
+  defaults to a real run (`dryRun` must be given). Each run appends
+  `{ at, action: 'deadletter-requeue', filters, requeued, eventIds, osUser }`
+  to `~/.agenfk/hub-audit.jsonl`, plus `force: true` and the `overridden`
+  binding-check findings when `--force` overrode them. An audit failure
+  after a successful requeue is shouted, never swallowed.
 
 **`agenfk hub carry-over` is the sole stamp-rewrite path.** It moves
 queued events from one *named* org stamp to another:
@@ -607,6 +651,16 @@ the cycle ends with `lastError` (transport failure *or* refusals — a
 yellow carry-over guidance when stale rows remain, and only prints
 `✓ Flush completed` when the outbox is clean. `agenfk hub status` shows
 `Stale-org rows`, `Deadlettered`, and the per-org outbox breakdown.
+Refusals are **sticky** (#223): `lastError` clears on the next flush,
+so it cannot carry them. The deadletter file can: `/internal/hub/status`
+returns a `deadletter` indicator (`count`, `actionable` — everything but
+`hidden_user` —, `since` = the oldest `deadletteredAt`, per-reason
+counts), `agenfk hub status` prints it as a red `Refused:` line with the
+fix for the main reason (even with no hub configured or no server
+reachable, from the file), the CLI pre-action banner warns while any
+actionable refusal remains, and the board shows it through the public,
+counts-only `GET /hub/refusals`. It clears only when the file is emptied
+— by a requeue or a discard.
 `hub login`/`hub join` print the same stale-org guidance after writing
 config — with exact counts and ready-to-run commands — and never
 auto-rewrite a non-empty foreign org. Identity gates: `login` (both
@@ -614,12 +668,27 @@ paths) and `join` refuse to persist a `hub.json` unless the URL they are
 about to persist answers `/healthz` with `service=agenfk-hub` —
 including the server-supplied `hubUrl` in redeem/device responses.
 
+**Backdated events are rolled up on their own days.** The rollup timer
+recomputes forward from the latest rolled-up day, so an event dated
+before it — an outbox catching up after days offline, or a requeue
+resending refused events — reached the totals and the PR overview but
+never the per-day series. `/v1/events` now recomputes, after its
+transaction, exactly the earlier days of the events it stored (not
+duplicates, not refusals), for the ingesting org only
+(`recomputeBackdatedDays` in `packages/hub/src/rollup.ts`). The anchor
+is capped at today (UTC), so one future-dated event cannot make live
+traffic pay for a recompute on every batch. A failure there only warns:
+the events are stored either way.
+
 Code: `packages/server/src/hub/flusher.ts` (boundary, deadletter,
-rejection handling), `packages/storage-sqlite/src/index.ts`
+rejection handling), `packages/server/src/hub/deadletter.ts` (requeue,
+indicator), `packages/core/src/hubDeadletter.ts` (selection rules,
+indicator, hints), `packages/storage-sqlite/src/index.ts`
 (`hubOutboxPeekDeliverable`, `hubOutboxRewriteOrgId`,
-`hubOutboxOrgSummaries`), `packages/cli/src/commands/hub.ts`
-(carry-over, deadletter, gates, reporting),
-`packages/hub/src/routes/events.ts` (rejections). The deadletter path is
+`hubOutboxOrgSummaries`, `hubOutboxAppendMany`),
+`packages/cli/src/commands/hub.ts` (carry-over, deadletter, requeue,
+gates, reporting), `packages/hub/src/routes/events.ts` (rejections, ping
+binding, backdated rollups). The deadletter path is
 a contract between flusher and CLI (`defaultDeadletterPath()`),
 drift-pinned by tests in both packages; the docs↔code facts above are
 pinned by `packages/hub/src/test/hub-docs-tenancy.test.ts`.
@@ -955,7 +1024,7 @@ is the guard.
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/v1/ping` | api_key | Cheap "creds good?" check. |
+| GET | `/v1/ping` | api_key | Cheap "creds good?" check: `{ ok, orgId, installationId }`, where `installationId` is the installation a bound key belongs to (`null` for an org-wide key). |
 | POST | `/v1/events` | api_key | `{ events: HubEvent[] }`. Returns `{ ingested, skipped, rejected, installationId }`. Stamps the batch's `X-Agenfk-Version` onto each new event row's `reporting_version` and onto the installation row. |
 | GET | `/v1/upgrade-directive` | api_key | Oldest *pending* directive for this installation, or `204`. |
 

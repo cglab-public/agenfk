@@ -32,6 +32,7 @@ import { WelcomeScreen, welcomeActions } from './WelcomeScreen';
 import { AgenfkFlag } from './AgenfkFlag';
 import { AgenfkWordmark } from './AgenfkWordmark';
 import { ReleaseReminder } from './ReleaseReminder';
+import { HubRefusalIndicator } from './HubRefusalIndicator';
 import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
 import { FlowEditorModal, renderStepIcon } from './FlowEditorModal';
@@ -1970,6 +1971,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
 
               <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-1 hidden md:block" />
 
+              <HubRefusalIndicator />
               <ReleaseReminder />
 
               {selectedProjectId && (

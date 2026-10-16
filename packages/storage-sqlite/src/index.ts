@@ -383,6 +383,29 @@ export class SQLiteStorageProvider implements StorageProvider {
     ).run(eventId, occurredAt, payloadJson);
   }
 
+  /**
+   * Append several preserved events at once, all or nothing (#223: the
+   * deadletter requeue puts refused events back with their ORIGINAL id and
+   * occurred-at). Rows already queued are ignored, like hubOutboxAppend.
+   * Returns how many rows were actually inserted.
+   */
+  hubOutboxAppendMany(rows: Array<{ eventId: string; occurredAt: string; payload: string }>): number {
+    if (rows.length === 0) return 0;
+    const insert = this.database.prepare(
+      'INSERT OR IGNORE INTO hub_outbox (event_id, occurred_at, payload) VALUES (?, ?, ?)'
+    );
+    let inserted = 0;
+    this.database.exec('BEGIN');
+    try {
+      for (const r of rows) inserted += Number(insert.run(r.eventId, r.occurredAt, r.payload).changes ?? 0);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+    return inserted;
+  }
+
   hubOutboxPeek(limit: number = 500): Array<{ event_id: string; occurred_at: string; payload: string; attempts: number; last_error: string | null }> {
     return this.database.prepare(
       'SELECT event_id, occurred_at, payload, attempts, last_error FROM hub_outbox ORDER BY occurred_at ASC LIMIT ?'

@@ -17,7 +17,7 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -30,6 +30,8 @@ import { readGitHubAccount, signOutGitHub } from "./githubAccount.js";
 import { createOutputCapture, formatBytes, type CapturedOutput } from "./verifyCapture.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
 import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
+import { requeueDeadletter, readDeadletterIndicator, RequeueRewriteFailed } from "./hub/deadletter.js";
+import { defaultDeadletterPath } from "./hub/flusher.js";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -10725,11 +10727,60 @@ app.get('/internal/hub/status', asyncHandler(async (req: any, res: any) => {
   const orgs = typeof (storage as any)?.hubOutboxOrgSummaries === 'function'
     ? (storage as any).hubOutboxOrgSummaries()
     : {};
+  // The sticky refusal indicator (#223) comes from the deadletter file, not the
+  // flusher's memory: it outlives flushes, restarts, re-joins and a logout.
+  const deadletter = readDeadletterIndicator(defaultDeadletterPath());
   if (!hubFlusher) {
-    return res.json({ enabled: false, orgs });
+    return res.json({ enabled: false, orgs, deadletter });
   }
-  res.json({ ...hubFlusher.getStatus(), orgs });
+  res.json({ ...hubFlusher.getStatus(), orgs, deadletter });
 }));
+
+// ── Hub deadletter requeue (used by `agenfk hub deadletter requeue`, #223) ───
+// Puts refused events back in the outbox with their original eventId and
+// occurredAt, so the next flush resends them once the cause is fixed. Here and
+// not in the CLI because the outbox is the server's to write.
+app.post('/internal/hub/requeue-deadletter', asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: 'Forbidden: hub deadletter requeue requires internal token.' });
+  }
+  // Explicit, never defaulted: a body that lost its fields (or was not JSON)
+  // must not turn into a real run over every default-selected line.
+  const dryRun = req.body?.dryRun;
+  if (typeof dryRun !== 'boolean') {
+    return res.status(400).json({ error: 'dryRun must be given as true or false.' });
+  }
+  const eventIds = req.body?.eventIds;
+  if (eventIds !== undefined
+    && !(Array.isArray(eventIds) && eventIds.every((id: unknown) => typeof id === 'string' && id.length > 0))) {
+    return res.status(400).json({ error: 'eventIds must be a list of event ids.' });
+  }
+  const parsed = validateRequeueFilters(req.body?.filters);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  try {
+    res.json(requeueDeadletter({
+      storage: storage as SQLiteStorageProvider,
+      path: defaultDeadletterPath(),
+      filters: parsed.filters,
+      dryRun,
+      onlyEventIds: eventIds,
+    }));
+  } catch (e: any) {
+    if (e instanceof RequeueRewriteFailed) {
+      return res.status(500).json({ error: e.message, inserted: e.inserted });
+    }
+    throw e;
+  }
+}));
+
+// ── Hub refusals, for the board (#223) ───────────────────────────────────────
+// The board holds no internal token, so this read is public on loopback like
+// the rest of the board's routes. Counts and a hint only: the deadletter lines
+// carry actor emails and item titles, and none of that leaves here.
+app.get('/hub/refusals', limitBoardRoutes, (_req: any, res: any) => {
+  const ind = readDeadletterIndicator(defaultDeadletterPath());
+  res.json({ ...ind, hint: indicatorHint(ind) });
+});
 
 // ── Hub outbox org rewrite (used by `agenfk hub carry-over`, `hub repoint
 // --carry-over`, and login's pre-login sentinel stamp) ─────────────────────
@@ -12305,6 +12356,9 @@ export const API_PATH_PREFIXES = [
   // `/herdr`: without the prefix the desktop answers it with index.html and a
   // 200, so the caller's `r.ok` is true and the JSON parse is what fails.
   '/decompositions',
+  // `/hub/refusals` feeds the board's refusal indicator (#223). The board has
+  // no page under /hub, so nothing of the SPA is shadowed by claiming it.
+  '/hub',
 ];
 
 /**

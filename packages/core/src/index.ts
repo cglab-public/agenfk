@@ -30,4 +30,5 @@ export * from './projectFile';
 export * from './projectIdentity';
 export * from './commandApproval';
 export * from './privateFile';
+export * from './hubDeadletter';
 export * from './releaseChannel';

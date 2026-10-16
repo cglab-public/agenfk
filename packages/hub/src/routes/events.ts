@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { SEMVER_TAG_RE } from '../util/semver.js';
 import { forwardEvents } from '../services/federation/forwarding.js';
+import { recomputeBackdatedDays, utcDayOf } from '../rollup.js';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { HubEvent } from '@agenfk/core';
@@ -125,7 +126,10 @@ export function eventsRouter(ctx: HubServerContext): Router {
   const requireKey = requireApiKey(ctx.db);
 
   router.get('/ping', requireKey, (req: Request, res: Response) => {
-    res.json({ ok: true, orgId: req.hubApiKey!.orgId });
+    // installationId: the machine a bound key belongs to (null for an org-wide
+    // key). `agenfk hub deadletter requeue` checks it before resending (#223):
+    // a bound key refuses every event from any other installation.
+    res.json({ ok: true, orgId: req.hubApiKey!.orgId, installationId: req.hubApiKey!.installationId ?? null });
   });
 
   // Fleet poll endpoint (Story 2 of EPIC 541c12b3 — remote upgrade).
@@ -232,6 +236,9 @@ export function eventsRouter(ctx: HubServerContext): Router {
     // forwardEvents is a no-op and nothing is queued.
     const forwardable: Array<Record<string, unknown>> = [];
     const rejections: EventRejection[] = [];
+    // Days of the events actually stored (not skipped, not refused), for the
+    // backdated rollup repair after the transaction (#223).
+    const ingestedDays = new Set<string>();
     // Best-effort eventId for events that fail isValidEvent: they may lack it
     // entirely, which is often the very reason they are invalid.
     const eventIdOf = (ev: any): string | null =>
@@ -390,6 +397,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
         // local insert ignored is not news for the parent either.
         forwardable.push({ ...e, userKey });
         ingested++;
+        ingestedDays.add(utcDayOf(e.occurredAt));
         await ctx.db.run(UPSERT_INSTALLATION_SQL, [
           e.installationId, e.orgId, now, now,
           e.actor.osUser ?? null, e.actor.gitName ?? null, e.actor.gitEmail ?? null,
@@ -542,6 +550,18 @@ export function eventsRouter(ctx: HubServerContext): Router {
         + `${keyInstallation ? ` (installation ${keyInstallation})` : ' (org-wide key)'}.`,
       );
     }
+    // Roll up the past days this batch stored (#223). The timer only rolls up
+    // from the latest rolled-up day forward, so an event dated before it — an
+    // outbox catching up after days offline, or a deadletter requeue resending
+    // refused events with their original occurredAt — would count in totals and
+    // the PR overview but never in the per-day series. After the transaction:
+    // the events are stored either way, and a failure here only warns.
+    try {
+      await recomputeBackdatedDays(ctx.db, orgId, ingestedDays);
+    } catch (err) {
+      console.warn('[ROLLUP] stored backdated events but could not roll up their days:', (err as Error).message);
+    }
+
     // Federation (CGLAB-184). Deliberately AFTER the ingest transaction and
     // outside it: queueing for the parent is a side effect of having stored an
     // event, never a condition of storing it.

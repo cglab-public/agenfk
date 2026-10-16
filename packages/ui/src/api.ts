@@ -613,6 +613,11 @@ export const api = {
     const { data } = await axios.get(`${API_URL}/releases/latest`);
     return data;
   },
+  /** Events the hub refused, kept in this machine's deadletter (#223): counts and a hint only. */
+  getHubRefusals: async (): Promise<{ count: number; actionable: number; since: string | null; reasons: Record<string, number>; unparseable: number; hint: string | null }> => {
+    const { data } = await axios.get(`${API_URL}/hub/refusals`);
+    return data;
+  },
   /** The INSTALLED version's own release notes - what What's New shows (4aac7076). */
   getCurrentRelease: async () => {
     const { data } = await axios.get(`${API_URL}/releases/current`);
