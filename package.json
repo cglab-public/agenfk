@@ -69,10 +69,10 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/supertest": "^7.2.1",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^5.0.5",
     "js-yaml": "^4.1.1",
     "jsdom": "^28.1.0",
     "supertest": "^7.3.1",
-    "vitest": "^4.0.18"
+    "vitest": "^5.0.5"
   }
 }
