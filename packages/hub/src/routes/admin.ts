@@ -3,7 +3,8 @@ import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
 import { revokeAdminCliToken } from '../auth/adminCliToken.js';
-import { checkEmailAllowlist } from '../auth/oauth.js';
+import { checkEmailAllowlist, checkHostedDomain, parseStoredList } from '../auth/oauth.js';
+import { ENTRA_ALIAS_REFUSAL, ENTRA_TENANT_GUID, isEntraTenantAlias } from '../auth/entra.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
@@ -88,20 +89,29 @@ interface AuthConfigRow {
   entra_client_id: string | null;
   entra_client_secret_enc: string | null;
   email_allowlist: string | null;
+  google_hosted_domains: string | null;
 }
 
 function publicAuthConfig(row: AuthConfigRow) {
   return {
     passwordEnabled: !!row.password_enabled,
     googleEnabled: !!row.google_enabled,
-    google: { clientId: row.google_client_id ?? '', clientSecretSet: !!row.google_client_secret_enc },
+    google: {
+      clientId: row.google_client_id ?? '',
+      clientSecretSet: !!row.google_client_secret_enc,
+      hostedDomains: parseStoredList(row.google_hosted_domains) ?? [],
+      // Sign-in denies everyone while a list is unreadable; the page must say
+      // so rather than show an empty list an admin could save as "anyone".
+      hostedDomainsUnreadable: parseStoredList(row.google_hosted_domains) === null,
+    },
     entraEnabled: !!row.entra_enabled,
     entra: {
       tenantId: row.entra_tenant_id ?? '',
       clientId: row.entra_client_id ?? '',
       clientSecretSet: !!row.entra_client_secret_enc,
     },
-    emailAllowlist: row.email_allowlist ? JSON.parse(row.email_allowlist) : [],
+    emailAllowlist: parseStoredList(row.email_allowlist) ?? [],
+    emailAllowlistUnreadable: parseStoredList(row.email_allowlist) === null,
   };
 }
 
@@ -115,17 +125,50 @@ interface SignInAdmin { id?: string; email: string; password_hash: string | null
  * an email the allowlist lets through (auth/google.ts, auth/entra.ts). A
  * method being "on" is not enough; somebody has to be able to use it.
  *
- * An approximation in one respect: the callbacks check the allowlist against
- * the email the identity provider returns, and this checks the stored
- * users.email. They differ only for an admin who signs in under another
- * address than the one they were invited with.
+ * A provider counts only for an admin it can still sign in: one whose row is
+ * not yet bound (provider 'password') or is bound to that provider, since a
+ * bound row is never rebound to another identity (auth/oauth.ts).
+ *
+ * Approximations, because the callbacks judge what the identity provider
+ * returns and this judges the stored row: the allowlist is checked against
+ * users.email, and the Workspace domains against that email's domain, which
+ * is the account's hd claim for its primary domain. They differ only for an
+ * admin who signs in under another address, or a Workspace secondary domain.
  */
 export function adminCanStillSignIn(cfg: AuthConfigRow, admins: SignInAdmin[]): boolean {
   const byPassword = !!cfg.password_enabled && admins.some(a => a.provider === 'password' && !!a.password_hash);
   if (byPassword) return true;
   const google = !!cfg.google_enabled && !!cfg.google_client_id?.trim() && !!cfg.google_client_secret_enc;
-  const entra = !!cfg.entra_enabled && !!cfg.entra_tenant_id?.trim() && !!cfg.entra_client_id?.trim() && !!cfg.entra_client_secret_enc;
-  return (google || entra) && admins.some(a => checkEmailAllowlist(a.email, cfg.email_allowlist).allowed);
+  const entra = !!cfg.entra_enabled && !!cfg.entra_tenant_id?.trim() && !isEntraTenantAlias(cfg.entra_tenant_id ?? '')
+    && !!cfg.entra_client_id?.trim() && !!cfg.entra_client_secret_enc;
+  const unbound = (a: SignInAdmin) => a.provider === 'password';
+  const allowed = (a: SignInAdmin) => checkEmailAllowlist(a.email, cfg.email_allowlist).allowed;
+  const inWorkspace = (a: SignInAdmin) => checkHostedDomain(a.email.split('@').pop(), cfg.google_hosted_domains ?? null).allowed;
+  return admins.some(a => allowed(a) && (
+    (google && (unbound(a) || a.provider === 'google') && inWorkspace(a))
+    || (entra && (unbound(a) || a.provider === 'entra'))
+  ));
+}
+
+/** A bare domain as a Workspace or allowlist entry names it: acme.com, eu.acme.com. */
+const BARE_DOMAIN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const bareDomain = (v: string): string | null => (BARE_DOMAIN.test(v.toLowerCase()) ? v.toLowerCase() : null);
+
+/**
+ * A list field of PUT /auth-config, trimmed, or the reason it is refused.
+ * Stored lists are trusted at sign-in only as arrays of strings, so anything
+ * else is refused here rather than saved and then denied for everyone.
+ */
+function cleanList(value: unknown, field: string, each?: (v: string) => string | null): { list: string[] } | { error: string } {
+  if (!Array.isArray(value)) return { error: `${field} must be a list` };
+  const list: string[] = [];
+  for (const v of value) {
+    if (typeof v !== 'string' || !v.trim()) return { error: `${field} entries must be non-empty text` };
+    const cleaned = each ? each(v.trim()) : v.trim();
+    if (cleaned === null) return { error: `${field}: "${v.trim()}" is not a bare domain such as acme.com` };
+    list.push(cleaned);
+  }
+  return { list };
 }
 
 /** The org's active admins, as the sign-in checks need them. Exported for tests that hold this read. */
@@ -137,11 +180,11 @@ export function signInLockoutReason(cfg: AuthConfigRow, admins: SignInAdmin[]): 
   if (cfg.password_enabled && !admins.some(a => a.provider === 'password' && !!a.password_hash)) {
     return 'This would leave no admin able to sign in: no admin has an email + password account any more '
       + '(signing in with Google or Entra once moves an account to it), and no single sign-on provider is set up '
-      + 'with an allowlist that lets an admin in.';
+      + 'with an allowlist and Workspace domains that let an admin in.';
   }
   return 'This would leave no admin able to sign in: keep email + password on, or finish setting up '
     + 'Google or Microsoft Entra (client ID, secret and, for Entra, the tenant) with an allowlist '
-    + 'that still lets an admin in.';
+    + 'and Workspace domains that still let an admin in.';
 }
 
 /**
@@ -206,12 +249,32 @@ export function adminRouter(ctx: HubServerContext): Router {
       setField('google_client_secret_enc', encryptSecret(b.google.clientSecret, ctx.config.secretKey));
     }
     if (b.entraEnabled !== undefined) setField('entra_enabled', b.entraEnabled ? 1 : 0);
-    if (b.entra?.tenantId !== undefined) setField('entra_tenant_id', b.entra.tenantId || null);
+    if (b.google?.hostedDomains !== undefined) {
+      const domains = cleanList(b.google.hostedDomains, 'Workspace domains', bareDomain);
+      if ('error' in domains) return res.status(400).json({ error: domains.error });
+      setField('google_hosted_domains', JSON.stringify(domains.list));
+    }
+    if (b.entra?.tenantId !== undefined && b.entra?.tenantId !== null) {
+      if (typeof b.entra.tenantId !== 'string') return res.status(400).json({ error: 'The Entra tenant must be text' });
+      const tenant = b.entra.tenantId.trim();
+      if (tenant && isEntraTenantAlias(tenant)) return res.status(400).json({ error: ENTRA_ALIAS_REFUSAL });
+      // Entra discovery takes the tenant by id or by one of its verified
+      // domains (contoso.onmicrosoft.com); both name a single tenant.
+      const stored = !tenant ? null : ENTRA_TENANT_GUID.test(tenant) ? tenant : bareDomain(tenant);
+      if (tenant && !stored) {
+        return res.status(400).json({ error: 'The Entra tenant must be the Directory (tenant) ID, a GUID such as 0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0, or a verified domain of the tenant' });
+      }
+      setField('entra_tenant_id', stored);
+    }
     if (b.entra?.clientId !== undefined) setField('entra_client_id', b.entra.clientId || null);
     if (typeof b.entra?.clientSecret === 'string' && b.entra.clientSecret) {
       setField('entra_client_secret_enc', encryptSecret(b.entra.clientSecret, ctx.config.secretKey));
     }
-    if (Array.isArray(b.emailAllowlist)) setField('email_allowlist', JSON.stringify(b.emailAllowlist));
+    if (b.emailAllowlist !== undefined) {
+      const allowlist = cleanList(b.emailAllowlist, 'Email allowlist');
+      if ('error' in allowlist) return res.status(400).json({ error: allowlist.error });
+      setField('email_allowlist', JSON.stringify(allowlist.list));
+    }
 
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
     // Saving a config nobody can sign in with locks the whole org out, the
@@ -1459,9 +1522,21 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.put('/users/:id', guard, asyncRoute(async (req: Request, res: Response) => {
-    const { role, active, password } = req.body ?? {};
+    const { role, active, password, resetSignIn } = req.body ?? {};
     const sets: string[] = [];
     const params: any[] = [];
+    // A row bound to one sign-in identity is never rebound by email
+    // (auth/oauth.ts); unlinking it here is how it moves. Not your own: the
+    // session would outlive the only way back in.
+    if (resetSignIn === true) {
+      if (req.session!.userId === req.params.id) {
+        return res.status(400).json({ error: 'You cannot reset your own sign-in; ask another admin.' });
+      }
+      // The password goes too: an SSO account can still hold the hash of the
+      // password it was invited with, which provider = 'password' would make
+      // valid again for whoever knew it (an address reused after its owner left).
+      sets.push("provider = 'password'", 'provider_subject = NULL', 'password_hash = NULL');
+    }
     if (role === 'admin' || role === 'viewer') { sets.push('role = ?'); params.push(role); }
     if (active === true || active === false) { sets.push('active = ?'); params.push(active ? 1 : 0); }
     if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(hashPassword(password)); }

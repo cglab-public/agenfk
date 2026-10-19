@@ -1177,6 +1177,11 @@ work out your hub's public origin first (`AGENFK_HUB_PUBLIC_URL`, e.g.
    - Paste the client ID and client secret. The secret is encrypted with
      `AGENFK_HUB_SECRET_KEY` (AES-256-GCM) before persisting; only the
      decrypted form ever leaves memory during the OIDC exchange.
+   - Set **Workspace domains** (`acme.com`, `eu.acme.com`) to accept only
+     accounts of those Google Workspace domains. The hub checks Google's
+     `hd` claim, which a consumer account does not carry; the domain of the
+     email address does not prove Workspace membership. Leave it empty to
+     accept any Google account.
    - Optionally tighten the **email allowlist** (`acme.com`,
      `*.subsidiary.com`, or specific addresses).
    - Save.
@@ -1223,9 +1228,13 @@ design).
    email. Adding the optional claim avoids surprises.
 5. **In the hub** (**Admin → Auth**):
    - Toggle **Microsoft Entra** on.
-   - **Tenant ID**: paste the Directory (tenant) ID from step 1, or
-     `organizations` for any work/school tenant, or `common` for any
-     account (only if your "Supported account types" allows it).
+   - **Tenant ID**: paste the Directory (tenant) ID from step 1, a GUID,
+     or one of the tenant's verified domains (`contoso.onmicrosoft.com`).
+     The hub refuses `organizations`, `common` and `consumers`: their
+     discovery document names the issuer as a `{tenantid}` template, so no
+     token verifies against it, and nothing would say which tenant a
+     sign-in belongs to. Every sign-in's `tid` claim is checked against
+     the tenant the discovery document's issuer names.
    - **Client ID**: the Application (client) ID.
    - **Client secret**: the *Value* you copied from step 3.
    - Optionally restrict the email allowlist.
@@ -1248,10 +1257,24 @@ After provider config + invite:
    **Sign in with Microsoft** buttons (only the providers you enabled).
 2. Click → IdP consent → redirected back to
    `/auth/{google,entra}/callback?code=…&state=…`.
-3. Hub validates state cookie + exchanges the code, runs the allowlist,
-   then `findInvitedSsoUser`. If they're invited, a session cookie is set
-   and they land on `/`. If not, **403 "Account not invited — ask your
-   admin to invite you first"** — no session cookie, no row created.
+3. Hub validates state cookie + exchanges the code, checks the tenant
+   (Entra `tid`) or the Workspace domain (Google `hd`), runs the
+   allowlist, then `findInvitedSsoUser`. If they're invited, a session
+   cookie is set and they land on `/`. If not, **403 "Account not invited —
+   ask your admin to invite you first"** — no session cookie, no row
+   created.
+4. The first sign-in binds the invited row to the provider's immutable
+   subject (Entra `oid`, Google `sub`) and writes a `user.sso_bind` entry to
+   the audit log. A row already bound is matched by that subject only,
+   never by email: an address reused after its owner left gets **403 "This
+   email belongs to an account linked to another sign-in identity"**. If
+   the binding should move, an admin uses **Reset** next to the provider in
+   **Admin → Users**; the person's next sign-in links the account again,
+   keeping its id, role and history. The reset also removes any password
+   stored on the account, so an old one cannot come back with it. It does
+   not end existing sessions: deactivate a user who has left first. Admin recovery
+   (`AGENFK_HUB_RESET_ADMIN_EMAIL`) unlinks the recovered admin the same
+   way.
 
 ---
 

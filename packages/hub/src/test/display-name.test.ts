@@ -138,7 +138,7 @@ describe('signed-in user display name', () => {
     it('persists the name claim on sign-in', async () => {
       await invite(ctx.db, 'u-pre', 'bob@acme.com');
       vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt' } } as any);
-      mockClaims = { oid: 'oid-1', email: 'bob@acme.com', name: 'Bob Marley' };
+      mockClaims = { tid: 'tenant-uuid', oid: 'oid-1', email: 'bob@acme.com', name: 'Bob Marley' };
 
       const cb = await signIn(app, 'entra');
       expect(cb.status).toBe(302);
@@ -150,9 +150,9 @@ describe('signed-in user display name', () => {
       await invite(ctx.db, 'u-pre', 'bob@acme.com');
       vi.spyOn(axios, 'post').mockResolvedValue({ data: { id_token: 'fake.jwt' } } as any);
 
-      mockClaims = { oid: 'oid-1', email: 'bob@acme.com', name: 'Bob Marley' };
+      mockClaims = { tid: 'tenant-uuid', oid: 'oid-1', email: 'bob@acme.com', name: 'Bob Marley' };
       await signIn(app, 'entra');
-      mockClaims = { oid: 'oid-1', email: 'bob@acme.com', name: 'Roberta Marley' };
+      mockClaims = { tid: 'tenant-uuid', oid: 'oid-1', email: 'bob@acme.com', name: 'Roberta Marley' };
       await signIn(app, 'entra');
 
       const row = await ctx.db.get<any>('SELECT * FROM users WHERE id = ?', ['u-pre']);
@@ -162,7 +162,7 @@ describe('signed-in user display name', () => {
     it('signs in without a name claim and leaves the name unset', async () => {
       await invite(ctx.db, 'u-pre', 'bob@acme.com');
       vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt' } } as any);
-      mockClaims = { oid: 'oid-1', email: 'bob@acme.com' };
+      mockClaims = { tid: 'tenant-uuid', oid: 'oid-1', email: 'bob@acme.com' };
 
       const cb = await signIn(app, 'entra');
       expect(cb.status).toBe(302);
@@ -177,7 +177,7 @@ describe('signed-in user display name', () => {
       await invite(ctx.db, 'u-pre', 'bob@acme.com');
       await ctx.db.run('UPDATE users SET name = ? WHERE id = ?', ['Bob Marley', 'u-pre']);
       vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt' } } as any);
-      mockClaims = { oid: 'oid-1', email: 'bob@acme.com' };
+      mockClaims = { tid: 'tenant-uuid', oid: 'oid-1', email: 'bob@acme.com' };
 
       await signIn(app, 'entra');
 
@@ -189,7 +189,7 @@ describe('signed-in user display name', () => {
     it('strips control characters and bounds an over-long name', async () => {
       await invite(ctx.db, 'u-pre', 'bob@acme.com');
       vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt' } } as any);
-      mockClaims = { oid: 'oid-1', email: 'bob@acme.com', name: `Bob\u202E\nMarley${'x'.repeat(400)}` };
+      mockClaims = { tid: 'tenant-uuid', oid: 'oid-1', email: 'bob@acme.com', name: `Bob\u202E\nMarley${'x'.repeat(400)}` };
 
       await signIn(app, 'entra');
 
@@ -204,7 +204,7 @@ describe('signed-in user display name', () => {
       // apart, each half can be right while the pair is broken.
       await invite(ctx.db, 'u-pre', 'bob@acme.com');
       vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt' } } as any);
-      mockClaims = { oid: 'oid-1', email: 'bob@acme.com', name: 'Bob Marley' };
+      mockClaims = { tid: 'tenant-uuid', oid: 'oid-1', email: 'bob@acme.com', name: 'Bob Marley' };
 
       const cb = await signIn(app, 'entra');
       const session = (cb.headers['set-cookie'] as unknown as string[])
@@ -220,9 +220,9 @@ describe('signed-in user display name', () => {
       await invite(ctx.db, 'u-pre', 'bob@acme.com');
       vi.spyOn(axios, 'post').mockResolvedValue({ data: { id_token: 'fake.jwt' } } as any);
 
-      mockClaims = { oid: 'oid-1', email: 'bob@acme.com', name: 'Bob Marley' };
+      mockClaims = { tid: 'tenant-uuid', oid: 'oid-1', email: 'bob@acme.com', name: 'Bob Marley' };
       await signIn(app, 'entra');
-      mockClaims = { oid: 'oid-1', email: 'bob@acme.com', name: '   ' };
+      mockClaims = { tid: 'tenant-uuid', oid: 'oid-1', email: 'bob@acme.com', name: '   ' };
       await signIn(app, 'entra');
 
       const row = await ctx.db.get<any>('SELECT * FROM users WHERE id = ?', ['u-pre']);

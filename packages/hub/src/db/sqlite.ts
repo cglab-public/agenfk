@@ -335,7 +335,8 @@ const SCHEMA_SQLITE = `
     entra_tenant_id TEXT,
     entra_client_id TEXT,
     entra_client_secret_enc TEXT,
-    email_allowlist TEXT
+    email_allowlist TEXT,
+    google_hosted_domains TEXT
   );
 
   -- Per-org registry choice (CGLAB-138). An admin of a hub-connected company
@@ -1159,6 +1160,11 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!akHave.has('os_user'))         raw.exec("ALTER TABLE api_keys ADD COLUMN os_user TEXT");
   if (!akHave.has('git_name'))        raw.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");
   if (!akHave.has('git_email'))       raw.exec("ALTER TABLE api_keys ADD COLUMN git_email TEXT");
+
+  // auth_config.google_hosted_domains: the Workspace domains a Google sign-in's
+  // hd claim must match (INFRA-463, phase 0).
+  const acCols = raw.prepare("PRAGMA table_info(auth_config)").all() as Array<{ name: string }>;
+  if (!new Set(acCols.map(c => c.name)).has('google_hosted_domains')) raw.exec("ALTER TABLE auth_config ADD COLUMN google_hosted_domains TEXT");
 
   // flow_assignments multi-scope migration. Pre-existing tables had PK
   // (org_id, scope). New PK is (org_id, scope, target_id). SQLite can't

@@ -55,7 +55,7 @@ describe('sign-in provider cards', () => {
     await screen.findByRole('heading', { name: 'Microsoft Entra' });
     const entra = card('Microsoft Entra');
     expect(within(entra).getByText('Off')).toBeInTheDocument();
-    expect(within(entra).queryByPlaceholderText('common, organizations, or tenant GUID')).toBeNull();
+    expect(within(entra).queryByPlaceholderText('Directory (tenant) ID, a GUID')).toBeNull();
     expect(within(entra).queryByPlaceholderText('application (client) ID')).toBeNull();
   });
 
@@ -72,7 +72,7 @@ describe('sign-in provider cards', () => {
     await screen.findByRole('heading', { name: 'Microsoft Entra' });
     fireEvent.click(screen.getByRole('switch', { name: 'Microsoft Entra sign-in' }));
     const entra = card('Microsoft Entra');
-    expect(within(entra).getByPlaceholderText('common, organizations, or tenant GUID')).toBeInTheDocument();
+    expect(within(entra).getByPlaceholderText('Directory (tenant) ID, a GUID')).toBeInTheDocument();
     expect(within(entra).getByText('On · needs a tenant ID, a client ID and a client secret')).toBeInTheDocument();
   });
 
@@ -94,7 +94,7 @@ describe('sign-in provider cards', () => {
     await screen.findByRole('heading', { name: 'Microsoft Entra' });
     fireEvent.click(screen.getByRole('switch', { name: 'Microsoft Entra sign-in' }));
     const entra = card('Microsoft Entra');
-    fireEvent.change(within(entra).getByPlaceholderText('common, organizations, or tenant GUID'), { target: { value: 'organizations' } });
+    fireEvent.change(within(entra).getByPlaceholderText('Directory (tenant) ID, a GUID'), { target: { value: '0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0' } });
     fireEvent.change(within(entra).getByPlaceholderText('application (client) ID'), { target: { value: 'app-1' } });
     expect(within(entra).getByText('On · needs a client secret')).toBeInTheDocument();
     fireEvent.change(within(entra).getByPlaceholderText('client secret value'), { target: { value: 's3cret' } });

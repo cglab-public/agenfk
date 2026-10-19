@@ -5,9 +5,34 @@ import jwt, { JwtHeader, SigningKeyCallback } from 'jsonwebtoken';
 import jwksClient, { JwksClient } from 'jwks-rsa';
 import { HubServerContext } from '../server.js';
 import { decryptSecret } from '../crypto.js';
-import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, verifyOAuthState } from './oauth.js';
+import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, ssoRefusal, verifyOAuthState } from './oauth.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
+
+/** A Directory (tenant) ID as Entra shows it. */
+export const ENTRA_TENANT_GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The multi-tenant aliases. Their discovery document names the issuer as the
+ * `{tenantid}` template, so a token never verifies against it, and nothing
+ * would say which tenant a sign-in belongs to. Multi-tenant sign-in arrives
+ * with the join policy (a list of allowed tenant ids), not through these.
+ */
+const ENTRA_TENANT_ALIASES = new Set(['organizations', 'common', 'consumers']);
+export const isEntraTenantAlias = (tenant: string): boolean => ENTRA_TENANT_ALIASES.has(tenant.trim().toLowerCase());
+export const ENTRA_ALIAS_REFUSAL = 'Microsoft Entra sign-in needs the Directory (tenant) ID of one tenant, or one of its verified domains. '
+  + 'The organizations, common and consumers aliases are not supported; signing in several tenants will come with the join policy.';
+
+/**
+ * The tenant a discovery document's issuer names: the GUID for a tenant
+ * configured by id or by verified domain, the literal {tenantid} template for
+ * the aliases (null then, since it names no tenant).
+ */
+export function issuerTenant(issuer: string): string | null {
+  const m = /^https:\/\/login\.microsoftonline\.com\/([^/]+)\/v2\.0\/?$/i.exec(issuer);
+  if (!m || m[1].includes('{') || isEntraTenantAlias(m[1])) return null;
+  return m[1].toLowerCase();
+}
 
 interface EntraCfg {
   entra_enabled: number;
@@ -104,10 +129,17 @@ export function entraRouter(ctx: HubServerContext): Router {
     }
     const code = req.query.code as string | undefined;
     if (!code) return res.status(400).json({ error: 'Missing authorization code' });
+    // A row saved before the admin route refused these: the hub cannot tell
+    // which tenant such a sign-in should belong to, so it signs nobody in.
+    if (isEntraTenantAlias(cfg.entra_tenant_id)) {
+      return res.status(403).json({ error: ENTRA_ALIAS_REFUSAL });
+    }
 
     let claims: jwt.JwtPayload;
+    let expectedTenant: string | null;
     try {
       const disc = await getDiscovery(cfg.entra_tenant_id);
+      expectedTenant = issuerTenant(disc.doc.issuer);
       const clientSecret = decryptSecret(cfg.entra_client_secret_enc, ctx.config.secretKey);
       const tokenResp = await axios.post(disc.doc.token_endpoint, new URLSearchParams({
         code,
@@ -132,12 +164,22 @@ export function entraRouter(ctx: HubServerContext): Router {
       || [claims.given_name, claims.family_name].filter(Boolean).join(' ').trim()
       || undefined;
     if (!subject || !email) return res.status(403).json({ error: 'Entra ID token missing sub/email' });
+    // The issuer check pins the tenant only as far as the discovery document
+    // does; tid is the claim Microsoft documents for "which tenant is this".
+    // It is compared with the tenant the issuer names, which covers a tenant
+    // stored as a verified domain as well as one stored by id.
+    const tid = typeof claims.tid === 'string' ? claims.tid.toLowerCase() : null;
+    if (!expectedTenant) return res.status(403).json({ error: ENTRA_ALIAS_REFUSAL });
+    if (!tid || tid !== expectedTenant) {
+      return res.status(403).json({ error: 'This Microsoft account belongs to a different tenant than the one this hub signs in' });
+    }
 
     const allow = checkEmailAllowlist(email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email, name });
-    if (!user) return res.status(403).json({ error: 'Account not invited — ask your admin to invite you first' });
+    const found = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email, name }, req.ip ?? null);
+    if (!('user' in found)) return res.status(403).json({ error: ssoRefusal(found) });
+    const { user } = found;
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
     await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);
     res.redirect('/');

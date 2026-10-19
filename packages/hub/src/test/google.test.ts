@@ -57,6 +57,17 @@ describe('checkEmailAllowlist', () => {
   it('matches exact emails', () => {
     expect(checkEmailAllowlist('alice@example.com', '["alice@example.com"]').allowed).toBe(true);
   });
+  // Once sign-in can create users, a typo in the stored list must not admit
+  // everyone. The admin route only ever stores an array of strings, so these
+  // shapes come from a hand edit or an older build.
+  it('denies everyone when the stored list is not valid JSON', () => {
+    expect(checkEmailAllowlist('alice@acme.com', '["acme.com"').allowed).toBe(false);
+  });
+  it('denies everyone when the stored list is not an array of strings', () => {
+    expect(checkEmailAllowlist('alice@acme.com', '{"acme.com":true}').allowed).toBe(false);
+    expect(checkEmailAllowlist('alice@acme.com', '"acme.com"').allowed).toBe(false);
+    expect(checkEmailAllowlist('alice@acme.com', '["acme.com", 7]').allowed).toBe(false);
+  });
 });
 
 describe('Google OAuth flow', () => {
@@ -193,5 +204,136 @@ describe('Google OAuth flow', () => {
       .get(`/auth/google/callback?code=abc&state=${state}`)
       .set('Cookie', stateCookie!);
     expect(cb.status).toBe(403);
+  });
+});
+
+/**
+ * Phase 0 of the Hub auto-join epic (INFRA-463). Google says the domain of
+ * the email claim does not prove Workspace membership; the hd claim does, and
+ * it is absent for consumer accounts. With google_hosted_domains set, only
+ * accounts of those Workspace domains get in.
+ */
+describe('Google sign-in binds to the configured Workspace domains and an immutable subject', () => {
+  let ctx: any;
+
+  const signIn = async (userinfo: any) => {
+    vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { access_token: 'tok' } } as any);
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({ data: userinfo } as any);
+    const start = await supertest(__server).get('/auth/google/start').redirects(0);
+    const stateCookie = start.headers['set-cookie']?.[0];
+    const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
+    return supertest(__server)
+      .get(`/auth/google/callback?code=abc&state=${state}`)
+      .set('Cookie', stateCookie!)
+      .redirects(0);
+  };
+  const invite = (email: string) => ctx.db.run(
+    'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)',
+    ['u-pre', 'org', email, null, 'password', 'viewer'],
+  );
+  const setHostedDomains = (domains: string[]) =>
+    ctx.db.run('UPDATE auth_config SET google_hosted_domains = ? WHERE org_id = ?', [JSON.stringify(domains), 'org']);
+  const sessionSet = (r: any) => (r.headers['set-cookie'] ?? []).some((c: string) => c.startsWith('agenfk_hub_session='));
+
+  beforeEach(async () => {
+    cleanup();
+    const out = await createHubApp({ dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org' });
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = out.app.listen(0);
+    ctx = out.ctx;
+    vi.restoreAllMocks();
+    await enableGoogle(ctx.db);
+  });
+
+  afterEach(async () => {
+    await drainApp(__server);
+    await ctx.db.close();
+    cleanup();
+  });
+
+  it('signs in an invited account whose hd is in google_hosted_domains', async () => {
+    await setHostedDomains(['acme.com']);
+    await invite('alice@acme.com');
+    const r = await signIn({ sub: 'g-sub-1', email: 'alice@acme.com', email_verified: true, hd: 'acme.com' });
+    expect(r.status).toBe(302);
+    expect(sessionSet(r)).toBe(true);
+  });
+
+  it('refuses a Workspace account from a domain outside the list', async () => {
+    await setHostedDomains(['acme.com']);
+    await invite('alice@acme.com');
+    const r = await signIn({ sub: 'g-sub-1', email: 'alice@acme.com', email_verified: true, hd: 'other.com' });
+    expect(r.status).toBe(403);
+    expect(r.body.error).toMatch(/workspace|domain/i);
+    expect(sessionSet(r)).toBe(false);
+  });
+
+  it('refuses a consumer account, which carries no hd, while the list is set', async () => {
+    await setHostedDomains(['acme.com']);
+    await invite('alice@acme.com');
+    const r = await signIn({ sub: 'g-sub-1', email: 'alice@acme.com', email_verified: true });
+    expect(r.status).toBe(403);
+    const row = await ctx.db.get<any>('SELECT provider, provider_subject FROM users WHERE id = ?', ['u-pre']);
+    expect(row.provider).toBe('password');
+    expect(row.provider_subject).toBeNull();
+  });
+
+  it('matches hd case-insensitively', async () => {
+    await setHostedDomains(['Acme.com']);
+    await invite('alice@acme.com');
+    const r = await signIn({ sub: 'g-sub-1', email: 'alice@acme.com', email_verified: true, hd: 'ACME.COM' });
+    expect(r.status).toBe(302);
+  });
+
+  it('never rebinds by email a row already bound to another Google subject', async () => {
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ['u-old', 'org', 'alice@acme.com', null, 'google', 'g-sub-old', 'admin'],
+    );
+    const r = await signIn({ sub: 'g-sub-new', email: 'alice@acme.com', email_verified: true });
+    expect(r.status).toBe(403);
+    expect(sessionSet(r)).toBe(false);
+    const row = await ctx.db.get<any>('SELECT provider_subject, role FROM users WHERE id = ?', ['u-old']);
+    expect(row.provider_subject).toBe('g-sub-old');
+    expect(row.role).toBe('admin');
+  });
+
+  // Admin recovery (AGENFK_HUB_RESET_ADMIN_EMAIL) moves the row back to a
+  // password account. Rows recovered before it also cleared the subject still
+  // carry the old one; both must sign in with Google again.
+  it('rebinds a recovered admin who is back on a password account, old subject still on the row', async () => {
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ['u-rec', 'org', 'alice@acme.com', 'hash', 'password', 'g-sub-old', 'admin'],
+    );
+    const r = await signIn({ sub: 'g-sub-new', email: 'alice@acme.com', email_verified: true });
+    expect(r.status).toBe(302);
+    const row = await ctx.db.get<any>('SELECT provider, provider_subject FROM users WHERE id = ?', ['u-rec']);
+    expect(row.provider).toBe('google');
+    expect(row.provider_subject).toBe('g-sub-new');
+  });
+
+  it('redeeming an admin recovery token clears the sign-in subject along with the provider', async () => {
+    const { mintAdminRecoveryToken, redeemAdminRecoveryToken } = await import('../auth/adminRecovery');
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ['u-adm', 'org', 'alice@acme.com', null, 'google', 'g-sub-1', 'admin'],
+    );
+    const minted: any = await mintAdminRecoveryToken(ctx.db, 'org', 'alice@acme.com');
+    expect(minted.token).toBeTruthy();
+    const redeemed: any = await redeemAdminRecoveryToken(ctx.db, 'org', minted.token, 'longenough1');
+    expect(redeemed.user).toBeTruthy();
+    const row = await ctx.db.get<any>('SELECT provider, provider_subject FROM users WHERE id = ?', ['u-adm']);
+    expect(row.provider).toBe('password');
+    expect(row.provider_subject).toBeNull();
+  });
+
+  it('records user.sso_bind when a Google sign-in first binds an invited row', async () => {
+    await invite('alice@acme.com');
+    const r = await signIn({ sub: 'g-sub-1', email: 'alice@acme.com', email_verified: true });
+    expect(r.status).toBe(302);
+    const rows = await ctx.db.all<any>("SELECT * FROM config_audit WHERE action = 'user.sso_bind'");
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].after_json)).toMatchObject({ provider: 'google', providerSubject: 'g-sub-1' });
   });
 });
