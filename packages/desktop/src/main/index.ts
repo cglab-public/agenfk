@@ -19,7 +19,8 @@ import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
 import { resolveDbPath, buildServerEnv } from './serverEnv.js';
-import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
+import { isAgenfkServer, readServerIdentity, servesUiBundle, httpGet } from './probes.js';
+import { makeJudge, versionMismatchNotice } from './adoption.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
 import { proposeDecomposition } from './propose.js';
@@ -311,10 +312,19 @@ async function boot(): Promise<void> {
       // Identity, not just liveness: anything could be listening on 3000, and
       // adopting it would open a window on somebody else's application.
       probe: isAgenfkServer,
+      // Identity is not enough either (BUG cdae6039): a WSL server of another
+      // version, forwarded to localhost, is AgEnFK on a database we do not use.
+      judge: makeJudge({
+        appVersion: () => app.getVersion(),
+        appDbPath: resolveDbPath,
+        platform: runningOn,
+        readIdentity: readServerIdentity,
+      }),
       spawn: startServer,
     });
     console.log(
-      `[DESKTOP] ${server.adopted ? 'Adopted running' : 'Started'} AgEnFK server at ${server.url}`,
+      `[DESKTOP] ${server.adopted ? 'Adopted running' : 'Started'} AgEnFK server at ${server.url}` +
+      (server.versionMismatch ? ` (server ${server.versionMismatch.serverVersion}, app ${app.getVersion()})` : ''),
     );
 
     if (!await servesUiBundle(server.port)) {
@@ -360,6 +370,20 @@ async function boot(): Promise<void> {
       tearingDown = true;
       app.quit();
       return;
+    }
+
+    if (server.versionMismatch) {
+      // Not awaited: the board still opens. The user decides whether to switch.
+      const notice = versionMismatchNotice({
+        ...server.versionMismatch,
+        appVersion: app.getVersion(),
+      });
+      void dialog.showMessageBox({
+        type: 'info',
+        title: notice.title,
+        message: notice.title,
+        detail: notice.detail,
+      });
     }
 
     // Terminals need the resolved port: a card's directory comes from the
