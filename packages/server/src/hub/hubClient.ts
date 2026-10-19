@@ -42,6 +42,21 @@ export function hubConfirmedAbsent(): boolean {
   return !env && hubConfigFileState() === 'absent';
 }
 
+/**
+ * Rewrite hub.json for the server (an admin repoint campaign). It keeps the
+ * `source` the CLI recorded (INFRA-463): a repoint moves the URL, not where
+ * the URL was first learnt, and `agenfk hub status` reports that source.
+ */
+export function writeHubConfigFile(cfg: HubConfig): void {
+  const target = hubConfigPath();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  let source: unknown;
+  try { source = JSON.parse(fs.readFileSync(target, 'utf8'))?.source; } catch { /* no prior file */ }
+  const out = typeof source === 'string' ? { ...cfg, source } : cfg;
+  fs.writeFileSync(target, JSON.stringify(out, null, 2), { mode: 0o600 });
+  try { fs.chmodSync(target, 0o600); } catch { /* best effort */ }
+}
+
 function readHubConfigFile(): HubConfig | null {
   try {
     const raw = fs.readFileSync(hubConfigPath(), 'utf8');

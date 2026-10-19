@@ -10,6 +10,7 @@ import { pruneInstallDir, pruneInstallDirAgainstManifest } from './sync-install-
 import { copyTree } from './copy-tree.mjs';
 import { forceLocalFlag, tarPath } from './tar-flags.mjs';
 import { requestedGitRef, releaseTagForRef, releaseTagForVersion } from './requested-ref.mjs';
+import { installCommand } from './install-command.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -26,11 +27,6 @@ const RESET  = '\x1b[0m';
 const isNpxCache = !fs.existsSync(path.join(REPO_ROOT, '.git'));
 const shouldRebuild = process.argv.includes('--rebuild');
 const isBeta = process.argv.includes('--beta');
-// install.mjs is quiet by default; --debuglog brings back its step-by-step log.
-const debuglog = process.argv.includes('--debuglog');
-// MCP is opt-in (CLI-only by default): forward --with-mcp / --no-mcp to install.mjs.
-const withMcp = process.argv.includes('--with-mcp');
-const noMcp = process.argv.includes('--no-mcp');
 
 // SAFETY GUARD: this is the npx *installer bootstrap*, not the CLI dispatcher.
 // Run against a git checkout it installs in place, and scripts/install.mjs's
@@ -157,7 +153,7 @@ function fetchLatestTag(repo, beta = false) {
 // non-zero exit; we translate that into an explicit error + non-zero exit code.
 function runInstaller(cwd) {
   try {
-    execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}${withMcp ? ' --with-mcp' : ''}${noMcp ? ' --no-mcp' : ''}${debuglog ? ' --debuglog' : ''}`, { cwd, stdio: 'inherit', windowsHide: true });
+    execSync(installCommand(process.argv), { cwd, stdio: 'inherit', windowsHide: true });
   } catch {
     console.error(`\n${YELLOW}❌ AgEnFK installation failed — the setup step did not complete.${RESET}`);
     console.error(`${YELLOW}   Re-run with --debuglog to see every step:${RESET}`);

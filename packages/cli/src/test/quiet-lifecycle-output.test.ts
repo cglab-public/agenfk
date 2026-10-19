@@ -273,6 +273,14 @@ describe('agenfk upgrade', () => {
     expect(String(install?.[0])).not.toMatch(/--quiet/);
   });
 
+  // INFRA-463: an upgrade is not an install, so it never offers the Hub
+  // sign-in, even with --debuglog (which drops --quiet).
+  it.each([[[]], [['--debuglog']]])('never offers the Hub sign-in (extra flags %j)', async (extra) => {
+    await program.parseAsync(['node', 'agenfk', 'upgrade', '--version', '9.9.9', ...extra]);
+    const install = mockExecSync.mock.calls.find(([cmd]) => /install\.mjs/.test(String(cmd)));
+    expect(String(install?.[0]).split(' ')).toContain('--no-hub');
+  });
+
   it('with --json, prints the JSON result and nothing else', async () => {
     const writes: string[] = [];
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: any) => { writes.push(String(chunk)); return true; });

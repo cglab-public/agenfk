@@ -213,7 +213,7 @@ if (fs.existsSync(INSTALL_DIR)) {
 console.log(`\n${GREEN}Running install...${RESET}\n`);
 const tarballEnv = distTarball && fs.existsSync(distTarball) ? distTarball : null;
 try {
-  execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}`, {
+  execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${process.argv.includes('--no-hub') ? ' --no-hub' : ''}`, {
     cwd: INSTALL_DIR,
     stdio: 'inherit',
     // Path via env, never interpolated into the command string: a filesystem

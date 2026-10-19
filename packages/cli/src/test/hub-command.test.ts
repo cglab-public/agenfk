@@ -74,7 +74,8 @@ describe('agenfk hub commands', () => {
       await program.parseAsync(['node', 'agenfk', 'hub', 'login', '--url', 'http://hub.test/', '--token', 'tok123', '--org', 'acme']);
       expect(fs.existsSync(HUB_CONFIG)).toBe(true);
       const cfg = JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'));
-      expect(cfg).toEqual({ url: 'http://hub.test', token: 'tok123', orgId: 'acme' });
+      // INFRA-463: hub.json records where the URL came from; an explicit --url is 'flag'.
+      expect(cfg).toEqual({ url: 'http://hub.test', token: 'tok123', orgId: 'acme', source: 'flag' });
       const stat = fs.statSync(HUB_CONFIG);
       // Windows has no POSIX mode bits (#208): the owner-only check is a POSIX one.
       if (process.platform !== 'win32') expect(stat.mode & 0o777).toBe(0o600);

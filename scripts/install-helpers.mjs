@@ -1,3 +1,6 @@
+import readline from 'readline';
+import { spawnSync } from 'child_process';
+import { pathToFileURL } from 'url';
 import { existsSync, statSync } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -447,4 +450,80 @@ export function installAirlockRuntime({ run, rootDir, node = process.execPath, w
   }
   const why = said || r?.error?.message || `exit ${r?.status}`;
   warn(`Could not install smolvm for Airlock: ${why}. Install it with: agenfk airlock install`);
+}
+
+// Offer to sign in to a discovered corporate Hub after install (INFRA-463).
+// Every collaborator is injected so the decision is testable without a TTY,
+// DNS or a real login. Fails open: nothing here may fail the install.
+// Returns { action: 'login' | 'skipped' | 'printed', reason? }.
+export async function hubSignInStep({ argv = [], env = {}, isTTY = false, hubConfigExists = false, discover, ask, runLogin, print = console.log } = {}) {
+  if (argv.includes('--no-hub')) return { action: 'skipped', reason: '--no-hub' };
+  if (env.AGENFK_NO_HUB === '1') return { action: 'skipped', reason: 'AGENFK_NO_HUB=1' };
+  // An existing hub.json means the machine is already signed in: never re-prompt.
+  if (hubConfigExists) return { action: 'skipped', reason: 'hub.json exists' };
+  let found;
+  try {
+    found = await discover();
+  } catch (e) {
+    return { action: 'skipped', reason: `discovery failed: ${e?.message ?? e}` };
+  }
+  if (!found?.url) return { action: 'skipped', reason: 'no hub discovered' };
+  const where = `${found.url} (found via ${found.source ?? 'discovery'})`;
+  if (!isTTY) {
+    print(`  A corporate Hub was found at ${where}. Sign in with: agenfk hub login`);
+    return { action: 'printed' };
+  }
+  try {
+    const answer = String(await ask(`  Sign in to the corporate Hub at ${where}? [Y/n] `) ?? '').trim().toLowerCase();
+    if (answer === 'n' || answer === 'no') {
+      print('  Skipped. Sign in later with: agenfk hub login');
+      return { action: 'skipped', reason: 'declined' };
+    }
+    const code = await runLogin();
+    if (code === 0) return { action: 'login' };
+    print(`  Hub sign-in did not complete (exit ${code}). Retry with: agenfk hub login`);
+    return { action: 'skipped', reason: `login exited ${code}` };
+  } catch (e) {
+    print(`  Hub sign-in did not complete (${e?.message ?? e}). Retry with: agenfk hub login`);
+    return { action: 'skipped', reason: 'login failed' };
+  }
+}
+
+/**
+ * The real dependencies install.mjs hands hubSignInStep, kept here so they
+ * can be tested: discovery comes from the CLI build under rootDir (a CommonJS
+ * module, so its export may sit on `default`), sign-in runs that build's
+ * `hub login`. Every dependency can be swapped by a test.
+ */
+export async function offerHubSignIn({
+  rootDir,
+  argv = process.argv,
+  env = process.env,
+  isTTY = Boolean(process.stdin.isTTY),
+  homedir = () => os.homedir(),
+  exists = (p) => existsSync(p),
+  importModule = (p) => import(pathToFileURL(p).href),
+  spawn = (cmd, args, opts) => spawnSync(cmd, args, opts),
+  ask,
+  print = console.log,
+} = {}) {
+  const cliDist = path.join(rootDir, 'packages', 'cli', 'dist');
+  return hubSignInStep({
+    argv,
+    env,
+    isTTY,
+    hubConfigExists: exists(path.join(homedir(), '.agenfk', 'hub.json')),
+    discover: async () => {
+      const mod = await importModule(path.join(cliDist, 'hub', 'discovery.js'));
+      const discoverHub = mod.discoverHub ?? mod.default?.discoverHub;
+      if (typeof discoverHub !== 'function') throw new Error('discovery module has no discoverHub');
+      return discoverHub();
+    },
+    ask: ask ?? (async (question) => {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      try { return await new Promise((resolve) => rl.question(question, resolve)); } finally { rl.close(); }
+    }),
+    runLogin: async () => spawn(process.execPath, [path.join(cliDist, 'index.js'), 'hub', 'login'], { stdio: 'inherit' }).status ?? 1,
+    print,
+  });
 }

@@ -19,7 +19,7 @@ import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint, NO_VERIFY_COMMAND, VERIFY_COMMAND_FLAG, AIRLOCK_SESSION_HEADER } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
-import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
+import { HubClient, Flusher, loadHubConfig, writeHubConfigFile, PENDING_ORG } from "./hub/index.js";
 import { hubConfirmedAbsent } from "./hub/hubClient.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { flowSyncChannels } from "./hub/flowSync.js";
@@ -1878,12 +1878,7 @@ if (hubDisabledForTests) {
     // AGENFK_HUB_URL overrides hub.json, so a rewrite would be a no-op here;
     // the reconciler reports blocked_by_env instead of a false success.
     envHubUrl: process.env.AGENFK_HUB_URL ?? null,
-    writeConfigImpl: (cfg: HubConfig) => {
-      const target = path.join(os.homedir(), '.agenfk', 'hub.json');
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-      try { fs.chmodSync(target, 0o600); } catch { /* best effort */ }
-    },
+    writeConfigImpl: (cfg: HubConfig) => writeHubConfigFile(cfg),
     // Adopt the verified hub in-process, on EVERY channel (GH-346 review): the
     // Flusher and the loop's channels bake their base URL and token in, and
     // nothing re-reads hub.json. Swapping only the Flusher used to leave flows,
