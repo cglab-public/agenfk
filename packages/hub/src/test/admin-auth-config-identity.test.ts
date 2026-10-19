@@ -4,7 +4,7 @@
  * well-formed allowlist, because sign-in is about to be trusted to create
  * users from them.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -241,6 +241,126 @@ describe('Resetting a user\'s sign-in link', () => {
     const cookie = await loginAs(app, 'admin@acme.com', 'longenough1');
     const r = await supertest(server).put(`/v1/admin/users/${me.id}`).set('Cookie', cookie).send({ resetSignIn: true });
     expect(r.status).toBe(400);
+  });
+
+  it('refuses a reset that leaves no admin able to sign in, and leaves the row as it was', async () => {
+    // Password on, SSO off. The actor signs in, then their row is bound to
+    // Google, which is off: the target is the only admin who can still sign in.
+    const cookie = await loginAs(app, 'admin@acme.com', 'longenough1');
+    await ctx.db.run("UPDATE users SET provider = 'google', provider_subject = 'g-sub-actor' WHERE email = 'admin@acme.com'");
+    await createPasswordUser(ctx.db, 'org', 'pw@acme.com', 'pwpassword1', 'admin');
+    const before = await ctx.db.get<any>("SELECT id, provider, provider_subject, password_hash FROM users WHERE email = 'pw@acme.com'");
+    const r = await supertest(server).put(`/v1/admin/users/${before.id}`).set('Cookie', cookie).send({ resetSignIn: true });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/^This would leave no admin able to sign in/);
+    const after = await ctx.db.get<any>('SELECT id, provider, provider_subject, password_hash FROM users WHERE id = ?', [before.id]);
+    expect(after).toEqual(before);
+    expect((await supertest(server).post('/auth/login').send({ email: 'pw@acme.com', password: 'pwpassword1' })).status).toBe(200);
+  });
+
+  it('refuses a reset of a row with no identity to unlink, and leaves the row as it was', async () => {
+    // A row already on provider = 'password' has nothing to unlink; clearing
+    // its password there would be a password removal under another name.
+    await createPasswordUser(ctx.db, 'org', 'pw@acme.com', 'pwpassword1', 'viewer');
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ['u-invited', 'org', 'invited@acme.com', null, 'password', null, 'viewer'],
+    );
+    const pw = (await ctx.db.get<any>("SELECT id FROM users WHERE email = 'pw@acme.com'")).id;
+    const cookie = await loginAs(app, 'admin@acme.com', 'longenough1');
+    for (const id of [pw, 'u-invited']) {
+      const before = await ctx.db.get<any>('SELECT provider, provider_subject, password_hash FROM users WHERE id = ?', [id]);
+      const r = await supertest(server).put(`/v1/admin/users/${id}`).set('Cookie', cookie).send({ resetSignIn: true });
+      expect(r.status).toBe(409);
+      expect(r.body.error).toMatch(/nothing to unlink/i);
+      expect(await ctx.db.get<any>('SELECT provider, provider_subject, password_hash FROM users WHERE id = ?', [id])).toEqual(before);
+    }
+    expect((await supertest(server).post('/auth/login').send({ email: 'pw@acme.com', password: 'pwpassword1' })).status).toBe(200);
+  });
+
+  it('sets a new password with the reset in one assignment, and only the new one signs in', async () => {
+    // SQLite keeps the rightmost of two assignments to one column and Postgres
+    // refuses the statement, so the UPDATE itself is what is pinned here.
+    await createPasswordUser(ctx.db, 'org', 'old@acme.com', 'oldpassword1', 'viewer');
+    await ctx.db.run("UPDATE users SET provider = 'google', provider_subject = 'g-sub-old' WHERE email = 'old@acme.com'");
+    const id = (await ctx.db.get<any>("SELECT id FROM users WHERE email = 'old@acme.com'")).id;
+    const cookie = await loginAs(app, 'admin@acme.com', 'longenough1');
+    const run = vi.spyOn(ctx.db, 'run');
+    try {
+      const r = await supertest(server).put(`/v1/admin/users/${id}`).set('Cookie', cookie).send({ resetSignIn: true, password: 'freshpassword1' });
+      expect(r.status).toBe(200);
+      const updates = run.mock.calls.map(c => String(c[0])).filter(sql => /^\s*UPDATE users SET/i.test(sql));
+      expect(updates).toHaveLength(1);
+      expect(updates[0].match(/password_hash\s*=/gi)).toHaveLength(1);
+    } finally {
+      run.mockRestore();
+    }
+    const row = await ctx.db.get<any>('SELECT provider, provider_subject FROM users WHERE id = ?', [id]);
+    expect(row).toEqual({ provider: 'password', provider_subject: null });
+    expect((await supertest(server).post('/auth/login').send({ email: 'old@acme.com', password: 'freshpassword1' })).status).toBe(200);
+    expect((await supertest(server).post('/auth/login').send({ email: 'old@acme.com', password: 'oldpassword1' })).status).not.toBe(200);
+  });
+
+  it('allows a reset of the only admin who can sign in, since the unlinked row still signs in with SSO', async () => {
+    // Password off, Google on. The target is the only admin Google can sign
+    // in; the actor is bound to Entra, which is off. Judging the reset as a
+    // removal would refuse it.
+    await ctx.db.run(
+      "UPDATE auth_config SET password_enabled = 0, google_enabled = 1, google_client_id = 'gid', google_client_secret_enc = 'v1:x' WHERE org_id = 'org'",
+    );
+    await ctx.db.run("UPDATE users SET provider = 'entra', provider_subject = 'e-actor' WHERE email = 'admin@acme.com'");
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ['u-g', 'org', 'g@acme.com', null, 'google', 'g-sub', 'admin'],
+    );
+    const { signSession } = await import('../auth/session');
+    const actor = await ctx.db.get<any>("SELECT id FROM users WHERE email = 'admin@acme.com'");
+    const cookie = `agenfk_hub_session=${signSession({ userId: actor.id, orgId: 'org', role: 'admin' }, 'test-session-secret')}`;
+    const r = await supertest(server).put('/v1/admin/users/u-g').set('Cookie', cookie).send({ resetSignIn: true });
+    expect(r.status).toBe(200);
+    expect(await ctx.db.get<any>('SELECT provider, provider_subject FROM users WHERE id = ?', ['u-g']))
+      .toEqual({ provider: 'password', provider_subject: null });
+  });
+
+  it('resets an SSO row that lost its subject, which is not a password account', async () => {
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ['u-legacy', 'org', 'legacy@acme.com', null, 'google', null, 'viewer'],
+    );
+    const cookie = await loginAs(app, 'admin@acme.com', 'longenough1');
+    const r = await supertest(server).put('/v1/admin/users/u-legacy').set('Cookie', cookie).send({ resetSignIn: true });
+    expect(r.status).toBe(200);
+    expect((await ctx.db.get<any>('SELECT provider FROM users WHERE id = ?', ['u-legacy'])).provider).toBe('password');
+  });
+
+  it('answers 404 for a reset of a user that is not in the org, and leaves another org\'s row as it was', async () => {
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ['u-other', 'other-org', 'x@other.com', null, 'password', null, 'admin'],
+    );
+    const cookie = await loginAs(app, 'admin@acme.com', 'longenough1');
+    for (const id of ['u-missing', 'u-other']) {
+      const r = await supertest(server).put(`/v1/admin/users/${id}`).set('Cookie', cookie).send({ resetSignIn: true });
+      expect(r.status).toBe(404);
+    }
+    expect(await ctx.db.get<any>('SELECT provider, provider_subject FROM users WHERE id = ?', ['u-other']))
+      .toEqual({ provider: 'password', provider_subject: null });
+  });
+
+  it('audits which identity a reset unlinked', async () => {
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ['u-sso', 'org', 'bob@acme.com', null, 'google', 'g-sub-old', 'viewer'],
+    );
+    const cookie = await loginAs(app, 'admin@acme.com', 'longenough1');
+    expect((await supertest(server).put('/v1/admin/users/u-sso').set('Cookie', cookie).send({ resetSignIn: true })).status).toBe(200);
+    const audit = await ctx.db.all<any>("SELECT before_json, after_json FROM config_audit WHERE action = 'user.update'");
+    expect(audit).toHaveLength(1);
+    const before = JSON.parse(audit[0].before_json);
+    const after = JSON.parse(audit[0].after_json);
+    expect(before).toMatchObject({ id: 'u-sso', provider: 'google', provider_subject: 'g-sub-old' });
+    expect(after).toMatchObject({ id: 'u-sso', provider: 'password' });
+    expect(after).toHaveProperty('provider_subject', null);
   });
 });
 

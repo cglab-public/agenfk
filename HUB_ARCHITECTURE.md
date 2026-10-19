@@ -1272,9 +1272,10 @@ After provider config + invite:
    **Admin → Users**; the person's next sign-in links the account again,
    keeping its id, role and history. The reset also removes any password
    stored on the account, so an old one cannot come back with it. It does
-   not end existing sessions: deactivate a user who has left first. Admin recovery
-   (`AGENFK_HUB_RESET_ADMIN_EMAIL`) unlinks the recovered admin the same
-   way.
+   not end existing sessions: deactivate a user who has left first. The hub
+   refuses (409) a reset of an account on email and password, which has
+   nothing to unlink. Admin recovery (`AGENFK_HUB_RESET_ADMIN_EMAIL`) unlinks
+   the recovered admin the same way.
 
 ---
 

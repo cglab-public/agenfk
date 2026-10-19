@@ -215,12 +215,17 @@ export function adminRouter(ctx: HubServerContext): Router {
    * never sign in again once their session ends. Judged as "makes it worse",
    * like the sign-in config guard: an org already in that state is not blocked.
    */
-  const removalStrandsSignIn = async (orgId: string, userId: string): Promise<boolean> => {
+  const removalStrandsSignIn = (orgId: string, userId: string): Promise<boolean> => changeStrandsSignIn(orgId, userId, null);
+  /** The same judgement for a change to `userId`'s row: `next` is what it becomes, null when it stops being an admin. */
+  const changeStrandsSignIn = async (
+    orgId: string, userId: string, next: Pick<SignInAdmin, 'provider' | 'password_hash'> | null,
+  ): Promise<boolean> => {
     const cfg = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
     if (!cfg) return false;
     const admins = await activeAdmins(orgId);
     if (!admins.some(a => a.id === userId)) return false;
-    return adminCanStillSignIn(cfg, admins) && !adminCanStillSignIn(cfg, admins.filter(a => a.id !== userId));
+    const after = admins.flatMap(a => (a.id !== userId ? [a] : next ? [{ ...a, ...next }] : []));
+    return adminCanStillSignIn(cfg, admins) && !adminCanStillSignIn(cfg, after);
   };
   const STRANDS_SIGN_IN = 'This would leave no admin able to sign in: the admins left are outside the allowlist or '
     + 'have no way to sign in that is switched on. Fix the sign-in settings first.';
@@ -1525,6 +1530,8 @@ export function adminRouter(ctx: HubServerContext): Router {
     const { role, active, password, resetSignIn } = req.body ?? {};
     const sets: string[] = [];
     const params: any[] = [];
+    const orgId = req.session!.orgId;
+    const newHash = typeof password === 'string' && password.length >= 8 ? hashPassword(password) : null;
     // A row bound to one sign-in identity is never rebound by email
     // (auth/oauth.ts); unlinking it here is how it moves. Not your own: the
     // session would outlive the only way back in.
@@ -1532,16 +1539,32 @@ export function adminRouter(ctx: HubServerContext): Router {
       if (req.session!.userId === req.params.id) {
         return res.status(400).json({ error: 'You cannot reset your own sign-in; ask another admin.' });
       }
-      // The password goes too: an SSO account can still hold the hash of the
-      // password it was invited with, which provider = 'password' would make
-      // valid again for whoever knew it (an address reused after its owner left).
-      sets.push("provider = 'password'", 'provider_subject = NULL', 'password_hash = NULL');
+      const target = await ctx.db.get<{ provider: string; provider_subject: string | null }>(
+        'SELECT provider, provider_subject FROM users WHERE id = ? AND org_id = ?', [req.params.id, orgId],
+      );
+      if (!target) return res.status(404).json({ error: 'User not found' });
+      // Defence in depth: an unbound row still counts under every SSO provider,
+      // so today only the rows refused below can strand sign-in. Judged on the
+      // row as the reset leaves it, and first, so the admin hears that reason.
+      if (await changeStrandsSignIn(orgId, String(req.params.id), { provider: 'password', password_hash: newHash })) {
+        return res.status(409).json({ error: STRANDS_SIGN_IN });
+      }
+      // Clearing the password of a row with no identity bound would be a
+      // password removal under another name.
+      if (target.provider === 'password' && !target.provider_subject) {
+        return res.status(409).json({ error: 'This account signs in with email and password; there is nothing to unlink.' });
+      }
+      sets.push("provider = 'password'", 'provider_subject = NULL');
+      // The password goes too, unless this request sets a new one: an SSO
+      // account can still hold the hash of the password it was invited with,
+      // which provider = 'password' would make valid again for whoever knew it
+      // (an address reused after its owner left).
+      if (!newHash) sets.push('password_hash = NULL');
     }
     if (role === 'admin' || role === 'viewer') { sets.push('role = ?'); params.push(role); }
     if (active === true || active === false) { sets.push('active = ?'); params.push(active ? 1 : 0); }
-    if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(hashPassword(password)); }
+    if (newHash) { sets.push('password_hash = ?'); params.push(newHash); }
     if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
-    const orgId = req.session!.orgId;
     const removesAdminAccess = role === 'viewer' || active === false;
     if (removesAdminAccess && req.session!.userId === req.params.id) {
       return res.status(400).json({ error: 'You cannot demote or deactivate your own account; ask another admin.' });
