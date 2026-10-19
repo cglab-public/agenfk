@@ -210,6 +210,31 @@ describe('sameDatabase', () => {
     expect(sameDatabase(WIN_DB, viaDrvfs, 'linux', nothing)).toBe(true);
   });
 
+  it('never touches a network or device path the server reported', () => {
+    // The path comes from whatever answers on loopback. On Windows, stat on
+    // \\host\share opens an SMB session and can hand the user's NTLM hash to
+    // that host.
+    for (const reported of [
+      '\\\\attacker\\share\\db.sqlite',
+      '//attacker/share/db.sqlite',
+      '\\\\?\\UNC\\attacker\\share\\db.sqlite',
+      '\\\\.\\pipe\\x',
+      '\\\\?\\C:\\Users\\x\\db.sqlite',
+    ]) {
+      const touched: string[] = [];
+      const spy = (p: string) => { touched.push(p); return null; };
+      expect(sameDatabase(reported, WIN_DB, 'win32', spy)).toBe(false);
+      expect(touched).not.toContain(reported);
+      expect(touched.filter(p => /^[\\/]{2}/.test(p))).toEqual([]);
+    }
+  });
+
+  it('still compares the files behind a local drive path on Windows', () => {
+    const viaJunction = 'D:\\agenfk\\db.sqlite';
+    expect(sameDatabase(viaJunction, WIN_DB, 'win32', files({ [viaJunction]: 'f1', [WIN_DB]: 'f1' })))
+      .toBe(true);
+  });
+
   it('still tells a WSL home from a Windows drive', () => {
     expect(sameDatabase(WSL_DB, WIN_DB, 'win32', nothing)).toBe(false);
   });

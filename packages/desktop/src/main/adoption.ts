@@ -139,7 +139,16 @@ export function sameDatabase(
   };
   if (norm(serverPath) === norm(appPath)) return true;
 
-  const server = fileId(canonical(serverPath, platform));
+  // The server path comes from whatever answers on loopback. Stat on a UNC or
+  // device path opens a network session on Windows and can hand the user's
+  // NTLM hash to that host, so only a local absolute path is looked at.
+  const serverLocal = canonical(serverPath, platform);
+  const local = platform === 'win32'
+    ? /^[a-zA-Z]:[\\/]/.test(serverLocal)
+    : serverLocal.startsWith('/');
+  if (!local) return false;
+
+  const server = fileId(serverLocal);
   const app = fileId(canonical(appPath, platform));
   return !!server && !!app && server.id === app.id;
 }
