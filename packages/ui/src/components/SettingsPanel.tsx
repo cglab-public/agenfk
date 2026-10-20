@@ -36,7 +36,7 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
-import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, FolderCog, ShieldCheck, type LucideIcon } from 'lucide-react';
+import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, FolderCog, ShieldCheck, ArrowLeft, type LucideIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
 import {
@@ -379,7 +379,14 @@ function initials(name: string | null, login: string): string {
  * `initialSection`: the section to open on (GH-294: `agenfk airlock edit` links
  * `?settings=airlock`). An id no section has opens the first one.
  */
-export function SettingsPanel({ projectId, initialSection }: { projectId?: string | null; initialSection?: string | null } = {}): React.ReactElement {
+export function SettingsPanel({ projectId, initialSection, onBack, backLabel = 'Back' }: {
+  projectId?: string | null;
+  initialSection?: string | null;
+  /** Return to the view Settings was opened from. Absent, no Back is drawn. */
+  onBack?: () => void;
+  /** Its accessible name, saying where it goes ("Back to Tasks"). */
+  backLabel?: string;
+} = {}): React.ReactElement {
   const queryClient = useQueryClient();
   const { data: settings, isError: readFailed } = useQuery<AppSettingsDto>({
     queryKey: ['settings'],
@@ -1056,11 +1063,28 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
 
   return (
     <div className="flex h-full min-h-0">
+      <div className="flex w-48 shrink-0 flex-col border-r border-border-soft">
+      {/* Outside the nav: the nav is the list of sections, and tests and screen
+          readers walk it as exactly that (5f367fa9). */}
+      {onBack && (
+        <div className="px-2 pt-4">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label={backLabel}
+            title={backLabel}
+            className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] text-ink-secondary transition-colors hover:bg-nav-surface hover:text-ink"
+          >
+            <ArrowLeft size={15} aria-hidden="true" className="mr-2.5 shrink-0 opacity-80" />
+            Back
+          </button>
+        </div>
+      )}
       {/* The rail. Its entries come from `sections`, so it can never offer one
           the pane cannot show. */}
       <nav
         aria-label="Settings sections"
-        className="w-48 shrink-0 border-r border-border-soft px-2 py-6"
+        className={clsx('px-2 pb-6', onBack ? 'pt-2' : 'pt-6')}
       >
         {sections.map(section => (
           <button
@@ -1085,6 +1109,7 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
           </button>
         ))}
       </nav>
+      </div>
 
       {/* min-w-0 is load-bearing: without it a long description refuses to wrap
           and pushes the whole window into horizontal scroll, which is the

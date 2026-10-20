@@ -108,6 +108,11 @@ import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, 
  */
 type ViewId = 'kanban' | 'terminal' | 'settings' | 'project';
 
+/** What Back in Settings names as its destination (5f367fa9). */
+const VIEW_NAMES: Record<ViewId, string> = {
+  kanban: 'Tasks', terminal: 'Terminal', settings: 'Settings', project: 'Project',
+};
+
 /**
  * The WORK group at the top of the sidebar (CGLAB-164).
  *
@@ -242,6 +247,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
+  // Where Back in Settings goes (5f367fa9): the view it was opened from, which
+  // is still mounted underneath with its state.
+  const [settingsReturnTo, setSettingsReturnTo] = React.useState<ViewId>('kanban');
+  const openSettingsView = React.useCallback(() => {
+    if (active !== 'settings') setSettingsReturnTo(active);
+    setSettingsOpened(true);
+    setActive('settings');
+  }, [active]);
+  const leaveSettings = React.useCallback(() => setActive(settingsReturnTo), [settingsReturnTo]);
+  // No Escape shortcut: the sidebar menus and What's new stay usable over
+  // Settings and close on Escape, and one key must not do both.
+  const settingsBackLabel = `Back to ${VIEW_NAMES[settingsReturnTo]}`;
   const { activeProjectId, focusedItemId, setActiveProjectId, markProjectWorked, focusItem, terminalRequest } = useActiveProject();
   /**
    * The installation's settings, for the tmux default the dialog starts from.
@@ -1736,7 +1753,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onOpenPane={attachHerdr}
           liveItems={liveItems}
           openSession={openSession}
-          openSettings={() => { setSettingsOpened(true); setActive('settings'); }}
+          openSettings={openSettingsView}
           revealOnBoard={revealOnBoard}
           activeView={active}
           onSelectView={setActive}
@@ -1933,7 +1950,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                user two scrollbars and move the rail out of reach. */
             className="min-h-0 flex-1 overflow-hidden"
           >
-            {settingsOpened && <SettingsPanel projectId={activeProjectId} />}
+            {settingsOpened && <SettingsPanel projectId={activeProjectId} onBack={leaveSettings} backLabel={settingsBackLabel} />}
           </div>
 
           {/* Rendered, not conditionally mounted — and more load-bearing here
