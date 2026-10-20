@@ -200,6 +200,67 @@ const openSettings = async (section = 'Agents'): Promise<void> => {
   fireEvent.click(within(rail).getByRole('button', { name: new RegExp(`^${section}$`, 'i') }));
 };
 
+/** Which main view is showing: the others are hidden, not unmounted. */
+const shownView = (): string[] =>
+  ['kanban', 'terminal', 'settings', 'project']
+    .filter(id => document.getElementById(`panel-${id}`)?.hidden === false);
+
+// STORY 5f367fa9: Settings replaced the main area with no way back to what
+// was running, a terminal for one.
+describe('leaving it', () => {
+  it('has a Back button that returns to the board it was opened from', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: /^settings$/i });
+    expect(shownView()).toEqual(['kanban']);
+    await openSettingsRaw();
+    expect(shownView()).toEqual(['settings']);
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    fireEvent.click(within(panel).getByRole('button', { name: /^back to tasks$/i }));
+    expect(shownView()).toEqual(['kanban']);
+  });
+
+  const openProjectPage = async (): Promise<void> => {
+    fireEvent.click(await screen.findByRole('button', { name: /^agenfk$/i }));
+    await waitFor(() => expect(shownView()).toEqual(['project']));
+  };
+  // The project page has a Settings of its own; this is the app's.
+  const appSettings = (): void => {
+    fireEvent.click(within(screen.getByTestId('shell-nav')).getByRole('button', { name: /^settings$/i }));
+  };
+
+  it('returns to the project page when that is where Settings was opened', async () => {
+    renderShell();
+    await openProjectPage();
+    appSettings();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    fireEvent.click(within(panel).getByRole('button', { name: /^back to project$/i }));
+    expect(shownView()).toEqual(['project']);
+  });
+
+  it('keeps where it came from when Settings is opened again from Settings', async () => {
+    renderShell();
+    await openProjectPage();
+    appSettings();
+    await screen.findByRole('region', { name: /settings/i });
+    appSettings();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    fireEvent.click(within(panel).getByRole('button', { name: /^back to project$/i }));
+    expect(shownView()).toEqual(['project']);
+  });
+
+  it('leaves Escape alone', async () => {
+    // Escape closes the menus and dialogs that stay usable over Settings (the
+    // sidebar project menu, What's new); leaving Settings on the same key
+    // would do both at once.
+    renderShell();
+    await openSettingsRaw();
+    await screen.findByRole('region', { name: /settings/i });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(shownView()).toEqual(['settings']);
+  });
+});
+
 describe('getting to it', () => {
   it('pins the entry below the sessions rail, out of the scrolling list', async () => {
     // The projects list has no upper bound. An entry that scrolls with it is
