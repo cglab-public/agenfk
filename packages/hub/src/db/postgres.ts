@@ -327,7 +327,9 @@ const SCHEMA_PG = `
     entra_client_id TEXT,
     entra_client_secret_enc TEXT,
     email_allowlist TEXT,
-    google_hosted_domains TEXT
+    google_hosted_domains TEXT,
+    join_mode TEXT NOT NULL DEFAULT 'off',
+    entra_required_role TEXT
   );
 
   -- Per-org registry choice (CGLAB-138). Mirrors the SQLite table; see the
@@ -1183,6 +1185,16 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   if (!new Set(acCols.map(c => c.column_name)).has('google_hosted_domains')) {
     await adapter.exec("ALTER TABLE auth_config ADD COLUMN google_hosted_domains TEXT");
   }
+  // auth_config.join_mode and entra_required_role (INFRA-463, phase 1a).
+  if (!new Set(acCols.map(c => c.column_name)).has('join_mode')) {
+    await adapter.exec("ALTER TABLE auth_config ADD COLUMN join_mode TEXT NOT NULL DEFAULT 'off'");
+  }
+  if (!new Set(acCols.map(c => c.column_name)).has('entra_required_role')) {
+    await adapter.exec("ALTER TABLE auth_config ADD COLUMN entra_required_role TEXT");
+  }
+  // Case-insensitive email uniqueness, as in db/sqlite.ts.
+  try { await adapter.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users (lower(email))'); }
+  catch (e: any) { console.warn(`[HUB] users: emails that differ only in case exist, case-insensitive uniqueness not enforced (${e?.message ?? e})`); }
 
   // flows.org_available — org-available flag.
   const flowCols = await adapter.all<{ column_name: string }>(

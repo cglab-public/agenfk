@@ -90,7 +90,13 @@ interface AuthConfigRow {
   entra_client_secret_enc: string | null;
   email_allowlist: string | null;
   google_hosted_domains: string | null;
+  join_mode: string;
+  entra_required_role: string | null;
 }
+
+export const JOIN_MODES = ['off', 'auto'] as const;
+/** An Entra app role value as the manifest allows it: no whitespace. */
+const APP_ROLE_VALUE = /^[^\s]{1,120}$/;
 
 function publicAuthConfig(row: AuthConfigRow) {
   return {
@@ -109,7 +115,9 @@ function publicAuthConfig(row: AuthConfigRow) {
       tenantId: row.entra_tenant_id ?? '',
       clientId: row.entra_client_id ?? '',
       clientSecretSet: !!row.entra_client_secret_enc,
+      requiredRole: row.entra_required_role ?? null,
     },
+    joinMode: row.join_mode,
     emailAllowlist: parseStoredList(row.email_allowlist) ?? [],
     emailAllowlistUnreadable: parseStoredList(row.email_allowlist) === null,
   };
@@ -280,8 +288,26 @@ export function adminRouter(ctx: HubServerContext): Router {
       if ('error' in allowlist) return res.status(400).json({ error: allowlist.error });
       setField('email_allowlist', JSON.stringify(allowlist.list));
     }
+    if (b.joinMode !== undefined) {
+      if (!(JOIN_MODES as readonly unknown[]).includes(b.joinMode)) {
+        return res.status(400).json({ error: `The join mode must be one of: ${JOIN_MODES.join(', ')}` });
+      }
+      setField('join_mode', b.joinMode);
+    }
+    if (b.entra?.requiredRole !== undefined) {
+      const role = typeof b.entra.requiredRole === 'string' ? b.entra.requiredRole.trim() : b.entra.requiredRole;
+      if (role !== null && role !== '' && (typeof role !== 'string' || !APP_ROLE_VALUE.test(role))) {
+        return res.status(400).json({ error: 'The required app role must be the role\'s value as the Entra app defines it, with no spaces' });
+      }
+      setField('entra_required_role', role || null);
+    }
 
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    // The app role is what keeps automatic join closed when the enterprise
+    // app's assignment requirement is switched off by mistake.
+    if (next.join_mode === 'auto' && next.entra_enabled && !next.entra_required_role) {
+      return res.status(400).json({ error: 'Automatic join with Microsoft Entra needs the app role a token must carry; set it under Microsoft Entra' });
+    }
     // Saving a config nobody can sign in with locks the whole org out, the
     // admin making the change included.
     const admins = await activeAdmins(orgId);

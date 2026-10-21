@@ -1240,7 +1240,7 @@ design).
    - Optionally restrict the email allowlist.
    - Save.
 6. **Invite users** the same way as for Google. The user-lookup gate is
-   provider-agnostic.
+   provider-agnostic. Or let them join on their own (section 11.4).
 
 Things that commonly go wrong: registering the wrong tenant id (Directory
 ID vs Application ID — these are easy to swap); using *Secret ID* instead
@@ -1276,6 +1276,39 @@ After provider config + invite:
    refuses (409) a reset of an account on email and password, which has
    nothing to unlink. Admin recovery (`AGENFK_HUB_RESET_ADMIN_EMAIL`) unlinks
    the recovered admin the same way.
+
+### 11.4 Automatic join
+
+With **Admin → Sign-in → Joining** set to *Automatic*, a first sign-in that
+finds no row creates the member instead of answering "Account not invited".
+The member gets the `viewer` role, is bound to the provider's subject from
+the start, and the audit log records `user.jit_create`. Invited rows, rows
+bound to another identity and deactivated rows behave as in 11.3; join mode
+never recreates a deactivated member.
+
+For Entra the gate is a group, set up once in the Entra admin center:
+
+1. In the app registration, **App roles → Create app role**: allowed member
+   types *Users/Groups*, value `AgEnFK.Member` (any value without spaces).
+2. In **Enterprise applications** → the app → **Properties**, set
+   *Assignment required* to *Yes*. Under **Users and groups**, assign the
+   group that may join (CG/lab: `agenfk`, filled at onboarding) to that role.
+3. In the hub, put the role value in **Microsoft Entra → Required app role**
+   and set **Join mode** to *Automatic*. The hub refuses to save automatic
+   join with Entra on and no required role.
+
+Entra itself refuses a person outside the group (`AADSTS50105`). The hub
+also checks the token's `roles` claim for the required role, so an app whose
+assignment requirement was switched off still creates nobody. Removing a
+person from the group blocks their next sign-in; it does not end a session
+they already hold. Deleting the member in **Admin → Users** is not enough on
+its own: while they are still in the group, their next sign-in creates them
+again as a viewer. To take someone out, remove them from the group or
+deactivate their row; a deactivated row is never recreated.
+
+For Google, automatic join needs at least one Workspace domain under
+**Google → Workspace domains**: without one every Google account passes the
+`hd` check, so the hub creates nobody.
 
 ---
 

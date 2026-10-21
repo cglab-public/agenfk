@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { Request, Response } from 'express';
 import { DB } from '../db.js';
 import { setSessionCookie, signSession, cookieSecure } from './session.js';
@@ -100,6 +100,10 @@ function usableName(name: string | null | undefined): string | null {
   return cleaned.length > 0 ? cleaned.slice(0, 200) : null;
 }
 
+/** The row bound to this provider identity, the only way a bound row is ever matched. */
+const findBySubject = (db: DB, identity: SsoIdentity) =>
+  db.get<UserRow>('SELECT * FROM users WHERE provider = ? AND provider_subject = ?', [identity.provider, identity.subject]);
+
 export type SsoLookup =
   | { user: UserRow }
   | { refused: 'not-invited' | 'bound-elsewhere' };
@@ -135,10 +139,7 @@ export async function findInvitedSsoUser(
   // name overwrites what is stored.
   const name = usableName(identity.name);
 
-  const existing = await db.get<UserRow>(
-    'SELECT * FROM users WHERE provider = ? AND provider_subject = ?',
-    [identity.provider, identity.subject],
-  );
+  const existing = await findBySubject(db, identity);
   if (existing) {
     if (name && name !== existing.name) {
       await db.run('UPDATE users SET name = ? WHERE id = ?', [name, existing.id]);
@@ -167,10 +168,7 @@ export async function findInvitedSsoUser(
   if (result.changes !== 1) {
     // Lost the race. A double-submitted callback for the same identity bound
     // it first: that sign-in is the same person and gets the user.
-    const winner = await db.get<UserRow>(
-      'SELECT * FROM users WHERE provider = ? AND provider_subject = ?',
-      [identity.provider, identity.subject],
-    );
+    const winner = await findBySubject(db, identity);
     return winner ? { user: winner } : { refused: 'bound-elsewhere' };
   }
   await recordAudit(db, {
@@ -185,6 +183,56 @@ export async function findInvitedSsoUser(
     after: { provider: identity.provider, providerSubject: identity.subject },
   });
   return { user: { ...byEmail, provider: identity.provider, provider_subject: identity.subject, name: nextName } };
+}
+
+/** The role a member created by a first sign-in gets: sees the org, changes nothing (owner decision, INFRA-463). */
+export const JIT_MEMBER_ROLE = 'viewer';
+
+/**
+ * Create the member for a first SSO sign-in that found no row, when the org's
+ * join mode is auto and the caller has already applied every gate (tenant,
+ * Workspace domain, allowlist, app role). Bound to the identity from the start,
+ * so the row is never matched by email again.
+ *
+ * Two callbacks for the same new identity can race: the email is unique, so
+ * the second insert fails and that sign-in gets the row the first one made,
+ * provided it is the same identity. Anything else is refused as bound-elsewhere.
+ */
+export async function createSsoMember(
+  db: DB,
+  orgId: string,
+  identity: SsoIdentity,
+  ip: string | null = null,
+): Promise<SsoLookup> {
+  const name = usableName(identity.name);
+  const id = randomUUID();
+  try {
+    await db.run(
+      'INSERT INTO users (id, org_id, email, name, password_hash, provider, provider_subject, role, active) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1)',
+      [id, orgId, identity.email, name, identity.provider, identity.subject, JIT_MEMBER_ROLE],
+    );
+  } catch (e) {
+    const winner = await findBySubject(db, identity);
+    if (winner) return { user: winner };
+    // Only the unique email explains a failed insert here; any other failure
+    // is the database's and must surface, not read as a refusal.
+    const byEmail = await db.get<{ id: string }>('SELECT id FROM users WHERE lower(email) = lower(?)', [identity.email]);
+    if (byEmail) return { refused: 'bound-elsewhere' };
+    throw e;
+  }
+  await recordAudit(db, {
+    orgId,
+    actor: { userId: id, email: identity.email },
+    source: 'board',
+    ip,
+    area: 'users',
+    action: 'user.jit_create',
+    target: `user ${identity.email}`,
+    before: null,
+    after: { provider: identity.provider, providerSubject: identity.subject, role: JIT_MEMBER_ROLE },
+  });
+  const user = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', [id]);
+  return user ? { user } : { refused: 'not-invited' };
 }
 
 export async function completeSsoLogin(

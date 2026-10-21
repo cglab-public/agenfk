@@ -5,7 +5,7 @@ import jwt, { JwtHeader, SigningKeyCallback } from 'jsonwebtoken';
 import jwksClient, { JwksClient } from 'jwks-rsa';
 import { HubServerContext } from '../server.js';
 import { decryptSecret } from '../crypto.js';
-import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, ssoRefusal, verifyOAuthState } from './oauth.js';
+import { checkEmailAllowlist, completeSsoLogin, createSsoMember, findInvitedSsoUser, issueOAuthState, ssoRefusal, verifyOAuthState } from './oauth.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 
@@ -40,6 +40,8 @@ interface EntraCfg {
   entra_client_id: string | null;
   entra_client_secret_enc: string | null;
   email_allowlist: string | null;
+  join_mode: string;
+  entra_required_role: string | null;
 }
 
 interface DiscoveryDoc {
@@ -54,7 +56,7 @@ const DISCOVERY_TTL_MS = 60 * 60 * 1000;
 
 async function readEntraConfig(ctx: HubServerContext): Promise<EntraCfg | undefined> {
   return ctx.db.get<EntraCfg>(
-    'SELECT entra_enabled, entra_tenant_id, entra_client_id, entra_client_secret_enc, email_allowlist FROM auth_config WHERE org_id = ?',
+    'SELECT entra_enabled, entra_tenant_id, entra_client_id, entra_client_secret_enc, email_allowlist, join_mode, entra_required_role FROM auth_config WHERE org_id = ?',
     [ctx.config.defaultOrgId],
   );
 }
@@ -177,7 +179,18 @@ export function entraRouter(ctx: HubServerContext): Router {
     const allow = checkEmailAllowlist(email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const found = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email, name }, req.ip ?? null);
+    const identity = { provider: 'entra' as const, subject, email, name };
+    let found = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, identity, req.ip ?? null);
+    if (!('user' in found) && found.refused === 'not-invited' && cfg.join_mode === 'auto') {
+      // The group assigned to the enterprise app is the gate; the app role it
+      // carries proves the assignment was enforced. Without a stored role the
+      // Hub creates nobody, whatever the join mode says.
+      const roles = Array.isArray(claims.roles) ? claims.roles : [];
+      if (!cfg.entra_required_role || !roles.includes(cfg.entra_required_role)) {
+        return res.status(403).json({ error: "This Microsoft account does not carry the hub's app role; ask your admin to add you to the group assigned to the AgEnFK app" });
+      }
+      found = await createSsoMember(ctx.db, ctx.config.defaultOrgId, identity, req.ip ?? null);
+    }
     if (!('user' in found)) return res.status(403).json({ error: ssoRefusal(found) });
     const { user } = found;
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });

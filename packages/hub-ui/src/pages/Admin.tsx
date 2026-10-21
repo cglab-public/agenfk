@@ -78,9 +78,10 @@ export function AdminLayout() {
 interface AuthConfig {
   passwordEnabled: boolean; googleEnabled: boolean; entraEnabled: boolean;
   google: { clientId: string; clientSecretSet: boolean; hostedDomains?: string[]; hostedDomainsUnreadable?: boolean };
-  entra: { tenantId: string; clientId: string; clientSecretSet: boolean };
+  entra: { tenantId: string; clientId: string; clientSecretSet: boolean; requiredRole?: string | null };
   emailAllowlist: string[];
   emailAllowlistUnreadable?: boolean;
+  joinMode?: 'off' | 'auto';
 }
 
 const inputCls = controlClass;
@@ -177,7 +178,25 @@ export function AdminAuth() {
           <Field label="Client secret" className="sm:col-span-2">
             <input className={inputCls} type="password" placeholder={c.entra.clientSecretSet ? '•••••• (leave blank to keep)' : 'client secret value'} value={c.entra.clientSecret ?? ''} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, clientSecret: e.target.value } })} />
           </Field>
+          <Field label="Required app role" className="sm:col-span-2">
+            <input className={`${inputCls} font-mono`} placeholder="AgEnFK.Member" value={c.entra.requiredRole ?? ''} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, requiredRole: e.target.value } })} />
+          </Field>
+          <p className="sm:col-span-2 text-small text-ink-tertiary">The value of the app role assigned to the group that may join. With automatic join, a token without it creates nobody.</p>
         </div>
+        )}
+      </section>
+
+      <section className={cardCls}>
+        <h3 className="text-body font-semibold text-ink">Joining</h3>
+        <p className="mt-1 text-small text-ink-tertiary">Automatic: a first Google or Entra sign-in that passes the checks on this page creates a viewer. Entra also needs the required app role; Google needs Workspace domains.</p>
+        <Field label="Join mode" className="mt-3">
+          <select className={inputCls} value={c.joinMode ?? 'off'} onChange={(e) => setDraft({ ...draft, joinMode: e.target.value })}>
+            <option value="off">Off: only invited people sign in</option>
+            <option value="auto">Automatic: first sign-in creates a viewer</option>
+          </select>
+        </Field>
+        {c.joinMode === 'auto' && c.googleEnabled && (c.google.hostedDomains ?? []).length === 0 && (
+          <p role="status" className="mt-2 text-small text-status-warn-text">Google creates nobody until a Workspace domain is set: without one, any Google account would pass.</p>
         )}
       </section>
 

@@ -3,7 +3,7 @@ import { requestOrigin } from '../util/publicUrl.js';
 import axios from 'axios';
 import { HubServerContext } from '../server.js';
 import { decryptSecret } from '../crypto.js';
-import { checkEmailAllowlist, checkHostedDomain, completeSsoLogin, findInvitedSsoUser, issueOAuthState, ssoRefusal, verifyOAuthState } from './oauth.js';
+import { checkEmailAllowlist, checkHostedDomain, completeSsoLogin, createSsoMember, findInvitedSsoUser, issueOAuthState, parseStoredList, ssoRefusal, verifyOAuthState } from './oauth.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 
@@ -13,12 +13,12 @@ const GOOGLE_USERINFO = 'https://openidconnect.googleapis.com/v1/userinfo';
 
 interface GoogleCfg {
   google_enabled: number; google_client_id: string | null; google_client_secret_enc: string | null;
-  email_allowlist: string | null; google_hosted_domains: string | null;
+  email_allowlist: string | null; google_hosted_domains: string | null; join_mode: string;
 }
 
 async function readGoogleConfig(ctx: HubServerContext): Promise<GoogleCfg | undefined> {
   return ctx.db.get<GoogleCfg>(
-    'SELECT google_enabled, google_client_id, google_client_secret_enc, email_allowlist, google_hosted_domains FROM auth_config WHERE org_id = ?',
+    'SELECT google_enabled, google_client_id, google_client_secret_enc, email_allowlist, google_hosted_domains, join_mode FROM auth_config WHERE org_id = ?',
     [ctx.config.defaultOrgId],
   );
 }
@@ -95,7 +95,14 @@ export function googleRouter(ctx: HubServerContext): Router {
     const allow = checkEmailAllowlist(userinfo.email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const found = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'google', subject: userinfo.sub, email: userinfo.email, name: userinfo.name }, req.ip ?? null);
+    const identity = { provider: 'google' as const, subject: userinfo.sub, email: userinfo.email, name: userinfo.name };
+    let found = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, identity, req.ip ?? null);
+    // Without Workspace domains every Google account passes the hd gate, so
+    // creating members then would open the hub to anyone with one.
+    if (!('user' in found) && found.refused === 'not-invited' && cfg.join_mode === 'auto'
+      && (parseStoredList(cfg.google_hosted_domains) ?? []).length > 0) {
+      found = await createSsoMember(ctx.db, ctx.config.defaultOrgId, identity, req.ip ?? null);
+    }
     if (!('user' in found)) return res.status(403).json({ error: ssoRefusal(found) });
     const { user } = found;
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
