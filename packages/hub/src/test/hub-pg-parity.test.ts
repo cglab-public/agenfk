@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
 import { backfillUserKeyAliases } from '../services/backfillUserKeyAliases';
 import { createHubApp } from '../server';
-import { openPgMemDb, backfillPrEventRemoteUrls, migrateUsersSessionEpoch } from '../db/postgres';
+import { openPgMemDb, backfillPrEventRemoteUrls, migrateUsersSessionEpoch, migrateEmptyEmailAllowlist } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
@@ -1094,6 +1094,33 @@ describe('PG parity: password reset revokes live sessions (session epoch)', () =
     await db.run('UPDATE users SET session_epoch = 2 WHERE email = ?', ['old@x']);
     await migrateUsersSessionEpoch(db);
     expect(await epoch()).toBe(2);
+    await db.close();
+  });
+});
+
+/**
+ * Email allowlist fail-closed (AEF-5, Fix 3) on Postgres: the one-time pass that
+ * turns the "[]" the old admin screen stored for "no allowlist" into NULL runs
+ * there too, and only once. Without it an upgrade would deny every SSO sign-in
+ * of an org that never set one, because "[]" now reads as misconfigured.
+ */
+describe('PG parity: legacy empty email allowlist is normalised once', () => {
+  it('turns "[]" into NULL the first time, then leaves later values alone', async () => {
+    const db = await openPgMemDb();
+    // A bare pg-mem database has no org yet (createHubApp seeds it).
+    await db.run("INSERT INTO orgs (id, name) VALUES ('org', 'org')");
+    await db.run("INSERT INTO auth_config (org_id, password_enabled) VALUES ('org', 1)");
+    const allowlist = async () => (await db.get<{ email_allowlist: string | null }>("SELECT email_allowlist FROM auth_config WHERE org_id = 'org'"))!.email_allowlist;
+    // openPgMemDb has already run the pass once on the fresh database (marker set).
+    await db.run("UPDATE auth_config SET email_allowlist = '[]' WHERE org_id = 'org'");
+    await db.run("DELETE FROM system_state WHERE key = 'allowlist_empty_normalised'");
+
+    await migrateEmptyEmailAllowlist(db);
+    expect(await allowlist()).toBeNull();
+
+    await db.run("UPDATE auth_config SET email_allowlist = '[]' WHERE org_id = 'org'");
+    await migrateEmptyEmailAllowlist(db);
+    expect(await allowlist()).toBe('[]');
     await db.close();
   });
 });

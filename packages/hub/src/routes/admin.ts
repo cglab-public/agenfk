@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
-import { checkEmailAllowlist } from '../auth/oauth.js';
+import { checkEmailAllowlist, isValidAllowlistEntry, parseAllowlist } from '../auth/oauth.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
@@ -97,8 +97,19 @@ function publicAuthConfig(row: AuthConfigRow) {
       clientId: row.entra_client_id ?? '',
       clientSecretSet: !!row.entra_client_secret_enc,
     },
-    emailAllowlist: row.email_allowlist ? JSON.parse(row.email_allowlist) : [],
+    ...readAllowlist(row.email_allowlist),
   };
+}
+
+/**
+ * The stored allowlist for the admin screen. Never throws: the screen that
+ * fixes an unreadable list has to open. `emailAllowlistMisconfigured` mirrors
+ * what sign-in does with it (checkEmailAllowlist denies), so the admin is told
+ * why nobody is getting in; the list itself is shown best-effort.
+ */
+function readAllowlist(stored: string | null): { emailAllowlist: string[]; emailAllowlistMisconfigured: boolean } {
+  const list = stored == null ? [] : parseAllowlist(stored);
+  return { emailAllowlist: list ?? [], emailAllowlistMisconfigured: list === null };
 }
 
 interface SignInAdmin { id?: string; email: string; password_hash: string | null; provider: string }
@@ -207,7 +218,22 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (typeof b.entra?.clientSecret === 'string' && b.entra.clientSecret) {
       setField('entra_client_secret_enc', encryptSecret(b.entra.clientSecret, ctx.config.secretKey));
     }
-    if (Array.isArray(b.emailAllowlist)) setField('email_allowlist', JSON.stringify(b.emailAllowlist));
+    // Validated before anything is written: a typo like [123] used to be stored
+    // and silently disabled the allowlist. An empty list is how the screen says
+    // "no allowlist", so it is stored as NULL (never as "[]", which the matcher
+    // now reads as a misconfiguration).
+    // An entry already in the stored list is accepted as it stands, whatever its
+    // shape: the matcher has always honoured those (a legacy 'corp'), and the
+    // screen resends the whole list on any edit, so refusing them would block
+    // an admin from touching an entry they did not change. New entries must fit.
+    if (b.emailAllowlist !== undefined) {
+      const list = b.emailAllowlist;
+      const known = new Set((current.email_allowlist == null ? [] : parseAllowlist(current.email_allowlist) ?? []).map(p => p.toLowerCase()));
+      if (!Array.isArray(list) || !list.every(e => isValidAllowlistEntry(e) || (typeof e === 'string' && known.has(e.toLowerCase())))) {
+        return res.status(400).json({ error: 'emailAllowlist must be a list of email addresses (ceo@acme.com), @domain, domain or *.domain patterns' });
+      }
+      setField('email_allowlist', list.length > 0 ? JSON.stringify(list) : null);
+    }
 
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
     // Saving a config nobody can sign in with locks the whole org out, the

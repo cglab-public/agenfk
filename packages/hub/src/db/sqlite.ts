@@ -7,6 +7,22 @@ import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 type RawDb = InstanceType<typeof DatabaseSync>;
 
+/**
+ * Runs `fn` in one transaction. A failed BEGIN has nothing to roll back and
+ * reports itself; a failed COMMIT/fn rolls back, and a ROLLBACK that itself
+ * fails ('no transaction is active') must not replace the error that caused it.
+ */
+function inTransaction(raw: RawDb, fn: () => void): void {
+  raw.exec('BEGIN IMMEDIATE');
+  try {
+    fn();
+    raw.exec('COMMIT');
+  } catch (err) {
+    try { raw.exec('ROLLBACK'); } catch { /* keep the original error */ }
+    throw err;
+  }
+}
+
 const SCHEMA_SQLITE = `
   CREATE TABLE IF NOT EXISTS orgs (
     id TEXT PRIMARY KEY,
@@ -728,15 +744,22 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
     // One transaction: a crash between the two statements would leave the
     // column present but every user at 0, and the next boot (seeing the column)
     // would never bump, so the old cookies would stay valid for good.
-    raw.exec('BEGIN IMMEDIATE');
-    try {
+    inTransaction(raw, () => {
       raw.exec("ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0");
       raw.exec("UPDATE users SET session_epoch = 1");
-      raw.exec('COMMIT');
-    } catch (err) {
-      raw.exec('ROLLBACK');
-      throw err;
-    }
+    });
+  }
+  // auth_config.email_allowlist (AEF-5): the admin screen used to send [] for a
+  // blank field and the route stored it as "[]", which meant "no restriction".
+  // checkEmailAllowlist now reads an empty list as a misconfiguration and
+  // denies, so without this an upgrade would shut every SSO user out of each
+  // org that never set an allowlist. Once, guarded by a marker: a "[]" written
+  // after this is a real misconfiguration and must stay one.
+  if (!raw.prepare("SELECT 1 FROM system_state WHERE key = 'allowlist_empty_normalised'").get()) {
+    inTransaction(raw, () => {
+      raw.exec("UPDATE auth_config SET email_allowlist = NULL WHERE email_allowlist = '[]'");
+      raw.exec("INSERT OR IGNORE INTO system_state (key, value, updated_at) VALUES ('allowlist_empty_normalised', '1', datetime('now'))");
+    });
   }
 
   // Backfill: canonicalise remote_url forms (ssh / https / with-or-without-.git)

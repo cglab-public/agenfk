@@ -707,6 +707,20 @@ export async function migrateUsersSessionEpoch(adapter: HubDb): Promise<void> {
   }
 }
 
+/**
+ * auth_config.email_allowlist (AEF-5): see the SQLite migration for the why.
+ * Once, guarded by a marker in system_state; exported for the same reason as
+ * migrateUsersSessionEpoch.
+ */
+export async function migrateEmptyEmailAllowlist(adapter: HubDb): Promise<void> {
+  const done = await adapter.get("SELECT 1 AS done FROM system_state WHERE key = 'allowlist_empty_normalised'");
+  if (done) return;
+  await adapter.transaction(async () => {
+    await adapter.exec("UPDATE auth_config SET email_allowlist = NULL WHERE email_allowlist = '[]'");
+    await adapter.run("INSERT INTO system_state (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO NOTHING", ['allowlist_empty_normalised', '1']);
+  });
+}
+
 async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec(SCHEMA_PG);
   await adapter.exec("DELETE FROM events WHERE type = 'tokens.logged'");
@@ -770,6 +784,7 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   }
 
   await migrateUsersSessionEpoch(adapter);
+  await migrateEmptyEmailAllowlist(adapter);
 
   const rdCols0 = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_name = 'rollups_daily'"

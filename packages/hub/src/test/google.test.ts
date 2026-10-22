@@ -42,9 +42,16 @@ const enableGoogle = async (db: any, allowlist?: string[]) => {
 };
 
 describe('checkEmailAllowlist', () => {
-  it('allows everything when null/empty', () => {
+  it('allows everything when there is no allowlist (null)', () => {
     expect(checkEmailAllowlist('a@b.com', null).allowed).toBe(true);
-    expect(checkEmailAllowlist('a@b.com', '[]').allowed).toBe(true);
+  });
+  // AEF-5 Fix 3: this used to assert that '[]' allowed everything. An empty
+  // list is now a misconfiguration and denies (fail closed); "no allowlist" is
+  // NULL, which the admin route now stores for an empty list.
+  it('denies an empty stored list as misconfigured, not as "no restriction"', () => {
+    const r = checkEmailAllowlist('a@b.com', '[]');
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toBe('allowlist is misconfigured');
   });
   it('matches bare domains', () => {
     expect(checkEmailAllowlist('alice@acme.com', '["acme.com"]').allowed).toBe(true);

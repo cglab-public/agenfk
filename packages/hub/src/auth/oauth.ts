@@ -9,23 +9,56 @@ export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 export interface AllowlistResult { allowed: boolean; reason?: string }
 
+/** Why a stored allowlist that cannot be read as a list of patterns denies everyone. */
+export const ALLOWLIST_MISCONFIGURED = 'allowlist is misconfigured';
+
+// The shapes checkEmailAllowlist matches: an exact email, @domain, a bare
+// domain, and *.domain. A domain needs at least two labels, so `*.com` (every
+// .com address) and a bare `acme` are not shapes, and none of them can carry
+// whitespace, a scheme or a path. PUT /auth-config accepts only these.
+const LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+const DOMAIN = `${LABEL}(?:\\.${LABEL})+`;
+const ALLOWLIST_ENTRY = new RegExp(`^(?:[^\\s@*]+@${DOMAIN}|@${DOMAIN}|${DOMAIN}|\\*\\.${DOMAIN})$`, 'i');
+export const isValidAllowlistEntry = (v: unknown): v is string =>
+  typeof v === 'string' && v.length <= 254 && ALLOWLIST_ENTRY.test(v);
+
+/** The stored allowlist as a list of patterns, or null when it cannot be read as a non-empty list of strings. */
+export function parseAllowlist(allowlistJson: string): string[] | null {
+  let list: unknown;
+  try { list = JSON.parse(allowlistJson); } catch { return null; }
+  if (!Array.isArray(list) || list.length === 0 || !list.every((p): p is string => typeof p === 'string')) return null;
+  return list;
+}
+
+/**
+ * Whether `email` may sign in under the stored allowlist (JSON text, or null).
+ *
+ * Fails CLOSED. No allowlist at all (null) means no restriction. Anything else
+ * that cannot be read as a non-empty list of strings - unparseable text, not
+ * an array, an empty array, one non-string entry - denies everyone, the
+ * legitimate user included. It used to answer "allowed" on those, so one
+ * typo ([123]) silently switched the allowlist off, and the lockout guard
+ * (which asks this same function) was fooled with it. An allowlist whose
+ * meaning has to be guessed is not an allowlist.
+ */
 export function checkEmailAllowlist(email: string, allowlistJson: string | null): AllowlistResult {
-  if (!allowlistJson) return { allowed: true };
-  try {
-    const list = JSON.parse(allowlistJson) as string[];
-    if (!Array.isArray(list) || list.length === 0) return { allowed: true };
-    const lower = email.toLowerCase();
-    for (const pattern of list) {
-      const p = pattern.toLowerCase();
-      if (p.startsWith('*.') && lower.endsWith(p.slice(1))) return { allowed: true };
-      if (p.startsWith('@') && lower.endsWith(p)) return { allowed: true };
-      if (lower.endsWith('@' + p)) return { allowed: true };
-      if (lower === p) return { allowed: true };
-    }
-    return { allowed: false, reason: `Email ${email} not in allowlist` };
-  } catch {
-    return { allowed: true }; // malformed allowlist → fail open (admin can fix)
+  if (allowlistJson === null || allowlistJson === undefined) return { allowed: true };
+  const list = parseAllowlist(allowlistJson);
+  if (!list) return { allowed: false, reason: ALLOWLIST_MISCONFIGURED };
+  // One '@' exactly. The patterns match by suffix, so `x@evil@acme.com` would
+  // satisfy `acme.com` and `@acme.com`; an address with more than one '@' is
+  // not one an identity provider vouches for (Entra's `email` claim is not
+  // verified), so it is refused rather than parsed.
+  if (email.split('@').length !== 2) return { allowed: false, reason: `Email ${email} not in allowlist` };
+  const lower = email.toLowerCase();
+  for (const pattern of list) {
+    const p = pattern.toLowerCase();
+    if (p.startsWith('*.') && lower.endsWith(p.slice(1))) return { allowed: true };
+    if (p.startsWith('@') && lower.endsWith(p)) return { allowed: true };
+    if (lower.endsWith('@' + p)) return { allowed: true };
+    if (lower === p) return { allowed: true };
   }
+  return { allowed: false, reason: `Email ${email} not in allowlist` };
 }
 
 export function issueOAuthState(res: Response): string {
