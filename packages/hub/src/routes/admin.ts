@@ -1461,7 +1461,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     // signed out by the same bump; there is no UI for that, only this API.)
     // Demotion does not bump: the row's role already overrides the cookie's.
     const bumpsEpoch = (typeof password === 'string' && password.length >= 8) || active === false;
-    if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(hashPassword(password)); }
+    if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(await hashPassword(password)); }
     if (bumpsEpoch) sets.push('session_epoch = session_epoch + 1');
     if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
     const orgId = req.session!.orgId;

@@ -3,7 +3,8 @@ import { timingSafeEqual } from 'crypto';
 import { HubServerContext } from '../server.js';
 import {
   countUsers,
-  createPasswordUser,
+  hashPassword,
+  insertPasswordUser,
   findUserByEmail,
   recordLogin,
   verifyPassword,
@@ -109,7 +110,7 @@ export function authRouter(ctx: HubServerContext): Router {
     if (user.provider !== 'password' && !(ctx.config.forcePasswordLogin && user.role === 'admin')) {
       return res.status(401).json({ error: `This account signs in with ${user.provider}` });
     }
-    if (!verifyPassword(password, user.password_hash)) {
+    if (!(await verifyPassword(password, user.password_hash))) {
       loginFailures.recordFailure(email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -198,6 +199,9 @@ export function setupRouter(ctx: HubServerContext): Router {
     // removed the row may create an admin. If user creation throws (e.g. a
     // UNIQUE collision on email), the token is rolled back so the operator
     // can retry.
+    // Hashed BEFORE the transaction opens (see insertPasswordUser): the hash is a
+    // worker round-trip, and nothing else may run on the connection inside it.
+    const passwordHash = await hashPassword(password);
     try {
       await ctx.db.transaction(async () => {
         const consumed = await ctx.db.run('DELETE FROM bootstrap_tokens WHERE token = ?', [token]);
@@ -206,7 +210,7 @@ export function setupRouter(ctx: HubServerContext): Router {
         // one) would be a second key to an admin account. On Postgres a racer
         // holding it now waits on this DELETE and finds nothing once we commit.
         await ctx.db.run('DELETE FROM bootstrap_tokens', []);
-        await createPasswordUser(ctx.db, ctx.config.defaultOrgId, email, password, 'admin');
+        await insertPasswordUser(ctx.db, ctx.config.defaultOrgId, email, passwordHash, 'admin');
       });
     } catch (err) {
       if (err instanceof SetupAlreadyClaimed) {

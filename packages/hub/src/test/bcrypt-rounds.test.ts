@@ -24,6 +24,18 @@ const withRounds = (value: string | undefined, fn: () => void) => {
   }
 };
 
+/** withRounds for a body that awaits (hashPassword/verifyPassword are asynchronous since AEF-5 Fix 4). */
+const withRoundsAsync = async (value: string | undefined, fn: () => Promise<void>) => {
+  if (value === undefined) delete process.env[ENV];
+  else process.env[ENV] = value;
+  try {
+    await fn();
+  } finally {
+    if (original === undefined) delete process.env[ENV];
+    else process.env[ENV] = original;
+  }
+};
+
 describe('getBcryptRounds', () => {
   afterEach(() => {
     if (original === undefined) delete process.env[ENV];
@@ -61,26 +73,26 @@ describe('getBcryptRounds', () => {
 });
 
 describe('hashPassword under a reduced cost', () => {
-  it('produces a standard bcrypt hash that still verifies', () => {
-    withRounds('4', () => {
-      const hash = hashPassword('longenough1');
+  it('produces a standard bcrypt hash that still verifies', async () => {
+    await withRoundsAsync('4', async () => {
+      const hash = await hashPassword('longenough1');
       expect(hash).toMatch(/^\$2[aby]\$\d{2}\$/);
       expect(hash).toContain('$04$');
-      expect(verifyPassword('longenough1', hash)).toBe(true);
-      expect(verifyPassword('wrong-password', hash)).toBe(false);
+      expect(await verifyPassword('longenough1', hash)).toBe(true);
+      expect(await verifyPassword('wrong-password', hash)).toBe(false);
     });
   });
 
-  it('hashes at the configured cost, not the default', () => {
-    withRounds('4', () => {
-      const roundsInHash = Number.parseInt(hashPassword('longenough1').split('$')[2], 10);
+  it('hashes at the configured cost, not the default', async () => {
+    await withRoundsAsync('4', async () => {
+      const roundsInHash = Number.parseInt((await hashPassword('longenough1')).split('$')[2], 10);
       expect(roundsInHash).toBe(4);
     });
   });
 
-  it('a reduced-cost hash is still comparable by bcrypt directly (format unchanged)', () => {
-    withRounds('4', () => {
-      expect(bcrypt.compareSync('longenough1', hashPassword('longenough1'))).toBe(true);
+  it('a reduced-cost hash is still comparable by bcrypt directly (format unchanged)', async () => {
+    await withRoundsAsync('4', async () => {
+      expect(bcrypt.compareSync('longenough1', await hashPassword('longenough1'))).toBe(true);
     });
   });
 });

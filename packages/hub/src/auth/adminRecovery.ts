@@ -64,6 +64,8 @@ export async function redeemAdminRecoveryToken(db: DB, orgId: string, token: unk
   }
   const user = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', [row.user_id]);
   if (!activeAdmin(user ?? null, orgId)) return refused;
+  // Hashed before the transaction opens: ~100 ms of bcrypt must not hold it.
+  const newHash = await hashPassword(password);
   let spent = false;
   await db.transaction(async () => {
     const consumed = await db.run('DELETE FROM admin_recovery_tokens WHERE token_hash = ?', [tokenHash]);
@@ -71,7 +73,7 @@ export async function redeemAdminRecoveryToken(db: DB, orgId: string, token: unk
     // Setting a password rotates the credential: bump the epoch so sessions
     // issued before the recovery (the very thing it may be recovering from)
     // stop working. Same statement as the password, so they cannot diverge.
-    await db.run("UPDATE users SET password_hash = ?, provider = 'password', session_epoch = session_epoch + 1 WHERE id = ?", [hashPassword(password), user!.id]);
+    await db.run("UPDATE users SET password_hash = ?, provider = 'password', session_epoch = session_epoch + 1 WHERE id = ?", [newHash, user!.id]);
     spent = true;
   });
   if (!spent) return refused;
