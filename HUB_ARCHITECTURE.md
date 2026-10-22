@@ -120,6 +120,11 @@ only, tags `hub-v<version>`, and pushes; CI does the rest. The `hub-v*` and
   Nomad, Swarm) will restart unhealthy containers.
 - `tini` is the entrypoint, so `SIGTERM` from the orchestrator reaches Node
   directly and graceful shutdown works.
+- Every response carries `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options: DENY` and a
+  Content-Security-Policy; HSTS (180 days, `includeSubDomains`) is added when the request arrived over TLS
+  (`req.secure`, so it follows `AGENFK_HUB_TRUST_PROXY`). The SPA shell's one inline script is allowed by hash,
+  not `'unsafe-inline'`. The hub cannot be framed (an internal portal iframe will break), and images from
+  other origins, such as markdown images in community-flow text, are blocked.
 - Back up the contents of `/data` (`hub.sqlite`, `-wal`, `-shm`) on the same
   cadence as any other system-of-record.
 
@@ -151,6 +156,11 @@ server (the UI, CLI, install script) reads that file rather than assuming
 | `AGENFK_HUB_TRUST_PROXY` | no | How many reverse proxies stand in front of the hub (default `1`: an ALB, nginx or Caddy), `0` when the hub is exposed directly, or a list of proxy addresses/CIDRs. Decides which `X-Forwarded-For` hop is the client, and so every per-client rate limit. A proxy appends the address it saw, so with the wrong value a client can pick its own bucket; `true` (trust every hop), more than 5 hops, and list items that are not addresses/CIDRs are refused at boot. Assumes the proxy APPENDS to `X-Forwarded-For` - an ALB's default (`routing.http.xff_header_processing.mode=append`); with `preserve` the client-written value comes through and limits are spoofable again. |
 | `AGENFK_HUB_FORCE_PASSWORD_LOGIN` | no | Break-glass. `1` accepts email + password sign-in (and shows the form) even while Admin → Sign-in has it switched off, so an operator can get back in after SSO breaks (a wrong secret, a revoked app, an IdP outage). Passwords are still checked. Any other value is off. The hub logs a warning on every boot while it is set: sign in, repair the sign-in settings, then unset it and restart. |
 | `AGENFK_HUB_RESET_ADMIN_EMAIL` | no | Admin recovery for a hub whose admins all sign in by SSO (no password, so the break-glass above has nothing to check). Set it to an active admin's email and restart: boot logs a one-time recovery token for that admin (works once, for an hour; only its hash is stored; a later boot clears only expired tokens, so a restart or a second instance does not withdraw it). Open the hub at `/recover`, paste the token with a new password: that admin is signed in, whatever Admin → Sign-in says, and lands on Admin → Sign-in to repair it. An email that is not an active admin mints nothing and logs a warning. Unset it and restart once you are back in. |
+| `AGENFK_HUB_REQUIRE_BOUND_KEYS` | no | `1`, `true`, `yes` or `on` makes `POST /v1/events` refuse an API key that is not bound to an installation (403 with a JSON error; the spoke keeps its batch and backs off, nothing is lost). An unbound key (from `POST /v1/admin/api-keys`, or issued before binding existed) is org-wide: it may report events for any installation of its org. Keys from `agenfk hub login` and `agenfk hub join` are bound and are held to their own installation whatever this says. Off by default so a fleet on legacy keys keeps reporting. **Before switching it on**, check the count in the boot log (`N live key(s) are unbound`) or the keys list: every unbound key is refused, including onboarding-labelled ones that would otherwise bind themselves on first report, so those machines must re-onboard. An unrecognised value is named in the boot log and leaves it off. Ping, directive polls and flow routes are not affected. Read per request. |
+| `AGENFK_HUB_BCRYPT_ROUNDS` | no | bcrypt cost (default `11`, clamped to 4-31). Lower it only in tests. |
+| `AGENFK_HUB_BCRYPT_WORKERS` | no | Worker threads that run password hashing, off the request thread (default: cores minus one, between 1 and 4; an explicit value is capped at 32). Each costs about 8 MB. |
+| `AGENFK_HUB_BCRYPT_QUEUE_MAX` | no | Password checks allowed to wait for a worker before new ones get a 429 (default 16 per worker, about 1.7 s of queue). |
+| `AGENFK_HUB_DEBUG_ERRORS` | no | `1` puts the raw error message in 500 responses, outside production only. Default off: a driver error names tables and columns, and unauthenticated routes reach the handler. The message is always in the hub's log. |
 
 For staging deployments, secrets typically live in AWS Secrets Manager (or
 equivalent) under `agenfk-hub-<env>/{pg-url,hub-secret-key,hub-session-secret}`

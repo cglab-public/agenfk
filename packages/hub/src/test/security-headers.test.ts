@@ -215,6 +215,17 @@ describe('inlineScriptHashes', () => {
   });
 });
 
+describe('the maintenance app answers errors like the real one', () => {
+  it('a malformed JSON body gets a short 4xx, never Express\'s HTML page with a stack trace and file paths', async () => {
+    await boot({ defaultOrgId: 'some-other-org' });
+    const r = await supertest(server).post('/anything').set('Content-Type', 'application/json').send('{not json');
+    expect(r.status).toBe(400);
+    expect(r.text).not.toMatch(/at .*\.(js|ts):\d+|node_modules|\/home\//);
+    expect(r.headers['content-type']).toMatch(/json/);
+    expect(r.headers['x-content-type-options']).toBe('nosniff');
+  });
+});
+
 describe('the maintenance app (boot refused on an org-id mismatch) carries them too', () => {
   it('serves its HTML page and its JSON answers with the headers, and a CSP its inline <style> can live under', async () => {
     // First boot seeds org "org"; the second names another, so the hub refuses to boot normally.

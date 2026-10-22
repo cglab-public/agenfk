@@ -16,6 +16,7 @@
 //                                   for idempotent re-emit.
 //
 // File-backed JSON, atomically written via tmp+rename.
+import { writePrivateFileSync } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -59,11 +60,12 @@ export function readUpgradeState(dbDir: string): UpgradeState | null {
 }
 
 export function writeUpgradeState(dbDir: string, state: UpgradeState): void {
-  fs.mkdirSync(dbDir, { recursive: true });
-  const p = filePath(dbDir);
-  const tmp = `${p}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, p);
+  // Owner-only, like hub.json and the deadletter beside it. It holds no secret,
+  // but the default (0644 under the usual umask) made it the one file here any
+  // local user could read. The shared helper writes a fresh 0600 temp file ('wx',
+  // random name, so a planted file or symlink fails the write instead of being
+  // followed), cleans it up on failure, and renames it over the target.
+  writePrivateFileSync(filePath(dbDir), JSON.stringify(state, null, 2));
 }
 
 export function clearUpgradeState(dbDir: string): void {

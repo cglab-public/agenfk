@@ -59,6 +59,25 @@ export interface HubServerContext {
 }
 
 /**
+ * An admin renamed the org in the UI: the rows now carry the new id, and
+ * system_state.pending_env_orgid records it until someone acknowledges the
+ * banner. If the deployment still passes the OLD id, the boot guard below
+ * refuses (maintenance page) with only "does not match" to go on; this says
+ * which value to set. Before the guard, so it is printed in that case too.
+ */
+async function logPendingOrgRename(db: DB, envOrgId: string): Promise<void> {
+  let pending: string | undefined;
+  try {
+    pending = (await db.get<{ value: string }>("SELECT value FROM system_state WHERE key = 'pending_env_orgid'"))?.value;
+  } catch { return; /* no system_state yet on a brand-new database */ }
+  if (!pending || pending === envOrgId) return;
+  console.warn(
+    `[HUB] An org rename to ${JSON.stringify(pending)} is pending (system_state.pending_env_orgid), but AGENFK_HUB_ORG_ID is ${JSON.stringify(envOrgId)}. `
+    + `Set AGENFK_HUB_ORG_ID=${pending} in your deployment and restart.`,
+  );
+}
+
+/**
  * Minimal Express surface served when the boot-time consistency check
  * detects an env↔DB org-id mismatch. Every route returns the same
  * mismatch payload — HTML for browser hits, JSON for API/healthz — so an
@@ -141,6 +160,10 @@ function buildMaintenanceApp(
       });
     }
   });
+  // Without it Express's default handler answers a malformed JSON body with the
+  // SyntaxError and a stack trace (absolute paths) on any non-production hub, and
+  // a hub in this state is the one an operator is likely to have on staging.
+  app.use(hubErrorHandler);
 
   return { app, ctx: { db, config } };
 }
@@ -164,6 +187,7 @@ export async function createHubApp(
   // to read) or silently resurrect a phantom org row, we boot a minimal
   // "maintenance mode" Express app whose every route serves a self-explanatory
   // mismatch page so the admin can see the problem in the browser and fix it.
+  await logPendingOrgRename(db, config.defaultOrgId);
   let dbOrgIds: string[] = [];
   try {
     const existing = await db.all<{ id: string }>('SELECT id FROM orgs');
@@ -418,10 +442,12 @@ export function hubErrorHandler(err: any, _req: Request, res: Response, _next: N
   // path param, malformed JSON) keeps its 4xx; its message names no table.
   const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
   if (status < 500) { res.status(status).json({ error: err?.expose === false ? 'bad request' : (err?.message ?? 'bad request') }); return; }
-  const body = process.env.NODE_ENV === 'production'
-    ? 'internal error'
-    : (err?.message ?? 'internal error');
-  res.status(500).json({ error: body });
+  // The detail is opt-in (AGENFK_HUB_DEBUG_ERRORS=1), and never in production.
+  // It used to follow NODE_ENV alone, so every hub not literally NODE_ENV=production
+  // (staging, a bare `node bin.js`) told anonymous callers which tables and columns
+  // a failing query named. The real message is already in the log line above.
+  const debugErrors = process.env.NODE_ENV !== 'production' && process.env.AGENFK_HUB_DEBUG_ERRORS === '1';
+  res.status(500).json({ error: debugErrors ? (err?.message ?? 'internal error') : 'internal error' });
 }
 
 /**

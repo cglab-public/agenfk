@@ -88,3 +88,39 @@ describe('upgradeState — file-backed persistence', () => {
     expect(entries.filter(n => n.endsWith('.tmp'))).toEqual([]);
   });
 });
+
+// Security audit, Fix 7 (AEF-5): the file was written with no mode, so it landed
+// 0644 under the process umask. It holds no secret, but it sits beside files that
+// do, and every other file this client writes in ~/.agenfk is 0600 (hub.json,
+// the deadletter, the audit log). Consistency, not an exploit.
+describe.skipIf(process.platform === 'win32')('upgradeState — file mode', () => {
+  let dbDir: string;
+  beforeEach(() => { dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-upgrade-state-mode-')); });
+  afterEach(() => { fs.rmSync(dbDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  const modeOf = (p: string) => fs.statSync(p).mode & 0o777;
+  const stateFile = () => fs.readdirSync(dbDir).filter(f => f.startsWith('upgrade-state'));
+
+  it('writes upgrade-state.json owner-only, even under a permissive umask', () => {
+    const before = process.umask(0o022);
+    try {
+      writeUpgradeState(dbDir, { lastDirectiveId: 'd-1', outcome: 'started' });
+    } finally { process.umask(before); }
+    const files = stateFile();
+    expect(files).toEqual(['upgrade-state.json']);
+    expect(modeOf(path.join(dbDir, files[0]))).toBe(0o600);
+  });
+
+  it('tightens a state file an older version left world-readable', () => {
+    const p = path.join(dbDir, 'upgrade-state.json');
+    fs.writeFileSync(p, JSON.stringify({ lastDirectiveId: 'old', outcome: 'started' }), { mode: 0o644 });
+    fs.chmodSync(p, 0o644);
+    writeUpgradeState(dbDir, { lastDirectiveId: 'd-2', outcome: 'started' });
+    expect(modeOf(p)).toBe(0o600);
+    expect(readUpgradeState(dbDir)).toEqual({ lastDirectiveId: 'd-2', outcome: 'started' });
+  });
+
+  it('leaves no temp file behind', () => {
+    writeUpgradeState(dbDir, { lastDirectiveId: 'd-3', outcome: 'started' });
+    expect(fs.readdirSync(dbDir).filter(f => f.endsWith('.tmp'))).toEqual([]);
+  });
+});
