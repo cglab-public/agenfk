@@ -1,0 +1,49 @@
+name: Dependency audit
+
+# A blocking gate on advisories in what we SHIP. The test suite exercises our
+# code, not the advisories filed against our dependencies, so a critical in
+# proxy-addr or a high in follow-redirects used to sit in main unnoticed.
+# --omit=dev: only production dependencies are the product's exposure; dev-tool
+# advisories are tracked, but must not block a release.
+# --audit-level=high: moderates and lows are reported (see the job log) without
+# failing the run; raise the bar here if that changes.
+on:
+  push:
+    branches: [main, beta]
+  # Unfiltered for the same reason as ci.yml: a branch filter matches the PR's
+  # base and would skip PRs stacked on other PRs.
+  pull_request:
+  # An advisory is published against a tree that did not change, so a gate that
+  # only ran on push would stay green until the next unrelated commit.
+  schedule:
+    - cron: '17 6 * * *'
+
+# Read-only token: this job only reads the lockfile.
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  npm-audit:
+    name: npm audit (production, high+)
+    runs-on: ubuntu-latest
+    # A hung registry request must not hold a runner for the 6h default.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+
+      # No `npm ci`: audit reads package-lock.json, and skipping the install
+      # means no dependency install script runs in a job whose point is to
+      # distrust dependencies. Not continue-on-error, and no `|| true`: a
+      # non-zero exit here is the gate.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
