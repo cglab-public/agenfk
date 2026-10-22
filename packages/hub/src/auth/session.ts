@@ -16,6 +16,11 @@ export function signSession(payload: SessionPayload, secret: string): string {
   return jwt.sign(payload, secret, { algorithm: 'HS256', expiresIn: `${SESSION_TTL_HOURS}h` });
 }
 
+/** The claims a fresh session for `user` carries, epoch included (see requireSession). */
+export function sessionPayloadFor(user: { id: string; org_id: string; role: SessionPayload['role']; session_epoch: number }): SessionPayload {
+  return { userId: user.id, orgId: user.org_id, role: user.role, epoch: Number(user.session_epoch) };
+}
+
 export function verifySession(token: string, secret: string): SessionPayload | null {
   try {
     return jwt.verify(token, secret) as SessionPayload;
@@ -64,7 +69,7 @@ export function clearSessionCookie(res: Response): void {
  * viewer from their next request, and a promoted viewer an admin.
  */
 /** The guard's per-request read of the signed-in user. Exported for tests that need to hold it. */
-export const SESSION_USER_SQL = 'SELECT role, active, org_id FROM users WHERE id = ?';
+export const SESSION_USER_SQL = 'SELECT role, active, org_id, session_epoch FROM users WHERE id = ?';
 
 export function requireSession(secret: string, db: DB) {
   return (req: Request, res: Response, next: NextFunction): void => {
@@ -74,11 +79,21 @@ export function requireSession(secret: string, db: DB) {
     if (!session) { res.status(401).json({ error: 'Session expired or invalid' }); return; }
     // This promise is not returned to express, so nothing forwards its
     // rejection: catch it here, or a DB error leaves the request unanswered.
-    db.get<{ role: SessionPayload['role']; active: number; org_id: string }>(SESSION_USER_SQL, [session.userId]).then((user) => {
+    db.get<{ role: SessionPayload['role']; active: number; org_id: string; session_epoch: number }>(SESSION_USER_SQL, [session.userId]).then((user) => {
       // A throw in here would otherwise escape as an unhandled rejection
       // (downstream handlers are covered by express's own try/catch).
       try {
         if (!user || !Number(user.active) || user.org_id !== session.orgId) {
+          res.status(401).json({ error: 'Session no longer valid; sign in again' });
+          return;
+        }
+        // Credential rotation (a password set by an admin or by recovery)
+        // bumps users.session_epoch. A cookie issued under an earlier epoch is
+        // refused here, so "reset the compromised account's password" ends the
+        // attacker's session too instead of leaving it live for the rest of its
+        // 12h TTL. A cookie with no epoch claim predates the column, and counts
+        // as epoch 0, which the migration's bump to 1 already invalidated.
+        if (Number(user.session_epoch) !== Number(session.epoch ?? 0)) {
           res.status(401).json({ error: 'Session no longer valid; sign in again' });
           return;
         }

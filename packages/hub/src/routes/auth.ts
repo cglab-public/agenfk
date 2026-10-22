@@ -14,6 +14,7 @@ import {
   requireSession,
   setSessionCookie,
   signSession,
+  sessionPayloadFor,
 } from '../auth/session.js';
 import { rateLimit, FailedAttemptTracker, sessionUserKey } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
@@ -115,7 +116,7 @@ export function authRouter(ctx: HubServerContext): Router {
 
     loginFailures.clear(email);
     await recordLogin(ctx.db, user.id);
-    const token = signSession({ userId: user.id, orgId: user.org_id, role: user.role }, ctx.config.sessionSecret);
+    const token = signSession(sessionPayloadFor(user), ctx.config.sessionSecret);
     setSessionCookie(res, token);
     res.json({ id: user.id, email: user.email, role: user.role, orgId: user.org_id });
   }));
@@ -130,7 +131,7 @@ export function authRouter(ctx: HubServerContext): Router {
     if ('status' in out) return res.status(out.status).json({ error: out.error });
     const user = out.user;
     await recordLogin(ctx.db, user.id);
-    setSessionCookie(res, signSession({ userId: user.id, orgId: user.org_id, role: user.role }, ctx.config.sessionSecret));
+    setSessionCookie(res, signSession(sessionPayloadFor(user), ctx.config.sessionSecret));
     console.warn(`[HUB] Admin recovery: ${user.email} signed in with a recovery token and set a new password.`);
     res.json({ id: user.id, email: user.email, role: user.role, orgId: user.org_id });
   }));

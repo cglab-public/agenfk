@@ -36,6 +36,8 @@ export interface UserRow {
   provider_subject: string | null;
   role: 'admin' | 'viewer';
   active: number;
+  /** Bumped on a credential change; session cookies are bound to it (auth/session.ts). */
+  session_epoch: number;
   created_at: string;
   last_login_at: string | null;
 }

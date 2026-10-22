@@ -1427,7 +1427,16 @@ export function adminRouter(ctx: HubServerContext): Router {
     const params: any[] = [];
     if (role === 'admin' || role === 'viewer') { sets.push('role = ?'); params.push(role); }
     if (active === true || active === false) { sets.push('active = ?'); params.push(active ? 1 : 0); }
+    // A new password rotates the credential, so it also bumps the session epoch
+    // (auth/session.ts): the account's live cookies stop working, which is the
+    // point of resetting a compromised account's password. Deactivation bumps it
+    // too: without that, re-enabling the account would revive the cookies the
+    // guard refused while it was off. (An admin resetting their OWN password is
+    // signed out by the same bump; there is no UI for that, only this API.)
+    // Demotion does not bump: the row's role already overrides the cookie's.
+    const bumpsEpoch = (typeof password === 'string' && password.length >= 8) || active === false;
     if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(hashPassword(password)); }
+    if (bumpsEpoch) sets.push('session_epoch = session_epoch + 1');
     if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
     const orgId = req.session!.orgId;
     const removesAdminAccess = role === 'viewer' || active === false;

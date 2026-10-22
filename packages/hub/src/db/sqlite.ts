@@ -103,6 +103,9 @@ const SCHEMA_SQLITE = `
     provider_subject TEXT,
     role TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
+    -- Bumped when the credential changes; a session cookie is only good while
+    -- it carries the current value (auth/session.ts).
+    session_epoch INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_login_at TEXT
   );
@@ -714,6 +717,26 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const userCols = raw.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (userCols.length > 0 && !new Set(userCols.map(c => c.name)).has('name')) {
     raw.exec("ALTER TABLE users ADD COLUMN name TEXT");
+  }
+  // users.session_epoch (AEF-5). Sessions were pure 12h JWTs, so a password
+  // reset left the attacker's cookie alive. Adding the column and moving every
+  // existing user to epoch 1 happen together, and only here: a cookie issued
+  // before this release carries no epoch (= 0) and is refused once, so users
+  // sign in again one time. Doing the bump outside this branch would log
+  // everyone out on every boot.
+  if (userCols.length > 0 && !new Set(userCols.map(c => c.name)).has('session_epoch')) {
+    // One transaction: a crash between the two statements would leave the
+    // column present but every user at 0, and the next boot (seeing the column)
+    // would never bump, so the old cookies would stay valid for good.
+    raw.exec('BEGIN IMMEDIATE');
+    try {
+      raw.exec("ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0");
+      raw.exec("UPDATE users SET session_epoch = 1");
+      raw.exec('COMMIT');
+    } catch (err) {
+      raw.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   // Backfill: canonicalise remote_url forms (ssh / https / with-or-without-.git)

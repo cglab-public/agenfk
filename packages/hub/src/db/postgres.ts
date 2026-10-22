@@ -94,6 +94,9 @@ const SCHEMA_PG = `
     provider_subject TEXT,
     role TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
+    -- Bumped when the credential changes; a session cookie is only good while
+    -- it carries the current value (auth/session.ts).
+    session_epoch INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_login_at TIMESTAMPTZ
   );
@@ -683,6 +686,27 @@ export async function backfillPrEventRemoteUrls(adapter: HubDb): Promise<void> {
   }
 }
 
+/**
+ * users.session_epoch (AEF-5): see the SQLite migration for the why. The bump
+ * only runs when this call adds the column, so a restart never logs anyone out.
+ * WHERE session_epoch = 0 keeps two instances booting together (rolling deploy)
+ * from lowering an epoch the other has already advanced. Exported so the
+ * existing-table path can be tested without re-running all of bootstrap, which
+ * pg-mem cannot do.
+ */
+export async function migrateUsersSessionEpoch(adapter: HubDb): Promise<void> {
+  const cols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users'",
+  );
+  if (cols.length > 0 && !new Set(cols.map(c => c.column_name)).has('session_epoch')) {
+    // One transaction, as on SQLite: column and bump land together or not at all.
+    await adapter.transaction(async () => {
+      await adapter.exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS session_epoch INTEGER NOT NULL DEFAULT 0");
+      await adapter.exec("UPDATE users SET session_epoch = 1 WHERE session_epoch = 0");
+    });
+  }
+}
+
 async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec(SCHEMA_PG);
   await adapter.exec("DELETE FROM events WHERE type = 'tokens.logged'");
@@ -744,6 +768,8 @@ async function bootstrap(adapter: HubDb): Promise<void> {
       await adapter.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${ddl}`);
     }
   }
+
+  await migrateUsersSessionEpoch(adapter);
 
   const rdCols0 = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_name = 'rollups_daily'"

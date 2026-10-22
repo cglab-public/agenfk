@@ -59,4 +59,11 @@ export interface SessionPayload {
   userId: string;
   orgId: string;
   role: 'admin' | 'viewer';
+  /**
+   * users.session_epoch at issue time. requireSession refuses the cookie when
+   * the row has moved on (a password change bumps it), so a stolen session does
+   * not outlive the credential. Absent = epoch 0 = a cookie older than the
+   * claim, which the migration that added the column already invalidated.
+   */
+  epoch?: number;
 }

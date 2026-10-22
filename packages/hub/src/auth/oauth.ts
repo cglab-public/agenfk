@@ -1,9 +1,8 @@
 import { randomBytes } from 'crypto';
 import { Request, Response } from 'express';
 import { DB } from '../db.js';
-import { setSessionCookie, signSession, cookieSecure } from './session.js';
+import { setSessionCookie, signSession, sessionPayloadFor, cookieSecure } from './session.js';
 import { recordLogin, UserRow } from './password.js';
-import { SessionPayload } from '../types.js';
 
 export const OAUTH_STATE_COOKIE = 'agenfk_hub_oauth_state';
 export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
@@ -127,6 +126,5 @@ export async function completeSsoLogin(
   sessionSecret: string,
 ): Promise<void> {
   await recordLogin(db, user.id);
-  const payload: SessionPayload = { userId: user.id, orgId: user.org_id, role: user.role };
-  setSessionCookie(res, signSession(payload, sessionSecret));
+  setSessionCookie(res, signSession(sessionPayloadFor(user), sessionSecret));
 }

@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
 import { backfillUserKeyAliases } from '../services/backfillUserKeyAliases';
 import { createHubApp } from '../server';
-import { openPgMemDb, backfillPrEventRemoteUrls } from '../db/postgres';
+import { openPgMemDb, backfillPrEventRemoteUrls, migrateUsersSessionEpoch } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
@@ -1055,5 +1055,45 @@ describe('PG parity: admin model mappings', () => {
     expect(removed.body.removed).toBe(true);
     const reverted = await (await supertest(fx.app).get('/v1/prs/overview').set('Cookie', fx.cookie)).body;
     expect(reverted.byModel).toHaveLength(2);
+  });
+});
+
+/**
+ * Session epoch (AEF-5, Fix 1) on Postgres: users.session_epoch exists in the
+ * Postgres schema and the password-reset bump runs there, so the old cookie is
+ * refused. A SQLite-only test would not notice a column missing from this DDL.
+ */
+describe('PG parity: password reset revokes live sessions (session epoch)', () => {
+  it('refuses the old cookie after an admin resets the password', async () => {
+    const fx = await bootHubOnPg();
+    await createPasswordUser(fx.db, 'org', 'victim@x', 'old-password-1', 'viewer');
+    const login = await supertest(__server).post('/auth/login').send({ email: 'victim@x', password: 'old-password-1' });
+    const stolen = login.headers['set-cookie'][0];
+    expect((await supertest(__server).get('/auth/me').set('Cookie', stolen)).status).toBe(200);
+
+    const victim = await fx.db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', ['victim@x']);
+    const reset = await supertest(__server).put(`/v1/admin/users/${victim!.id}`).set('Cookie', fx.cookie).send({ password: 'new-password-1' });
+    expect(reset.status).toBe(200);
+
+    expect((await supertest(__server).get('/auth/me').set('Cookie', stolen)).status).toBe(401);
+    expect((await supertest(__server).post('/auth/login').send({ email: 'victim@x', password: 'new-password-1' })).status).toBe(200);
+    await fx.db.close();
+  });
+
+  it('migrates a users table that predates session_epoch: bumps once, never again', async () => {
+    const db = await openPgMemDb();
+    await createPasswordUser(db, 'org', 'old@x', 'old-password-1', 'viewer');
+    // What an older hub's users table looks like.
+    await db.run('ALTER TABLE users DROP COLUMN session_epoch');
+
+    await migrateUsersSessionEpoch(db);
+    const epoch = async () => Number((await db.get<{ session_epoch: number }>('SELECT session_epoch FROM users WHERE email = ?', ['old@x']))!.session_epoch);
+    expect(await epoch()).toBe(1);
+
+    // A restart must not bump again, nor lower an epoch a reset advanced.
+    await db.run('UPDATE users SET session_epoch = 2 WHERE email = ?', ['old@x']);
+    await migrateUsersSessionEpoch(db);
+    expect(await epoch()).toBe(2);
+    await db.close();
   });
 });
