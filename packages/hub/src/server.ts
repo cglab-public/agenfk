@@ -17,6 +17,7 @@ import { installConfigAudit, mountRouter } from './services/configAuditRoutes.js
 import { auditRouter } from './routes/audit.js';
 import { mintAdminRecoveryToken, withdrawExpiredRecoveryTokens } from './auth/adminRecovery.js';
 import { logBoundKeyPosture } from './auth/apiKey.js';
+import { securityHeaders, htmlCsp, inlineScriptHashes } from './util/securityHeaders.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { federationRouter, federationInviteRouter } from './routes/federation.js';
@@ -73,6 +74,11 @@ function buildMaintenanceApp(
     `Serving maintenance page only.`,
   );
   const app = express();
+  app.disable('x-powered-by');
+  // Same proxy trust as the real app, or req.secure is always false here and the
+  // maintenance page would never send HSTS over TLS.
+  app.set('trust proxy', config.trustProxy ?? DEFAULT_TRUST_PROXY);
+  app.use(securityHeaders());
   app.use(express.json({ limit: '10mb' }));
 
   const safeEnv = String(envOrgId).replace(/[<>&"']/g, '');
@@ -123,6 +129,8 @@ function buildMaintenanceApp(
   app.use((req: Request, res: Response) => {
     const accept = String(req.headers.accept ?? '');
     if (req.method === 'GET' && accept.includes('text/html')) {
+      // The page has an inline <style> and no script, which htmlCsp([]) allows.
+      res.setHeader('Content-Security-Policy', htmlCsp([]));
       res.status(503).type('html').send(html);
     } else {
       res.status(503).json({
@@ -225,11 +233,15 @@ export async function createHubApp(
   const ctx: HubServerContext = { db, config };
 
   const app = express();
+  // Not advertising the framework, and the security headers on every response
+  // (util/securityHeaders.ts), mounted before anything that can answer.
+  app.disable('x-powered-by');
   // Which X-Forwarded-For hop is the client. Every rate limit keys on req.ip,
   // and req.ip is only as honest as this setting: see configFromEnv.
   app.set('trust proxy', config.trustProxy ?? DEFAULT_TRUST_PROXY);
   // Read by publicHubUrl for every URL the hub hands out.
   app.locals.hubPublicUrl = config.publicUrl;
+  app.use(securityHeaders());
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -334,29 +346,38 @@ export async function createHubApp(
   const uiDir = candidates.find((d) => fs.existsSync(pathMod.join(d, 'index.html')));
   if (uiDir) {
     console.log(`[HUB] Serving SPA bundle from ${uiDir}`);
-    app.use(express.static(uiDir));
-    // SPA fallback. Anything that isn't an API route falls through to
-    // index.html so deep-link refreshes (e.g. /users/alice@acme.com,
-    // /admin/keys, /connect) resolve to the React shell rather than 404.
-    // We read index.html once at boot and serve it from memory — earlier
-    // versions used res.sendFile which surfaced "Not Found" 500s when the
-    // installed path resolution flickered between startup and request time.
-    // Note: `/setup` itself is a SPA route (the first-run Setup page), so we
-    // only exclude the specific API path under it. Adding new API endpoints
-    // under /setup means listing them here.
-    const API_PREFIXES = ['/v1', '/auth', '/setup/initial-admin', '/healthz', '/hub'];
+    // The shell is read once and served from memory, on every path that serves
+    // it (GET /, GET /index.html and the deep-link fallback below), and the CSP's
+    // script hashes come from that same copy. Served from disk by express.static,
+    // a file replaced under a running hub would arrive under the old hash and
+    // have its inline script blocked. Earlier versions used res.sendFile, which
+    // surfaced "Not Found" 500s when the installed path resolution flickered
+    // between startup and request time.
     let indexHtml = '';
     try {
       indexHtml = fs.readFileSync(pathMod.join(uiDir, 'index.html'), 'utf8');
     } catch (e) {
       console.warn('[HUB] Failed to preload index.html:', (e as Error).message);
     }
+    const spaCsp = htmlCsp(inlineScriptHashes(indexHtml));
+    // Note: `/setup` itself is a SPA route (the first-run Setup page), so we
+    // only exclude the specific API path under it. Adding new API endpoints
+    // under /setup means listing them here.
+    const API_PREFIXES = ['/v1', '/auth', '/setup/initial-admin', '/healthz', '/hub'];
+    // SPA fallback. Anything that isn't an API route falls through to
+    // index.html so deep-link refreshes (e.g. /users/alice@acme.com,
+    // /admin/keys, /connect) resolve to the React shell rather than 404.
     const spaFallback = (req: Request, res: Response, next: NextFunction): void => {
-      if (req.method !== 'GET') return next();
+      // HEAD too: express.static used to answer HEAD / (a monitor probing the shell), and Express sends no body for it.
+      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
       if (API_PREFIXES.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
       if (!indexHtml) return next();
+      res.setHeader('Content-Security-Policy', spaCsp);
       res.type('html').send(indexHtml);
     };
+    app.use((req: Request, res: Response, next: NextFunction) => (req.path === '/index.html' ? spaFallback(req, res, next) : next()));
+    // index: false, so `/` is not served from disk either.
+    app.use(express.static(uiDir, { index: false }));
     app.use(spaFallback);
     // Defence in depth: a final 404 trap that re-applies the same fallback
     // for anything that snuck past, e.g. a router calling res.sendStatus(404)
