@@ -124,6 +124,7 @@ const UPSERT_INSTALLATION_SQL = `
 export function eventsRouter(ctx: HubServerContext): Router {
   const router = Router();
   const requireKey = requireApiKey(ctx.db);
+  const requireIngestKey = requireApiKey(ctx.db, { ingest: true });
 
   router.get('/ping', requireKey, (req: Request, res: Response) => {
     // installationId: the machine a bound key belongs to (null for an org-wide
@@ -203,7 +204,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
   // Hard ceiling on events processed in a single /v1/events transaction.
   const MAX_EVENTS_PER_BATCH = 500;
 
-  router.post('/events', requireKey, asyncRoute(async (req: Request, res: Response) => {
+  router.post('/events', requireIngestKey, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
     // An installation-bound key may only post events for its OWN installation.
     // Without this, any org key could stamp fleet:upgrade:* state or running

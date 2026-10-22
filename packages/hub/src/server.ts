@@ -16,6 +16,7 @@ import { ensureBootstrapToken } from './auth/bootstrapToken.js';
 import { installConfigAudit, mountRouter } from './services/configAuditRoutes.js';
 import { auditRouter } from './routes/audit.js';
 import { mintAdminRecoveryToken, withdrawExpiredRecoveryTokens } from './auth/adminRecovery.js';
+import { logBoundKeyPosture } from './auth/apiKey.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { federationRouter, federationInviteRouter } from './routes/federation.js';
@@ -218,6 +219,8 @@ export async function createHubApp(
   } else {
     await withdrawExpiredRecoveryTokens(db);
   }
+
+  await logBoundKeyPosture(db);
 
   const ctx: HubServerContext = { db, config };
 
