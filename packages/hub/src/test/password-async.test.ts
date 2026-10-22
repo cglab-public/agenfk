@@ -129,6 +129,54 @@ describe('every password write goes through the async hash', () => {
   });
 });
 
+describe('POST /v1/admin/users/invite tells a busy hash pool from a duplicate email', () => {
+  const invite = (cookie: string, email: string, password?: string) =>
+    supertest(server).post('/v1/admin/users/invite').set('Cookie', cookie)
+      .send(password === undefined ? { email, role: 'viewer' } : { email, password, role: 'viewer' });
+
+  it('a saturated pool answers 429, not a false "A user with that email already exists"', async () => {
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'admin-password-1', 'admin');
+    const cookie = (await login('admin@x', 'admin-password-1')).headers['set-cookie'][0];
+    const pool = await import('../auth/bcryptPool');
+    const busy = vi.spyOn(pool, 'bcryptHash').mockRejectedValueOnce(Object.assign(new Error('Too many sign-in attempts are being checked right now; try again shortly.'), { status: 429 }));
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const r = await invite(cookie, 'new@x', 'invited-password-1');
+      expect(r.status, JSON.stringify(r.body)).toBe(429);
+      expect(JSON.stringify(r.body)).not.toMatch(/already exists/);
+    } finally { busy.mockRestore(); quiet.mockRestore(); }
+    // Nothing was created, so the same invite goes through once the pool is free.
+    expect((await invite(cookie, 'new@x', 'invited-password-1')).status).toBe(201);
+  });
+
+  it('a database failure on the insert is a 500, not a false "already exists"', async () => {
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'admin-password-1', 'admin');
+    const cookie = (await login('admin@x', 'admin-password-1')).headers['set-cookie'][0];
+    const realRun = ctx.db.run.bind(ctx.db);
+    ctx.db.run = async (sql: string, params?: unknown[]) => {
+      if (/INSERT INTO users/.test(sql)) throw new Error('SQLITE_IOERR: disk I/O error');
+      return realRun(sql, params);
+    };
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const body of [{ email: 'io@x', password: 'invited-password-1', role: 'viewer' }, { email: 'io2@x', role: 'viewer' }]) {
+        const r = await supertest(server).post('/v1/admin/users/invite').set('Cookie', cookie).send(body);
+        expect(r.status, JSON.stringify(r.body)).toBe(500);
+        expect(JSON.stringify(r.body)).not.toMatch(/already exists/);
+      }
+    } finally { quiet.mockRestore(); ctx.db.run = realRun; }
+  });
+
+  it('a real duplicate is still 409, with or without a password', async () => {
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'admin-password-1', 'admin');
+    const cookie = (await login('admin@x', 'admin-password-1')).headers['set-cookie'][0];
+    expect((await invite(cookie, 'dup@x', 'invited-password-1')).status).toBe(201);
+    expect((await invite(cookie, 'dup@x', 'invited-password-1')).status).toBe(409);
+    expect((await invite(cookie, 'sso@x')).status).toBe(201);
+    expect((await invite(cookie, 'sso@x')).status).toBe(409);
+  });
+});
+
 describe('no hash is awaited inside a database transaction', () => {
   // SQLite's transaction() is a bare BEGIN ... COMMIT on the ONE shared
   // connection. While a hash is a worker round-trip, other requests run on that

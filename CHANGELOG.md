@@ -75,7 +75,8 @@ port, project ids kept out of version control, and hub-side flow adherence.
   password, redeeming a recovery token, or deactivating an account ends that account's sessions (before, a reset
   left the old cookie valid for up to 12 h). An admin resetting their own password via the API is signed out too.
   During a rolling Postgres deploy, cookies issued by a not-yet-upgraded instance carry no epoch and are refused by
-  upgraded ones, so users can be bounced to the sign-in page until every instance is on the new version.
+  upgraded ones, so users can be bounced to the sign-in page until every instance is on the new version. Two instances
+  booting at the same instant can both run the one-off bump, so a user created in between signs in once more.
 - **The email allowlist fails closed.** An unreadable stored list (not JSON, not an array, a non-string entry, or
   empty) now denies every SSO sign-in instead of allowing it. `PUT /v1/admin/auth-config` validates entries
   (email, `@domain`, `domain`, `*.domain`; entries already in the stored list are kept as they are) and stores an

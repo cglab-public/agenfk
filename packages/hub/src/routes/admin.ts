@@ -4,7 +4,7 @@ import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
 import { checkEmailAllowlist, isValidAllowlistEntry, parseAllowlist } from '../auth/oauth.js';
 import { encryptSecret } from '../crypto.js';
-import { createPasswordUser, hashPassword } from '../auth/password.js';
+import { insertPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
 import { DEFAULT_FLOW, describeFlowContract, mergeStepContracts, registryInstallSteps, flowChecksErrors } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
@@ -19,7 +19,7 @@ import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { mintChildHubInvite } from './federation.js';
-import { parentUrlFromInviteToken, inviteExpiryFromToken } from '../auth/inviteToken.js';
+import { parentUrlFromInviteToken, inviteExpiryFromToken, isUniqueViolation } from '../auth/inviteToken.js';
 import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
 import {
   readParentBinding, writeParentBinding, clearParentBinding, assertHttpUrl,
@@ -1427,9 +1427,13 @@ export function adminRouter(ctx: HubServerContext): Router {
       return res.status(400).json({ error: 'password must be ≥8 chars when provided' });
     }
     if (role !== 'admin' && role !== 'viewer') return res.status(400).json({ error: 'role must be admin or viewer' });
+    // Hashed BEFORE the try: the hash is a worker round-trip that can fail (a busy
+    // pool answers 429, a dead worker errors), and that is not "a user with that
+    // email already exists". Only the INSERT below can collide.
+    const passwordHash = hasPassword ? await hashPassword(password) : null;
     try {
       if (hasPassword) {
-        const u = await createPasswordUser(ctx.db, req.session!.orgId, email, password, role);
+        const u = await insertPasswordUser(ctx.db, req.session!.orgId, email, passwordHash!, role);
         res.status(201).json({ id: u.id, email: u.email, role: u.role });
       } else {
         // SSO-only invite: row is created with NULL password_hash. Password
@@ -1443,6 +1447,9 @@ export function adminRouter(ctx: HubServerContext): Router {
         res.status(201).json({ id, email, role });
       }
     } catch (e: any) {
+      // Only a unique violation is a duplicate; a disk or connection failure on
+      // the INSERT is not "already exists", so let it reach the error handler.
+      if (!isUniqueViolation(e)) throw e;
       res.status(409).json({ error: 'A user with that email already exists' });
     }
   }));
