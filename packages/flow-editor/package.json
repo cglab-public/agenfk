@@ -2,7 +2,7 @@
   "name": "@agenfk/flow-editor",
   "private": true,
   "license": "Apache-2.0",
-  "version": "2.0.0-rc.3",
+  "version": "2.0.0",
   "type": "module",
   "main": "./src/index.ts",
   "exports": {

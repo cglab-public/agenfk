@@ -11,8 +11,9 @@ import {
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
   ChevronUp, ChevronDown, X, FolderInput, GitBranch, SquareTerminal,
-  Settings, ArrowLeft,
+  Settings, ArrowLeft, Minimize2, Maximize2,
 } from 'lucide-react';
+import { readBoardLayout, writeBoardLayout } from '../boardLayout';
 import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
@@ -131,12 +132,15 @@ interface KanbanCardProps {
   /** Open a terminal on this card. The board's only route to the shell's sessions. */
   onOpenTerminal: (item: AgEnFKItem) => void;
   disableLayoutAnimation?: boolean;
+  /** #262: the compact board - a tighter card. */
+  compact?: boolean;
 }
 
 const KanbanCard: React.FC<KanbanCardProps> = ({
   item, items, projects, highlightedId, dragId, dropTargetId, dropPosition,
   copiedId, pricesData, isUserAction, onCardDragStart, onCardDragEnd, onCardDragOver,
-  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onMoveToProject, onCopyId, onOpenTerminal, disableLayoutAnimation
+  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onMoveToProject, onCopyId, onOpenTerminal, disableLayoutAnimation,
+  compact = false,
 }) => {
   const [isMoveMenuOpen, setIsMoveMenuOpen] = useState(false);
   const moveMenuRef = React.useRef<HTMLDivElement>(null);
@@ -264,7 +268,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         },
       }}
       className={clsx(
-        "group bg-card-glass backdrop-blur rounded-xl p-3 border border-border-soft cursor-move hover:border-accent transition-colors duration-200",
+        "group bg-card-glass backdrop-blur rounded-xl border border-border-soft cursor-move hover:border-accent transition-colors duration-200 min-w-0 break-words",
+        // #262: tighter on the desktop board only - the stacked mobile layout keeps its cards.
+        compact ? "p-3 md:p-2 md:text-[12px]" : "p-3",
         highlightedId === item.id && "search-highlight border-accent",
         dragId === item.id && "opacity-40",
         item.status === Status.DONE && dragId !== item.id && "opacity-60",
@@ -289,8 +295,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       {dropTargetId === item.id && dropPosition === 'below' && (
         <div className="absolute -bottom-[1px] left-0 right-0 h-[2px] bg-accent rounded-b-xl z-50 pointer-events-none" />
       )}
-      <div className="flex justify-between items-start mb-2">
-        <div className="flex items-center gap-1.5">
+      {/* #262: rows wrap in a narrow column instead of running past the card's edge. */}
+      <div className="flex flex-wrap justify-between items-start gap-y-1 mb-2">
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
           {/* One grammar, decided in one place (CGLAB-164). This ladder used
               to paint STORY with `story-blue` and TASK with the brand teal —
               the exact reverse of what the create form teaches, so a card
@@ -410,8 +417,8 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         </div>
       )}
 
-      <div className="flex items-center justify-between pt-2 border-t border-slate-50 dark:border-slate-800 mt-auto text-[9px] text-slate-400 dark:text-slate-500 font-mono">
-        <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 pt-2 border-t border-slate-50 dark:border-slate-800 mt-auto text-[9px] text-slate-400 dark:text-slate-500 font-mono">
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
           {item.externalUrl && (
             <a
               href={item.externalUrl}
@@ -771,10 +778,19 @@ export const KanbanBoard: React.FC = () => {
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
   }, []);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [isIdeasCollapsed, setIsIdeasCollapsed] = useState(true);
-  const [isArchiveCollapsed, setIsArchiveCollapsed] = useState(true);
-  const [isBlockedCollapsed, setIsBlockedCollapsed] = useState(true);
-  const [isPausedCollapsed, setIsPausedCollapsed] = useState(true);
+  // #262: the side columns start collapsed and the board's density is normal, unless this viewer chose otherwise.
+  const [initialLayout] = useState(readBoardLayout);
+  const [isIdeasCollapsed, setIsIdeasCollapsed] = useState(initialLayout.collapsed.ideas);
+  const [isArchiveCollapsed, setIsArchiveCollapsed] = useState(initialLayout.collapsed.archived);
+  const [isBlockedCollapsed, setIsBlockedCollapsed] = useState(initialLayout.collapsed.blocked);
+  const [isPausedCollapsed, setIsPausedCollapsed] = useState(initialLayout.collapsed.paused);
+  const [isCompact, setIsCompact] = useState(initialLayout.compact);
+  useEffect(() => {
+    writeBoardLayout({ compact: isCompact, collapsed: { ideas: isIdeasCollapsed, paused: isPausedCollapsed, blocked: isBlockedCollapsed, archived: isArchiveCollapsed } });
+  }, [isCompact, isIdeasCollapsed, isPausedCollapsed, isBlockedCollapsed, isArchiveCollapsed]);
+  // The floor a step column shrinks to before the board scrolls: it was 180px, which scrolled an 8-step flow under ~1,800px.
+  // Literal class names, so Tailwind generates them. Expanded side columns keep 180px: their headers need it, and they start collapsed.
+  const columnFloor = isCompact ? 'md:min-w-[96px]' : 'md:min-w-[120px]';
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
@@ -2001,6 +2017,18 @@ agenfk update-project <id> --setup-command "npm ci"`}
               {/* The desktop shell shows its own, in the status bar that every tab keeps (beae41a0). */}
               {!isDesktop() && <VerifyRunsChip />}
 
+              {/* #262: narrower columns and denser cards, for flows with many steps. */}
+              <button
+                data-testid="board-compact-toggle"
+                onClick={() => setIsCompact(c => !c)}
+                aria-pressed={isCompact}
+                title={isCompact ? 'Normal density' : 'Compact board'}
+                aria-label="Compact board"
+                className="p-1.5 hover:bg-surface rounded-lg text-slate-500 hover:text-accent-ink transition-all"
+              >
+                {isCompact ? <Maximize2 size={16} /> : <Minimize2 size={16} />}
+              </button>
+
               {!isDesktop() && (
                 <button
                   data-testid="board-settings-btn"
@@ -2156,6 +2184,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                     <AnimatePresence mode="popLayout" initial={false}>
                       {getItemsByStatus(Status.IDEAS).map((item: AgEnFKItem) => (
                           <KanbanCard
+                            compact={isCompact}
                             key={item.id}
                             item={item}
                             items={items}
@@ -2200,7 +2229,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
             const columnLabel = flowStep ? (flowStep.label || flowStep.name) : status.replace(/_/g, ' ');
             const blocking = flowStep ? blockingChecksOf(flowStep.name) : undefined;
             return (
-            <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
+            <div key={status} data-testid={`column-${status}`} className={clsx("@container flex flex-col w-full md:flex-1 h-full min-h-[300px] md:min-h-0", columnFloor)} onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
               <div
                 data-testid={`column-header-${status}`}
                 className="group flex flex-col gap-0.5 mb-3 px-1 border-t-4 pt-2"
@@ -2208,12 +2237,13 @@ agenfk update-project <id> --setup-command "npm ci"`}
                 data-user-colour=""
                 style={{ borderTopColor: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}
               >
-                <div data-testid={`column-title-${status}`} className="flex items-center gap-2 min-w-0">
-                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800 shrink-0" data-user-colour="" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
+                {/* #262: in a narrow column the title keeps the room - no icon, and the archive action floats on hover. */}
+                <div data-testid={`column-title-${status}`} className="relative flex items-center gap-2 min-w-0">
+                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800 shrink-0 @max-[170px]:hidden" data-user-colour="" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
                     {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
                   <h2 title={columnLabel} className="flex-1 min-w-0 truncate font-bold text-ink-secondary text-sm">{titleCaseLabel(columnLabel)}</h2>
-                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-opacity" title="Archive Column">
+                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-opacity @max-[170px]:absolute @max-[170px]:right-9 @max-[170px]:bg-surface" title="Archive Column">
                     <Archive size={12} />
                   </button>
                   <span data-testid={`column-count-${status}`} className="shrink-0 bg-accent-fill text-accent-ink text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
@@ -2221,17 +2251,18 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   </span>
                 </div>
                 {/* Always rendered, so every header is the same height (85b59d8c). */}
-                <div data-testid={`column-meta-${status}`} className="flex items-center gap-2 min-h-[16px] pl-[30px] min-w-0">
+                <div data-testid={`column-meta-${status}`} className="flex items-center gap-2 min-h-[16px] pl-[30px] @max-[170px]:pl-0 min-w-0">
                   {flowStep && <ColumnRole step={flowStep} />}
                   {flowStep && <ColumnContractBadges step={flowStep} checkCount={blocking?.length} checkNames={blocking?.map(c => checkText(c.id).title)} />}
                 </div>
               </div>
 
-              <div className={clsx("flex-1 px-3 pb-10 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+              <div className={clsx("flex-1 pb-10 flex flex-col gap-3 relative scrollbar-thin", isCompact ? "px-3 md:px-1" : "px-3", "scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                   <AnimatePresence mode="popLayout" initial={false}>
                     {getItemsByStatus(status as Status).map((item: AgEnFKItem) => (
                       <CardAnimationWrapper key={`anim-${item.id}`} enabled={easterEggsEnabled} itemId={item.id} status={item.status}>
                       <KanbanCard
+                            compact={isCompact}
                         key={item.id}
                         item={item}
                         items={items}
@@ -2284,6 +2315,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                     <AnimatePresence mode="popLayout" initial={false}>
                       {getItemsByStatus(Status.PAUSED).map((item: AgEnFKItem) => (
                           <KanbanCard
+                            compact={isCompact}
                             key={item.id}
                             item={item}
                             items={items}
@@ -2328,6 +2360,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                     <AnimatePresence mode="popLayout" initial={false}>
                       {getItemsByStatus(Status.BLOCKED).map((item: AgEnFKItem) => (
                           <KanbanCard
+                            compact={isCompact}
                             key={item.id}
                             item={item}
                             items={items}
@@ -2391,6 +2424,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                     <AnimatePresence mode="popLayout" initial={false}>
                       {archivedShown.map((item: AgEnFKItem) => (
                         <KanbanCard
+                            compact={isCompact}
                           key={item.id}
                           item={item}
                           items={items}
@@ -2426,6 +2460,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                 <div className="w-12 shrink-0 flex flex-col gap-2 h-full">
                   {isPausedCollapsed && (
                     <button
+                      data-testid="collapsed-PAUSED"
                       onClick={() => setIsPausedCollapsed(false)}
                       className="flex-1 w-full bg-status-warn-bg rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:border-status-warn-text hover:border-solid transition-colors group border border-dashed border-status-warn-text/40"
                     >
@@ -2436,6 +2471,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   )}
                   {isBlockedCollapsed && (
                     <button
+                      data-testid="collapsed-BLOCKED"
                       onClick={() => setIsBlockedCollapsed(false)}
                       className="flex-1 w-full bg-status-danger-bg rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:border-status-danger-text hover:border-solid transition-colors group border border-dashed border-status-danger-text/40"
                     >
@@ -2445,7 +2481,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                     </button>
                   )}
                   {isArchiveCollapsed && (
-                    <button onClick={() => setIsArchiveCollapsed(false)} className="flex-1 w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
+                    <button data-testid="collapsed-ARCHIVED" onClick={() => setIsArchiveCollapsed(false)} className="flex-1 w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
                       <Archive size={16} className="text-slate-500 group-hover:text-accent-ink shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>
                       <span className="bg-surface text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto" data-testid="side-count-ARCHIVED">{sideCount(Status.ARCHIVED)}</span>

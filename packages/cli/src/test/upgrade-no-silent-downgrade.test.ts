@@ -21,8 +21,10 @@ vi.mock('@agenfk/telemetry', () => ({
   DEFAULT_API_PORT: 3000,
 }));
 vi.mock('axios');
-const { execSync, execFileSync, spawnSync } = vi.hoisted(() => ({
+const { execSync, execFileSync, spawnSync, installed } = vi.hoisted(() => ({
   execSync: vi.fn(), execFileSync: vi.fn(), spawnSync: vi.fn(() => ({ status: 0 })),
+  // The version the CLI reads from its package.json, when a test pins one.
+  installed: { version: undefined as string | undefined },
 }));
 vi.mock('child_process', () => ({
   execSync, execFileSync, spawnSync, spawn: vi.fn(),
@@ -34,7 +36,13 @@ vi.mock('inquirer', () => ({ default: { prompt: vi.fn() } }));
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
   const existsSync = (p: any) => (String(p).endsWith(`${path.sep}.git`) ? false : actual.existsSync(p));
-  return { ...actual, existsSync, default: { ...actual, existsSync } };
+  const cliPkg = path.resolve(__dirname, '../../package.json');
+  const readFileSync = ((p: any, ...rest: any[]) => {
+    const text = (actual.readFileSync as any)(p, ...rest);
+    if (!installed.version || path.resolve(String(p)) !== cliPkg) return text;
+    return JSON.stringify({ ...JSON.parse(String(text)), version: installed.version });
+  }) as typeof actual.readFileSync;
+  return { ...actual, existsSync, readFileSync, default: { ...actual, existsSync, readFileSync } };
 });
 
 import axios from 'axios';
@@ -47,8 +55,8 @@ let out: string[];
 let spies: Array<{ mockRestore: () => void }>;
 
 /** GitHub as `upgrade` sees it: services down, then the release lookups. */
-function github(opts: { latest: string; list: Array<{ tag: string; pre?: boolean; at?: string }> }) {
-  mockedAxios.get.mockImplementation(async (url: string) => {
+function github(opts: { latest: string; list: Array<{ tag: string; pre?: boolean; at?: string }> }, ax = mockedAxios) {
+  ax.get.mockImplementation(async (url: string) => {
     if (url.includes('localhost')) throw new Error('services down');
     if (url.endsWith('/releases/latest')) return { data: { tag_name: opts.latest } };
     if (url.includes('/releases/tags/')) return { status: 200, data: { tag_name: decodeURIComponent(url.split('/releases/tags/')[1]) } };
@@ -60,7 +68,10 @@ function github(opts: { latest: string; list: Array<{ tag: string; pre?: boolean
 }
 
 async function upgrade(...args: string[]) {
-  try { await program.parseAsync(['node', 'agenfk', 'upgrade', ...args]); } catch (e: any) { if (e?.message !== 'exit') throw e; }
+  return upgradeWith(program, ...args);
+}
+async function upgradeWith(cli: typeof program, ...args: string[]) {
+  try { await cli.parseAsync(['node', 'agenfk', 'upgrade', ...args]); } catch (e: any) { if (e?.message !== 'exit') throw e; }
   return out.join('\n');
 }
 const extracted = () => execSync.mock.calls.some(c => /\btar\b/.test(String(c[0])));
@@ -92,11 +103,11 @@ describe('upgrade never downgrades without being asked (BUG 3a261573)', () => {
     expect(isUpgrade(CURRENT, '1.1.20')).toBe(true);
   });
 
-  it('refuses when the latest stable is older than what is installed, and says --beta', async () => {
+  it('refuses when the latest stable is older than what is installed', async () => {
     github({ latest: 'v1.1.20', list: [{ tag: 'v1.1.20' }] });
     const text = await upgrade();
     expect(text).toMatch(/1\.1\.20/);
-    expect(text).toMatch(/--beta/);
+    expect(text).toMatch(/not downgrading/);
     expect(text).not.toMatch(/Upgrading AgEnFK/);
     expect(extracted(), 'an archive was extracted').toBe(false);
   });
@@ -127,22 +138,6 @@ describe('upgrade never downgrades without being asked (BUG 3a261573)', () => {
     expect(text).toMatch(/Upgrading AgEnFK .* → 1\.1\.20/);
   });
 
-  // These two describe a beta install: true for this repo except on the commit
-  // that bumps to a stable, where they would otherwise go red for no defect.
-  it.runIf(CURRENT.includes('-'))('the stable-channel refusal points a beta install at --beta, and --beta does not repeat it', async () => {
-    github({ latest: 'v1.1.20', list: [{ tag: 'v1.1.20' }, { tag: 'v1.1.20-beta.1', pre: true }] });
-    expect(await upgrade()).toMatch(/on the beta line: agenfk upgrade --beta/);
-    out.length = 0;
-    expect(await upgrade('--beta')).not.toMatch(/on the beta line/);
-  });
-
-  it.runIf(CURRENT.includes('-'))('--beta takes the stable that graduates the beta when no newer beta exists', async () => {
-    const [core] = CURRENT.split('-');
-    github({ latest: `v${core}`, list: [{ tag: `v${core}` }, { tag: `v${CURRENT}`, pre: true }] });
-    const text = await upgrade('--beta');
-    expect(text).toMatch(new RegExp(`Upgrading AgEnFK .* → ${core.replace(/\./g, '\\.')}\\.\\.\\.`));
-  });
-
   it('--beta falls back to stable when no beta is listed at all', async () => {
     github({ latest: 'v99.0.0', list: [{ tag: 'v99.0.0' }] });
     expect(await upgrade('--beta')).toMatch(/Upgrading AgEnFK .* → 99\.0\.0/);
@@ -152,6 +147,41 @@ describe('upgrade never downgrades without being asked (BUG 3a261573)', () => {
     github({ latest: 'v99.0.0', list: [{ tag: 'v99.0.0' }] });
     const text = await upgrade();
     expect(text).toMatch(/Upgrading AgEnFK .* → 99\.0\.0/);
+  });
+});
+
+// The CLI's version is read once, from its package.json, when it loads. These pin
+// it and load a fresh CLI, so the beta and the stable cases both run whatever
+// version this checkout is on (a stable bump used to skip the beta ones).
+describe('the stable-channel refusal and --beta follow the installed version', () => {
+  async function installedAs(version: string, opts: Parameters<typeof github>[0]) {
+    installed.version = version;
+    vi.resetModules();
+    const { program: cli } = await import('../index');
+    github(opts, vi.mocked((await import('axios')).default, true));
+    return (...args: string[]) => upgradeWith(cli, ...args);
+  }
+  afterEach(() => { installed.version = undefined; vi.resetModules(); });
+
+  it('points a beta install at --beta, and --beta does not repeat it', async () => {
+    const run = await installedAs('2.0.0-beta.3', { latest: 'v1.1.20', list: [{ tag: 'v1.1.20' }, { tag: 'v1.1.20-beta.1', pre: true }] });
+    const text = await run();
+    expect(text).toMatch(/AgEnFK 2\.0\.0-beta\.3 is newer .*not downgrading/);
+    expect(text).toMatch(/on the beta line: agenfk upgrade --beta/);
+    out.length = 0;
+    expect(await run('--beta')).not.toMatch(/on the beta line/);
+  });
+
+  it('does not point a stable install at --beta', async () => {
+    const run = await installedAs('2.0.0', { latest: 'v1.1.20', list: [{ tag: 'v1.1.20' }, { tag: 'v1.1.20-beta.1', pre: true }] });
+    const text = await run();
+    expect(text).toMatch(/AgEnFK 2\.0\.0 is newer .*not downgrading/);
+    expect(text).not.toMatch(/--beta/);
+  });
+
+  it('--beta takes the stable that graduates the beta when no newer beta exists', async () => {
+    const run = await installedAs('2.0.0-beta.3', { latest: 'v2.0.0', list: [{ tag: 'v2.0.0' }, { tag: 'v2.0.0-beta.3', pre: true }] });
+    expect(await run('--beta')).toMatch(/Upgrading AgEnFK 2\.0\.0-beta\.3 → 2\.0\.0\.\.\./);
   });
 });
 

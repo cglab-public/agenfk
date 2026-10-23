@@ -2,6 +2,24 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-rc.4] — 2026-10-22
+
+Fourth release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-rc.3` (#262, PR #263; #264, PR #265):
+
+- **The board fits the window.** Step columns share the width down to a 120px floor (was 180px), so an 8-step flow
+  fits a 1,280px window instead of scrolling sideways below ~1,800px.
+- **Compact board mode.** A toggle next to Settings, in the browser and the desktop app, narrows columns to a 96px
+  floor and tightens the cards. An 8-step flow then fits 1,024px. Desktop layout only; the stacked mobile layout
+  keeps its cards.
+- **The board remembers its layout** per viewer: which side columns (Ideas, Paused, Blocked, Archived) are expanded,
+  and whether compact mode is on. They still start collapsed.
+- **Narrow columns stay readable.** Below 170px a column header hides its step icon so the title keeps its room, and
+  card rows wrap instead of running past the card's edge.
+- **Fixed: `exclusiveSuite` could let two suites run at once** when the setting was turned on while a run was
+  starting. A project read that was in flight across the change wrote the old value over it. A change to the
+  setting now wins.
+
 ## [2.0.0-rc.3] — 2026-10-21
 
 Third release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
@@ -60,10 +78,10 @@ First release candidate for 2.0.0. Its release notes are the `2.0.0` section bel
 - `agenfk flow install` accepts community-registry flows again (#252).
 - `agenfk hub deadletter requeue` and surfaced refusals (#223).
 
-## [2.0.0] — Unreleased
+## [2.0.0] — 2026-10-22
 
-Stable, cumulative over `1.1.20`: everything in `1.1.21-beta.1` through `1.1.21-beta.12` and `2.0.0-beta.1`
-through `2.0.0-beta.46`. 2.0 moves workflow enforcement into the server. A card moves forward only through
+Stable, cumulative over `1.1.20`: everything in `1.1.21-beta.1` through `1.1.21-beta.12`, `2.0.0-beta.1`
+through `2.0.0-beta.46`, and `2.0.0-rc.1` through `2.0.0-rc.4`. 2.0 moves workflow enforcement into the server. A card moves forward only through
 `agenfk verify`, each step carries a role and checks the server runs from recorded evidence, and the final step
 runs the project's own verify command. The line also brings the desktop app, a board served from the API's own
 port, project ids kept out of version control, and hub-side flow adherence.
@@ -294,7 +312,12 @@ Not changed: storage is still the built-in `node:sqlite`.
   (`--test-report-related-command`), Markdown edits no test names skip the suite, the close stands on a green
   already on record, siblings share runs, and suite runs are queued server-wide (`maxConcurrentSuiteRuns`).
 - `agenfk verify --plan` and the gatekeeper say what leaving a step will run before it runs.
-- `verifyAt: parent` runs the suite once at the top-level card.
+- `verifyAt: parent` runs the suite once at the top-level card. With `verifyAtScope: project` (on the flow, or
+  `agenfk update-project <id> --verify-at-scope project`) a card in another worktree defers too; the parent's
+  verify then waits until its close commit is merged into the parent's branch (`DEFERRED_CHILD_UNMERGED`).
+- `agenfk update-project <id> --exclusive-suite on` runs one of a project's suites at a time, for suites that
+  share a database or fixed ports, without holding other projects back.
+- A PR's "Warnings the checks raised" lists only the warnings that held a card.
 - A failed verify command leaves the card where it is instead of rolling it back.
 - `agenfk update <id> --worktree <path>|none|inherit` chooses where a card runs; verify and the close commit
   run in the card's worktree.
@@ -327,6 +350,9 @@ Not changed: storage is still the built-in `node:sqlite`.
 - One visual system with the hub and flow editor, neutral dark mode, visible focus, AA contrast.
 - Created and updated dates on cards, a date filter, Settings in the browser board, drill-down into any card
   with children.
+- The board fits the window: columns share the width down to a 120px floor, so an 8-step flow fits 1,280px; a
+  compact mode fits it in 1,024px. The board remembers compact mode and which side columns are expanded.
+- A Project section in Settings, in the browser and the desktop app, for the open project's suite settings.
 
 **Installer and CLI**
 - Two-line upgrades, one-line `up`/`down`/`restart`/`kill`; step-by-step logs behind `--debuglog`.

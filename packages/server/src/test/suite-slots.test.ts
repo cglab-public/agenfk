@@ -23,7 +23,7 @@ const TEST_DB = testDbPath('suite-slots-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, acquireSuiteRun } from '../server';
 import { posixShell } from './helpers/posixShell';
 // Loaded per test: the module is new, and a test file that fails to import has no tests to track.
 const slotsModule = () => import('../suiteSlots');
@@ -152,7 +152,8 @@ describe('the setting', () => {
 
 // Long enough for two runs to overlap when they may: on Windows the git work before
 // each run starts takes longer than the 400ms POSIX needs (#208).
-const RUN_MS = process.platform === 'win32' ? 3000 : 400;
+// #264: 400ms was shorter than a run's start-up on a loaded machine, so 'they overlap' tests failed there.
+const RUN_MS = process.platform === 'win32' ? 3000 : 1000;
 /** Two projects whose suite command logs its start and end (ms) to one file outside both trees. */
 let seq = 0;
 async function twoProjects(kind: 'capture' | 'final') {
@@ -191,7 +192,8 @@ setTimeout(() => {
 }
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 
-describe('suite runs across projects take a slot', () => {
+// Serialised runs here take several RUN_MS: past vitest's 5s default.
+describe('suite runs across projects take a slot', { timeout: 60_000 }, () => {
   it('two captures in two projects do not overlap when the limit is 1', async () => {
     await agent().put('/settings').send({ maxConcurrentSuiteRuns: 1 });
     const t = await twoProjects('capture');
@@ -300,7 +302,8 @@ describe('exclusiveSuite: one suite run at a time in the project', { timeout: 60
     it(`two ${kind === 'capture' ? 'captures' : 'final-step verifies'} in an exclusive project do not overlap, while another project's run is not held back`, async () => {
       await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
       try {
-        const t = await exclusiveProject(kind, true);
+        // A's runs long enough that the git work before B's run, slow under a loaded full-suite run, cannot outlast A's first one.
+        const t = await exclusiveProject(kind, true, { A: RUN_MS * 5 });
         const rs = await Promise.all([...t.sameProject, t.otherProject].map(id => runVerify(kind, id)));
         for (const r of rs) expect(r.status, JSON.stringify(r.body)).toBe(200);
         const a = t.intervals('A');
@@ -372,6 +375,51 @@ describe('exclusiveSuite: one suite run at a time in the project', { timeout: 60
       await agent().put('/settings').send({ maxConcurrentSuiteRuns: 0 });
     }
   });
+
+  /*
+   * #264: a project read that starts before the setting is turned on and lands
+   * after must not switch it back off - at the top of acquireSuiteRun, or at
+   * its re-check after the server slot. Synchronised on the held read being
+   * entered and on the second run queueing for the project, not on sleeps.
+   */
+  for (const [which, heldCall] of [['the first read', 1], ['the re-check read', 2]] as const) {
+    it(`a stale project read (${which}) cannot let a run start beside the project's running one`, async () => {
+      await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
+      const releases: Array<() => void> = [];
+      const spies: Array<{ mockRestore: () => void }> = [];
+      try {
+        // With one server slot, the slot alone would keep the runs apart and this would prove nothing.
+        expect((await agent().get('/settings/runtime')).body.suiteRunLimit, 'needs two server slots').toBeGreaterThanOrEqual(2);
+        const pid = (await agent().post('/projects').send({ name: `stale-${++seq}` })).body.id as string;
+        releases.push(await acquireSuiteRun(pid, () => {}));
+        const stale = await storage.getProject(pid);
+        let letGo!: () => void;
+        const held = new Promise<void>(r => { letGo = r; });
+        let entered!: () => void;
+        const inHeldRead = new Promise<void>(r => { entered = r; });
+        const real = storage.getProject.bind(storage);
+        let calls = 0;
+        spies.push(vi.spyOn(storage, 'getProject').mockImplementation(async (id: string) => {
+          if (id === pid && ++calls === heldCall) { entered(); await held; return stale; }
+          return real(id);
+        }));
+        let queuedForProject!: () => void;
+        const queued = new Promise<'queued'>(r => { queuedForProject = () => r('queued'); });
+        const second = acquireSuiteRun(pid, (_w, line) => { if (/exclusiveSuite/.test(line)) queuedForProject(); });
+        await inHeldRead;
+        expect((await agent().put(`/projects/${pid}`).send({ exclusiveSuite: true })).status).toBe(200);
+        letGo();
+        const outcome = await Promise.race([queued, second.then(r => { releases.push(r); return 'started' as const; })]);
+        expect(outcome, 'the second run started while the first was still going').toBe('queued');
+        releases.shift()!();
+        releases.push(await second);
+      } finally {
+        for (const r of releases) r();
+        for (const sp of spies) sp.mockRestore();
+        await agent().put('/settings').send({ maxConcurrentSuiteRuns: 0 });
+      }
+    });
+  }
 
   it("the line a run waiting for its project prints names the project's setting, not the server's", async () => {
     const { projectWaitingLine } = await slotsModule();

@@ -3120,15 +3120,26 @@ const projectSlotsFor = (projectId: string): SuiteSlots => {
   if (!slots) projectSuiteSlots.set(projectId, slots = new SuiteSlots(() => (projectExclusive.get(projectId) ? 1 : Number.MAX_SAFE_INTEGER)));
   return slots;
 };
+/**
+ * A change of the setting bumps this, so a project read that was in flight
+ * across the change cannot write its stale value over it (#264).
+ */
+const projectExclusiveVersion = new Map<string, number>();
 /** A project's setting changed: the line applies it at once (a run waiting when it is turned off starts). */
 function noteProjectExclusive(projectId: string, exclusive: boolean): void {
+  projectExclusiveVersion.set(projectId, (projectExclusiveVersion.get(projectId) ?? 0) + 1);
   projectExclusive.set(projectId, exclusive);
   projectSuiteSlots.get(projectId)?.recheck();
 }
-async function acquireSuiteRun(projectId: string | undefined, onWait: (w: SuiteWait, line: string) => void): Promise<() => void> {
-  if (!projectId) return suiteSlots.acquire(w => onWait(w, waitingLine(w)));
+/** Read the setting from storage - kept only if no change landed while the read was in flight. */
+async function refreshProjectExclusive(projectId: string): Promise<void> {
+  const before = projectExclusiveVersion.get(projectId) ?? 0;
   const project: any = await storage.getProject(projectId);
-  projectExclusive.set(projectId, project?.exclusiveSuite === true);
+  if ((projectExclusiveVersion.get(projectId) ?? 0) === before) projectExclusive.set(projectId, project?.exclusiveSuite === true);
+}
+export async function acquireSuiteRun(projectId: string | undefined, onWait: (w: SuiteWait, line: string) => void): Promise<() => void> {
+  if (!projectId) return suiteSlots.acquire(w => onWait(w, waitingLine(w)));
+  await refreshProjectExclusive(projectId);
   for (;;) {
     const releaseProject = await projectSlotsFor(projectId).acquire(w => onWait(w, projectWaitingLine(w)));
     let releaseServer: () => void;
@@ -3139,7 +3150,13 @@ async function acquireSuiteRun(projectId: string | undefined, onWait: (w: SuiteW
      * was turned on while this waited for a server slot: another run of the
      * project may be going. Both slots go back and it queues again, now
      * behind that run (review of 7ddeaf7c).
+     *
+     * Read again here, the read at the top may be old - and neither read can
+     * overwrite a change that landed while it was in flight (#264). The
+     * decision below is synchronous, after the last await.
      */
+    try { await refreshProjectExclusive(projectId); }
+    catch (e) { releaseServer(); releaseProject(); throw e; }
     if (projectExclusive.get(projectId) && (projectRunning.get(projectId) ?? 0) > 0) {
       releaseServer();
       releaseProject();
