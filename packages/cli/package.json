@@ -24,7 +24,7 @@
   "devDependencies": {
     "@types/inquirer": "^9.0.7",
     "@types/node": "^20.11.16",
-    "typescript": "^5.3.3"
+    "typescript": "^7.0.2"
   },
   "keywords": [
     "agenfk",

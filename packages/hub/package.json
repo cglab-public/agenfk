@@ -43,6 +43,6 @@
     "@types/node": "^22.0.0",
     "@types/pg": "^8.23.1",
     "pg-mem": "^3.0.14",
-    "typescript": "^5.3.3"
+    "typescript": "^7.0.2"
   }
 }
