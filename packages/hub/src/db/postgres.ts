@@ -94,6 +94,9 @@ const SCHEMA_PG = `
     provider_subject TEXT,
     role TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
+    -- Bumped when the credential changes; a session cookie is only good while
+    -- it carries the current value (auth/session.ts).
+    session_epoch INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_login_at TIMESTAMPTZ
   );
@@ -683,6 +686,33 @@ export async function backfillPrEventRemoteUrls(adapter: HubDb): Promise<void> {
   }
 }
 
+/**
+ * users.session_epoch migration (see SQLite). `WHERE session_epoch = 0` stops a rolling deploy
+ * from lowering an advanced epoch. current_schema() is where the tables were created, and still
+ * excludes another schema's `users`. Exported because pg-mem cannot re-run bootstrap.
+ */
+export async function migrateUsersSessionEpoch(adapter: HubDb): Promise<void> {
+  const cols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'users'",
+  );
+  if (cols.length > 0 && !new Set(cols.map(c => c.column_name)).has('session_epoch')) {
+    await adapter.transaction(async () => {
+      await adapter.exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS session_epoch INTEGER NOT NULL DEFAULT 0");
+      await adapter.exec("UPDATE users SET session_epoch = 1 WHERE session_epoch = 0");
+    });
+  }
+}
+
+/** Clears legacy '[]' allowlists once (see SQLite). Exported for the same reason as above. */
+export async function migrateEmptyEmailAllowlist(adapter: HubDb): Promise<void> {
+  const done = await adapter.get("SELECT 1 AS done FROM system_state WHERE key = 'allowlist_empty_normalised'");
+  if (done) return;
+  await adapter.transaction(async () => {
+    await adapter.exec("UPDATE auth_config SET email_allowlist = NULL WHERE email_allowlist = '[]'");
+    await adapter.run("INSERT INTO system_state (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO NOTHING", ['allowlist_empty_normalised', '1']);
+  });
+}
+
 async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec(SCHEMA_PG);
   await adapter.exec("DELETE FROM events WHERE type = 'tokens.logged'");
@@ -744,6 +774,9 @@ async function bootstrap(adapter: HubDb): Promise<void> {
       await adapter.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${ddl}`);
     }
   }
+
+  await migrateUsersSessionEpoch(adapter);
+  await migrateEmptyEmailAllowlist(adapter);
 
   const rdCols0 = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_name = 'rollups_daily'"

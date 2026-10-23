@@ -112,9 +112,8 @@ export function testHomeEnv() {
  * Test-time env shared by every runner (vitest root config, workspace project,
  * and the Stryker spawn-time wrap).
  *
- * AGENFK_HUB_BCRYPT_ROUNDS: the hub's `hashSync`/`compareSync` are synchronous
- * and the hub suite performs ~238 of them. At the production cost of 11 that is
- * ~23s of blocked worker per full run for zero extra signal — the bcrypt hash
+ * AGENFK_HUB_BCRYPT_ROUNDS: the hub suite performs ~238 password hashes and
+ * checks; at the production cost of 11 that is ~23s of CPU per run for zero extra signal — the bcrypt hash
  * format is identical at cost 4, so login/signup/rotation paths are still
  * exercised end to end. Production never sets this var, so it keeps rounds 11.
  * Set via env only: `hashPassword` takes no cost argument, so no test can

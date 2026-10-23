@@ -7,6 +7,18 @@ import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 type RawDb = InstanceType<typeof DatabaseSync>;
 
+/** Runs `fn` in one transaction; a failing ROLLBACK must not mask the original error. */
+function inTransaction(raw: RawDb, fn: () => void): void {
+  raw.exec('BEGIN IMMEDIATE');
+  try {
+    fn();
+    raw.exec('COMMIT');
+  } catch (err) {
+    try { raw.exec('ROLLBACK'); } catch { /* keep the original error */ }
+    throw err;
+  }
+}
+
 const SCHEMA_SQLITE = `
   CREATE TABLE IF NOT EXISTS orgs (
     id TEXT PRIMARY KEY,
@@ -103,6 +115,9 @@ const SCHEMA_SQLITE = `
     provider_subject TEXT,
     role TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
+    -- Bumped when the credential changes; a session cookie is only good while
+    -- it carries the current value (auth/session.ts).
+    session_epoch INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_login_at TEXT
   );
@@ -714,6 +729,23 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const userCols = raw.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (userCols.length > 0 && !new Set(userCols.map(c => c.name)).has('name')) {
     raw.exec("ALTER TABLE users ADD COLUMN name TEXT");
+  }
+  // users.session_epoch: bump to 1 only when adding the column (pre-epoch cookies are refused once);
+  // bumping on every boot would log everyone out.
+  if (userCols.length > 0 && !new Set(userCols.map(c => c.name)).has('session_epoch')) {
+    // Atomic: a crash between the statements would leave users at 0 and never bump.
+    inTransaction(raw, () => {
+      raw.exec("ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0");
+      raw.exec("UPDATE users SET session_epoch = 1");
+    });
+  }
+  // Legacy "[]" meant "no restriction" but checkEmailAllowlist now denies on it, so clear it once
+  // (marker-guarded; a later "[]" is a real misconfiguration).
+  if (!raw.prepare("SELECT 1 FROM system_state WHERE key = 'allowlist_empty_normalised'").get()) {
+    inTransaction(raw, () => {
+      raw.exec("UPDATE auth_config SET email_allowlist = NULL WHERE email_allowlist = '[]'");
+      raw.exec("INSERT OR IGNORE INTO system_state (key, value, updated_at) VALUES ('allowlist_empty_normalised', '1', datetime('now'))");
+    });
   }
 
   // Backfill: canonicalise remote_url forms (ssh / https / with-or-without-.git)

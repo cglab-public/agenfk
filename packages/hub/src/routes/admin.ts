@@ -2,9 +2,9 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
-import { checkEmailAllowlist } from '../auth/oauth.js';
+import { checkEmailAllowlist, isValidAllowlistEntry, parseAllowlist } from '../auth/oauth.js';
 import { encryptSecret } from '../crypto.js';
-import { createPasswordUser, hashPassword } from '../auth/password.js';
+import { insertPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
 import { DEFAULT_FLOW, describeFlowContract, mergeStepContracts, registryInstallSteps, flowChecksErrors } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
@@ -19,7 +19,7 @@ import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { mintChildHubInvite } from './federation.js';
-import { parentUrlFromInviteToken, inviteExpiryFromToken } from '../auth/inviteToken.js';
+import { parentUrlFromInviteToken, inviteExpiryFromToken, isUniqueViolation } from '../auth/inviteToken.js';
 import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
 import {
   readParentBinding, writeParentBinding, clearParentBinding, assertHttpUrl,
@@ -97,8 +97,14 @@ function publicAuthConfig(row: AuthConfigRow) {
       clientId: row.entra_client_id ?? '',
       clientSecretSet: !!row.entra_client_secret_enc,
     },
-    emailAllowlist: row.email_allowlist ? JSON.parse(row.email_allowlist) : [],
+    ...readAllowlist(row.email_allowlist),
   };
+}
+
+/** Stored allowlist for the admin screen; never throws so an unreadable list can still be fixed. */
+function readAllowlist(stored: string | null): { emailAllowlist: string[]; emailAllowlistMisconfigured: boolean } {
+  const list = stored == null ? [] : parseAllowlist(stored);
+  return { emailAllowlist: list ?? [], emailAllowlistMisconfigured: list === null };
 }
 
 interface SignInAdmin { id?: string; email: string; password_hash: string | null; provider: string }
@@ -207,7 +213,16 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (typeof b.entra?.clientSecret === 'string' && b.entra.clientSecret) {
       setField('entra_client_secret_enc', encryptSecret(b.entra.clientSecret, ctx.config.secretKey));
     }
-    if (Array.isArray(b.emailAllowlist)) setField('email_allowlist', JSON.stringify(b.emailAllowlist));
+    // Empty list is stored as NULL ("[]" reads as a misconfiguration). Entries already
+    // stored are kept as-is (the screen resends the whole list); new ones must be valid.
+    if (b.emailAllowlist !== undefined) {
+      const list = b.emailAllowlist;
+      const known = new Set((current.email_allowlist == null ? [] : parseAllowlist(current.email_allowlist) ?? []).map(p => p.toLowerCase()));
+      if (!Array.isArray(list) || !list.every(e => isValidAllowlistEntry(e) || (typeof e === 'string' && known.has(e.toLowerCase())))) {
+        return res.status(400).json({ error: 'emailAllowlist must be a list of email addresses (ceo@acme.com), @domain, domain or *.domain patterns' });
+      }
+      setField('email_allowlist', list.length > 0 ? JSON.stringify(list) : null);
+    }
 
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
     // Saving a config nobody can sign in with locks the whole org out, the
@@ -1401,9 +1416,11 @@ export function adminRouter(ctx: HubServerContext): Router {
       return res.status(400).json({ error: 'password must be ≥8 chars when provided' });
     }
     if (role !== 'admin' && role !== 'viewer') return res.status(400).json({ error: 'role must be admin or viewer' });
+    // Hash outside the try: its failures (429, dead worker) are not duplicate-email errors.
+    const passwordHash = hasPassword ? await hashPassword(password) : null;
     try {
       if (hasPassword) {
-        const u = await createPasswordUser(ctx.db, req.session!.orgId, email, password, role);
+        const u = await insertPasswordUser(ctx.db, req.session!.orgId, email, passwordHash!, role);
         res.status(201).json({ id: u.id, email: u.email, role: u.role });
       } else {
         // SSO-only invite: row is created with NULL password_hash. Password
@@ -1417,6 +1434,8 @@ export function adminRouter(ctx: HubServerContext): Router {
         res.status(201).json({ id, email, role });
       }
     } catch (e: any) {
+      // Only a unique violation means "already exists".
+      if (!isUniqueViolation(e)) throw e;
       res.status(409).json({ error: 'A user with that email already exists' });
     }
   }));
@@ -1427,7 +1446,11 @@ export function adminRouter(ctx: HubServerContext): Router {
     const params: any[] = [];
     if (role === 'admin' || role === 'viewer') { sets.push('role = ?'); params.push(role); }
     if (active === true || active === false) { sets.push('active = ?'); params.push(active ? 1 : 0); }
-    if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(hashPassword(password)); }
+    // A new password or a deactivation bumps session_epoch so live cookies stop working
+    // (re-enabling must not revive them). Demotion needs no bump: the row's role wins.
+    const bumpsEpoch = (typeof password === 'string' && password.length >= 8) || active === false;
+    if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(await hashPassword(password)); }
+    if (bumpsEpoch) sets.push('session_epoch = session_epoch + 1');
     if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
     const orgId = req.session!.orgId;
     const removesAdminAccess = role === 'viewer' || active === false;

@@ -64,12 +64,17 @@ export async function redeemAdminRecoveryToken(db: DB, orgId: string, token: unk
   }
   const user = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', [row.user_id]);
   if (!activeAdmin(user ?? null, orgId)) return refused;
+  // Hashed before the transaction opens: ~100 ms of bcrypt must not hold it.
+  const newHash = await hashPassword(password);
   let spent = false;
   await db.transaction(async () => {
     const consumed = await db.run('DELETE FROM admin_recovery_tokens WHERE token_hash = ?', [tokenHash]);
     if (consumed.changes !== 1) return;   // another request spent it first
-    await db.run("UPDATE users SET password_hash = ?, provider = 'password' WHERE id = ?", [hashPassword(password), user!.id]);
+    // Bump the epoch with the password so pre-recovery sessions stop working.
+    await db.run("UPDATE users SET password_hash = ?, provider = 'password', session_epoch = session_epoch + 1 WHERE id = ?", [newHash, user!.id]);
     spent = true;
   });
-  return spent ? { user: user! } : refused;
+  if (!spent) return refused;
+  // Re-read so the caller signs the session with the bumped epoch.
+  return { user: (await db.get<UserRow>('SELECT * FROM users WHERE id = ?', [user!.id]))! };
 }

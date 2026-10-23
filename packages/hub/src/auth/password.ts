@@ -1,12 +1,12 @@
-import bcrypt from 'bcryptjs';
+import { bcryptHash, bcryptCompare } from './bcryptPool.js';
 import { randomUUID } from 'crypto';
 import { DB } from '../db.js';
 
 // Production default is 11. Overridable via env (NOT via an argument) so a
 // test run can drop the cost without any test being able to weaken a real
-// login path by passing a low cost: hashSync/compareSync are synchronous and
-// the hub suite performs ~238 of them (114 user creations + 124 logins), which
-// at rounds=11 costs ~23s of blocked worker per full run. vitest.config.ts
+// login path by passing a low cost: the hub suite performs ~238 hashes and
+// checks (114 user creations + 124 logins), which at rounds=11 costs ~23s of
+// CPU per full run. vitest.config.ts
 // pins AGENFK_HUB_BCRYPT_ROUNDS=4 (~1ms/op); the hash format is unchanged, so
 // auth paths stay genuinely exercised. Read lazily so a test that sets the env
 // in a setup file (before this module's first call) is honoured.
@@ -36,16 +36,19 @@ export interface UserRow {
   provider_subject: string | null;
   role: 'admin' | 'viewer';
   active: number;
+  /** Bumped on a credential change; session cookies are bound to it (auth/session.ts). */
+  session_epoch: number;
   created_at: string;
   last_login_at: string | null;
 }
 
-export function hashPassword(plain: string): string {
-  return bcrypt.hashSync(plain, getBcryptRounds());
+// Async and off the request thread (bcryptPool.ts): in-process hashing froze the hub.
+export function hashPassword(plain: string): Promise<string> {
+  return bcryptHash(plain, getBcryptRounds());
 }
 
-export function verifyPassword(plain: string, hash: string): boolean {
-  return bcrypt.compareSync(plain, hash);
+export function verifyPassword(plain: string, hash: string): Promise<boolean> {
+  return bcryptCompare(plain, hash);
 }
 
 export async function findUserByEmail(db: DB, email: string): Promise<UserRow | null> {
@@ -60,10 +63,21 @@ export async function createPasswordUser(
   plainPassword: string,
   role: 'admin' | 'viewer',
 ): Promise<UserRow> {
+  return insertPasswordUser(db, orgId, email, await hashPassword(plainPassword), role);
+}
+
+/** For callers in a transaction: hash first, since awaiting inside a shared-connection BEGIN lets other requests' writes join it. */
+export async function insertPasswordUser(
+  db: DB,
+  orgId: string,
+  email: string,
+  passwordHash: string,
+  role: 'admin' | 'viewer',
+): Promise<UserRow> {
   const id = randomUUID();
   await db.run(
     'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, orgId, email, hashPassword(plainPassword), 'password', role],
+    [id, orgId, email, passwordHash, 'password', role],
   );
   const created = await findUserByEmail(db, email);
   if (!created) throw new Error('Failed to read back newly inserted user');

@@ -86,6 +86,34 @@ through `2.0.0-beta.46`, and `2.0.0-rc.1` through `2.0.0-rc.4`. 2.0 moves workfl
 runs the project's own verify command. The line also brings the desktop app, a board served from the API's own
 port, project ids kept out of version control, and hub-side flow adherence.
 
+### Hub security audit fixes (AEF-5)
+
+- **Everyone signs in again once.** Sessions are now bound to a per-user `session_epoch`; the migration moves
+  every user to epoch 1, so cookies issued before the upgrade stop working. After that, an admin resetting a
+  password, redeeming a recovery token, or deactivating an account ends that account's sessions (before, a reset
+  left the old cookie valid for up to 12 h). An admin resetting their own password via the API is signed out too.
+  During a rolling Postgres deploy, cookies issued by a not-yet-upgraded instance carry no epoch and are refused by
+  upgraded ones, so users can be bounced to the sign-in page until every instance is on the new version. Two instances
+  booting at the same instant can both run the one-off bump, so a user created in between signs in once more.
+- **The email allowlist fails closed.** An unreadable stored list (not JSON, not an array, a non-string entry, or
+  empty) now denies every SSO sign-in instead of allowing it. `PUT /v1/admin/auth-config` validates entries
+  (email, `@domain`, `domain`, `*.domain`; entries already in the stored list are kept as they are) and stores an
+  empty list as "no allowlist". Boot converts the `"[]"`
+  the old screen stored for "none" once. During a rolling Postgres deploy an old instance can still write
+  `"[]"`; re-save the field. The admin screen now warns when the stored list is unreadable. An address with more
+  than one `@` no longer matches a suffix pattern.
+- **Password hashing no longer freezes the hub.** bcrypt runs on a small worker-thread pool
+  (`AGENFK_HUB_BCRYPT_WORKERS`, `_QUEUE_MAX`); a saturated pool answers 429, and one that cannot start a worker answers 503 with
+  `Retry-After` and tries again later. Hashes are unchanged.
+- **Security headers** on every response (CSP, nosniff, referrer policy, frame denial, HSTS over TLS);
+  `X-Powered-By` is gone. See the production posture notes in `HUB_ARCHITECTURE.md` for what this blocks.
+- **`AGENFK_HUB_REQUIRE_BOUND_KEYS`** (off by default) refuses unbound API keys on ingest.
+- **500 responses no longer carry the error message.** `AGENFK_HUB_DEBUG_ERRORS=1` brings it back outside
+  production; in production it never does. The maintenance page (org-id mismatch) answers errors the same way.
+- Boot logs the pending org-rename value when `AGENFK_HUB_ORG_ID` differs from it; `upgrade-state.json` is
+  written `0600`.
+- Dependency bumps clear every critical and high advisory in production dependencies.
+
 ### Breaking changes
 
 - **Forward moves go through `agenfk verify` only.** `agenfk update <id> --status <later step>` (and MCP

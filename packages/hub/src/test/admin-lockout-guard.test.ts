@@ -273,6 +273,14 @@ describe('adminCanStillSignIn', () => {
     expect(adminCanStillSignIn({ ...cfg, email_allowlist: JSON.stringify(['other.com']) }, [ssoAdmin])).toBe(false);
   });
 
+  // An unreadable allowlist denies, so the guard must see it as locking the admin out.
+  it('a malformed allowlist counts as SSO admins being unable to sign in', () => {
+    for (const bad of ['not-json', '[123]', '[]', JSON.stringify(['acme.com', 5])]) {
+      expect(adminCanStillSignIn({ ...cfg, email_allowlist: bad }, [ssoAdmin]), bad).toBe(false);
+    }
+    expect(adminCanStillSignIn({ ...cfg, email_allowlist: '[123]', password_enabled: 1 }, [pwAdmin])).toBe(true);
+  });
+
   it('an incomplete provider counts for nobody', () => {
     expect(adminCanStillSignIn({ ...cfg, google_client_secret_enc: null }, [ssoAdmin, pwAdmin])).toBe(false);
   });

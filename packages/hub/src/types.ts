@@ -59,4 +59,6 @@ export interface SessionPayload {
   userId: string;
   orgId: string;
   role: 'admin' | 'viewer';
+  /** users.session_epoch at issue time; requireSession refuses the cookie once the row's epoch moves on. Absent = 0. */
+  epoch?: number;
 }

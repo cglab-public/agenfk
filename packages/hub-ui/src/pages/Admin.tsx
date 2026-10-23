@@ -80,6 +80,8 @@ interface AuthConfig {
   google: { clientId: string; clientSecretSet: boolean };
   entra: { tenantId: string; clientId: string; clientSecretSet: boolean };
   emailAllowlist: string[];
+  /** The stored list cannot be read, so sign-in is denying everyone (the box below then shows empty). */
+  emailAllowlistMisconfigured?: boolean;
 }
 
 const inputCls = controlClass;
@@ -173,7 +175,12 @@ export function AdminAuth() {
 
       <section className={cardCls}>
         <h3 id="auth-email-allowlist" className="text-body font-semibold text-ink">Email allowlist</h3>
-        <p className="mt-1 text-small text-ink-tertiary">Comma-separated domains. Only addresses ending in these domains may sign in. Leave empty to accept any.</p>
+        <p className="mt-1 text-small text-ink-tertiary">Comma-separated email addresses (ceo@acme.com), <span className="font-mono">@acme.com</span>, domains (acme.com) or <span className="font-mono">*.acme.com</span> subdomains. Only matching addresses may sign in. Leave empty to accept any.</p>
+        {c.emailAllowlistMisconfigured && (
+          <p role="alert" className="mt-2 text-small text-status-danger-text font-medium">
+            The saved allowlist cannot be read, so nobody can sign in with Google or Microsoft right now. Enter a valid list (or clear it to accept any) and save.
+          </p>
+        )}
         <input className={`${inputCls} mt-3 font-mono text-small`}
                aria-labelledby="auth-email-allowlist"
                placeholder='acme.com, *.subsidiary.com'

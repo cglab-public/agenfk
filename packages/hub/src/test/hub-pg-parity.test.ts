@@ -3,10 +3,12 @@
 // gets full coverage of the SQL the hub actually emits at runtime.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
 import supertest from 'supertest';
 import { backfillUserKeyAliases } from '../services/backfillUserKeyAliases';
 import { createHubApp } from '../server';
-import { openPgMemDb, backfillPrEventRemoteUrls } from '../db/postgres';
+import { openPgMemDb, backfillPrEventRemoteUrls, migrateUsersSessionEpoch, migrateEmptyEmailAllowlist } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
@@ -1055,5 +1057,91 @@ describe('PG parity: admin model mappings', () => {
     expect(removed.body.removed).toBe(true);
     const reverted = await (await supertest(fx.app).get('/v1/prs/overview').set('Cookie', fx.cookie)).body;
     expect(reverted.byModel).toHaveLength(2);
+  });
+});
+
+describe('PG parity: password reset revokes live sessions (session epoch)', () => {
+  it('refuses the old cookie after an admin resets the password', async () => {
+    const fx = await bootHubOnPg();
+    await createPasswordUser(fx.db, 'org', 'victim@x', 'old-password-1', 'viewer');
+    const login = await supertest(__server).post('/auth/login').send({ email: 'victim@x', password: 'old-password-1' });
+    const stolen = login.headers['set-cookie'][0];
+    expect((await supertest(__server).get('/auth/me').set('Cookie', stolen)).status).toBe(200);
+
+    const victim = await fx.db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', ['victim@x']);
+    const reset = await supertest(__server).put(`/v1/admin/users/${victim!.id}`).set('Cookie', fx.cookie).send({ password: 'new-password-1' });
+    expect(reset.status).toBe(200);
+
+    expect((await supertest(__server).get('/auth/me').set('Cookie', stolen)).status).toBe(401);
+    expect((await supertest(__server).post('/auth/login').send({ email: 'victim@x', password: 'new-password-1' })).status).toBe(200);
+    await fx.db.close();
+  });
+
+  it('migrates a users table that predates session_epoch: bumps once, never again', async () => {
+    const db = await openPgMemDb();
+    await createPasswordUser(db, 'org', 'old@x', 'old-password-1', 'viewer');
+    await db.run('ALTER TABLE users DROP COLUMN session_epoch');
+
+    await migrateUsersSessionEpoch(db);
+    const epoch = async () => Number((await db.get<{ session_epoch: number }>('SELECT session_epoch FROM users WHERE email = ?', ['old@x']))!.session_epoch);
+    expect(await epoch()).toBe(1);
+
+    await db.run('UPDATE users SET session_epoch = 2 WHERE email = ?', ['old@x']);
+    await migrateUsersSessionEpoch(db);
+    expect(await epoch()).toBe(2);
+    await db.close();
+  });
+});
+
+describe('PG parity: legacy empty email allowlist is normalised once', () => {
+  it('turns "[]" into NULL the first time, then leaves later values alone', async () => {
+    const db = await openPgMemDb();
+    // A bare pg-mem database has no org yet.
+    await db.run("INSERT INTO orgs (id, name) VALUES ('org', 'org')");
+    await db.run("INSERT INTO auth_config (org_id, password_enabled) VALUES ('org', 1)");
+    const allowlist = async () => (await db.get<{ email_allowlist: string | null }>("SELECT email_allowlist FROM auth_config WHERE org_id = 'org'"))!.email_allowlist;
+    // openPgMemDb already ran the pass once; reset its marker.
+    await db.run("UPDATE auth_config SET email_allowlist = '[]' WHERE org_id = 'org'");
+    await db.run("DELETE FROM system_state WHERE key = 'allowlist_empty_normalised'");
+
+    await migrateEmptyEmailAllowlist(db);
+    expect(await allowlist()).toBeNull();
+
+    await db.run("UPDATE auth_config SET email_allowlist = '[]' WHERE org_id = 'org'");
+    await migrateEmptyEmailAllowlist(db);
+    expect(await allowlist()).toBe('[]');
+    await db.close();
+  });
+});
+
+describe('PG parity: bootstrap() runs the session_epoch and allowlist migrations', () => {
+  // pg-mem cannot re-run bootstrap(), and a hub on a real database only gets these changes through it.
+  it('a bootstrapped database carries the allowlist marker, so bootstrap ran migrateEmptyEmailAllowlist', async () => {
+    const db = await openPgMemDb();
+    expect(await db.get("SELECT 1 AS done FROM system_state WHERE key = 'allowlist_empty_normalised'")).toBeTruthy();
+    await db.close();
+  });
+
+  it('bootstrap() calls both migrations, so dropping either call is caught', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../db/postgres.ts'), 'utf8');
+    const start = src.indexOf('async function bootstrap(');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\n}\n', start)).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+    expect(body).toMatch(/await migrateUsersSessionEpoch\(adapter\)/);
+    expect(body).toMatch(/await migrateEmptyEmailAllowlist\(adapter\)/);
+  });
+});
+
+describe('PG parity: the session_epoch migration finds users in the connection schema, not only in "public"', () => {
+  it('adds the column when the users table lives in a non-public schema', async () => {
+    const ran: string[] = [];
+    const nonPublic = {
+      // What Postgres would answer for a hub whose tables sit in another schema.
+      all: async (sql: string) => /table_schema\s*=\s*'public'/.test(sql) ? [] : /current_schema\(\)/.test(sql) ? [{ column_name: 'id' }, { column_name: 'email' }] : [],
+      exec: async (sql: string) => { ran.push(sql); },
+      transaction: async (fn: () => Promise<unknown>) => fn(),
+    } as unknown as HubDb;
+    await migrateUsersSessionEpoch(nonPublic);
+    expect(ran.some(sql => /ADD COLUMN IF NOT EXISTS session_epoch/.test(sql))).toBe(true);
   });
 });

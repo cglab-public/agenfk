@@ -16,6 +16,8 @@ import { ensureBootstrapToken } from './auth/bootstrapToken.js';
 import { installConfigAudit, mountRouter } from './services/configAuditRoutes.js';
 import { auditRouter } from './routes/audit.js';
 import { mintAdminRecoveryToken, withdrawExpiredRecoveryTokens } from './auth/adminRecovery.js';
+import { logBoundKeyPosture } from './auth/apiKey.js';
+import { securityHeaders, htmlCsp, inlineScriptHashes } from './util/securityHeaders.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { federationRouter, federationInviteRouter } from './routes/federation.js';
@@ -56,6 +58,19 @@ export interface HubServerContext {
   stopWorkers?: () => void;
 }
 
+/** Warns which AGENFK_HUB_ORG_ID to set after a UI org rename; runs before the boot guard so a mismatch shows it too. */
+async function logPendingOrgRename(db: DB, envOrgId: string): Promise<void> {
+  let pending: string | undefined;
+  try {
+    pending = (await db.get<{ value: string }>("SELECT value FROM system_state WHERE key = 'pending_env_orgid'"))?.value;
+  } catch { return; /* no system_state yet on a brand-new database */ }
+  if (!pending || pending === envOrgId) return;
+  console.warn(
+    `[HUB] An org rename to ${JSON.stringify(pending)} is pending (system_state.pending_env_orgid), but AGENFK_HUB_ORG_ID is ${JSON.stringify(envOrgId)}. `
+    + `Set AGENFK_HUB_ORG_ID=${pending} in your deployment and restart.`,
+  );
+}
+
 /**
  * Minimal Express surface served when the boot-time consistency check
  * detects an env↔DB org-id mismatch. Every route returns the same
@@ -72,6 +87,10 @@ function buildMaintenanceApp(
     `Serving maintenance page only.`,
   );
   const app = express();
+  app.disable('x-powered-by');
+  // Same proxy trust as the real app, or HSTS is never sent over TLS here.
+  app.set('trust proxy', config.trustProxy ?? DEFAULT_TRUST_PROXY);
+  app.use(securityHeaders());
   app.use(express.json({ limit: '10mb' }));
 
   const safeEnv = String(envOrgId).replace(/[<>&"']/g, '');
@@ -122,6 +141,7 @@ function buildMaintenanceApp(
   app.use((req: Request, res: Response) => {
     const accept = String(req.headers.accept ?? '');
     if (req.method === 'GET' && accept.includes('text/html')) {
+      res.setHeader('Content-Security-Policy', htmlCsp([]));
       res.status(503).type('html').send(html);
     } else {
       res.status(503).json({
@@ -132,6 +152,8 @@ function buildMaintenanceApp(
       });
     }
   });
+  // Else Express's default handler leaks a stack trace on malformed JSON bodies.
+  app.use(hubErrorHandler);
 
   return { app, ctx: { db, config } };
 }
@@ -155,6 +177,7 @@ export async function createHubApp(
   // to read) or silently resurrect a phantom org row, we boot a minimal
   // "maintenance mode" Express app whose every route serves a self-explanatory
   // mismatch page so the admin can see the problem in the browser and fix it.
+  await logPendingOrgRename(db, config.defaultOrgId);
   let dbOrgIds: string[] = [];
   try {
     const existing = await db.all<{ id: string }>('SELECT id FROM orgs');
@@ -219,14 +242,18 @@ export async function createHubApp(
     await withdrawExpiredRecoveryTokens(db);
   }
 
+  await logBoundKeyPosture(db);
+
   const ctx: HubServerContext = { db, config };
 
   const app = express();
+  app.disable('x-powered-by');
   // Which X-Forwarded-For hop is the client. Every rate limit keys on req.ip,
   // and req.ip is only as honest as this setting: see configFromEnv.
   app.set('trust proxy', config.trustProxy ?? DEFAULT_TRUST_PROXY);
   // Read by publicHubUrl for every URL the hub hands out.
   app.locals.hubPublicUrl = config.publicUrl;
+  app.use(securityHeaders());
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -331,29 +358,33 @@ export async function createHubApp(
   const uiDir = candidates.find((d) => fs.existsSync(pathMod.join(d, 'index.html')));
   if (uiDir) {
     console.log(`[HUB] Serving SPA bundle from ${uiDir}`);
-    app.use(express.static(uiDir));
-    // SPA fallback. Anything that isn't an API route falls through to
-    // index.html so deep-link refreshes (e.g. /users/alice@acme.com,
-    // /admin/keys, /connect) resolve to the React shell rather than 404.
-    // We read index.html once at boot and serve it from memory — earlier
-    // versions used res.sendFile which surfaced "Not Found" 500s when the
-    // installed path resolution flickered between startup and request time.
-    // Note: `/setup` itself is a SPA route (the first-run Setup page), so we
-    // only exclude the specific API path under it. Adding new API endpoints
-    // under /setup means listing them here.
-    const API_PREFIXES = ['/v1', '/auth', '/setup/initial-admin', '/healthz', '/hub'];
+    // Serve the shell from memory on every path, so the CSP script hashes match the served copy
+    // (res.sendFile also surfaced "Not Found" 500s when path resolution flickered).
     let indexHtml = '';
     try {
       indexHtml = fs.readFileSync(pathMod.join(uiDir, 'index.html'), 'utf8');
     } catch (e) {
       console.warn('[HUB] Failed to preload index.html:', (e as Error).message);
     }
+    const spaCsp = htmlCsp(inlineScriptHashes(indexHtml));
+    // Note: `/setup` itself is a SPA route (the first-run Setup page), so we
+    // only exclude the specific API path under it. Adding new API endpoints
+    // under /setup means listing them here.
+    const API_PREFIXES = ['/v1', '/auth', '/setup/initial-admin', '/healthz', '/hub'];
+    // SPA fallback. Anything that isn't an API route falls through to
+    // index.html so deep-link refreshes (e.g. /users/alice@acme.com,
+    // /admin/keys, /connect) resolve to the React shell rather than 404.
     const spaFallback = (req: Request, res: Response, next: NextFunction): void => {
-      if (req.method !== 'GET') return next();
+      // HEAD too: express.static used to answer it for monitors probing the shell.
+      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
       if (API_PREFIXES.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
       if (!indexHtml) return next();
+      res.setHeader('Content-Security-Policy', spaCsp);
       res.type('html').send(indexHtml);
     };
+    app.use((req: Request, res: Response, next: NextFunction) => (req.path === '/index.html' ? spaFallback(req, res, next) : next()));
+    // index: false, or `/` is served from disk and skips the in-memory shell the CSP hashes match.
+    app.use(express.static(uiDir, { index: false }));
     app.use(spaFallback);
     // Defence in depth: a final 404 trap that re-applies the same fallback
     // for anything that snuck past, e.g. a router calling res.sendStatus(404)
@@ -394,10 +425,14 @@ export function hubErrorHandler(err: any, _req: Request, res: Response, _next: N
   // path param, malformed JSON) keeps its 4xx; its message names no table.
   const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
   if (status < 500) { res.status(status).json({ error: err?.expose === false ? 'bad request' : (err?.message ?? 'bad request') }); return; }
-  const body = process.env.NODE_ENV === 'production'
-    ? 'internal error'
-    : (err?.message ?? 'internal error');
-  res.status(500).json({ error: body });
+  // A retryable 503 that names itself (the bcrypt pool when no worker can start); its message is fixed text.
+  if (err?.status === 503 && Number.isInteger(err.retryAfterSeconds) && err.retryAfterSeconds > 0) {
+    res.set('Retry-After', String(err.retryAfterSeconds)).status(503).json({ error: err.message });
+    return;
+  }
+  // Detail is opt-in (AGENFK_HUB_DEBUG_ERRORS=1) and never in production; it can name tables and columns.
+  const debugErrors = process.env.NODE_ENV !== 'production' && process.env.AGENFK_HUB_DEBUG_ERRORS === '1';
+  res.status(500).json({ error: debugErrors ? (err?.message ?? 'internal error') : 'internal error' });
 }
 
 /**
