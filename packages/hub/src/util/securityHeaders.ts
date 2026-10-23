@@ -13,7 +13,7 @@ const HSTS = 'max-age=15552000; includeSubDomains';
 /** CSP source expressions ('sha256-...') for each inline <script> in `html`, in order, duplicates removed. */
 export function inlineScriptHashes(html: string): string[] {
   const hashes: string[] = [];
-  const re = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+  const re = /<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi;
   for (let m = re.exec(html); m; m = re.exec(html)) {
     if (/\bsrc\s*=/i.test(m[1])) continue;   // external: allowed by 'self', and has no text to hash
     // Browsers hash after normalising CRLF/CR to LF; do the same or CRLF files get blocked.
