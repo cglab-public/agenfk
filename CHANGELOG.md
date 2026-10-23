@@ -93,8 +93,7 @@ port, project ids kept out of version control, and hub-side flow adherence.
   production; in production it never does. The maintenance page (org-id mismatch) answers errors the same way.
 - Boot logs the pending org-rename value when `AGENFK_HUB_ORG_ID` differs from it; `upgrade-state.json` is
   written `0600`.
-- Dependency bumps clear every critical and high advisory in production dependencies, and
-  `.github/workflows/audit.yml` runs `npm audit --omit=dev --audit-level=high` on PRs, `main`, `beta` and daily.
+- Dependency bumps clear every critical and high advisory in production dependencies.
 
 ### Breaking changes
 
