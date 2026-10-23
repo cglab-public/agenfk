@@ -60,7 +60,7 @@ function runHook(port: number, file = editedFile): Promise<{ stdout: string }> {
   });
 }
 
-const card = (id: string, status: string, claims?: string[]) => ({ id, status, title: `t-${id}`, claims });
+const card = (id: string, status: string, claims?: string[]) => ({ id, projectId: 'p1', status, title: `t-${id}`, claims });
 
 describe('an old claim on a parked card', () => {
   it('no longer blocks an edit inside it', async () => {

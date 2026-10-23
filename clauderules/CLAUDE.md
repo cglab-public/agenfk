@@ -142,7 +142,7 @@ After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --num
 | `curl` / `wget` to `http://localhost:3000` | `agenfk list`, `agenfk create`, `agenfk update`, `agenfk verify` |
 
 Two PreToolUse hooks enforce the workflow:
-- `agenfk-gatekeeper` — blocks Edit/Write/NotebookEdit when no active task.
+- `agenfk-gatekeeper` — blocks Edit/Write/NotebookEdit when the edited file's project has no active task.
   A shell write (`printf >>`, a heredoc, a script) does not pass through it: that edit is still the card's change, and only the server-side checks (a tests-only step) see it.
 - `agenfk-mcp-enforcer` — blocks the direct-DB and `curl localhost:3000` bypass routes above. It never blocks the `agenfk` CLI: the CLI and the MCP tools are interchangeable, with or without MCP registered.
 
