@@ -58,13 +58,7 @@ export interface HubServerContext {
   stopWorkers?: () => void;
 }
 
-/**
- * An admin renamed the org in the UI: the rows now carry the new id, and
- * system_state.pending_env_orgid records it until someone acknowledges the
- * banner. If the deployment still passes the OLD id, the boot guard below
- * refuses (maintenance page) with only "does not match" to go on; this says
- * which value to set. Before the guard, so it is printed in that case too.
- */
+/** Warns which AGENFK_HUB_ORG_ID to set after a UI org rename; runs before the boot guard so a mismatch shows it too. */
 async function logPendingOrgRename(db: DB, envOrgId: string): Promise<void> {
   let pending: string | undefined;
   try {
@@ -94,8 +88,7 @@ function buildMaintenanceApp(
   );
   const app = express();
   app.disable('x-powered-by');
-  // Same proxy trust as the real app, or req.secure is always false here and the
-  // maintenance page would never send HSTS over TLS.
+  // Same proxy trust as the real app, or HSTS is never sent over TLS here.
   app.set('trust proxy', config.trustProxy ?? DEFAULT_TRUST_PROXY);
   app.use(securityHeaders());
   app.use(express.json({ limit: '10mb' }));
@@ -148,7 +141,6 @@ function buildMaintenanceApp(
   app.use((req: Request, res: Response) => {
     const accept = String(req.headers.accept ?? '');
     if (req.method === 'GET' && accept.includes('text/html')) {
-      // The page has an inline <style> and no script, which htmlCsp([]) allows.
       res.setHeader('Content-Security-Policy', htmlCsp([]));
       res.status(503).type('html').send(html);
     } else {
@@ -160,9 +152,7 @@ function buildMaintenanceApp(
       });
     }
   });
-  // Without it Express's default handler answers a malformed JSON body with the
-  // SyntaxError and a stack trace (absolute paths) on any non-production hub, and
-  // a hub in this state is the one an operator is likely to have on staging.
+  // Else Express's default handler leaks a stack trace on malformed JSON bodies.
   app.use(hubErrorHandler);
 
   return { app, ctx: { db, config } };
@@ -257,8 +247,6 @@ export async function createHubApp(
   const ctx: HubServerContext = { db, config };
 
   const app = express();
-  // Not advertising the framework, and the security headers on every response
-  // (util/securityHeaders.ts), mounted before anything that can answer.
   app.disable('x-powered-by');
   // Which X-Forwarded-For hop is the client. Every rate limit keys on req.ip,
   // and req.ip is only as honest as this setting: see configFromEnv.
@@ -370,13 +358,8 @@ export async function createHubApp(
   const uiDir = candidates.find((d) => fs.existsSync(pathMod.join(d, 'index.html')));
   if (uiDir) {
     console.log(`[HUB] Serving SPA bundle from ${uiDir}`);
-    // The shell is read once and served from memory, on every path that serves
-    // it (GET /, GET /index.html and the deep-link fallback below), and the CSP's
-    // script hashes come from that same copy. Served from disk by express.static,
-    // a file replaced under a running hub would arrive under the old hash and
-    // have its inline script blocked. Earlier versions used res.sendFile, which
-    // surfaced "Not Found" 500s when the installed path resolution flickered
-    // between startup and request time.
+    // Serve the shell from memory on every path, so the CSP script hashes match the served copy
+    // (res.sendFile also surfaced "Not Found" 500s when path resolution flickered).
     let indexHtml = '';
     try {
       indexHtml = fs.readFileSync(pathMod.join(uiDir, 'index.html'), 'utf8');
@@ -392,7 +375,7 @@ export async function createHubApp(
     // index.html so deep-link refreshes (e.g. /users/alice@acme.com,
     // /admin/keys, /connect) resolve to the React shell rather than 404.
     const spaFallback = (req: Request, res: Response, next: NextFunction): void => {
-      // HEAD too: express.static used to answer HEAD / (a monitor probing the shell), and Express sends no body for it.
+      // HEAD too: express.static used to answer it for monitors probing the shell.
       if (req.method !== 'GET' && req.method !== 'HEAD') return next();
       if (API_PREFIXES.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
       if (!indexHtml) return next();
@@ -400,7 +383,7 @@ export async function createHubApp(
       res.type('html').send(indexHtml);
     };
     app.use((req: Request, res: Response, next: NextFunction) => (req.path === '/index.html' ? spaFallback(req, res, next) : next()));
-    // index: false, so `/` is not served from disk either.
+    // index: false, or `/` is served from disk and skips the in-memory shell the CSP hashes match.
     app.use(express.static(uiDir, { index: false }));
     app.use(spaFallback);
     // Defence in depth: a final 404 trap that re-applies the same fallback
@@ -442,10 +425,7 @@ export function hubErrorHandler(err: any, _req: Request, res: Response, _next: N
   // path param, malformed JSON) keeps its 4xx; its message names no table.
   const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
   if (status < 500) { res.status(status).json({ error: err?.expose === false ? 'bad request' : (err?.message ?? 'bad request') }); return; }
-  // The detail is opt-in (AGENFK_HUB_DEBUG_ERRORS=1), and never in production.
-  // It used to follow NODE_ENV alone, so every hub not literally NODE_ENV=production
-  // (staging, a bare `node bin.js`) told anonymous callers which tables and columns
-  // a failing query named. The real message is already in the log line above.
+  // Detail is opt-in (AGENFK_HUB_DEBUG_ERRORS=1) and never in production; it can name tables and columns.
   const debugErrors = process.env.NODE_ENV !== 'production' && process.env.AGENFK_HUB_DEBUG_ERRORS === '1';
   res.status(500).json({ error: debugErrors ? (err?.message ?? 'internal error') : 'internal error' });
 }

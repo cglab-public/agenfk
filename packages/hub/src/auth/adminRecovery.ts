@@ -70,14 +70,11 @@ export async function redeemAdminRecoveryToken(db: DB, orgId: string, token: unk
   await db.transaction(async () => {
     const consumed = await db.run('DELETE FROM admin_recovery_tokens WHERE token_hash = ?', [tokenHash]);
     if (consumed.changes !== 1) return;   // another request spent it first
-    // Setting a password rotates the credential: bump the epoch so sessions
-    // issued before the recovery (the very thing it may be recovering from)
-    // stop working. Same statement as the password, so they cannot diverge.
+    // Bump the epoch with the password so pre-recovery sessions stop working.
     await db.run("UPDATE users SET password_hash = ?, provider = 'password', session_epoch = session_epoch + 1 WHERE id = ?", [newHash, user!.id]);
     spent = true;
   });
   if (!spent) return refused;
-  // Re-read: the caller signs the new session from this row, and the epoch it
-  // holds is the bumped one, not the one read before the transaction.
+  // Re-read so the caller signs the session with the bumped epoch.
   return { user: (await db.get<UserRow>('SELECT * FROM users WHERE id = ?', [user!.id]))! };
 }

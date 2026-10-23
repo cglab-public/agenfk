@@ -102,8 +102,7 @@ export function orgRenameRouter(ctx: HubServerContext): Router {
     // admin requests don't 401 against a deleted org. Strip the JWT-internal
     // claims (iat/exp) that verifySession leaves on the payload — passing
     // them back to jwt.sign with expiresIn would conflict.
-    // The epoch must travel with it: dropped, the cookie would read as epoch 0
-    // and requireSession would refuse the caller's very next request.
+    // Carry the epoch, or requireSession refuses the next request.
     const { userId, role, epoch } = session;
     const newToken = signSession({ userId, role, orgId: to, epoch }, ctx.config.sessionSecret);
     setSessionCookie(res, newToken);

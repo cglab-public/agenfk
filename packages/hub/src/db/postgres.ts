@@ -687,19 +687,14 @@ export async function backfillPrEventRemoteUrls(adapter: HubDb): Promise<void> {
 }
 
 /**
- * users.session_epoch (AEF-5): see the SQLite migration for the why. The bump
- * only runs when this call adds the column, so a restart never logs anyone out.
- * WHERE session_epoch = 0 keeps two instances booting together (rolling deploy)
- * from lowering an epoch the other has already advanced. Exported so the
- * existing-table path can be tested without re-running all of bootstrap, which
- * pg-mem cannot do.
+ * users.session_epoch migration (see SQLite). `WHERE session_epoch = 0` stops a rolling deploy
+ * from lowering an advanced epoch. Exported because pg-mem cannot re-run bootstrap.
  */
 export async function migrateUsersSessionEpoch(adapter: HubDb): Promise<void> {
   const cols = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users'",
   );
   if (cols.length > 0 && !new Set(cols.map(c => c.column_name)).has('session_epoch')) {
-    // One transaction, as on SQLite: column and bump land together or not at all.
     await adapter.transaction(async () => {
       await adapter.exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS session_epoch INTEGER NOT NULL DEFAULT 0");
       await adapter.exec("UPDATE users SET session_epoch = 1 WHERE session_epoch = 0");
@@ -707,11 +702,7 @@ export async function migrateUsersSessionEpoch(adapter: HubDb): Promise<void> {
   }
 }
 
-/**
- * auth_config.email_allowlist (AEF-5): see the SQLite migration for the why.
- * Once, guarded by a marker in system_state; exported for the same reason as
- * migrateUsersSessionEpoch.
- */
+/** Clears legacy '[]' allowlists once (see SQLite). Exported for the same reason as above. */
 export async function migrateEmptyEmailAllowlist(adapter: HubDb): Promise<void> {
   const done = await adapter.get("SELECT 1 AS done FROM system_state WHERE key = 'allowlist_empty_normalised'");
   if (done) return;

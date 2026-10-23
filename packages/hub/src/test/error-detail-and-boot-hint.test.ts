@@ -1,20 +1,4 @@
-/**
- * Security audit, Fix 7 (AEF-5), the two hub-side items.
- *
- * (1) hubErrorHandler returned the raw err.message on every 500 whenever
- *     NODE_ENV !== 'production'. A driver error names tables and columns
- *     ('relation "auth_config" does not exist'), and every unauthenticated route
- *     reaches this handler, so any staging hub (NODE_ENV unset or 'staging')
- *     handed that to anyone who could trigger a failure. The detail is now
- *     opt-in (AGENFK_HUB_DEBUG_ERRORS=1), default off, and never in production.
- *     4xx messages are client errors and stay as they were.
- *
- * (2) The boot guard already refuses an AGENFK_HUB_ORG_ID that no org in the
- *     database matches (maintenance page), but an operator who renamed the org
- *     in the admin UI and restarted with the old env var got a mismatch with no
- *     pointer to the new value, which the hub holds in system_state. Boot now
- *     says so, in a log line.
- */
+/** 500 responses hide err.message unless AGENFK_HUB_DEBUG_ERRORS=1; boot hints the renamed org id on a mismatch. */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -24,7 +8,7 @@ import { createHubApp, hubErrorHandler } from '../server';
 import { drainApp } from './helpers/drainApp';
 
 const FLAG = 'AGENFK_HUB_DEBUG_ERRORS';
-// Module scope, like the other specs: removed only after the hub's database is closed.
+// Module scope: removed only after the hub's database is closed.
 const ERR_DB = path.join(os.tmpdir(), `agenfk-hub-errdetail-${process.pid}.sqlite`);
 const cleanErrDb = () => { for (const s of ['', '-wal', '-shm']) if (fs.existsSync(ERR_DB + s)) fs.unlinkSync(ERR_DB + s); };
 
@@ -157,8 +141,7 @@ describe('boot points at the pending org rename', () => {
   });
 
   it('names the pending value and the variable to set when the env var differs', async () => {
-    // The org was renamed in the admin UI: rows now say "renamed-org", the pending row records it,
-    // and the deployment still carries the old AGENFK_HUB_ORG_ID.
+    // Org renamed in the admin UI; the deployment still carries the old AGENFK_HUB_ORG_ID.
     await ctx.db.run("UPDATE orgs SET id = 'renamed-org'");
     await ctx.db.run("UPDATE auth_config SET org_id = 'renamed-org'");
     await setPending('renamed-org');

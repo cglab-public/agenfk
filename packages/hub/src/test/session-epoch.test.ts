@@ -1,13 +1,4 @@
-/**
- * Security audit, Fix 1 (AEF-5): a password change must revoke live sessions.
- *
- * A session is a signed JWT with a 12h TTL. requireSession already re-reads the
- * user row per request, so a demoted or deleted user is cut off at once - but
- * nothing tied the cookie to the CREDENTIAL, so after "reset the password of the
- * compromised account" the attacker's cookie kept working for up to 12 hours.
- * `users.session_epoch` is that tie: the cookie carries the epoch it was issued
- * under, requireSession refuses a mismatch, and a password change bumps it.
- */
+/** A password change must revoke live sessions: the cookie carries `users.session_epoch`, which the change bumps. */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -86,7 +77,6 @@ describe('admin password reset revokes live sessions', () => {
     const id = await userId('victim@x');
 
     expect((await adminPut(adminCookie, id, { role: 'viewer' })).status).toBe(200);
-    // Under the 8-char floor the route ignores the password, so nothing rotated.
     expect((await adminPut(adminCookie, id, { role: 'viewer', password: 'short' })).status).toBe(200);
 
     expect(await epochOf('victim@x')).toBe(0);
@@ -104,7 +94,6 @@ describe('admin recovery redemption revokes live sessions', () => {
   it('redeeming a token invalidates the admin\'s earlier sessions, and signs in a valid one', async () => {
     const before = await loginAs(server, 'admin@x', 'admin-password-1');
     await boot({ resetAdminEmail: 'admin@x' });
-    // A restart is not a credential change: the earlier session still works.
     expect((await me(before)).status).toBe(200);
     const token = logged.find(l => /admin recovery/i.test(l))?.match(/([A-Za-z0-9_-]{40,})/)?.[1];
     expect(token, logged.join('\n')).toBeTruthy();
@@ -203,8 +192,7 @@ describe('migration of a hub that predates session_epoch', () => {
     expect(await epochOf('victim@x')).toBe(1);
     expect((await me(preMigration)).status).toBe(401);
 
-    // Users sign in again, and that session survives the NEXT restart: the
-    // bump must not repeat on every boot or each deploy would log everyone out.
+    // The bump must not repeat on every boot, or each deploy would log everyone out.
     const relogin = await loginAs(server, 'victim@x', 'old-password-1');
     expect((await me(relogin)).status).toBe(200);
     await boot();
@@ -213,9 +201,7 @@ describe('migration of a hub that predates session_epoch', () => {
   });
 
   it('never lowers or resets an epoch a password change has advanced', async () => {
-    // A migration that re-ran "SET session_epoch = 1" each boot would pass the
-    // test above (the epoch is already 1) while reviving every cookie that a
-    // later reset had revoked.
+    // Re-running "SET session_epoch = 1" each boot would pass the test above but revive revoked cookies.
     await ctx.db.run('UPDATE users SET session_epoch = 2 WHERE email = ?', ['victim@x']);
     await boot();
     expect(await epochOf('victim@x')).toBe(2);

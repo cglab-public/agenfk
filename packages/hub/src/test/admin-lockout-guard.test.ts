@@ -273,8 +273,7 @@ describe('adminCanStillSignIn', () => {
     expect(adminCanStillSignIn({ ...cfg, email_allowlist: JSON.stringify(['other.com']) }, [ssoAdmin])).toBe(false);
   });
 
-  // AEF-5 Fix 3: an allowlist that cannot be read now denies, so the guard must
-  // see it as shutting the admin out (it used to read as "allowed").
+  // An unreadable allowlist denies, so the guard must see it as locking the admin out.
   it('a malformed allowlist counts as SSO admins being unable to sign in', () => {
     for (const bad of ['not-json', '[123]', '[]', JSON.stringify(['acme.com', 5])]) {
       expect(adminCanStillSignIn({ ...cfg, email_allowlist: bad }, [ssoAdmin]), bad).toBe(false);

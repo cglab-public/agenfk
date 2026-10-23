@@ -1,20 +1,4 @@
-/**
- * Security audit, Fix 4 (AEF-5): bcrypt must not run on the request thread.
- *
- * verifyPassword used bcrypt.compareSync at cost 11 (~105 ms). Every login
- * attempt against an existing email - failed ones included, the hash runs
- * before the 401 is decided - froze the whole hub for that long, so 30
- * concurrent bad logins from one IP took a trivial endpoint from ~1 ms to
- * ~400 ms: an unauthenticated DoS that the per-account lockout does not touch
- * (the loop time is already spent when the 429 is decided).
- *
- * The audit proposed bcrypt.hash/compare from bcryptjs. Measured here, that
- * does not fix it: bcryptjs only yields once per MAX_EXECUTION_TIME (100 ms) of
- * CPU, about one whole cost-11 hash, so six concurrent compares starved the
- * event loop for ~600 ms. The work therefore runs on a small worker_threads
- * pool (auth/bcryptPool.ts) that still uses bcryptjs, so hashes keep their
- * format and existing passwords keep working.
- */
+/** bcrypt must run on a worker pool, not the request thread (bcryptjs's own async API still starves the loop). */
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -67,7 +51,6 @@ describe('hashPassword / verifyPassword are asynchronous', () => {
     expect(hash).toMatch(/^\$2[aby]\$\d{2}\$/);
     expect(Number.parseInt(hash.split('$')[2], 10)).toBe(getBcryptRounds());
     expect(bcrypt.compareSync('longenough1', hash)).toBe(true);
-    // A password hashed before this change (synchronously, by bcryptjs) still signs in.
     const legacy = bcrypt.hashSync('legacy-password-1', 4);
     expect(await verifyPassword('legacy-password-1', legacy)).toBe(true);
     expect(await verifyPassword('wrong', legacy)).toBe(false);
@@ -145,7 +128,6 @@ describe('POST /v1/admin/users/invite tells a busy hash pool from a duplicate em
       expect(r.status, JSON.stringify(r.body)).toBe(429);
       expect(JSON.stringify(r.body)).not.toMatch(/already exists/);
     } finally { busy.mockRestore(); quiet.mockRestore(); }
-    // Nothing was created, so the same invite goes through once the pool is free.
     expect((await invite(cookie, 'new@x', 'invited-password-1')).status).toBe(201);
   });
 
@@ -178,11 +160,8 @@ describe('POST /v1/admin/users/invite tells a busy hash pool from a duplicate em
 });
 
 describe('no hash is awaited inside a database transaction', () => {
-  // SQLite's transaction() is a bare BEGIN ... COMMIT on the ONE shared
-  // connection. While a hash is a worker round-trip, other requests run on that
-  // connection inside the open BEGIN, and a ROLLBACK (a UNIQUE collision, a
-  // saturated pool) would discard their writes with it. So the hash is computed
-  // before the transaction opens, as it was when it was synchronous.
+  // SQLite's transaction() is a bare BEGIN on one shared connection: an await inside it lets other
+  // requests write in the open transaction, and a ROLLBACK would discard those too.
   it('/setup/initial-admin: the transaction body never yields to the event loop', async () => {
     const stored = await ctx.db.get('SELECT token FROM bootstrap_tokens LIMIT 1');
     expect(stored?.token, 'a fresh hub mints a bootstrap token').toBeTruthy();
@@ -190,8 +169,7 @@ describe('no hash is awaited inside a database transaction', () => {
     const original = ctx.db.transaction.bind(ctx.db);
     let yielded = false;
     ctx.db.transaction = (fn: () => Promise<unknown>) => original(async () => {
-      // A macrotask cannot run while the body only awaits already-resolved DB
-      // calls; it can once the body awaits a worker thread.
+      // A macrotask can only run if the body awaits a worker thread.
       const t = setImmediate(() => { yielded = true; });
       try { return await fn(); } finally { clearImmediate(t); }
     });
@@ -216,7 +194,7 @@ describe('the event loop stays available while passwords are being checked', () 
     expect(Number.parseInt((await ctx.db.get('SELECT password_hash FROM users WHERE email = ?', ['victim@x'])).password_hash.split('$')[2], 10)).toBe(11);
 
     const url = `http://127.0.0.1:${port()}/auth/providers`;
-    await fetch(url);   // warm the route and the connection path
+    await fetch(url);   // warm up
 
     const samples: number[] = [];
     let running = true;
@@ -230,21 +208,15 @@ describe('the event loop stays available while passwords are being checked', () 
       }
     })();
 
-    // Same email, all started before any failure is recorded, so every one of
-    // them reaches the hash (the lockout only refuses once failures are counted).
+    // Same email, all started before any failure is counted, so every one reaches the hash.
     const attempts = await Promise.all(Array.from({ length: 6 }, (_, i) => login('victim@x', `wrong-${i}-password`)));
     running = false;
     await poller;
 
-    // The latency is the assertion this test exists for, so it comes first: the
-    // old behaviours fail it (a starved poller records few, slow samples) rather
-    // than tripping a side condition.
     samples.sort((a, b) => a - b);
     const p95 = samples.length ? samples[Math.min(samples.length - 1, Math.ceil(samples.length * 0.95) - 1)] : Infinity;
-    // With the synchronous compare this was ~400 ms (every sample queued behind
-    // the hashes); with bcryptjs's own async API ~600 ms (see the file header).
+    // Synchronous compare measured ~400 ms here, bcryptjs's async API ~600 ms.
     expect(p95, `p95 ${p95.toFixed(1)} ms over ${samples.length} samples (max ${samples.length ? samples[samples.length - 1].toFixed(1) : 'n/a'} ms)`).toBeLessThan(50);
-    // And the measurement means something: the hashing alone takes several hundred ms.
     expect(samples.length).toBeGreaterThan(20);
     expect(attempts.map(a => a.status)).toEqual([401, 401, 401, 401, 401, 401]);
   }, 60_000);

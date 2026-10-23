@@ -3,21 +3,8 @@ import * as os from 'os';
 import bcryptjs from 'bcryptjs';
 
 /**
- * bcrypt on a small worker_threads pool, off the request thread.
- *
- * Why not just bcrypt.hash/compare: bcryptjs's async API yields at most once
- * per MAX_EXECUTION_TIME (100 ms) of CPU. A cost-11 hash takes ~105 ms, so it
- * is one slice, and concurrent logins interleave slice by slice: six at once
- * starved the event loop for ~600 ms (measured, password-async.test.ts). The
- * synchronous version this replaced did the same, and since the hash runs
- * before a failed login is answered, anyone could freeze the whole hub with a
- * handful of bad logins. Real parallelism is the only fix without a native
- * dependency, and the worker still runs bcryptjs, so the hash format and every
- * existing password are untouched.
- *
- * Bounded on purpose: a saturated pool refuses work (HTTP 429, which
- * hubErrorHandler passes through) instead of queueing an unbounded backlog of
- * ~100 ms jobs that unauthenticated callers can grow.
+ * bcrypt on a worker_threads pool: bcryptjs's async API still hogs the event loop,
+ * so concurrent bad logins could freeze the hub. A saturated pool refuses work (429).
  */
 
 const WORKER_SRC = `
@@ -36,20 +23,14 @@ type Op = { op: 'hash'; plain: string; rounds: number } | { op: 'compare'; plain
 interface Job { id: number; msg: Op; resolve: (v: any) => void; reject: (e: Error) => void }
 interface Slot { worker: Worker; job: Job | null }
 
-/** Worker count: AGENFK_HUB_BCRYPT_WORKERS, else one fewer than the cores (max 4, min 1) so the request thread keeps a core. */
+/** Worker count: AGENFK_HUB_BCRYPT_WORKERS, else cores - 1 (1 to 4). */
 function poolSize(): number {
   const n = Number.parseInt(process.env.AGENFK_HUB_BCRYPT_WORKERS ?? '', 10);
   if (Number.isFinite(n) && n >= 1) return Math.min(n, 32);
   return Math.max(1, Math.min(4, os.availableParallelism() - 1));
 }
 
-/**
- * Jobs allowed to wait for a free worker (AGENFK_HUB_BCRYPT_QUEUE_MAX); beyond
- * it new work is refused. The default is 16 per worker: at ~100 ms a job that
- * is under two seconds of queue, whatever the pool size, so a legitimate login
- * behind a flood is answered (or refused with a 429) before a client or load
- * balancer gives up on it. A count of 256 was ~25 s on a one-worker pool.
- */
+/** Max queued jobs (AGENFK_HUB_BCRYPT_QUEUE_MAX); 16 per worker keeps the wait under ~2 s. */
 function queueMax(): number {
   const n = Number.parseInt(process.env.AGENFK_HUB_BCRYPT_QUEUE_MAX ?? '', 10);
   return Number.isFinite(n) && n >= 0 ? n : poolSize() * 16;
@@ -72,13 +53,11 @@ function spawn(): Slot | null {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     worker = new Worker(WORKER_SRC, { eval: true, workerData: { bcryptPath: require.resolve('bcryptjs') } });
   } catch (err) {
-    // Degrade to bcryptjs's own async API (still correct, only not parallel)
-    // rather than refusing every sign-in on a platform without worker threads.
+    // No worker threads here: fall back to bcryptjs's async API (correct, not parallel).
     spawnFailed = true;
     console.warn('[HUB] bcrypt worker threads unavailable, hashing on the request thread:', (err as Error).message);
     return null;
   }
-  // The pool must never keep the process alive on its own.
   worker.unref();
   const slot: Slot = { worker, job: null };
   worker.on('message', (m: { id: number; result?: unknown; error?: string }) => {

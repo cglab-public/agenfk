@@ -7,11 +7,7 @@ import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 type RawDb = InstanceType<typeof DatabaseSync>;
 
-/**
- * Runs `fn` in one transaction. A failed BEGIN has nothing to roll back and
- * reports itself; a failed COMMIT/fn rolls back, and a ROLLBACK that itself
- * fails ('no transaction is active') must not replace the error that caused it.
- */
+/** Runs `fn` in one transaction; a failing ROLLBACK must not mask the original error. */
 function inTransaction(raw: RawDb, fn: () => void): void {
   raw.exec('BEGIN IMMEDIATE');
   try {
@@ -734,27 +730,17 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (userCols.length > 0 && !new Set(userCols.map(c => c.name)).has('name')) {
     raw.exec("ALTER TABLE users ADD COLUMN name TEXT");
   }
-  // users.session_epoch (AEF-5). Sessions were pure 12h JWTs, so a password
-  // reset left the attacker's cookie alive. Adding the column and moving every
-  // existing user to epoch 1 happen together, and only here: a cookie issued
-  // before this release carries no epoch (= 0) and is refused once, so users
-  // sign in again one time. Doing the bump outside this branch would log
-  // everyone out on every boot.
+  // users.session_epoch: bump to 1 only when adding the column (pre-epoch cookies are refused once);
+  // bumping on every boot would log everyone out.
   if (userCols.length > 0 && !new Set(userCols.map(c => c.name)).has('session_epoch')) {
-    // One transaction: a crash between the two statements would leave the
-    // column present but every user at 0, and the next boot (seeing the column)
-    // would never bump, so the old cookies would stay valid for good.
+    // Atomic: a crash between the statements would leave users at 0 and never bump.
     inTransaction(raw, () => {
       raw.exec("ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0");
       raw.exec("UPDATE users SET session_epoch = 1");
     });
   }
-  // auth_config.email_allowlist (AEF-5): the admin screen used to send [] for a
-  // blank field and the route stored it as "[]", which meant "no restriction".
-  // checkEmailAllowlist now reads an empty list as a misconfiguration and
-  // denies, so without this an upgrade would shut every SSO user out of each
-  // org that never set an allowlist. Once, guarded by a marker: a "[]" written
-  // after this is a real misconfiguration and must stay one.
+  // Legacy "[]" meant "no restriction" but checkEmailAllowlist now denies on it, so clear it once
+  // (marker-guarded; a later "[]" is a real misconfiguration).
   if (!raw.prepare("SELECT 1 FROM system_state WHERE key = 'allowlist_empty_normalised'").get()) {
     inTransaction(raw, () => {
       raw.exec("UPDATE auth_config SET email_allowlist = NULL WHERE email_allowlist = '[]'");

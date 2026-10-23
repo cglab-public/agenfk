@@ -101,12 +101,7 @@ function publicAuthConfig(row: AuthConfigRow) {
   };
 }
 
-/**
- * The stored allowlist for the admin screen. Never throws: the screen that
- * fixes an unreadable list has to open. `emailAllowlistMisconfigured` mirrors
- * what sign-in does with it (checkEmailAllowlist denies), so the admin is told
- * why nobody is getting in; the list itself is shown best-effort.
- */
+/** Stored allowlist for the admin screen; never throws so an unreadable list can still be fixed. */
 function readAllowlist(stored: string | null): { emailAllowlist: string[]; emailAllowlistMisconfigured: boolean } {
   const list = stored == null ? [] : parseAllowlist(stored);
   return { emailAllowlist: list ?? [], emailAllowlistMisconfigured: list === null };
@@ -218,14 +213,8 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (typeof b.entra?.clientSecret === 'string' && b.entra.clientSecret) {
       setField('entra_client_secret_enc', encryptSecret(b.entra.clientSecret, ctx.config.secretKey));
     }
-    // Validated before anything is written: a typo like [123] used to be stored
-    // and silently disabled the allowlist. An empty list is how the screen says
-    // "no allowlist", so it is stored as NULL (never as "[]", which the matcher
-    // now reads as a misconfiguration).
-    // An entry already in the stored list is accepted as it stands, whatever its
-    // shape: the matcher has always honoured those (a legacy 'corp'), and the
-    // screen resends the whole list on any edit, so refusing them would block
-    // an admin from touching an entry they did not change. New entries must fit.
+    // Empty list is stored as NULL ("[]" reads as a misconfiguration). Entries already
+    // stored are kept as-is (the screen resends the whole list); new ones must be valid.
     if (b.emailAllowlist !== undefined) {
       const list = b.emailAllowlist;
       const known = new Set((current.email_allowlist == null ? [] : parseAllowlist(current.email_allowlist) ?? []).map(p => p.toLowerCase()));
@@ -1427,9 +1416,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       return res.status(400).json({ error: 'password must be ≥8 chars when provided' });
     }
     if (role !== 'admin' && role !== 'viewer') return res.status(400).json({ error: 'role must be admin or viewer' });
-    // Hashed BEFORE the try: the hash is a worker round-trip that can fail (a busy
-    // pool answers 429, a dead worker errors), and that is not "a user with that
-    // email already exists". Only the INSERT below can collide.
+    // Hash outside the try: its failures (429, dead worker) are not duplicate-email errors.
     const passwordHash = hasPassword ? await hashPassword(password) : null;
     try {
       if (hasPassword) {
@@ -1447,8 +1434,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         res.status(201).json({ id, email, role });
       }
     } catch (e: any) {
-      // Only a unique violation is a duplicate; a disk or connection failure on
-      // the INSERT is not "already exists", so let it reach the error handler.
+      // Only a unique violation means "already exists".
       if (!isUniqueViolation(e)) throw e;
       res.status(409).json({ error: 'A user with that email already exists' });
     }
@@ -1460,13 +1446,8 @@ export function adminRouter(ctx: HubServerContext): Router {
     const params: any[] = [];
     if (role === 'admin' || role === 'viewer') { sets.push('role = ?'); params.push(role); }
     if (active === true || active === false) { sets.push('active = ?'); params.push(active ? 1 : 0); }
-    // A new password rotates the credential, so it also bumps the session epoch
-    // (auth/session.ts): the account's live cookies stop working, which is the
-    // point of resetting a compromised account's password. Deactivation bumps it
-    // too: without that, re-enabling the account would revive the cookies the
-    // guard refused while it was off. (An admin resetting their OWN password is
-    // signed out by the same bump; there is no UI for that, only this API.)
-    // Demotion does not bump: the row's role already overrides the cookie's.
+    // A new password or a deactivation bumps session_epoch so live cookies stop working
+    // (re-enabling must not revive them). Demotion needs no bump: the row's role wins.
     const bumpsEpoch = (typeof password === 'string' && password.length >= 8) || active === false;
     if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(await hashPassword(password)); }
     if (bumpsEpoch) sets.push('session_epoch = session_epoch + 1');

@@ -24,7 +24,7 @@ const withRounds = (value: string | undefined, fn: () => void) => {
   }
 };
 
-/** withRounds for a body that awaits (hashPassword/verifyPassword are asynchronous since AEF-5 Fix 4). */
+/** withRounds for an async body. */
 const withRoundsAsync = async (value: string | undefined, fn: () => Promise<void>) => {
   if (value === undefined) delete process.env[ENV];
   else process.env[ENV] = value;

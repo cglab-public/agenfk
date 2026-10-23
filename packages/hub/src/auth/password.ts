@@ -42,10 +42,7 @@ export interface UserRow {
   last_login_at: string | null;
 }
 
-// Asynchronous AND off the request thread (bcryptPool.ts): a cost-11 hash is
-// ~105 ms of CPU, and run in-process (the old compareSync, or bcryptjs's own
-// async API, which only yields every 100 ms) it froze the whole hub for every
-// login attempt, failed ones included.
+// Async and off the request thread (bcryptPool.ts): in-process hashing froze the hub.
 export function hashPassword(plain: string): Promise<string> {
   return bcryptHash(plain, getBcryptRounds());
 }
@@ -69,13 +66,7 @@ export async function createPasswordUser(
   return insertPasswordUser(db, orgId, email, await hashPassword(plainPassword), role);
 }
 
-/**
- * createPasswordUser for a hash the caller already has. A caller inside a
- * database transaction must hash FIRST and call this: on SQLite a transaction
- * is a bare BEGIN on the one shared connection, so awaiting a ~100 ms hash
- * inside it lets other requests' statements run within the open BEGIN, and a
- * ROLLBACK then discards their writes too.
- */
+/** For callers in a transaction: hash first, since awaiting inside a shared-connection BEGIN lets other requests' writes join it. */
 export async function insertPasswordUser(
   db: DB,
   orgId: string,

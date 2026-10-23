@@ -1,16 +1,4 @@
-/**
- * Security audit, Fix 5 (AEF-5): POST /v1/events must hold an installation-bound
- * key to its own installation.
- *
- * The audit saw an event whose installationId differed from the key's accepted -
- * but its key came from POST /v1/admin/api-keys, which is deliberately unbound
- * (org-wide, and the route says so). So the real questions were: do the keys the
- * REAL onboarding flows mint (device code, invite redeem) come out bound and
- * refuse a foreign installation, and can a hardened deployment refuse the
- * unbound ones? This pins both. The first already held (events.ts rejects
- * `foreign_installation` in the batch loop, beside `org_mismatch`); what was
- * missing is a test that goes through the flows rather than issueApiKey().
- */
+/** Keys minted by the real onboarding flows (device code, invite) are installation-bound; a flag can refuse unbound ones. */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -42,7 +30,6 @@ const post = (token: string, events: unknown[]) =>
 const eventCount = async (): Promise<number> => Number((await ctx.db.get('SELECT COUNT(*) AS c FROM events')).c);
 const installationExists = async (id: string): Promise<boolean> => !!(await ctx.db.get('SELECT 1 AS x FROM installations WHERE id = ?', [id]));
 
-/** The device-code flow, start to token, as `agenfk hub login` walks it. */
 async function deviceToken(installationId: string): Promise<string> {
   const start = await supertest(server).post('/hub/device/start').send({ installation: { installationId, osUser: 'alice', gitName: 'Alice', gitEmail: 'alice@example.com' } });
   expect(start.status).toBe(200);
@@ -51,7 +38,6 @@ async function deviceToken(installationId: string): Promise<string> {
   expect(poll.body.status).toBe('approved');
   return poll.body.token as string;
 }
-/** The invite flow, as `agenfk hub join` walks it. */
 async function inviteToken(installationId: string): Promise<string> {
   const created = await supertest(server).post('/hub/invite/create').set('Cookie', adminCookie).send({});
   const r = await supertest(server).post('/hub/invite/redeem').send({
@@ -92,7 +78,7 @@ describe.each([
     expect(r.body.rejected).toBe(1);
     expect(r.body.rejections).toEqual([{ eventId: 'foreign-1', reason: 'foreign_installation' }]);
     expect(await eventCount()).toBe(0);
-    // Not even an installations row: the rejection must not register the id it refused.
+    // The rejection must not register the id it refused.
     expect(await installationExists('inst-victim')).toBe(false);
   });
 
@@ -155,7 +141,6 @@ describe('boot says where AGENFK_HUB_REQUIRE_BOUND_KEYS stands', () => {
   });
 
   it('when on, says how many live unbound keys it will refuse', async () => {
-    // Seed on a first boot, then boot again with the flag on.
     await logsOf(undefined, async () => {
       await issueApiKey(ctx.db, 'org', 'legacy-1');
       await issueApiKey(ctx.db, 'org', 'legacy-2');
@@ -172,7 +157,7 @@ describe('AGENFK_HUB_REQUIRE_BOUND_KEYS refuses unbound keys on ingest', () => {
     const token = await issueApiKey(ctx.db, 'org', 'legacy-fleet');
     const r = await post(token, [event('inst-a', 'a-1')]);
     expect(r.status).toBe(403);
-    // The spoke reads a JSON `error` string as the hub's own refusal (not a proxy's): it keeps the batch and backs off.
+    // The spoke reads a JSON `error` string as the hub's own refusal, not a proxy's.
     expect(typeof r.body.error).toBe('string');
     expect(r.body.error).toMatch(/bound|installation/i);
     expect(await eventCount()).toBe(0);

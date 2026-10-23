@@ -1,20 +1,4 @@
-/**
- * Security audit, Fix 6 (AEF-5): the hub answered with no security headers at
- * all - only `X-Powered-By: Express`. No nosniff, no framing policy, no
- * referrer policy, no CSP, no HSTS. This pins what it sends now, per response
- * class, because the one that can break the product is the CSP on the SPA:
- *
- *  - every response: no X-Powered-By, nosniff, Referrer-Policy, X-Frame-Options
- *    DENY (nothing frames the hub: no iframe in ui/hub-ui/flow-editor, and the
- *    desktop app loadURL()s a top-level window);
- *  - HSTS only when the request really arrived over TLS (req.secure, so only as
- *    trustworthy as AGENFK_HUB_TRUST_PROXY), never over plain HTTP;
- *  - the SPA shell gets a CSP that allows its own origin, its one inline script
- *    (the pre-paint theme bootstrap) by sha256 hash, not 'unsafe-inline', and
- *    no eval;
- *  - everything else (JSON, static assets) gets a lock-down CSP that loads
- *    nothing and cannot be framed.
- */
+/** Pins the security headers per response class; the SPA's CSP (inline script allowed by hash) is the one that can break the UI. */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -151,7 +135,7 @@ describe('Content-Security-Policy', () => {
   });
 
   it('serves / , /index.html and deep links from the one in-memory copy, so the policy always matches the page', async () => {
-    // Replace the file under the running hub: nothing may be served from disk.
+    // Nothing may be served from disk once booted.
     fs.writeFileSync(path.join(uiDir, 'index.html'), FIXTURE_HTML.replace('window.b = 2', 'window.b = 3'));
     for (const p of ['/', '/index.html', '/admin/keys']) {
       const r = await get(p);
@@ -182,9 +166,7 @@ describe('Content-Security-Policy', () => {
   it('the real hub-ui/index.html: every inline script it contains is allowed, so a CSP never blanks the UI', async () => {
     const real = fs.readFileSync(path.resolve(__dirname, '../../../hub-ui/index.html'), 'utf8');
     const hashes = inlineScriptHashes(real);
-    // The pre-paint theme bootstrap is the only inline script today. If this
-    // count changes, a new inline script was added: it is hashed automatically,
-    // but whoever adds it should know the CSP now depends on it.
+    // Only the pre-paint theme bootstrap is inline today; a new one makes the CSP depend on it.
     expect(hashes.length).toBe(1);
     fs.writeFileSync(path.join(uiDir, 'index.html'), real);
     await boot();

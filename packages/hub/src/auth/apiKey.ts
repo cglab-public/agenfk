@@ -24,16 +24,7 @@ declare module 'express-serve-static-core' {
   }
 }
 
-/**
- * AGENFK_HUB_REQUIRE_BOUND_KEYS=1|true: ingest refuses an installation-UNBOUND
- * key. An unbound key (POST /v1/admin/api-keys, and keys from before binding
- * existed) is org-wide by design: it may report events for any installation of
- * its org, so one leaked key can write into every machine's history. A bound
- * key is held to its own installation (events.ts, foreign_installation). Off by
- * default so a fleet still on legacy keys keeps reporting; a deployment that
- * has re-onboarded can turn it on to close the gap. Read per request so an
- * operator can flip it without a rebuild.
- */
+/** AGENFK_HUB_REQUIRE_BOUND_KEYS=1|true: ingest refuses installation-unbound (org-wide) keys. Off by default for legacy fleets; read per request. */
 export function requireBoundKeys(): boolean {
   const v = process.env.AGENFK_HUB_REQUIRE_BOUND_KEYS?.trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
@@ -41,14 +32,7 @@ export function requireBoundKeys(): boolean {
 
 const BOUND_KEYS_OFF_VALUES = new Set(['', '0', 'false', 'no', 'off']);
 
-/**
- * Boot-time statement of where AGENFK_HUB_REQUIRE_BOUND_KEYS stands. A security
- * flag that silently stays off because of a typo ('enabled') is the worse
- * failure, so an unrecognised value is named. And switching it on refuses every
- * live unbound key, onboarding-labelled ones included (they can only bind by
- * reporting, which this refuses), so the count is logged: flipped blind on a
- * half-migrated fleet it would cut those machines off.
- */
+/** Boot log of the flag's state: names an unrecognised value (a typo must not silently leave it off) and counts the unbound keys it would cut off. */
 export async function logBoundKeyPosture(db: DB): Promise<void> {
   const raw = process.env.AGENFK_HUB_REQUIRE_BOUND_KEYS?.trim().toLowerCase() ?? '';
   if (!requireBoundKeys()) {
@@ -68,7 +52,7 @@ export async function logBoundKeyPosture(db: DB): Promise<void> {
 }
 
 export interface RequireApiKeyOptions {
-  /** This route ingests events: apply AGENFK_HUB_REQUIRE_BOUND_KEYS. Everything else (ping, polls, flows) stays open to unbound keys. */
+  /** Ingest routes only: apply AGENFK_HUB_REQUIRE_BOUND_KEYS. */
   ingest?: boolean;
 }
 
@@ -94,10 +78,8 @@ export function requireApiKey(db: DB, opts: RequireApiKeyOptions = {}) {
         res.status(401).json({ error: 'Invalid or revoked token' });
         return;
       }
-      // After the key is known to be valid, so a bad token still answers 401 and
-      // nothing is revealed about binding to someone who has no key. The body
-      // carries a JSON `error` string: the spoke reads that as the hub's own
-      // refusal (not a proxy's), keeps its batch and backs off - nothing is lost.
+      // After key validation, so a bad token still gets 401. The JSON `error` tells the
+      // spoke this is the hub's refusal: it keeps its batch and backs off.
       if (opts.ingest && requireBoundKeys() && !row.installation_id) {
         res.status(403).json({
           error: 'This hub only accepts events from installation-bound keys, and this key is not bound to an installation. '

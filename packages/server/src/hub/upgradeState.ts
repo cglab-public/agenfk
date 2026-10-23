@@ -60,11 +60,7 @@ export function readUpgradeState(dbDir: string): UpgradeState | null {
 }
 
 export function writeUpgradeState(dbDir: string, state: UpgradeState): void {
-  // Owner-only, like hub.json and the deadletter beside it. It holds no secret,
-  // but the default (0644 under the usual umask) made it the one file here any
-  // local user could read. The shared helper writes a fresh 0600 temp file ('wx',
-  // random name, so a planted file or symlink fails the write instead of being
-  // followed), cleans it up on failure, and renames it over the target.
+  // Owner-only (0600), like hub.json and the deadletter beside it.
   writePrivateFileSync(filePath(dbDir), JSON.stringify(state, null, 2));
 }
 

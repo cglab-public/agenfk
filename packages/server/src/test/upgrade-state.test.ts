@@ -89,10 +89,7 @@ describe('upgradeState — file-backed persistence', () => {
   });
 });
 
-// Security audit, Fix 7 (AEF-5): the file was written with no mode, so it landed
-// 0644 under the process umask. It holds no secret, but it sits beside files that
-// do, and every other file this client writes in ~/.agenfk is 0600 (hub.json,
-// the deadletter, the audit log). Consistency, not an exploit.
+// Consistency, not an exploit: every other file this client writes in ~/.agenfk is 0600.
 describe.skipIf(process.platform === 'win32')('upgradeState — file mode', () => {
   let dbDir: string;
   beforeEach(() => { dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-upgrade-state-mode-')); });

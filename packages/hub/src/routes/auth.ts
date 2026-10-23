@@ -199,8 +199,7 @@ export function setupRouter(ctx: HubServerContext): Router {
     // removed the row may create an admin. If user creation throws (e.g. a
     // UNIQUE collision on email), the token is rolled back so the operator
     // can retry.
-    // Hashed BEFORE the transaction opens (see insertPasswordUser): the hash is a
-    // worker round-trip, and nothing else may run on the connection inside it.
+    // Hash before the transaction opens (see insertPasswordUser).
     const passwordHash = await hashPassword(password);
     try {
       await ctx.db.transaction(async () => {

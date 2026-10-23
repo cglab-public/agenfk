@@ -16,7 +16,7 @@ export function signSession(payload: SessionPayload, secret: string): string {
   return jwt.sign(payload, secret, { algorithm: 'HS256', expiresIn: `${SESSION_TTL_HOURS}h` });
 }
 
-/** The claims a fresh session for `user` carries, epoch included (see requireSession). */
+/** Claims for a fresh session, including the epoch checked by requireSession. */
 export function sessionPayloadFor(user: { id: string; org_id: string; role: SessionPayload['role']; session_epoch: number }): SessionPayload {
   return { userId: user.id, orgId: user.org_id, role: user.role, epoch: Number(user.session_epoch) };
 }
@@ -87,12 +87,8 @@ export function requireSession(secret: string, db: DB) {
           res.status(401).json({ error: 'Session no longer valid; sign in again' });
           return;
         }
-        // Credential rotation (a password set by an admin or by recovery)
-        // bumps users.session_epoch. A cookie issued under an earlier epoch is
-        // refused here, so "reset the compromised account's password" ends the
-        // attacker's session too instead of leaving it live for the rest of its
-        // 12h TTL. A cookie with no epoch claim predates the column, and counts
-        // as epoch 0, which the migration's bump to 1 already invalidated.
+        // A password reset bumps session_epoch, ending any stolen session. A cookie
+        // without an epoch claim counts as 0, which the migration already invalidated.
         if (Number(user.session_epoch) !== Number(session.epoch ?? 0)) {
           res.status(401).json({ error: 'Session no longer valid; sign in again' });
           return;

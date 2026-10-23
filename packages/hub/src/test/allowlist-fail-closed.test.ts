@@ -1,14 +1,4 @@
-/**
- * Security audit, Fix 3 (AEF-5): the SSO email allowlist must fail CLOSED.
- *
- * checkEmailAllowlist used to answer "allowed" whenever it could not read the
- * list: not JSON, not an array, or one non-string entry throwing inside the
- * loop. PUT /v1/admin/auth-config stored whatever array it was given, so one
- * admin typo ([123]) silently switched the allowlist off - and adminCanStillSignIn
- * (the lockout guard) uses the same function, so it was fooled too. An absent
- * allowlist (NULL) still means "no restriction"; everything else that cannot be
- * read as a list of usable patterns now denies.
- */
+/** The SSO email allowlist fails closed: NULL means no restriction, anything unreadable denies. */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -42,7 +32,6 @@ describe('checkEmailAllowlist', () => {
     ['a list with a nested array', '[["acme.com"]]'],
   ])('denies when the stored list is %s', (_label, stored) => {
     expect(checkEmailAllowlist('attacker@evil.test', stored)).toEqual({ allowed: false, reason: MISCONFIGURED });
-    // Misconfigured is misconfigured for the legitimate user too: never guess.
     expect(checkEmailAllowlist('ceo@acme.com', stored)).toEqual({ allowed: false, reason: MISCONFIGURED });
   });
 
@@ -112,7 +101,7 @@ describe('PUT /v1/admin/auth-config validates emailAllowlist', () => {
   }
   const stored = async (): Promise<string | null> => (await ctx.db.get("SELECT email_allowlist FROM auth_config WHERE org_id = 'org'")).email_allowlist;
   const put = (cookie: string, body: Record<string, unknown>) => supertest(server).put('/v1/admin/auth-config').set('Cookie', cookie).send(body);
-  /** Password off, Google complete: the stored state, written directly (not a save). */
+  /** Password off, Google complete, written directly (not via a save). */
   const ssoOnly = (allowlist: string | null) => ctx.db.run(
     `UPDATE auth_config SET password_enabled = 0, google_enabled = 1, google_client_id = 'id.apps.googleusercontent.com',
        google_client_secret_enc = ?, email_allowlist = ? WHERE org_id = 'org'`,
@@ -178,15 +167,15 @@ describe('PUT /v1/admin/auth-config validates emailAllowlist', () => {
   });
 
   it('accepts an entry already stored, whatever its shape, but still refuses a NEW entry that does not fit', async () => {
-    await ctx.db.run("UPDATE auth_config SET email_allowlist = '[\"corp\",\"acme.com\"]' WHERE org_id = 'org'");   // legacy single-label domain
+    await ctx.db.run("UPDATE auth_config SET email_allowlist = '[\"corp\",\"acme.com\"]' WHERE org_id = 'org'");
     const keep = await put(cookie, { emailAllowlist: ['corp', 'acme.com', 'new.com'] });
     expect(keep.status, JSON.stringify(keep.body)).toBe(200);
     expect(JSON.parse((await stored())!)).toEqual(['corp', 'acme.com', 'new.com']);
-    expect((await put(cookie, { emailAllowlist: ['corp', 'intranet'] })).status).toBe(400);   // 'intranet' is new and has no dot
+    expect((await put(cookie, { emailAllowlist: ['corp', 'intranet'] })).status).toBe(400);
   });
 
   it('accepts uppercase, plus-addressing and the longest allowed entry', async () => {
-    const longest = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(58)}.com`;   // 254 characters
+    const longest = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(58)}.com`;
     expect(longest.length).toBe(254);
     const r = await put(cookie, { emailAllowlist: ['CEO+tag@Acme.COM', longest] });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
@@ -238,7 +227,7 @@ describe('PUT /v1/admin/auth-config validates emailAllowlist', () => {
   });
 
   it('still accepts the step that fixes an already-unreadable allowlist', async () => {
-    await ssoOnly('[123]');   // stored by the old fail-open code: nobody can sign in under it now
+    await ssoOnly('[123]');
     const r = await put(cookie, { emailAllowlist: ['corp.com'] });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(JSON.parse((await stored())!)).toEqual(['corp.com']);
@@ -268,7 +257,7 @@ describe('boot normalises the "[]" the old admin screen stored for "no allowlist
   });
 
   it('turns a legacy "[]" into NULL once, so upgrading does not deny every SSO sign-in of an org that never set an allowlist', async () => {
-    // The admin screen sent [] for a blank field and the route stored it; "[]" meant "no restriction".
+    // The old admin screen stored "[]" for a blank field, which then meant "no restriction".
     await ctx.db.run("UPDATE auth_config SET email_allowlist = '[]' WHERE org_id = 'org'");
     await ctx.db.run("DELETE FROM system_state WHERE key = 'allowlist_empty_normalised'");
     await boot();
@@ -276,7 +265,7 @@ describe('boot normalises the "[]" the old admin screen stored for "no allowlist
   });
 
   it('does it only once: a "[]" written afterwards is a misconfiguration and stays one', async () => {
-    await boot();   // marker is set by now
+    await boot();
     await ctx.db.run("UPDATE auth_config SET email_allowlist = '[]' WHERE org_id = 'org'");
     await boot();
     expect(await stored()).toBe('[]');

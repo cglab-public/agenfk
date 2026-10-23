@@ -1058,11 +1058,6 @@ describe('PG parity: admin model mappings', () => {
   });
 });
 
-/**
- * Session epoch (AEF-5, Fix 1) on Postgres: users.session_epoch exists in the
- * Postgres schema and the password-reset bump runs there, so the old cookie is
- * refused. A SQLite-only test would not notice a column missing from this DDL.
- */
 describe('PG parity: password reset revokes live sessions (session epoch)', () => {
   it('refuses the old cookie after an admin resets the password', async () => {
     const fx = await bootHubOnPg();
@@ -1083,14 +1078,12 @@ describe('PG parity: password reset revokes live sessions (session epoch)', () =
   it('migrates a users table that predates session_epoch: bumps once, never again', async () => {
     const db = await openPgMemDb();
     await createPasswordUser(db, 'org', 'old@x', 'old-password-1', 'viewer');
-    // What an older hub's users table looks like.
     await db.run('ALTER TABLE users DROP COLUMN session_epoch');
 
     await migrateUsersSessionEpoch(db);
     const epoch = async () => Number((await db.get<{ session_epoch: number }>('SELECT session_epoch FROM users WHERE email = ?', ['old@x']))!.session_epoch);
     expect(await epoch()).toBe(1);
 
-    // A restart must not bump again, nor lower an epoch a reset advanced.
     await db.run('UPDATE users SET session_epoch = 2 WHERE email = ?', ['old@x']);
     await migrateUsersSessionEpoch(db);
     expect(await epoch()).toBe(2);
@@ -1098,20 +1091,14 @@ describe('PG parity: password reset revokes live sessions (session epoch)', () =
   });
 });
 
-/**
- * Email allowlist fail-closed (AEF-5, Fix 3) on Postgres: the one-time pass that
- * turns the "[]" the old admin screen stored for "no allowlist" into NULL runs
- * there too, and only once. Without it an upgrade would deny every SSO sign-in
- * of an org that never set one, because "[]" now reads as misconfigured.
- */
 describe('PG parity: legacy empty email allowlist is normalised once', () => {
   it('turns "[]" into NULL the first time, then leaves later values alone', async () => {
     const db = await openPgMemDb();
-    // A bare pg-mem database has no org yet (createHubApp seeds it).
+    // A bare pg-mem database has no org yet.
     await db.run("INSERT INTO orgs (id, name) VALUES ('org', 'org')");
     await db.run("INSERT INTO auth_config (org_id, password_enabled) VALUES ('org', 1)");
     const allowlist = async () => (await db.get<{ email_allowlist: string | null }>("SELECT email_allowlist FROM auth_config WHERE org_id = 'org'"))!.email_allowlist;
-    // openPgMemDb has already run the pass once on the fresh database (marker set).
+    // openPgMemDb already ran the pass once; reset its marker.
     await db.run("UPDATE auth_config SET email_allowlist = '[]' WHERE org_id = 'org'");
     await db.run("DELETE FROM system_state WHERE key = 'allowlist_empty_normalised'");
 
