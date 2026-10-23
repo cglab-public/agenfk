@@ -103,7 +103,8 @@ port, project ids kept out of version control, and hub-side flow adherence.
   `"[]"`; re-save the field. The admin screen now warns when the stored list is unreadable. An address with more
   than one `@` no longer matches a suffix pattern.
 - **Password hashing no longer freezes the hub.** bcrypt runs on a small worker-thread pool
-  (`AGENFK_HUB_BCRYPT_WORKERS`, `_QUEUE_MAX`); a saturated pool answers 429. Hashes are unchanged.
+  (`AGENFK_HUB_BCRYPT_WORKERS`, `_QUEUE_MAX`); a saturated pool answers 429, and one that cannot start a worker answers 503 with
+  `Retry-After` and tries again later. Hashes are unchanged.
 - **Security headers** on every response (CSP, nosniff, referrer policy, frame denial, HSTS over TLS);
   `X-Powered-By` is gone. See the production posture notes in `HUB_ARCHITECTURE.md` for what this blocks.
 - **`AGENFK_HUB_REQUIRE_BOUND_KEYS`** (off by default) refuses unbound API keys on ingest.

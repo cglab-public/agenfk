@@ -425,6 +425,11 @@ export function hubErrorHandler(err: any, _req: Request, res: Response, _next: N
   // path param, malformed JSON) keeps its 4xx; its message names no table.
   const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
   if (status < 500) { res.status(status).json({ error: err?.expose === false ? 'bad request' : (err?.message ?? 'bad request') }); return; }
+  // A retryable 503 that names itself (the bcrypt pool when no worker can start); its message is fixed text.
+  if (err?.status === 503 && Number.isInteger(err.retryAfterSeconds) && err.retryAfterSeconds > 0) {
+    res.set('Retry-After', String(err.retryAfterSeconds)).status(503).json({ error: err.message });
+    return;
+  }
   // Detail is opt-in (AGENFK_HUB_DEBUG_ERRORS=1) and never in production; it can name tables and columns.
   const debugErrors = process.env.NODE_ENV !== 'production' && process.env.AGENFK_HUB_DEBUG_ERRORS === '1';
   res.status(500).json({ error: debugErrors ? (err?.message ?? 'internal error') : 'internal error' });

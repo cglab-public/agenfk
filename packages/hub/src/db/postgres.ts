@@ -688,11 +688,12 @@ export async function backfillPrEventRemoteUrls(adapter: HubDb): Promise<void> {
 
 /**
  * users.session_epoch migration (see SQLite). `WHERE session_epoch = 0` stops a rolling deploy
- * from lowering an advanced epoch. Exported because pg-mem cannot re-run bootstrap.
+ * from lowering an advanced epoch. current_schema() is where the tables were created, and still
+ * excludes another schema's `users`. Exported because pg-mem cannot re-run bootstrap.
  */
 export async function migrateUsersSessionEpoch(adapter: HubDb): Promise<void> {
   const cols = await adapter.all<{ column_name: string }>(
-    "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users'",
+    "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'users'",
   );
   if (cols.length > 0 && !new Set(cols.map(c => c.column_name)).has('session_epoch')) {
     await adapter.transaction(async () => {

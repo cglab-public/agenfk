@@ -3,6 +3,8 @@
 // gets full coverage of the SQL the hub actually emits at runtime.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
 import supertest from 'supertest';
 import { backfillUserKeyAliases } from '../services/backfillUserKeyAliases';
 import { createHubApp } from '../server';
@@ -1109,5 +1111,37 @@ describe('PG parity: legacy empty email allowlist is normalised once', () => {
     await migrateEmptyEmailAllowlist(db);
     expect(await allowlist()).toBe('[]');
     await db.close();
+  });
+});
+
+describe('PG parity: bootstrap() runs the session_epoch and allowlist migrations', () => {
+  // pg-mem cannot re-run bootstrap(), and a hub on a real database only gets these changes through it.
+  it('a bootstrapped database carries the allowlist marker, so bootstrap ran migrateEmptyEmailAllowlist', async () => {
+    const db = await openPgMemDb();
+    expect(await db.get("SELECT 1 AS done FROM system_state WHERE key = 'allowlist_empty_normalised'")).toBeTruthy();
+    await db.close();
+  });
+
+  it('bootstrap() calls both migrations, so dropping either call is caught', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../db/postgres.ts'), 'utf8');
+    const start = src.indexOf('async function bootstrap(');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\n}\n', start)).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+    expect(body).toMatch(/await migrateUsersSessionEpoch\(adapter\)/);
+    expect(body).toMatch(/await migrateEmptyEmailAllowlist\(adapter\)/);
+  });
+});
+
+describe('PG parity: the session_epoch migration finds users in the connection schema, not only in "public"', () => {
+  it('adds the column when the users table lives in a non-public schema', async () => {
+    const ran: string[] = [];
+    const nonPublic = {
+      // What Postgres would answer for a hub whose tables sit in another schema.
+      all: async (sql: string) => /table_schema\s*=\s*'public'/.test(sql) ? [] : /current_schema\(\)/.test(sql) ? [{ column_name: 'id' }, { column_name: 'email' }] : [],
+      exec: async (sql: string) => { ran.push(sql); },
+      transaction: async (fn: () => Promise<unknown>) => fn(),
+    } as unknown as HubDb;
+    await migrateUsersSessionEpoch(nonPublic);
+    expect(ran.some(sql => /ADD COLUMN IF NOT EXISTS session_epoch/.test(sql))).toBe(true);
   });
 });
