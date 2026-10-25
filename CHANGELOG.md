@@ -2,6 +2,24 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.1.0-beta.2] — 2026-10-25
+
+**Fixes**
+
+- **`actions/ci-check` works again** (#278). It ran `npx agenfk@<version>`, but agenfk is not on npm, so the action
+  failed for every user. It now installs the pinned GitHub release's `agenfk-dist.tar.gz` (optionally checked
+  against `agenfk-sha256`) and runs the built CLI. A download, install or CLI failure runs the gated steps under
+  `policy: run` and fails the job under `require`; a failed CLI never leaves `run=false` behind, and the CLI's
+  output is never read as workflow commands. This repository's CI gates its Linux test step on the check.
+- **Hub: Admin → Repositories scrolls within the window and is searchable** by part of a repository's name (#273).
+- **Hub: Recent receipts name the producer** by its git email (else OS user), not its installation id (#276).
+
+**Test suite**
+
+- **The full suite runs in about half the time** (#274, #281). Server, hub and CLI test files now run in parallel,
+  each worker with its own sandboxed home. About 400 repeated, nitpicking, over-the-top and text-rubric tests were
+  removed or merged, each with named coverage; tests that never asserted were rewritten.
+
 ## [2.1.0-beta.1] — 2026-10-24
 
 **CI receipts (RFC-002): verify once, reuse in CI.** Opt-in per repository on the hub. See `HUB_ARCHITECTURE.md` §13.
