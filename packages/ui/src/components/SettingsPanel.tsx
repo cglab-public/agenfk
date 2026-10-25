@@ -119,12 +119,16 @@ function SettingRow({
       data-testid="setting-row"
       data-row={testId}
       className={clsx(
-        'flex items-start gap-4 border-b border-border-soft py-4 last:border-b-0',
+        'flex flex-wrap items-start gap-x-4 gap-y-2 border-b border-border-soft py-4 last:border-b-0',
         indent && 'pl-4',
       )}
     >
       {lead && <div className="mt-0.5 shrink-0">{lead}</div>}
-      <div className="min-w-0 flex-1">
+      {/* a2a094e5. overflow-wrap is inherited, so a path or a command in the
+          text breaks inside it instead of pushing the pane wider; a <pre>
+          does not wrap and scrolls itself. The 14rem basis is where the
+          control stops fitting beside the text and wraps under it. */}
+      <div data-testid="setting-text" className="min-w-0 flex-[1_1_14rem] [overflow-wrap:anywhere]">
         <p className="text-[13px] font-semibold text-ink">{title}</p>
         <p className="mt-0.5 text-[12px] leading-snug text-ink-tertiary">
           {description}
@@ -145,7 +149,8 @@ function SettingRow({
           </p>
         )}
       </div>
-      <div className="mt-0.5 flex shrink-0 items-center gap-2">{control}</div>
+      {/* Never wider than the row, a select included, once it has wrapped. */}
+      <div className="mt-0.5 flex min-w-0 max-w-full shrink-0 flex-wrap items-center gap-2 [&_select]:max-w-full">{control}</div>
     </div>
   );
 }
@@ -1062,29 +1067,32 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
   const shown = sections.find(s => s.id === current) ?? sections[0];
 
   return (
-    <div className="flex h-full min-h-0">
-      <div className="flex w-48 shrink-0 flex-col border-r border-border-soft">
+    // A container, so the pane reflows by its own width: at 150-200% scale
+    // the window is 480-853 CSS px and the app sidebar keeps its share.
+    <div data-testid="settings-root" className="@container flex h-full min-h-0">
+      <div data-testid="settings-rail" className="flex w-12 shrink-0 flex-col border-r border-border-soft @xl:w-48">
       {/* Outside the nav: the nav is the list of sections, and tests and screen
-          readers walk it as exactly that (5f367fa9). */}
+          readers walk it as exactly that (5f367fa9). It folds with the rail. */}
       {onBack && (
-        <div className="px-2 pt-4">
+        <div className="px-1 pt-4 @xl:px-2">
           <button
             type="button"
             onClick={onBack}
             aria-label={backLabel}
             title={backLabel}
-            className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] text-ink-secondary transition-colors hover:bg-nav-surface hover:text-ink"
+            className="flex w-full items-center justify-center rounded-md py-1.5 text-left text-[13px] text-ink-secondary transition-colors hover:bg-nav-surface hover:text-ink @xl:justify-start @xl:px-3"
           >
-            <ArrowLeft size={15} aria-hidden="true" className="mr-2.5 shrink-0 opacity-80" />
-            Back
+            <ArrowLeft size={15} aria-hidden="true" className="shrink-0 opacity-80 @xl:mr-2.5" />
+            <span className="sr-only @xl:not-sr-only">Back</span>
           </button>
         </div>
       )}
       {/* The rail. Its entries come from `sections`, so it can never offer one
-          the pane cannot show. */}
+          the pane cannot show. Narrow, it folds to icons; each name stays as
+          the accessible name and the tooltip. */}
       <nav
         aria-label="Settings sections"
-        className={clsx('px-2 pb-6', onBack ? 'pt-2' : 'pt-6')}
+        className={clsx('px-1 pb-6 @xl:px-2', onBack ? 'pt-2' : 'pt-6')}
       >
         {sections.map(section => (
           <button
@@ -1095,8 +1103,9 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
             // looking at is information, not decoration, and a screen reader
             // needs it as much as the eye does.
             aria-current={section.id === shown.id ? 'page' : undefined}
+            title={section.label}
             className={clsx(
-              'mb-0.5 flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] transition-colors',
+              'mb-0.5 flex w-full items-center justify-center rounded-md py-1.5 text-left text-[13px] transition-colors @xl:justify-start @xl:px-3',
               section.id === shown.id
                 ? 'bg-accent-fill font-medium text-accent-ink'
                 : 'text-ink-secondary hover:bg-nav-surface hover:text-ink',
@@ -1104,8 +1113,8 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
           >
             {/* Decorative: the button's text already names the section, and a
                 second label here would make a screen reader say it twice. */}
-            <section.icon size={15} aria-hidden="true" className="mr-2.5 shrink-0 opacity-80" />
-            {section.label}
+            <section.icon size={15} aria-hidden="true" className="shrink-0 opacity-80 @xl:mr-2.5" />
+            <span className="sr-only @xl:not-sr-only">{section.label}</span>
           </button>
         ))}
       </nav>
@@ -1115,7 +1124,7 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
           and pushes the whole window into horizontal scroll, which is the
           classic way a two-column settings pane breaks. */}
       <div data-testid="settings-body" className="min-w-0 flex-1 overflow-y-auto scrollbar-slim">
-        <div className="mx-auto w-full max-w-2xl px-8 py-6">
+        <div className="mx-auto w-full max-w-2xl px-4 py-6 @xl:px-8">
           <header>
             <h1 className="text-xl font-semibold text-ink">{shown.label}</h1>
             <p className="mt-1 text-[13px] text-ink-tertiary">
@@ -1159,8 +1168,11 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
               tallest one's height and the dialog no longer jumps between tabs
               (capped at the viewport, it scrolls here instead). The ones not
               shown keep their space but are invisible, hidden from assistive
-              tech and inert: nothing in them can be read, focused or clicked. */}
-          <div className="mt-8 grid">
+              tech and inert: nothing in them can be read, focused or clicked.
+              grid-cols-1 is minmax(0,1fr): the implicit auto column took the
+              widest min-content of every section, hidden ones included, and
+              pushed the shown one past the window edge (a2a094e5). */}
+          <div className="mt-8 grid grid-cols-1">
             {sections.map(section => {
               const isShown = section.id === shown.id;
               return (
