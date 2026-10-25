@@ -386,6 +386,85 @@ describe('the shape of it', () => {
       expect(rows.length, `section "${label}" has no settings in it`).toBeGreaterThan(0);
     }
   });
+
+  // BUG a2a094e5. jsdom does not lay out, so these pin the CSS that decides
+  // the widths; the widths themselves were measured in Chromium (on the card).
+  it('sizes the stacked sections to the pane, not to the widest hidden one', async () => {
+    // Every section sits in one grid cell. An auto column takes the widest
+    // min-content of all of them, hidden ones included, so one long command
+    // in another section pushed Appearance past the window edge.
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const grid = panel.querySelector('[data-testid="settings-pane"]')?.parentElement;
+    expect(grid?.className).toMatch(/(^|\s)grid(\s|$)/);
+    expect(grid?.className).toMatch(/grid-cols-1|\[grid-template-columns:minmax\(0,1fr\)\]/);
+    // And nothing that brings the auto column back at some width.
+    expect(grid?.className.split(/\s+/).filter(c => /grid-cols-/.test(c))).toEqual(['grid-cols-1']);
+  });
+
+  // At 150-200% scale the window is 480-853 CSS px wide and the app sidebar
+  // keeps its share, so the pane must reflow by its own width (a container
+  // query), not by the viewport's.
+  it('folds the section rail to icons when the pane is narrow, keeping each name', async () => {
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const root = panel.querySelector('[data-testid="settings-root"]');
+    expect(root?.className).toMatch(/(^|\s)@container(\s|$)/);
+    const rail = within(panel).getByRole('navigation', { name: /settings sections/i });
+    const column = rail.closest('[data-testid="settings-rail"]') ?? rail;
+    expect(column.className).toMatch(/(^|\s)w-12(\s|$)/);
+    expect(column.className).toMatch(/@xl:w-48/);
+    expect(column.className).not.toMatch(/(^|\s)w-48(\s|$)/);
+    for (const button of within(rail).getAllByRole('button')) {
+      // The accessible name stays; only the visible label folds away.
+      expect(button.textContent?.trim()).not.toBe('');
+      expect(button.querySelector('span')?.className).toMatch(/sr-only/);
+      expect(button.querySelector('span')?.className).toMatch(/@xl:not-sr-only/);
+      expect(button.getAttribute('title')).toBe(button.textContent?.trim());
+      expect(button.className).toMatch(/(^|\s)justify-center(\s|$)/);
+      expect(button.className).toMatch(/@xl:justify-start/);
+    }
+    // Back (5f367fa9) sits in the same column, outside the nav, and folds with it.
+    const back = within(column as HTMLElement).getByRole('button', { name: /^back to tasks$/i });
+    expect(back.querySelector('span')?.className).toMatch(/sr-only/);
+    expect(back.querySelector('span')?.className).toMatch(/@xl:not-sr-only/);
+    expect(back.className).toMatch(/@xl:justify-start/);
+  });
+
+  it('narrows its padding with the pane', async () => {
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const inner = panel.querySelector('[data-testid="settings-body"] > div');
+    expect(inner?.className).toMatch(/(^|\s)px-4(\s|$)/);
+    expect(inner?.className).toMatch(/@xl:px-8/);
+  });
+
+  it('lets a row put its control under the text when they do not fit side by side', async () => {
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const row = panel.querySelector('[data-testid="setting-row"]') as HTMLElement;
+    expect(row.className).toMatch(/(^|\s)flex-wrap(\s|$)/);
+    const control = row.lastElementChild as HTMLElement;
+    // The control's own cap, not the [&_select] one (which also contains the
+    // string): without it the cockpit checkboxes run past a 480px pane.
+    expect(control.className.split(/\s+/)).toContain('max-w-full');
+    expect(control.className).toMatch(/\[&_select\]:max-w-full/);
+  });
+
+  it('wraps a long unbroken word in a row instead of widening the pane', async () => {
+    // A path or a command has no spaces to break at; the text column must be
+    // allowed to break inside it.
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const text = panel.querySelector('[data-testid="setting-row"] > [data-testid="setting-text"]');
+    expect(text?.className).toMatch(/min-w-0/);
+    expect(text?.className).toMatch(/\[overflow-wrap:anywhere\]/);
+  });
 });
 
 
