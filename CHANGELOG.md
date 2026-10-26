@@ -2,6 +2,21 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [Unreleased]
+
+**Database**
+
+- **Backups are SQLite snapshots of the whole database** (#288). They were one JSON string of projects and
+  items, which failed above ~512 MB (`Invalid string length`) and never held flows, settings or receipts.
+  `agenfk-backup-<time>.sqlite` is written every 30 minutes and on shutdown, with node:sqlite's online backup
+  (`VACUUM INTO` on a Node older than 22.16). The 5 newest are kept, older `.json` ones included. A new install
+  restores the newest; a `.json` one is still imported as before. A failed backup is shown by `agenfk db
+  status`, not only logged.
+- **`agenfk db vacuum`** (#288) folds the WAL into the database, gives back the space deleted rows left, and
+  checks the result, through the server. It is refused while a verify suite run is queued or running, and names
+  the cards. `agenfk db status` shows the database and WAL sizes, what a vacuum would reclaim, and the largest
+  tables.
+
 ## [2.1.0-beta.2] — 2026-10-25
 
 **Fixes**
