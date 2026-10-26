@@ -3,7 +3,7 @@
   "version": "2.1.0-beta.3",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22.12.0"
+    "node": "^22.13.0 || >=23.5.0"
   },
   "description": "Corporate Hub for AgEnFK — fleet-wide metrics + timeline server",
   "main": "dist/server.js",

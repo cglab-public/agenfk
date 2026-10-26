@@ -2,6 +2,19 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [Unreleased]
+
+**Breaking**
+
+- **Node 22.13 or newer is required** (was 22.12). inquirer 14, which the CLI's interactive `flow create` and
+  `flow edit` use, declares `^22.13.0` (#286).
+  *Migrate:* upgrade Node to 22.13 or later before upgrading AgEnFK.
+
+**Dependencies**
+
+- **inquirer 9 → 14** (#286, supersedes #284). `agenfk flow edit`'s step pickers move from the `list` prompt,
+  which inquirer 10 removed, to `select`.
+
 ## [2.1.0-beta.3] — 2026-10-26
 
 **Hub**

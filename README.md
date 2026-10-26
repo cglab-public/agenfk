@@ -123,7 +123,7 @@ This will:
 >
 > Your choice is persisted in `~/.agenfk/config.json` and honored on every upgrade, so you only need to pass the flag once. You can also flip it later per-platform with `agenfk integration install <platform> --with-mcp` / `--no-mcp`. When MCP tools are present, agents may use them interchangeably with the CLI — the CLI commands remain the canonical, equivalent path.
 
-> **Requirements**: Node.js 22.12+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
+> **Requirements**: Node.js 22.13+ (23.5+ on the Node 23 line), git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
 
 **To update**, run the same command again — npm will fetch the latest from GitHub and re-run setup. A default (no `--with-mcp`) upgrade cleanly unregisters any stale agenfk MCP server, so you never end up in a half-state.
 

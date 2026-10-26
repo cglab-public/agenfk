@@ -5386,7 +5386,7 @@ flowCommand
 
         const { action } = await inquirer.prompt([
           {
-            type: 'list',
+            type: 'select',
             name: 'action',
             message: 'What would you like to do?',
             choices: [
@@ -5430,7 +5430,7 @@ flowCommand
           if (steps.length === 0) { console.log(chalk.yellow('No steps to remove.')); continue; }
           const { stepToRemove } = await inquirer.prompt([
             {
-              type: 'list',
+              type: 'select',
               name: 'stepToRemove',
               message: 'Select step to remove:',
               choices: steps.map((s: any) => ({ name: `${s.name} (${s.label})`, value: s.id })),
@@ -5441,14 +5441,17 @@ flowCommand
           if (steps.length < 2) { console.log(chalk.yellow('Need at least 2 steps to reorder.')); continue; }
           const { stepToMove } = await inquirer.prompt([
             {
-              type: 'list',
+              type: 'select',
               name: 'stepToMove',
               message: 'Select step to move:',
               choices: steps.map((s: any) => ({ name: `${s.name} (order: ${s.order})`, value: s.id })),
             },
           ]);
+          // Enter on an empty number prompt answers undefined, and a step with
+          // no order makes the server refuse the whole edit: keep its order.
+          const current = steps.find((s: any) => s.id === stepToMove)?.order;
           const { newOrder } = await inquirer.prompt([
-            { type: 'number', name: 'newOrder', message: 'New order number:' },
+            { type: 'number', name: 'newOrder', message: 'New order number:', default: current, required: true },
           ]);
           steps = steps.map((s: any) => s.id === stepToMove ? { ...s, order: newOrder } : s)
             .sort((a: any, b: any) => a.order - b.order);
@@ -5456,7 +5459,7 @@ flowCommand
           if (steps.length === 0) { console.log(chalk.yellow('No steps to edit.')); continue; }
           const { stepToEdit } = await inquirer.prompt([
             {
-              type: 'list',
+              type: 'select',
               name: 'stepToEdit',
               message: 'Select step to edit:',
               choices: steps.map((s: any) => ({ name: `${s.name} (${s.label})`, value: s.id })),
