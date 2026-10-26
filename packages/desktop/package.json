@@ -25,7 +25,7 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "electron": "40.10.6",
-    "electron-builder": "^26.0.12",
+    "electron-builder": "^26.18.0",
     "typescript": "~5.9.3"
   },
   "author": "CG/lab",
