@@ -2,7 +2,7 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [Unreleased]
+## [2.1.0-beta.3] — 2026-10-26
 
 **Hub**
 
