@@ -1263,12 +1263,23 @@ test command and the same review agent again. The decision record is RFC-002
   claim is never read). It cannot prove what ran on that workstation. An org
   that turns receipts on trusts its enrolled machines the way it trusts their
   commits.
-- **Only allowlisted producers count.** Each repository has a producer
-  allowlist of installation ids. A receipt from an installation not on it is
+- **Only allowed producers count.** Each repository has a producer mode
+  (RFC-002 Amendment 1). Under **Only these installations** (`listed`, the
+  default) its producer allowlist of installation ids decides. Under **All
+  installations in the organization** (`all`) any installation of the org
+  whose `retired_at` is null counts, decided live: an installation that joins
+  later counts with no admin action, and retiring one stops its receipts
+  counting. A receipt from an installation that is not an allowed producer is
   stored but marked not reusable (`producer_not_allowed`). Org-wide api keys
   bound to no installation can never publish (`installation_key_required`).
-  CI also re-checks the allowlist at read time (`producerAllowed`), so removing
-  a producer stops its earlier receipts from qualifying.
+  CI also re-checks the rule at read time (`producerAllowed`), so removing a
+  producer from the list, or retiring an installation under `all`, stops its
+  earlier receipts from qualifying.
+- **`all` trades the allowlist for the org's enrolment.** Under `all`, any
+  machine that joins the org can produce a receipt that lets CI skip a job in
+  Enforce. The hub still records which installation published each receipt,
+  and the pinned command and exact-tree match still hold. It fits an org where
+  joining the hub already requires a managed machine.
 - **Content is compared byte for byte.** CI computes the tree of its own
   checkout (`HEAD^{tree}`, which on a `pull_request` run is the PR's merge
   result) and only a receipt taken on that exact tree qualifies. Any change,
@@ -1289,7 +1300,12 @@ repository):
 | `verify_command` + `revision` | The authoritative verify command. The first authorized installation that syncs the repository claims it from its declared command (`POST /v1/repo-settings/init`, first writer wins atomically). After that the hub is authoritative: clients adopt it on sync and a local setting cannot replace it. An admin revision (`PUT /v1/admin/repos/command`) bumps `revision`; every revision is kept in `repo_command_revisions` with who made it. |
 | `receipts_mode` | `off` (default), `shadow` or `enforce`. |
 | `shadow_threshold` | Admin-set, no default. `enforce` is refused while it is unset. |
-| producers | `repo_producers`: the installations whose receipts may be reused. |
+| `producer_mode` | `listed` (default: the `repo_producers` allowlist decides) or `all` (every live installation of the org). Switched by an admin with `PUT /v1/admin/repos/producer-mode` (`{ repo, producerMode }`), audited as `repo.producer-mode`. Hubs created before the column gain it at boot, with every existing repository on `listed`. |
+| producers | `repo_producers`: the installations whose receipts may be reused under `listed`. The list is kept untouched while `all` is on, stays editable, and applies again when the repository is switched back. |
+
+`GET /v1/repo-settings` (what installations sync and store as
+`hubRepoSettings`) carries `producerMode` beside `producers`; a client reading
+an older hub that sends no mode treats it as `listed`. The ETag covers the mode.
 
 Commands run from the repository root on every machine, so they must be
 portable. The client rewrites an absolute path inside the checkout to a

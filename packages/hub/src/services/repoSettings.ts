@@ -25,6 +25,22 @@ import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 export const RECEIPTS_MODES = ['off', 'shadow', 'enforce'] as const;
 export type ReceiptsMode = (typeof RECEIPTS_MODES)[number];
 
+/**
+ * Who may produce a repository's receipts (RFC-002 Amendment 1).
+ *
+ * - `listed`: only the installations on the repository's `repo_producers`
+ *   allowlist - the default, and what every repository meant before the mode
+ *   existed.
+ * - `all`: any installation of the organisation that is not retired, decided
+ *   when it is asked, so a machine that joins later counts and a retired one
+ *   stops counting without anyone editing the repository.
+ *
+ * The allowlist is kept as it is under `all` and applies again when the
+ * repository is switched back.
+ */
+export const PRODUCER_MODES = ['listed', 'all'] as const;
+export type ProducerMode = (typeof PRODUCER_MODES)[number];
+
 /** A verify command is a shell line an agent runs. Bounded, never empty. */
 export const MAX_VERIFY_COMMAND_LENGTH = 4096;
 
@@ -38,6 +54,7 @@ export class RepoSettingsError extends Error {
       | 'not_found'
       | 'invalid_mode'
       | 'invalid_threshold'
+      | 'invalid_producer_mode'
       | 'threshold_required'
       | 'unknown_installation',
     message: string,
@@ -53,7 +70,12 @@ export interface RepoSettingsView {
   revision: number;
   receiptsMode: ReceiptsMode;
   shadowThreshold: number | null;
-  /** Installation ids allowed to produce receipts for this repo, sorted. */
+  /** Whether the allowlist below or every live installation of the org may produce receipts. */
+  producerMode: ProducerMode;
+  /**
+   * The explicit allowlist, sorted. It decides only under `listed`, and is kept
+   * untouched under `all` so switching back restores it.
+   */
   producers: string[];
   createdAt: string;
   updatedAt: string;
@@ -80,6 +102,7 @@ interface SettingsRow {
   revision: unknown;
   receipts_mode: string;
   shadow_threshold: unknown;
+  producer_mode: string;
   created_at: string;
   updated_at: string;
 }
@@ -142,6 +165,16 @@ const validMode = (input: unknown): ReceiptsMode => {
   return input as ReceiptsMode;
 };
 
+/** A stored mode, read defensively: anything but 'all' is the allowlist, the narrower answer. */
+const producerModeOf = (v: unknown): ProducerMode => (String(v) === 'all' ? 'all' : 'listed');
+
+const validProducerMode = (input: unknown): ProducerMode => {
+  if (typeof input !== 'string' || !(PRODUCER_MODES as readonly string[]).includes(input)) {
+    throw new RepoSettingsError('invalid_producer_mode', `producerMode must be one of ${PRODUCER_MODES.join(', ')}`);
+  }
+  return input as ProducerMode;
+};
+
 /** A threshold is a positive whole number, or null to clear it. */
 const validThreshold = (input: unknown): number | null => {
   if (input === null) return null;
@@ -161,7 +194,7 @@ async function producersOf(db: HubDb, orgId: string, remoteUrl: string): Promise
 
 async function rowOf(db: HubDb, orgId: string, remoteUrl: string): Promise<SettingsRow | undefined> {
   return await db.get<SettingsRow>(
-    `SELECT remote_url, verify_command, revision, receipts_mode, shadow_threshold, created_at, updated_at
+    `SELECT remote_url, verify_command, revision, receipts_mode, shadow_threshold, producer_mode, created_at, updated_at
      FROM repo_settings WHERE org_id = ? AND remote_url = ?`,
     [orgId, remoteUrl],
   );
@@ -186,6 +219,7 @@ function toView(row: SettingsRow, producers: string[]): RepoSettingsView {
     revision: Number(row.revision),
     receiptsMode: String(row.receipts_mode) as ReceiptsMode,
     shadowThreshold: intOrNull(row.shadow_threshold),
+    producerMode: producerModeOf(row.producer_mode),
     producers,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -203,7 +237,7 @@ export async function getRepoSettings(db: HubDb, orgId: string, repo: unknown): 
 /** Every repo the org has claimed, in canonical-URL order. */
 export async function listRepoSettings(db: HubDb, orgId: string): Promise<RepoSettingsView[]> {
   const rows = await db.all<SettingsRow>(
-    `SELECT remote_url, verify_command, revision, receipts_mode, shadow_threshold, created_at, updated_at
+    `SELECT remote_url, verify_command, revision, receipts_mode, shadow_threshold, producer_mode, created_at, updated_at
      FROM repo_settings WHERE org_id = ? ORDER BY remote_url`,
     [orgId],
   );
@@ -494,4 +528,71 @@ export async function setProducer(
     );
   }
   return viewOf(db, orgId, remoteUrl);
+}
+
+/**
+ * Switch who may produce the repository's receipts (RFC-002 Amendment 1).
+ * The allowlist rows are not touched in either direction: under `all` they wait
+ * for the switch back, which is what makes the switch reversible.
+ */
+export async function setProducerMode(
+  db: HubDb,
+  orgId: string,
+  repo: unknown,
+  producerMode: unknown,
+): Promise<RepoSettingsView> {
+  const remoteUrl = canonicalRepo(repo);
+  const mode = validProducerMode(producerMode);
+  await db.run(
+    'UPDATE repo_settings SET producer_mode = ?, updated_at = ? WHERE org_id = ? AND remote_url = ?',
+    [mode, nowIso(), orgId, remoteUrl],
+  );
+  // A repository the org has no row for updated nothing; viewOf answers not_found.
+  return viewOf(db, orgId, remoteUrl);
+}
+
+/** Answers "may this installation produce receipts for this repository, now?". */
+export type ProducerCheck = (installationId: string) => boolean;
+
+/**
+ * The repository's producer rule as it stands NOW, as a check over
+ * installation ids - what the publish decision and every CI read ask.
+ *
+ * Under `listed` it is membership of the allowlist, exactly as before the mode
+ * existed. Under `all` it is "an installation of THIS org that is not retired",
+ * read live from `installations`, so a machine that joined since counts and a
+ * retired one does not, with no row of the repository's own to keep in step.
+ *
+ * A repository with no settings row has no producers at all.
+ *
+ * Only the `candidates` the caller is about to judge are looked up (by primary
+ * key, under `all`), so a read costs the receipts it returns, not the size of
+ * the org's fleet. Any id outside `candidates` answers false.
+ */
+export async function producerCheckOf(
+  db: HubDb,
+  orgId: string,
+  remoteUrl: string,
+  candidates: readonly string[],
+): Promise<ProducerCheck> {
+  const ids = [...new Set(candidates)];
+  if (ids.length === 0) return () => false;
+  const row = await db.get<{ producer_mode: string }>(
+    'SELECT producer_mode FROM repo_settings WHERE org_id = ? AND remote_url = ?',
+    [orgId, remoteUrl],
+  );
+  if (!row) return () => false;
+  const marks = ids.map(() => '?').join(', ');
+  // Under 'all' the producers are the org's live installations; under 'listed', the allowlist rows.
+  const rows = producerModeOf(row.producer_mode) === 'all'
+    ? await db.all<{ id: string }>(
+      `SELECT id FROM installations WHERE org_id = ? AND retired_at IS NULL AND id IN (${marks})`,
+      [orgId, ...ids],
+    )
+    : await db.all<{ id: string }>(
+      `SELECT installation_id AS id FROM repo_producers WHERE org_id = ? AND remote_url = ? AND installation_id IN (${marks})`,
+      [orgId, remoteUrl, ...ids],
+    );
+  const allowed = new Set(rows.map(r => String(r.id)));
+  return (installationId: string) => allowed.has(installationId);
 }

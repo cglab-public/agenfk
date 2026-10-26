@@ -30,6 +30,13 @@ export interface HubRepoSettings {
   revision: number;
   receiptsMode: 'off' | 'shadow' | 'enforce';
   shadowThreshold: number | null;
+  /**
+   * Who may produce the repository's receipts (RFC-002 Amendment 1): the
+   * explicit `producers` list, or every live installation of the org. An older
+   * hub sends no mode, which means the list.
+   */
+  producerMode: 'listed' | 'all';
+  /** The explicit allowlist. It decides only under `listed`; the hub keeps it under `all`. */
   producers: string[];
   syncedAt: string;
 }
@@ -93,6 +100,7 @@ function parseSettings(raw: any): HubRepoSettings | null {
     revision: typeof raw.revision === 'number' ? raw.revision : 0,
     receiptsMode: receipts === 'shadow' || receipts === 'enforce' ? receipts : 'off',
     shadowThreshold: typeof raw.shadowThreshold === 'number' ? raw.shadowThreshold : null,
+    producerMode: raw.producerMode === 'all' ? 'all' : 'listed',
     producers: Array.isArray(raw.producers) ? raw.producers.filter((p: unknown): p is string => typeof p === 'string') : [],
     syncedAt: typeof raw.syncedAt === 'string' && raw.syncedAt ? raw.syncedAt : new Date().toISOString(),
   };

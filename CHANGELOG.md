@@ -4,6 +4,18 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+**Hub**
+
+- **"All joined installations" as a repository's receipt producers** (#289, RFC-002 Amendment 1). Admin →
+  Repositories now has a producer mode per repository: *Only these installations* (the default, today's
+  allowlist) or *All joined installations*, where any installation of the organization that is not retired
+  produces receipts CI may reuse, including ones that join later. Retiring an installation stops its receipts
+  counting, both when it publishes and when CI asks. The explicit list is kept while All is on and applies again
+  when the repository is switched back. The switch is audited (`repo.producer-mode`) and shows in the settings
+  installations sync (`producerMode`). Trade-off: under All, any machine that joins the organization can produce
+  a receipt that skips a job in Enforce, so use it where joining the hub already requires a managed machine.
+  Existing hubs gain the setting at boot, with every repository on *Only these installations*.
+
 **Database**
 
 - **Backups are SQLite snapshots of the whole database** (#288). They were one JSON string of projects and

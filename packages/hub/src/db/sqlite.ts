@@ -644,6 +644,7 @@ const SCHEMA_SQLITE = `
     revision INTEGER NOT NULL DEFAULT 1,
     receipts_mode TEXT NOT NULL DEFAULT 'off' CHECK (receipts_mode IN ('off','shadow','enforce')),
     shadow_threshold INTEGER,
+    producer_mode TEXT NOT NULL DEFAULT 'listed' CHECK (producer_mode IN ('listed','all')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (org_id, remote_url)
@@ -947,6 +948,17 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
     if (!dcHave.has('os_user'))         raw.exec("ALTER TABLE device_codes ADD COLUMN os_user TEXT");
     if (!dcHave.has('git_name'))        raw.exec("ALTER TABLE device_codes ADD COLUMN git_name TEXT");
     if (!dcHave.has('git_email'))       raw.exec("ALTER TABLE device_codes ADD COLUMN git_email TEXT");
+  }
+
+  // repo_settings.producer_mode — RFC-002 Amendment 1 (GH #289). Who may
+  // produce a repository's receipts: 'listed' (the repo_producers allowlist,
+  // which is what every repository meant before this column) or 'all' (any
+  // live installation of the org). A hub that already has repo_settings keeps
+  // its table through CREATE TABLE IF NOT EXISTS, so the column is added here;
+  // the DEFAULT gives every existing repository today's behaviour.
+  const rsCols = raw.prepare("PRAGMA table_info(repo_settings)").all() as Array<{ name: string }>;
+  if (rsCols.length > 0 && !new Set(rsCols.map(c => c.name)).has('producer_mode')) {
+    raw.exec("ALTER TABLE repo_settings ADD COLUMN producer_mode TEXT NOT NULL DEFAULT 'listed' CHECK (producer_mode IN ('listed','all'))");
   }
 
   // api_keys columns added when binding installation identity to magic-link tokens.
