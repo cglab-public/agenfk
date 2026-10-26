@@ -697,7 +697,7 @@ async function run() {
         const isNewInstall = !existsSync(dbPath);
         if (isNewInstall && existsSync(backupDir)) {
             const backups = readdirSync(backupDir)
-                .filter(f => f.startsWith('agenfk-backup-') && f.endsWith('.json'))
+                .filter(f => f.startsWith('agenfk-backup-') && (f.endsWith('.sqlite') || f.endsWith('.json')))
                 .sort()
                 .reverse();
             if (backups.length > 0) {
@@ -707,8 +707,13 @@ async function run() {
                 try {
                     const ans = await ask(rl2, `  Restore latest backup? [y/N]: `);
                     if (ans.trim().toLowerCase() === 'y') {
-                        const migrationPath = path.join(agenfkHome, 'migration.json');
-                        copyFileSync(path.join(backupDir, backups[0]), migrationPath);
+                        // GH-288: a .sqlite snapshot is the whole database, which the
+                        // server puts in place on first start; a .json dump (older
+                        // versions) is imported into a new one.
+                        const migrationPath = path.join(agenfkHome, backups[0].endsWith('.sqlite') ? 'migration.sqlite' : 'migration.json');
+                        // Copied aside and renamed, so an install cut short never stages half a backup.
+                        copyFileSync(path.join(backupDir, backups[0]), `${migrationPath}.partial`);
+                        renameSync(`${migrationPath}.partial`, migrationPath);
                         console.log(`  ${GREEN}Backup staged for restore — will be imported on first server start.${NC}`);
                     }
                 } finally {
