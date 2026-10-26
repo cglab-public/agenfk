@@ -1324,7 +1324,7 @@ those two checks do not pin scripts outside the repository, and neither does thi
 | Mode | Root card's final gate | CI |
 |---|---|---|
 | `off` | Today's behaviour, including closing on a green already on record. | `agenfk ci check` answers "run" (`receipts_off`). |
-| `shadow` | Runs the authoritative command fresh, even when a green is on record, and publishes receipts. | Evaluates receipts and reports whether it *would* reuse (`would-reuse`), but always runs the step. |
+| `shadow` | Runs the authoritative command fresh, even when a green is on record or a sibling root card verified the same tree, and publishes receipts. | Evaluates receipts and reports whether it *would* reuse (`would-reuse`), but always runs the step. |
 | `enforce` | As shadow. | Skips the gated steps when a receipt qualifies. |
 
 Child cards keep deferring to their parent; only the root card (the one the PR
@@ -1384,7 +1384,7 @@ revocation are audited (`ci-token.issue`, `ci-token.revoke`).
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/v1/ci/receipts?repo&kind&pr&tree&lens` | Candidates, newest first. By `pr` first (the latest `pr.opened`/`pr.updated` event links the PR to its root card), falling back to `tree`. `lookup.by` says which answered. Each candidate carries its tree, commit, command revision, `reusable` + reason, producer and `producerAllowed`, lenses (reviews), and report availability. Also returns the repository's current command, revision and mode. |
+| GET | `/v1/ci/receipts?repo&kind&pr&tree&lens` | Candidates, newest first. By `pr` first (the latest `pr.opened`/`pr.updated` event links the PR to its root card), falling back to `tree` when that card has no receipt of the kind, or none for the tree CI asks about (a PR of several root cards, registered on one that closed before the others). `lookup.by` then says `tree`. `lookup.by` says which answered. Each candidate carries its tree, commit, command revision, `reusable` + reason, producer and `producerAllowed`, lenses (reviews), and report availability. Also returns the repository's current command, revision and mode. |
 | GET | `/v1/ci/receipts/:id` | One receipt as published, plus the summary. |
 | GET | `/v1/ci/receipts/:id/report` | The run's log, inflated, as `text/plain`. |
 

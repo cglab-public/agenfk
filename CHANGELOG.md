@@ -29,6 +29,19 @@ All notable changes to AgEnFK are documented here.
   the cards. `agenfk db status` shows the database and WAL sizes, what a vacuum would reclaim, and the largest
   tables.
 
+**CI receipts**
+
+- **A root card in Shadow or Enforce no longer closes on a sibling's green** (#291). It ran nothing, so it made
+  no receipt, and a PR of two root cards was certified by neither. It now runs the command itself, as the
+  root card's final gate does whenever a green is on record; `agenfk verify --plan` says so.
+- **A root parent in Shadow or Enforce is no longer closed by its last child** (#291). The roll-up walked it
+  onto the exit step having run nothing, and its children (which defer receipts to it) made none either. It now
+  stops one step short, as on a `verifyAt: parent` flow: the parent's own verify runs fresh and makes the receipt.
+- **`agenfk verify --plan` no longer promises one run** where a final step's capture would close a root card in
+  Shadow or Enforce (#291): the close runs the command again after it, and the plan now says so.
+- **CI finds the receipt for its tree when the PR's card has only older ones** (#291). The lookup stopped at the
+  card the PR is registered on; it now falls back to the receipts for the tree CI checked out.
+
 ## [2.1.0-beta.2] — 2026-10-25
 
 **Fixes**
