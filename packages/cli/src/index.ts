@@ -2706,21 +2706,73 @@ const dbCommand = program
 
 dbCommand
   .command('status')
-  .description('Show current database type, path, and backup information')
-  .action(async () => {
+  .description('Show current database type, path, size, and backup information')
+  .option('--tables', 'Also show the largest tables (reads every page of the database)')
+  .action(async (opts: { tables?: boolean }) => {
     try {
-      const { data } = await axios.get(`${API_URL}/db/status`);
+      const { data } = await axios.get(`${API_URL}/db/status${opts.tables ? '?tables=1' : ''}`);
       console.log(chalk.blue('\nDatabase Status'));
       console.log(chalk.white(`  Type:          ${data.dbType.toUpperCase()}`));
       console.log(chalk.white(`  Path:          ${data.dbPath}`));
       console.log(chalk.white(`  Backup Dir:    ${data.backupDir}`));
       console.log(chalk.white(`  Backups:       ${data.backupCount}`));
-      console.log(chalk.white(`  Latest Backup: ${data.latestBackup || 'none'}\n`));
+      console.log(chalk.white(`  Latest Backup: ${data.latestBackup || 'none'}`));
+      if (data.lastBackupError) {
+        console.log(chalk.red(`  Last backup FAILED at ${data.lastBackupError.at}: ${data.lastBackupError.error}`));
+      }
+      // GH-288: what the file holds, and what a vacuum would give back.
+      if (data.size) {
+        const s = data.size;
+        console.log(chalk.white(`  Size:          ${formatBytes(s.fileBytes)}`));
+        console.log(chalk.white(`  WAL:           ${formatBytes(s.walBytes)}`));
+        console.log(chalk.white(`  Reclaimable:   ${formatBytes(s.reclaimableBytes)}`) + chalk.gray(s.reclaimableBytes > 0 ? '  (agenfk db vacuum)' : ''));
+        if (s.tables) {
+          console.log(chalk.white('  Largest tables:'));
+          for (const t of s.tables.slice(0, 5)) console.log(chalk.white(`    ${t.name.padEnd(24)} ${formatBytes(t.bytes)}`));
+        }
+      }
+      console.log();
     } catch (error: any) {
       console.error(chalk.red('Error fetching DB status:'), error.response?.data?.error || error.message);
       console.error(chalk.yellow('Is the API server running? Try: agenfk up'));
     }
   });
+
+dbCommand
+  .command('vacuum')
+  .description('Compact the database: fold in the WAL, give back the space deleted rows left, and check the result')
+  .action(async () => {
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+    if (!fs.existsSync(tokenPath)) {
+      console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+      process.exitCode = 1;
+      return;
+    }
+    const token = fs.readFileSync(tokenPath, 'utf8').trim();
+    console.log(chalk.blue('Vacuuming the database (the server answers nothing until it finishes)...'));
+    try {
+      const { data } = await axios.post(`${API_URL}/db/vacuum`, {}, { headers: { 'x-agenfk-internal': token } });
+      const total = (s: any) => s.fileBytes + s.walBytes;
+      console.log(chalk.green(`Database: ${formatBytes(total(data.before))} -> ${formatBytes(total(data.after))}`));
+      if (data.check === 'ok') {
+        console.log(chalk.green('Integrity check: ok'));
+      } else {
+        console.error(chalk.red(`Integrity check failed:\n${data.check}`));
+        process.exitCode = 1;
+      }
+    } catch (error: any) {
+      if (error.response?.status === 401) console.error(chalk.red('Error: Invalid verify token.'));
+      else console.error(chalk.red('Error vacuuming the database:'), error.response?.data?.error || error.message);
+      process.exitCode = 1;
+    }
+  });
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
 
 // db switch removed — SQLite is the only supported storage backend.
 
