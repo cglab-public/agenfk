@@ -342,6 +342,13 @@ export async function lookupReceipts(db: HubDb, token: CiTokenContext, q: Lookup
   if (!by && tree !== null) {
     receipts = await candidates('content_tree', tree);
     if (receipts.length) by = 'tree';
+  } else if (by === 'pr' && tree !== null && !receipts.some(r => r.contentTree === tree)) {
+    // GH-291: the PR's card has receipts, but none for the tree CI checked out -
+    // a PR of several root cards, registered on one that closed before the
+    // others. A receipt for that tree from another card is the one that can
+    // certify it; with none, the card's own stay, so CI can say why not.
+    const forTree = await candidates('content_tree', tree);
+    if (forTree.length) { receipts = forTree; by = 'tree'; }
   }
 
   return {
