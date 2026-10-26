@@ -28,9 +28,49 @@ import {
 // node:sqlite is a built-in module available from Node.js v22+.
 // Using require() to avoid ESM/CJS interop issues in the compiled output.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+const sqlite = require('node:sqlite') as typeof import('node:sqlite');
+const { DatabaseSync } = sqlite;
+// The online backup API arrived in Node 22.16 / 23.8; older Nodes take VACUUM INTO.
+const onlineBackup = (sqlite as unknown as { backup?: (db: unknown, dest: string) => Promise<number> }).backup;
 
 type DB = InstanceType<typeof DatabaseSync>;
+
+/** What the database file holds (GH-288): `agenfk db status`. */
+export interface DbStats {
+  fileBytes: number;
+  walBytes: number;
+  pageSize: number;
+  pageCount: number;
+  freelistCount: number;
+  /** The free pages deleted rows left behind: what `agenfk db vacuum` gives back. */
+  reclaimableBytes: number;
+  /** Largest first; a table's indexes count toward it. Only when asked for: it reads every page. */
+  tables?: { name: string; bytes: number }[];
+}
+
+/**
+ * Whether a database file that is not open is a whole AgEnFK database (GH-288):
+ * "ok", else why not. An empty file counts as an empty database to SQLite and
+ * passes its integrity check, so the file must also have content and carry
+ * AgEnFK's own tables. Read-only: the file is not changed.
+ */
+export function checkSnapshotFile(file: string): string {
+  try {
+    if (fs.statSync(file).size === 0) return 'the file is empty';
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+      const check = (db.prepare('PRAGMA quick_check').all() as { quick_check: string }[]).map(r => r.quick_check).join('\n');
+      if (check !== 'ok') return check;
+      const tables = new Set((db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as { name: string }[]).map(r => r.name));
+      const missing = ['projects', 'items'].filter(t => !tables.has(t));
+      return missing.length ? `not an AgEnFK database (no ${missing.join(', ')} table)` : 'ok';
+    } finally {
+      db.close();
+    }
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
 
 export class SQLiteStorageProvider implements StorageProvider {
   name = 'sqlite-storage';
@@ -209,6 +249,77 @@ export class SQLiteStorageProvider implements StorageProvider {
       throw e;
     }
     return drop.length;
+  }
+
+  // ── Maintenance (GH-288) ─────────────────────────────────────────────────
+
+  /**
+   * What the file holds: its size and its WAL's, and the free pages a vacuum
+   * would reclaim. With `tables`, also the tables largest first - a walk over
+   * every page of the database, so only when asked for (review of GH-288).
+   */
+  dbStats(opts: { tables?: boolean } = {}): DbStats {
+    const pragma = (name: string) => Number((this.database.prepare(`PRAGMA ${name}`).get() as Record<string, unknown>)[name]);
+    const pageSize = pragma('page_size');
+    const pageCount = pragma('page_count');
+    const freelistCount = pragma('freelist_count');
+    const size = (p: string) => (fs.existsSync(p) ? fs.statSync(p).size : 0);
+    // dbstat lists indexes under their own names; each counts toward its table.
+    const rows = !opts.tables ? [] : this.database.prepare(
+      `SELECT coalesce(m.tbl_name, d.name) AS name, sum(d.pgsize) AS bytes
+         FROM dbstat d LEFT JOIN sqlite_schema m ON m.name = d.name
+        GROUP BY 1 ORDER BY 2 DESC`,
+    ).all() as { name: string; bytes: number }[];
+    return {
+      fileBytes: size(this.dbPath),
+      walBytes: size(this.dbPath + '-wal'),
+      pageSize,
+      pageCount,
+      freelistCount,
+      reclaimableBytes: freelistCount * pageSize,
+      ...(opts.tables ? { tables: rows.map(r => ({ name: r.name, bytes: Number(r.bytes) })) } : {}),
+    };
+  }
+
+  /**
+   * Fold the WAL into the file, rewrite the file without its free pages, and
+   * check the result. Holds the database for its whole duration: the caller
+   * makes sure nothing long-running needs it meanwhile.
+   */
+  vacuum(): { before: DbStats; after: DbStats; check: string } {
+    const before = this.dbStats();
+    this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    this.database.exec('VACUUM');
+    // VACUUM goes through the WAL too: fold it in again so the file is the whole database.
+    this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    const check = (this.database.prepare('PRAGMA quick_check').all() as { quick_check: string }[])
+      .map(r => r.quick_check).join('\n');
+    return { before, after: this.dbStats(), check };
+  }
+
+  /**
+   * Copy the whole database to `dest` as one SQLite file (GH-288): node:sqlite's
+   * online backup, which copies a step at a time without holding the database,
+   * or VACUUM INTO (one statement, compact) on a Node without it. Written beside
+   * `dest` and renamed into place, so `dest` is either the whole snapshot or
+   * absent.
+   */
+  async snapshotTo(dest: string, opts: { online?: boolean } = {}): Promise<void> {
+    const online = (opts.online ?? true) && typeof onlineBackup === 'function';
+    // Unique per call: two snapshots to one destination never share (or delete) a temporary file.
+    const partial = `${dest}.${process.pid}-${Math.random().toString(36).slice(2)}.partial`;
+    try {
+      if (online) await onlineBackup!(this.database, partial);
+      else this.database.prepare('VACUUM INTO ?').run(partial);
+      // The copy keeps the WAL mode it was taken in, and opening it would grow
+      // -wal/-shm files beside it: a backup is one self-contained file.
+      const copy = new DatabaseSync(partial);
+      try { copy.exec('PRAGMA journal_mode = DELETE'); } finally { copy.close(); }
+      fs.renameSync(partial, dest);
+    } catch (e) {
+      fs.rmSync(partial, { force: true });
+      throw e;
+    }
   }
 
   async shutdown(): Promise<void> {

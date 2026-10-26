@@ -2,7 +2,7 @@ import { StringDecoder } from 'string_decoder';
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
-import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
+import { SQLiteStorageProvider, checkSnapshotFile } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import { insideRoot, isTestPath, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
@@ -614,33 +614,86 @@ const purgeItemLogs = (itemId: string): void => {
 // ── Backup ───────────────────────────────────────────────────────────────────
 
 function backupDir(): string { return path.join(os.homedir(), '.agenfk', 'backup'); }
-const MAX_BACKUPS = 10;
+// GH-288: a backup is a snapshot of the whole database, ~its size on disk.
+const MAX_BACKUPS = 5;
+const isBackupFile = (f: string) => f.startsWith('agenfk-backup-') && (f.endsWith('.sqlite') || f.endsWith('.json'));
+/** The backup files, oldest first: .sqlite snapshots and the .json dumps older versions wrote. */
+function listBackups(): string[] {
+  if (!fs.existsSync(backupDir())) return [];
+  return fs.readdirSync(backupDir()).filter(isBackupFile).sort();
+}
+/** The last backup that failed, until one succeeds: `agenfk db status` reports it (it used to reach only api.log). */
+let lastBackupError: { at: string; error: string } | null = null;
 
-const performBackup = async (): Promise<string> => {
-  if (!fs.existsSync(backupDir())) fs.mkdirSync(backupDir(), { recursive: true });
-
-  const [projects, items] = await Promise.all([
-    storage.listProjects(),
-    storage.listItems({ limit: 1_000_000 }),  // all items including archived
-  ]);
-
-  const timestamp = new Date().toISOString().replace(/:/g, '-');
-  const dbType = 'sqlite';
-  const backupFile = path.join(backupDir(), `agenfk-backup-${timestamp}.json`);
-
-  fs.writeFileSync(backupFile, JSON.stringify({ version: '1', backupDate: new Date().toISOString(), dbType, projects, items }, null, 2));
-
-  // Rotate — keep only the MAX_BACKUPS most recent files
-  const existing = fs.readdirSync(backupDir())
-    .filter(f => f.startsWith('agenfk-backup-') && f.endsWith('.json'))
-    .sort();
-  for (const old of existing.slice(0, Math.max(0, existing.length - MAX_BACKUPS))) {
-    fs.unlinkSync(path.join(backupDir(), old));
-  }
-
-  console.log(`[BACKUP] Written: ${backupFile}`);
-  return backupFile;
+// One backup at a time: a manual one asked for while the periodic one runs
+// shares it rather than racing it for files (review of GH-288).
+let backupInFlight: Promise<string> | null = null;
+const performBackup = (): Promise<string> => {
+  if (!backupInFlight) backupInFlight = writeBackup().finally(() => { backupInFlight = null; });
+  return backupInFlight;
 };
+
+async function writeBackup(): Promise<string> {
+  try {
+    if (!fs.existsSync(backupDir())) fs.mkdirSync(backupDir(), { recursive: true });
+    // Names order backups by time, so a name taken waits for the next
+    // millisecond rather than taking a suffix that would sort out of order.
+    const nameAt = () => path.join(backupDir(), `agenfk-backup-${new Date().toISOString().replace(/:/g, '-')}.sqlite`);
+    let backupFile = nameAt();
+    while (fs.existsSync(backupFile)) {
+      await new Promise(r => setTimeout(r, 1));
+      backupFile = nameAt();
+    }
+    await (storage as SQLiteStorageProvider).snapshotTo(backupFile);
+
+    // Rotate: the one just written, and the newest others up to MAX_BACKUPS.
+    // Never by its place in the order alone - after the clock is set back it
+    // would sort oldest and go first.
+    const written = path.basename(backupFile);
+    const others = listBackups().filter(f => f !== written);
+    for (const old of others.slice(0, Math.max(0, others.length - (MAX_BACKUPS - 1)))) {
+      fs.unlinkSync(path.join(backupDir(), old));
+    }
+    lastBackupError = null;
+    console.log(`[BACKUP] Written: ${backupFile}`);
+    return backupFile;
+  } catch (e: any) {
+    lastBackupError = { at: new Date().toISOString(), error: e?.message ?? String(e) };
+    throw e;
+  }
+}
+
+/**
+ * A snapshot the installer staged (~/.agenfk/migration.sqlite, GH-288) becomes
+ * the database of an install that has none yet. Never over a database that
+ * exists: then it stays staged, and the log says why.
+ */
+function restoreStagedSnapshot(dbFile: string): void {
+  const staged = path.join(os.homedir(), '.agenfk', 'migration.sqlite');
+  if (!fs.existsSync(staged)) return;
+  if (fs.existsSync(dbFile)) {
+    console.warn(`[MIGRATION] ${staged} not restored: ${dbFile} already exists. Move one of them aside to choose.`);
+    return;
+  }
+  // Copied beside the database and checked before it takes the database's
+  // name: a copy cut short (a crash, or a staging copy the installer did not
+  // finish) must never open as the live database (review of GH-288).
+  fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+  const restoring = `${dbFile}.restoring`;
+  fs.copyFileSync(staged, restoring);
+  const check = checkSnapshotFile(restoring);
+  if (check !== 'ok') {
+    fs.rmSync(restoring, { force: true });
+    // Not started on an empty database instead: one would then exist, so no
+    // later restore could land, and the periodic backups would rotate empty
+    // snapshots over the good ones (review of GH-288).
+    throw new Error(`[MIGRATION] The backup staged for restore at ${staged} is not a whole database (${check}). `
+      + `Replace it with a good backup from ${backupDir()}, or remove it to start with an empty database, then start AgEnFK again.`);
+  }
+  fs.renameSync(restoring, dbFile);
+  fs.unlinkSync(staged);
+  console.log(`[MIGRATION] Restored the backup snapshot into ${dbFile}`);
+}
 
 // ── Archive / unarchive helpers ──────────────────────────────────────────────
 
@@ -1545,6 +1598,7 @@ const initStorage = async () => {
   storage = withRecordRetention(new SQLiteStorageProvider());
 
   console.log(`[SERVER_START] Using Database: ${dbPath} (SQLite)`);
+  restoreStagedSnapshot(dbPath);
   await storage.init({ path: dbPath });
   // f8d0a752: the server-wide suite-run limit, read from the settings it lives in.
   await loadSuiteRunSetting();
@@ -2289,18 +2343,32 @@ app.put("/api/telemetry/config", (req: any, res: any) => {
 
 // DB status & backup endpoints
 
-app.get("/db/status", asyncHandler(async (_req: any, res: any) => {
+app.get("/db/status", asyncHandler(async (req: any, res: any) => {
   const dbType = 'sqlite';
-  let backupCount = 0;
-  let latestBackup: string | null = null;
-  if (fs.existsSync(backupDir())) {
-    const files = fs.readdirSync(backupDir())
-      .filter(f => f.startsWith('agenfk-backup-') && f.endsWith('.json'))
-      .sort();
-    backupCount = files.length;
-    latestBackup = files.length > 0 ? files[files.length - 1] : null;
+  const files = listBackups();
+  const backupCount = files.length;
+  const latestBackup = files.length > 0 ? files[files.length - 1] : null;
+  res.json({ dbType, dbPath, backupDir: backupDir(), backupCount, latestBackup, lastBackupError, size: (storage as SQLiteStorageProvider).dbStats({ tables: req.query.tables === '1' }) });
+}));
+
+// GH-288: compact the database in place. VACUUM holds it for its whole
+// duration (the server answers nothing meanwhile), so it never starts while a
+// verify suite run is queued or running: that run's writes would wait on it.
+app.post("/db/vacuum", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
   }
-  res.json({ dbType, dbPath, backupDir: backupDir(), backupCount, latestBackup });
+  const running = cardsWithSuiteRunsInFlight();
+  if (running.length) {
+    return res.status(409).json({
+      error: `A verify suite run is in progress (${running.join(', ')}): vacuum when it finishes.`,
+      running,
+    });
+  }
+  console.log('[DB] Vacuum started');
+  const result = (storage as SQLiteStorageProvider).vacuum();
+  console.log(`[DB] Vacuum done: ${result.before.fileBytes + result.before.walBytes} -> ${result.after.fileBytes + result.after.walBytes} bytes, check: ${result.check}`);
+  res.json(result);
 }));
 
 app.post("/backup", asyncHandler(async (req: any, res: any) => {
@@ -3161,7 +3229,31 @@ async function refreshProjectExclusive(projectId: string): Promise<void> {
   const project: any = await storage.getProject(projectId);
   if ((projectExclusiveVersion.get(projectId) ?? 0) === before) projectExclusive.set(projectId, project?.exclusiveSuite === true);
 }
-export async function acquireSuiteRun(projectId: string | undefined, onWait: (w: SuiteWait, line: string) => void): Promise<() => void> {
+/**
+ * The cards with a suite run in flight, queued for a slot or running, by how
+ * many each has (GH-288): `agenfk db vacuum` holds the database for its whole
+ * duration, so it waits for none of them and is refused while any is here.
+ */
+const suiteRunsInFlight = new Map<string, number>();
+export function cardsWithSuiteRunsInFlight(): string[] { return [...suiteRunsInFlight.keys()]; }
+
+export async function acquireSuiteRun(projectId: string | undefined, onWait: (w: SuiteWait, line: string) => void, itemId?: string): Promise<() => void> {
+  if (!itemId) return acquireSuiteSlots(projectId, onWait);
+  suiteRunsInFlight.set(itemId, (suiteRunsInFlight.get(itemId) ?? 0) + 1);
+  let counted = true;
+  const uncount = () => {
+    if (!counted) return;
+    counted = false;
+    const n = (suiteRunsInFlight.get(itemId) ?? 1) - 1;
+    if (n > 0) suiteRunsInFlight.set(itemId, n); else suiteRunsInFlight.delete(itemId);
+  };
+  let release: () => void;
+  try { release = await acquireSuiteSlots(projectId, onWait); }
+  catch (e) { uncount(); throw e; }
+  return () => { uncount(); release(); };
+}
+
+async function acquireSuiteSlots(projectId: string | undefined, onWait: (w: SuiteWait, line: string) => void): Promise<() => void> {
   if (!projectId) return suiteSlots.acquire(w => onWait(w, waitingLine(w)));
   await refreshProjectExclusive(projectId);
   for (;;) {
@@ -5059,7 +5151,7 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
     const release = await acquireSuiteRun(item.projectId, (w, line) => {
       opts?.onOutput?.(line);
       opts?.onPhase?.({ state: 'queued', ahead: w.ahead });
-    });
+    }, item.id);
     try {
       opts?.onPhase?.(running);
       return await runAndRead(item, root, setting, command, cleanSha, opts, lazy);
@@ -10538,7 +10630,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     capture.note(line);
     if (run) appendRunOutput(run, line);
     setRunPhase(run, { state: 'queued', ahead: w.ahead });
-  });
+  }, item.id);
   setRunPhase(run, { state: 'running', kind: 'whole' });
 
   // The commit and the working-tree state the command actually ran against,
@@ -13165,6 +13257,11 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
       console.error(`[SERVER_START] Could not find a free port starting at ${REQUESTED_PORT}:`, err.message);
       process.exit(1);
     });
+  }).catch((err) => {
+    // A database that cannot be opened, or a staged restore that is not a
+    // whole database (GH-288): say why and stop, rather than serve without one.
+    console.error(`[SERVER_START] ${err?.message ?? err}`);
+    process.exit(1);
   });
 }
 
