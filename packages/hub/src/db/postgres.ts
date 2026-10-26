@@ -579,6 +579,7 @@ const SCHEMA_PG = `
     revision INTEGER NOT NULL DEFAULT 1,
     receipts_mode TEXT NOT NULL DEFAULT 'off' CHECK (receipts_mode IN ('off','shadow','enforce')),
     shadow_threshold INTEGER,
+    producer_mode TEXT NOT NULL DEFAULT 'listed' CHECK (producer_mode IN ('listed','all')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (org_id, remote_url)
@@ -997,6 +998,15 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     await adapter.exec("ALTER TABLE flows ADD COLUMN org_available INTEGER NOT NULL DEFAULT 0");
     // One-time backfill: the flow currently set as org default is implicitly available.
     await adapter.exec("UPDATE flows SET org_available = 1 WHERE id IN (SELECT flow_id FROM flow_assignments WHERE scope = 'org')");
+  }
+
+  // repo_settings.producer_mode — RFC-002 Amendment 1 (GH #289). See the
+  // sqlite adapter. Existing rows take the DEFAULT, today's allowlist mode.
+  const rsCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='repo_settings'",
+  );
+  if (rsCols.length > 0 && !new Set(rsCols.map(c => c.column_name)).has('producer_mode')) {
+    await adapter.exec("ALTER TABLE repo_settings ADD COLUMN producer_mode TEXT NOT NULL DEFAULT 'listed' CHECK (producer_mode IN ('listed','all'))");
   }
 
   // flow_assignments multi-scope migration. PG can DROP / ADD CONSTRAINT in

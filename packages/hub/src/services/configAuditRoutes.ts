@@ -112,14 +112,15 @@ const jiraSnap: Snapshot = async (db, orgId) =>
  * the same way before reading, or every row would read as a creation. A repo
  * with no record yet snapshots to null, which is the truth: there was nothing
  * to change. Producers ride along, since that is the list the producer route
- * moves, and `receipts_mode` would otherwise say nothing about it.
+ * moves, and `receipts_mode` would otherwise say nothing about it; so does
+ * `producer_mode`, whether that list or every live installation decides.
  */
 const repoSettingsSnap: Snapshot = async (db, orgId, _p, req) => {
   try {
     const remote = sanitizeRemoteUrl(String(req.body?.repo ?? '').trim());
     if (!remote) return null;
     const row = await db.get<any>(
-      `SELECT remote_url, verify_command, revision, receipts_mode, shadow_threshold, created_at, updated_at
+      `SELECT remote_url, verify_command, revision, receipts_mode, shadow_threshold, producer_mode, created_at, updated_at
        FROM repo_settings WHERE org_id = ? AND remote_url = ?`,
       [orgId, remote],
     );
@@ -215,6 +216,7 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   { method: 'PUT', path: '/v1/admin/repos/command', area: 'repositories', action: 'repo.command-revise', target: repoTarget, snapshot: repoSettingsSnap },
   { method: 'PUT', path: '/v1/admin/repos/mode', area: 'repositories', action: 'repo.mode', target: repoTarget, snapshot: repoSettingsSnap },
   { method: 'PUT', path: '/v1/admin/repos/producers', area: 'repositories', action: 'repo.producer', target: repoTarget, snapshot: repoSettingsSnap },
+  { method: 'PUT', path: '/v1/admin/repos/producer-mode', area: 'repositories', action: 'repo.producer-mode', target: repoTarget, snapshot: repoSettingsSnap },
   // JIRA (the org's app) and the org itself
   { method: 'PUT', path: '/v1/admin/jira', area: 'jira', action: 'jira.update', target: () => "the org's JIRA app", snapshot: jiraSnap },
   { method: 'POST', path: '/v1/admin/jira/disconnect-all', area: 'jira', action: 'jira.disconnect-all', target: () => 'every JIRA connection', noBody: true },
