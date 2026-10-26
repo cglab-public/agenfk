@@ -405,6 +405,37 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub CI read tokens and receipts 
       expect(r.body.receipts.map((x: any) => x.id)).toEqual([id]);
     });
 
+    // GH-291: a PR made of two root cards. The PR is registered on one, whose
+    // receipt is for an older tree; the other closed last, on the PR's content.
+    it('falls back to the content tree when none of the PR\'s card receipts is for the tree CI asks about', async () => {
+      await publish(verification({ content: { commit: COMMIT, gitTree: TREE_OTHER, treeState: null, treeStateVersion: 1 } }));
+      const sibling = await publish(verification({ card: { ...verification().card, id: 'card-sibling' } }));
+      await prOpened('org-a', CANON, 42, 'card-root');
+      const { token } = await mint({ repo: REPO_HTTPS });
+      const r = await lookup(token, { repo: REPO_HTTPS, kind: 'verification', pr: 42, tree: TREE });
+      expect(r.body.lookup).toMatchObject({ by: 'tree', pr: 42, cardId: 'card-root', tree: TREE });
+      expect(r.body.receipts.map((x: any) => x.id)).toEqual([sibling]);
+    });
+
+    it('still answers by the PR when one of its card\'s receipts is for that tree, even with a sibling\'s for it too', async () => {
+      const own = await publish(verification());
+      await publish(verification({ card: { ...verification().card, id: 'card-sibling' } }));
+      await prOpened('org-a', CANON, 42, 'card-root');
+      const { token } = await mint({ repo: REPO_HTTPS });
+      const r = await lookup(token, { repo: REPO_HTTPS, kind: 'verification', pr: 42, tree: TREE });
+      expect(r.body.lookup.by).toBe('pr');
+      expect(r.body.receipts.map((x: any) => x.id)).toEqual([own]);
+    });
+
+    it('keeps the PR card\'s stale receipts when nothing at all is for the tree, so CI can say why', async () => {
+      const stale = await publish(verification({ content: { commit: COMMIT, gitTree: TREE_OTHER, treeState: null, treeStateVersion: 1 } }));
+      await prOpened('org-a', CANON, 42, 'card-root');
+      const { token } = await mint({ repo: REPO_HTTPS });
+      const r = await lookup(token, { repo: REPO_HTTPS, kind: 'verification', pr: 42, tree: TREE });
+      expect(r.body.lookup.by).toBe('pr');
+      expect(r.body.receipts.map((x: any) => x.id)).toEqual([stale]);
+    });
+
     it('looks up by tree alone, and only that tree', async () => {
       const id = await publish(verification());
       await publish(verification({ content: { commit: COMMIT, gitTree: TREE_OTHER, treeState: null, treeStateVersion: 1 } }));

@@ -403,3 +403,120 @@ describe('in receipts mode the root card final gate runs the command, and the pa
     expect(receiptsOf(item), JSON.stringify(receiptsOf(item))).toHaveLength(0);
   });
 });
+
+/*
+ * GH-291: two ROOT cards on one tree (one PR made of two cards). The second to
+ * close found the first one's green and closed on it by sibling propagation -
+ * running nothing, so it made no receipt, and the PR's content was certified by
+ * nobody. In receipts mode a root card owes a fresh run whatever a sibling did.
+ */
+describe('in receipts mode a root card does not close on a sibling root card\'s green (GH-291)', () => {
+  async function twoRootCardsOneTree(mode: 'off' | 'shadow' | 'enforce') {
+    const dir = makeRepo();
+    const suite = counted('suite');
+    const pid = await project(await finalOnly(), reported(dir, suite.command));
+    await inReceiptsMode(pid, suite.command, mode);
+    const first = await card(pid, 'FINAL');
+    const second = await card(pid, 'FINAL');
+    const a = await validate(first);
+    expect(a.body.status, JSON.stringify(a.body)).toBe('END');
+    return { dir, suite, first, second };
+  }
+
+  for (const mode of ['shadow', 'enforce'] as const) {
+    it(`${mode}: the second root card runs the command itself and leaves its own receipt`, async () => {
+      const { dir, suite, second } = await twoRootCardsOneTree(mode);
+      const before = suite.runs().length;
+      const p = await predict(second);
+      expect(p.mode, JSON.stringify(p)).toBe('full');
+      const b = await validate(second);
+      expect(b.body.status, JSON.stringify(b.body)).toBe('END');
+      expect(b.body.message, 'closed on the sibling instead of running').not.toMatch(/sibling propagation|already verified by sibling/i);
+      expect(suite.runs(), 'the second root card ran nothing').toHaveLength(before + 1);
+      const receipts = receiptsOf(await read(second));
+      expect(receipts, JSON.stringify(commentsOf(await read(second)).map(c => c.content).slice(-2))).toHaveLength(1);
+      expect(receipts[0].content.gitTree).toBe(revParse(dir, 'HEAD^{tree}'));
+    });
+  }
+
+  it('CONTROL - receipts mode off: the second root card still closes on the sibling\'s green, running nothing', async () => {
+    const { suite, second } = await twoRootCardsOneTree('off');
+    const before = suite.runs().length;
+    expect((await predict(second)).mode).toBe('sibling-green');
+    const b = await validate(second);
+    expect(b.body.status, JSON.stringify(b.body)).toBe('END');
+    expect(suite.runs()).toHaveLength(before);
+    expect(receiptsOf(await read(second))).toHaveLength(0);
+  });
+});
+
+// Review of GH-291 (Codex): the two other ways a root card closed without the fresh run it owes.
+describe('in receipts mode a root parent is not closed by its last child (GH-291 review)', () => {
+  async function storyWithOneTask(mode: 'off' | 'shadow') {
+    const dir = makeRepo();
+    const suite = counted('suite');
+    const pid = await project(await finalOnly(), reported(dir, suite.command));
+    await inReceiptsMode(pid, suite.command, mode);
+    const parent = await agent().post('/items').send({ type: 'STORY', title: `story-${++seq}`, projectId: pid });
+    expect(parent.status, JSON.stringify(parent.body)).toBe(201);
+    await storage.updateItem(parent.body.id, { status: 'FINAL' } as any);
+    const child = await card(pid, 'FINAL');
+    await storage.updateItem(child, { parentId: parent.body.id } as any);
+    const c = await validate(child);
+    expect(c.body.status, JSON.stringify(c.body)).toBe('END');
+    return { dir, suite, parent: parent.body.id as string };
+  }
+
+  it('shadow: the last child closing leaves the root parent on its final step; the parent\'s own verify runs fresh and makes the receipt', async () => {
+    const { dir, suite, parent } = await storyWithOneTask('shadow');
+    expect((await read(parent)).status, 'the parent was walked to the exit step having run nothing').toBe('FINAL');
+    const before = suite.runs().length;
+    expect((await predict(parent)).mode).toBe('full');
+    const p = await validate(parent);
+    expect(p.body.status, JSON.stringify(p.body)).toBe('END');
+    expect(suite.runs()).toHaveLength(before + 1);
+    const receipts = receiptsOf(await read(parent));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].content.gitTree).toBe(revParse(dir, 'HEAD^{tree}'));
+  });
+
+  it('CONTROL - receipts mode off: the last child closing still closes the parent', async () => {
+    const { parent } = await storyWithOneTask('off');
+    expect((await read(parent)).status).toBe('END');
+  });
+});
+
+describe('in receipts mode the plan of a final step that captures says the command runs after the capture (GH-291 review)', () => {
+  const finalCaptures = () => flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true, role: 'closing' })]);
+  const plan = async (id: string) => {
+    const r = await agent().get(`/items/${id}/leave-plan`);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    return r.body;
+  };
+
+  it('shadow: the capture does not close the card, the verify command runs after it, and the plan says so', async () => {
+    const dir = makeRepo();
+    const suite = counted('suite');
+    const pid = await project(await finalCaptures(), reported(dir, suite.command));
+    await inReceiptsMode(pid, suite.command, 'shadow');
+    const id = await card(pid, 'TEST');
+    const p = await plan(id);
+    expect(p.closesOnCapture, JSON.stringify(p)).toBeUndefined();
+    expect(p.thenCommand).toBe(suite.command);
+    const res = await validate(id);
+    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
+    expect(suite.runs(), 'the plan and the close disagree about how many runs').toHaveLength(2);
+  });
+
+  it('CONTROL - receipts mode off: the capture closes the card in one run, as planned', async () => {
+    const dir = makeRepo();
+    const suite = counted('suite');
+    const pid = await project(await finalCaptures(), reported(dir, suite.command));
+    await inReceiptsMode(pid, suite.command, 'off');
+    const id = await card(pid, 'TEST');
+    expect((await plan(id)).closesOnCapture).toBe(true);
+    const res = await validate(id);
+    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
+    expect(suite.runs()).toHaveLength(1);
+  });
+});
