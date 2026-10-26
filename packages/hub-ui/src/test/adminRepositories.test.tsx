@@ -28,7 +28,7 @@ import { AdminRepos } from '../pages/AdminRepos';
 import { FILL_VIEWPORT_MIN } from '../components/ui';
 import { AdminLayout, AdminKeys } from '../pages/Admin';
 import { api } from '../api';
-import { answerConfirm, forbidWindowConfirm } from './helpers/confirmDialog';
+import { answerConfirm, forbidWindowConfirm, letMutationsLand } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -372,6 +372,120 @@ describe('Admin → Repositories: a producer removed since', () => {
     fireEvent.click(within(producers).getByRole('button', { name: /remove producer alice@acme.test/i }));
     await answerConfirm(true);
     await waitFor(() => expect(receiptReads()).toBe(2));
+  });
+});
+
+// RFC-002 Amendment 1 (GH #289): who may produce receipts is a mode, the
+// explicit list one of its two answers.
+describe('Admin → Repositories: producer mode', () => {
+  const modeGroup = async () => {
+    const producers = await screen.findByRole('region', { name: /producers/i });
+    return { producers, group: within(producers).getByRole('radiogroup', { name: /who may produce receipts/i }) };
+  };
+
+  it('shows "Only these installations" for a repository the hub sends no mode for, with the trust trade-off in one line', async () => {
+    hubAnswers();
+    renderAt(detailUrl);
+    const { producers, group } = await modeGroup();
+    expect(within(group).getByRole('radio', { name: /only these installations/i })).toBeChecked();
+    expect(within(group).getByRole('radio', { name: /all joined installations/i })).not.toBeChecked();
+    expect(within(producers).getByText(/any machine that joins the organization can produce/i)).toBeInTheDocument();
+    // The list is the one that applies: it is shown and editable.
+    expect(await within(producers).findByText(/alice@acme.test/)).toBeInTheDocument();
+    expect(within(producers).getByLabelText(/add a producer/i)).toBeEnabled();
+  });
+
+  it('switches to all joined installations after the admin confirms the trade-off, and refreshes the receipts', async () => {
+    hubAnswers();
+    put.mockResolvedValue({ data: repoRow({ producerMode: 'all' }) });
+    renderAt(detailUrl);
+    const { group } = await modeGroup();
+    const receiptReads = () => get.mock.calls.filter(([u]) => String(u).startsWith('/v1/admin/repos/receipts')).length;
+    await waitFor(() => expect(receiptReads()).toBe(1));
+    fireEvent.click(within(group).getByRole('radio', { name: /all joined installations/i }));
+    await answerConfirm(true);
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/v1/admin/repos/producer-mode', { repo: REPO, producerMode: 'all' }));
+    await waitFor(() => expect(receiptReads()).toBe(2));
+  });
+
+  it('changes nothing when the admin backs out of the confirmation', async () => {
+    hubAnswers();
+    renderAt(detailUrl);
+    const { group } = await modeGroup();
+    fireEvent.click(within(group).getByRole('radio', { name: /all joined installations/i }));
+    await answerConfirm(false);
+    await letMutationsLand();
+    expect(put).not.toHaveBeenCalled();
+    expect(within(group).getByRole('radio', { name: /only these installations/i })).toBeChecked();
+  });
+
+  it('under all, says the list is kept for when the repository is switched back, and switches back without asking', async () => {
+    hubAnswers({ '/v1/admin/repos': { repos: [repoRow({ producerMode: 'all' })] } });
+    put.mockResolvedValue({ data: repoRow({ producerMode: 'listed' }) });
+    renderAt(detailUrl);
+    const { producers, group } = await modeGroup();
+    expect(within(group).getByRole('radio', { name: /all joined installations/i })).toBeChecked();
+    expect(within(producers).getByText(/kept.*applies again/i)).toBeInTheDocument();
+    expect(await within(producers).findByText(/alice@acme.test/)).toBeInTheDocument();
+    fireEvent.click(within(group).getByRole('radio', { name: /only these installations/i }));
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/v1/admin/repos/producer-mode', { repo: REPO, producerMode: 'listed' }));
+  });
+
+  // Codex review: under all, removing a listed installation revokes nothing.
+  it('under all, removing an installation from the list says it changes nothing until the switch back', async () => {
+    hubAnswers({ '/v1/admin/repos': { repos: [repoRow({ producerMode: 'all' })] } });
+    put.mockResolvedValue({ data: repoRow({ producerMode: 'all', producers: [] }) });
+    renderAt(detailUrl);
+    const { producers } = await modeGroup();
+    await within(producers).findByText(/alice@acme.test/);
+    fireEvent.click(within(producers).getByRole('button', { name: /remove producer alice@acme.test/i }));
+    const said = await answerConfirm(true);
+    expect(said).toMatch(/changes nothing/i);
+    expect(said).toMatch(/until it is retired/i);
+    expect(said).not.toMatch(/CI stops reusing/i);
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/v1/admin/repos/producers', { repo: REPO, installationId: 'inst-alice', allowed: false }));
+  });
+
+  it('under listed, removing an installation still warns that CI stops reusing its receipts', async () => {
+    hubAnswers();
+    renderAt(detailUrl);
+    const { producers } = await modeGroup();
+    await within(producers).findByText(/alice@acme.test/);
+    fireEvent.click(within(producers).getByRole('button', { name: /remove producer alice@acme.test/i }));
+    expect(await answerConfirm(false)).toMatch(/CI stops reusing every receipt/i);
+  });
+
+  it('an empty list under all does not claim no receipt can be reused', async () => {
+    hubAnswers({ '/v1/admin/repos': { repos: [repoRow({ producerMode: 'all', producers: [] })] } });
+    renderAt(detailUrl);
+    const { producers } = await modeGroup();
+    expect(within(producers).queryByText(/no receipt from this repository can be reused/i)).not.toBeInTheDocument();
+    expect(within(producers).getByText(/no installations listed/i)).toBeInTheDocument();
+  });
+
+  it('an empty list under listed says no receipt can be reused', async () => {
+    hubAnswers({ '/v1/admin/repos': { repos: [repoRow({ producers: [] })] } });
+    renderAt(detailUrl);
+    const { producers } = await modeGroup();
+    expect(within(producers).getByText(/no receipt from this repository can be reused/i)).toBeInTheDocument();
+  });
+
+  it('shows the hub\'s refusal inline', async () => {
+    hubAnswers({ '/v1/admin/repos': { repos: [repoRow({ producerMode: 'all' })] } });
+    put.mockRejectedValue({ response: { status: 404, data: { error: 'this repository has no settings yet', code: 'not_found' } } });
+    renderAt(detailUrl);
+    const { producers, group } = await modeGroup();
+    fireEvent.click(within(group).getByRole('radio', { name: /only these installations/i }));
+    expect(await within(producers).findByRole('alert')).toHaveTextContent(/no settings yet/i);
+  });
+
+  it('says which mode each repository is on in the list', async () => {
+    hubAnswers({ '/v1/admin/repos': { repos: [repoRow({ producerMode: 'all' }), repoRow({ remoteUrl: REPO2 })] } });
+    renderAt('/admin/repos');
+    const row = (await screen.findByText(REPO)).closest('tr')!;
+    expect(within(row).getByText(/all joined installations/i)).toBeInTheDocument();
+    const other = screen.getByText(REPO2).closest('tr')!;
+    expect(within(other).getByText(/only these installations/i)).toBeInTheDocument();
   });
 });
 

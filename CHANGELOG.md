@@ -14,7 +14,21 @@ All notable changes to AgEnFK are documented here.
 
 - **inquirer 9 → 14** (#286, supersedes #284). `agenfk flow edit`'s step pickers move from the `list` prompt,
   which inquirer 10 removed, to `select`.
-  
+
+## [2.1.0-beta.3] — 2026-10-26
+
+**Hub**
+
+- **"All joined installations" as a repository's receipt producers** (#289, RFC-002 Amendment 1). Admin →
+  Repositories now has a producer mode per repository: *Only these installations* (the default, today's
+  allowlist) or *All joined installations*, where any installation of the organization that is not retired
+  produces receipts CI may reuse, including ones that join later. Retiring an installation stops its receipts
+  counting, both when it publishes and when CI asks. The explicit list is kept while All is on and applies again
+  when the repository is switched back. The switch is audited (`repo.producer-mode`) and shows in the settings
+  installations sync (`producerMode`). Trade-off: under All, any machine that joins the organization can produce
+  a receipt that skips a job in Enforce, so use it where joining the hub already requires a managed machine.
+  Existing hubs gain the setting at boot, with every repository on *Only these installations*.
+
 **Database**
 
 - **Backups are SQLite snapshots of the whole database** (#288). They were one JSON string of projects and
@@ -27,6 +41,19 @@ All notable changes to AgEnFK are documented here.
   checks the result, through the server. It is refused while a verify suite run is queued or running, and names
   the cards. `agenfk db status` shows the database and WAL sizes, what a vacuum would reclaim, and the largest
   tables.
+
+**CI receipts**
+
+- **A root card in Shadow or Enforce no longer closes on a sibling's green** (#291). It ran nothing, so it made
+  no receipt, and a PR of two root cards was certified by neither. It now runs the command itself, as the
+  root card's final gate does whenever a green is on record; `agenfk verify --plan` says so.
+- **A root parent in Shadow or Enforce is no longer closed by its last child** (#291). The roll-up walked it
+  onto the exit step having run nothing, and its children (which defer receipts to it) made none either. It now
+  stops one step short, as on a `verifyAt: parent` flow: the parent's own verify runs fresh and makes the receipt.
+- **`agenfk verify --plan` no longer promises one run** where a final step's capture would close a root card in
+  Shadow or Enforce (#291): the close runs the command again after it, and the plan now says so.
+- **CI finds the receipt for its tree when the PR's card has only older ones** (#291). The lookup stopped at the
+  card the PR is registered on; it now falls back to the receipts for the tree CI checked out.
 
 ## [2.1.0-beta.2] — 2026-10-25
 

@@ -6,8 +6,9 @@ import { api } from '../api';
 import { apiErrorText } from '../apiError';
 import { Badge, Callout, DataTable, QueryError, buttonClass, cardClass, controlClass, useConfirm, type DataColumn } from '../components/ui';
 import {
-  MODE_HELP, MODE_LABEL, notReusableWords, receiptStanding, repoQuery, revisionAuthor, utc,
-  type ReceiptView, type ReceiptsMode, type RepoView, type RevisionView,
+  MODE_HELP, MODE_LABEL, PRODUCER_ALL_TRADE_OFF, PRODUCER_MODE_HELP, PRODUCER_MODE_LABEL,
+  notReusableWords, producerModeOf, receiptStanding, repoQuery, revisionAuthor, utc,
+  type ProducerMode, type ReceiptView, type ReceiptsMode, type RepoView, type RevisionView,
 } from './repoSettingsText';
 
 /**
@@ -20,6 +21,7 @@ import {
 interface InstallationOption { id: string; gitEmail: string | null; osUser: string | null }
 
 const MODES: ReceiptsMode[] = ['off', 'shadow', 'enforce'];
+const PRODUCER_MODES: ProducerMode[] = ['all', 'listed'];
 const MODE_TONE = { off: 'neutral', shadow: 'info', enforce: 'ok' } as const;
 
 const useInstallations = () => useQuery<InstallationOption[]>({
@@ -58,6 +60,10 @@ const REPO_COLUMNS: DataColumn<RepoView>[] = [
   {
     key: 'mode', header: 'CI receipts',
     render: r => <Badge tone={MODE_TONE[r.receiptsMode] ?? 'neutral'}>{MODE_LABEL[r.receiptsMode] ?? r.receiptsMode}</Badge>,
+  },
+  {
+    key: 'producers', header: 'Producers', className: 'text-small text-ink-secondary',
+    render: r => PRODUCER_MODE_LABEL[producerModeOf(r)],
   },
   {
     key: 'last', header: 'Last receipt', className: 'text-small text-ink-tertiary tabular-nums',
@@ -289,17 +295,66 @@ function ProducersCard({ settings }: { settings: RepoView }) {
       qc.invalidateQueries({ queryKey: ['admin-repo-receipts', settings.remoteUrl] });
     },
   });
+  const switchMode = useMutation({
+    mutationFn: async (producerMode: ProducerMode) =>
+      (await api.put('/v1/admin/repos/producer-mode', { repo: settings.remoteUrl, producerMode })).data as RepoView,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-repos'] });
+      // Whether a receipt can be reused depends on who may produce them NOW.
+      qc.invalidateQueries({ queryKey: ['admin-repo-receipts', settings.remoteUrl] });
+    },
+  });
+  const mode = producerModeOf(settings);
+  const chooseMode = async (next: ProducerMode) => {
+    if (next === mode || switchMode.isPending) return;
+    switchMode.reset();
+    // Widening who may produce receipts is the trust decision; narrowing it back is not.
+    if (next === 'all' && !(await confirm({
+      title: 'Let every installation produce receipts?',
+      body: PRODUCER_ALL_TRADE_OFF,
+      confirmLabel: 'Allow all installations',
+    }))) return;
+    switchMode.mutate(next);
+  };
   const nameOf = (id: string) => installationName(installations.data, id) ?? id;
   const candidates = (Array.isArray(installations.data) ? installations.data : []).filter(i => !settings.producers.includes(i.id));
+  const helpId = (m: ProducerMode) => `producer-mode-help-${m}`;
   return (
     <section aria-label="Producers" className={`${cardClass} max-w-form`}>
       {dialog}
       <h3 className="text-body font-semibold text-ink">Producers</h3>
-      <p className="mt-1 text-small text-ink-tertiary">
-        Only these installations publish receipts CI may reuse. Removing one stops its earlier receipts from counting too.
+      <div role="radiogroup" aria-label="Who may produce receipts" className="mt-3 space-y-2">
+        {PRODUCER_MODES.map(m => (
+          <div key={m} className="flex items-start gap-2">
+            <input
+              type="radio" id={`producer-mode-${m}`} name="producer-mode" value={m}
+              checked={mode === m} disabled={switchMode.isPending}
+              aria-describedby={helpId(m)}
+              onChange={() => { void chooseMode(m); }}
+              className="mt-1"
+            />
+            <div>
+              <label htmlFor={`producer-mode-${m}`} className="text-body font-medium text-ink">{PRODUCER_MODE_LABEL[m]}</label>
+              <p id={helpId(m)} className="text-small text-ink-tertiary">{PRODUCER_MODE_HELP[m]}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-small text-ink-tertiary">{PRODUCER_ALL_TRADE_OFF}</p>
+      {switchMode.isError && <p role="alert" className="mt-2 text-small text-status-danger-text">{apiErrorText(switchMode.error)}</p>}
+      <p className="mt-3 text-small text-ink-tertiary">
+        {mode === 'all'
+          ? 'This list is kept while All is on, and applies again when the repository is switched back to Only these installations.'
+          : 'Only these installations publish receipts CI may reuse. Removing one stops its earlier receipts from counting too.'}
       </p>
       <ul className="mt-3 divide-y divide-border-soft">
-        {settings.producers.length === 0 && <li className="py-2 text-body text-ink-tertiary">No producers: no receipt from this repository can be reused.</li>}
+        {settings.producers.length === 0 && (
+          <li className="py-2 text-body text-ink-tertiary">
+            {mode === 'all'
+              ? 'No installations listed. This takes effect only if the repository is switched back to Only these installations.'
+              : 'No producers: no receipt from this repository can be reused.'}
+          </li>
+        )}
         {settings.producers.map(id => (
           <li key={id} className="py-2 flex items-center justify-between gap-3">
             <span className="text-body text-ink">{nameOf(id)} <span className="font-mono text-small text-ink-tertiary">{id}</span></span>
@@ -310,7 +365,9 @@ function ProducersCard({ settings }: { settings: RepoView }) {
               onClick={async () => {
                 if (await confirm({
                   title: `Remove ${nameOf(id)} as a producer?`,
-                  body: 'CI stops reusing every receipt this installation sent for this repository, including earlier ones.',
+                  body: mode === 'all'
+                    ? 'While All joined installations is on, this changes nothing: the installation still produces receipts until it is retired. It takes effect if the repository is switched back to Only these installations.'
+                    : 'CI stops reusing every receipt this installation sent for this repository, including earlier ones.',
                   confirmLabel: 'Remove producer',
                 })) set.mutate({ installationId: id, allowed: false });
               }}

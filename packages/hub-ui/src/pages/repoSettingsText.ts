@@ -4,12 +4,17 @@
 
 export type ReceiptsMode = 'off' | 'shadow' | 'enforce';
 
+/** Who may produce receipts (RFC-002 Amendment 1): the list, or every live installation. */
+export type ProducerMode = 'listed' | 'all';
+
 export interface RepoView {
   remoteUrl: string;
   verifyCommand: string;
   revision: number;
   receiptsMode: ReceiptsMode;
   shadowThreshold: number | null;
+  /** Absent from a hub older than the mode: that hub only has the list. */
+  producerMode?: ProducerMode;
   producers: string[];
   createdAt: string;
   updatedAt: string;
@@ -49,6 +54,24 @@ export const MODE_HELP: Record<ReceiptsMode, string> = {
   shadow: 'Root cards publish receipts; CI checks them but still runs every step, and says whether it would have reused one.',
   enforce: 'CI skips the steps a matching receipt covers.',
 };
+
+/** The mode a repository is on; a hub that sends none is on the list. */
+export const producerModeOf = (r: Pick<RepoView, 'producerMode'>): ProducerMode =>
+  r.producerMode === 'all' ? 'all' : 'listed';
+
+export const PRODUCER_MODE_LABEL: Record<ProducerMode, string> = {
+  all: 'All joined installations',
+  listed: 'Only these installations',
+};
+
+export const PRODUCER_MODE_HELP: Record<ProducerMode, string> = {
+  all: 'Every installation in the organization that is not retired, including ones that join later. Retiring one stops its receipts counting.',
+  listed: 'Only the installations listed below.',
+};
+
+/** The trust trade-off of "all", in one line. */
+export const PRODUCER_ALL_TRADE_OFF =
+  'Under All, any machine that joins the organization can produce a receipt that lets CI skip a job in Enforce. Use it only where joining the hub already requires a managed machine.';
 
 const REASON_WORDS: Record<string, string> = {
   producer_removed: 'the machine is no longer an allowed producer',

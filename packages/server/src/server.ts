@@ -1041,7 +1041,11 @@ const syncParentStatus = async (parentId: string, how: RollUp = {}) => {
     const endName = sortedFlowSteps(parentFlow as any).slice(-1)[0]?.name;
     // Keyed on what HAPPENED (a child deferred to it), not on the flow's setting now:
     // turning 'parent' off must not let the owed run slip.
-    if ((owed || flowVerifyAt(parentFlow) === 'parent') && ordered[laggard]?.name === endName && laggard > 0) laggard -= 1;
+    // GH-291: so does a root card in receipts mode - its close owes a fresh run,
+    // and that run is the receipt its PR is reused on. Walked onto the exit step,
+    // it would close having run nothing, with no receipt from it or its children.
+    const freshRootOwed = freshRootClose(parent, parentProject);
+    if ((owed || freshRootOwed || flowVerifyAt(parentFlow) === 'parent') && ordered[laggard]?.name === endName && laggard > 0) laggard -= 1;
     if (parentIdx !== null && laggard > parentIdx) {
       newStatus = ordered[laggard].name as Status;
     }
@@ -9228,7 +9232,9 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown;
   // Only on the move that ENDS the flow (a mid-flow boundary runs the command after), with a report the capture
   // is fenced by (no report, no state to hold the green to), and no command check running after the capture.
   const closesOnCapture = cap.runs && !!gateCommand && gateCommand === captureCommand && leavingEndsFlow(sorted as any, index)
-    && !!project?.testReport && reportPathsOf(project.testReport).length > 0 && !stepHasCommandChecks(flow, step);
+    && !!project?.testReport && reportPathsOf(project.testReport).length > 0 && !stepHasCommandChecks(flow, step)
+    // GH-291: as the close (own-capture reuse is refused there): a root card in receipts mode runs the command after.
+    && !freshRootClose(item, project);
   const thenCommand = cap.runs && gateCommand && !closesOnCapture ? gateCommand : undefined;
   const root = item.id ? resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root : project?.projectRoot ?? null;
   // NO_TREE refuses when something needs the capture: a check of THIS step, or the next step's BLOCKING
@@ -9317,7 +9323,8 @@ async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, 
   const index = sorted.findIndex(st => st.name === item.status);
   // The close's order: a sibling's green of this tree, then a green of it on record (ef1342b8), then the command.
   const commandLeg = async (command: string): Promise<{ mode: 'full' | 'sibling-green' | 'reuse'; sibling?: { id: string; title: string }; reusedFrom?: { itemId: string; step: string } }> => {
-    if (leavingEndsFlow(sorted as any, index)) {
+    // GH-291: as the close itself - a root card in receipts mode never carries a sibling's green.
+    if (leavingEndsFlow(sorted as any, index) && !freshRootClose(item, project)) {
       const { pass } = await siblingGreenOf(item, await greenPeersOf(item), flow as TransitionFlow, project, root, command);
       if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title } };
     }
@@ -10486,7 +10493,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // 3ffc9651: what an identical sibling run in flight is keyed on, when propagation found nothing yet.
   let siblingFlightKey: string | null = null;
   // A top-level card's peers count only on the move that ends the flow (GH-271).
-  if (item.parentId || endsFlow) {
+  // GH-291: a root card in receipts mode owes a fresh run, whatever a sibling
+  // ran - closing on another card's green leaves no run to make a receipt of,
+  // and the PR it closes is then certified by nobody.
+  if ((item.parentId || endsFlow) && !(endsFlow && freshRootClose(item, project))) {
     const siblings = endsFlow ? await greenPeersOf(item) : await storage.listItems({ parentId: item.parentId });
     // On the move that ends the flow, check siblings that finished it with the same verifyCommand
     if (endsFlow) {

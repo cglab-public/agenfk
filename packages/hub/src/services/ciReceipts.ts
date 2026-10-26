@@ -3,7 +3,7 @@ import type { HubDb } from '../db/types.js';
 import { generateCiToken } from '../auth/ciToken.js';
 import { hashToken } from '../auth/apiKey.js';
 import type { CiTokenContext } from '../auth/ciToken.js';
-import { canonicalRepo, RepoSettingsError } from './repoSettings.js';
+import { canonicalRepo, producerCheckOf, RepoSettingsError, type ProducerCheck } from './repoSettings.js';
 import { RECEIPT_KINDS, type ReceiptKind } from './receipts.js';
 
 /**
@@ -202,7 +202,7 @@ const RECEIPT_COLUMNS = `id, kind, card_id, content_tree, command_revision, inst
   body_json, received_at`;
 
 /** What CI needs to judge one candidate, without its body or its report. */
-function summaryOf(row: ReceiptListRow, body: any, producers: ReadonlySet<string>) {
+function summaryOf(row: ReceiptListRow, body: any, producerAllowed: ProducerCheck) {
   const available = Number(row.has_report) === 1;
   const reusable = Number(row.reusable) === 1;
   return {
@@ -215,10 +215,11 @@ function summaryOf(row: ReceiptListRow, body: any, producers: ReadonlySet<string
     reusable,
     notReusableReason: reusable ? null : row.not_reusable_reason ?? null,
     installationId: row.installation_id,
-    // The allowlist as it stands NOW: `reusable` was decided when the receipt
-    // was written, and an admin who removed the producer since has said its
-    // receipts no longer stand in for anything.
-    producerAllowed: producers.has(row.installation_id),
+    // The producer rule as it stands NOW: `reusable` was decided when the
+    // receipt was written, and an admin who removed the producer since - or,
+    // under 'all', retired the installation - has said its receipts no longer
+    // stand in for anything.
+    producerAllowed: producerAllowed(row.installation_id),
     // When the evidence was MADE: the run's finish, the review's record. Not
     // when the hub received it - a receipt that waited offline for weeks is
     // weeks old when it arrives, and --max-age asks about the evidence.
@@ -242,14 +243,6 @@ const lensesOf = (body: any): string[] =>
 const parseBody = (s: string): any => {
   try { return JSON.parse(s); } catch { return null; }
 };
-
-async function producersOf(db: HubDb, orgId: string, remoteUrl: string): Promise<Set<string>> {
-  const rows = await db.all<{ installation_id: string }>(
-    'SELECT installation_id FROM repo_producers WHERE org_id = ? AND remote_url = ?',
-    [orgId, remoteUrl],
-  );
-  return new Set(rows.map(r => r.installation_id));
-}
 
 /** The repository a read names, after the token's scope has had its say. */
 function scopedRepo(token: CiTokenContext, input: unknown): string {
@@ -302,8 +295,6 @@ export async function lookupReceipts(db: HubDb, token: CiTokenContext, q: Lookup
 
   const settings = await repoSettingsOf(db, token.orgId, remoteUrl);
   if (!settings) throw new CiError('repo_unknown', 'this repository has no settings for this organisation');
-  const producers = await producersOf(db, token.orgId, remoteUrl);
-
   const candidates = async (column: 'card_id' | 'content_tree', value: string) => {
     const rows = await db.all<ReceiptListRow>(
       `SELECT ${RECEIPT_COLUMNS} FROM receipts
@@ -312,11 +303,12 @@ export async function lookupReceipts(db: HubDb, token: CiTokenContext, q: Lookup
         LIMIT ${MAX_SCANNED}`,
       [token.orgId, remoteUrl, kind, value],
     );
-    return rows
+    const kept = rows
       .map(r => ({ row: r, body: parseBody(r.body_json) }))
       .filter(({ body }) => lensText === null || lensesOf(body).includes(lensText))
-      .slice(0, MAX_CANDIDATES)
-      .map(({ row, body }) => summaryOf(row, body, producers));
+      .slice(0, MAX_CANDIDATES);
+    const producers = await producerCheckOf(db, token.orgId, remoteUrl, kept.map(({ row }) => row.installation_id));
+    return kept.map(({ row, body }) => summaryOf(row, body, producers));
   };
 
   let cardId: string | null = null;
@@ -342,6 +334,13 @@ export async function lookupReceipts(db: HubDb, token: CiTokenContext, q: Lookup
   if (!by && tree !== null) {
     receipts = await candidates('content_tree', tree);
     if (receipts.length) by = 'tree';
+  } else if (by === 'pr' && tree !== null && !receipts.some(r => r.contentTree === tree)) {
+    // GH-291: the PR's card has receipts, but none for the tree CI checked out -
+    // a PR of several root cards, registered on one that closed before the
+    // others. A receipt for that tree from another card is the one that can
+    // certify it; with none, the card's own stay, so CI can say why not.
+    const forTree = await candidates('content_tree', tree);
+    if (forTree.length) { receipts = forTree; by = 'tree'; }
   }
 
   return {
@@ -372,7 +371,7 @@ async function readableRow(db: HubDb, token: CiTokenContext, id: string) {
 export async function getReceipt(db: HubDb, token: CiTokenContext, id: string) {
   const row = await readableRow(db, token, id);
   const body = parseBody(row.body_json);
-  const producers = await producersOf(db, token.orgId, row.remote_url);
+  const producers = await producerCheckOf(db, token.orgId, row.remote_url, [row.installation_id]);
   return { ...summaryOf(row, body, producers), repo: row.remote_url, receipt: body };
 }
 
@@ -400,7 +399,7 @@ export async function listRepoReceipts(db: HubDb, orgId: string, repo: unknown) 
       ORDER BY received_at DESC, id DESC LIMIT ${ADMIN_RECENT_RECEIPTS}`,
     [orgId, remoteUrl],
   );
-  const producers = await producersOf(db, orgId, remoteUrl);
+  const producers = await producerCheckOf(db, orgId, remoteUrl, rows.map(r => r.installation_id));
   return rows.map(r => {
     const body = parseBody(r.body_json);
     return { ...summaryOf(r, body, producers), cardTitle: typeof body?.card?.title === 'string' ? body.card.title : null };

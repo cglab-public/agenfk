@@ -146,6 +146,28 @@ describe('hub repoSettingsSync.syncRepoSettings', () => {
     expect(get.headers['Authorization']).toBe(`Bearer ${HUB_TOKEN}`);
   });
 
+  // RFC-002 Amendment 1 (GH #289): the producer mode rides along beside the
+  // explicit list, which keeps its meaning and its shape.
+  it('stores the producer mode the hub sends, with the explicit list unchanged beside it', async () => {
+    await mkProject(storage, 'p1');
+    const { fetchImpl } = makeHubFetch({ get: { status: 200, body: { settings: { ...SETTINGS, producerMode: 'all' } } } });
+    expect((await syncRepoSettings(args({ fetchImpl }))).outcome).toBe('adopted');
+    const stored: any = (await storage.getProject('p1'))?.hubRepoSettings;
+    expect(stored.producerMode).toBe('all');
+    expect(stored.producers).toEqual(['github-app']);
+  });
+
+  it('reads an older hub that sends no producer mode, or one it does not know, as "only these installations"', async () => {
+    for (const [i, producerMode] of [undefined, 'everyone', 7].entries()) {
+      const id = `p-old-${i}`;
+      await mkProject(storage, id);
+      const { fetchImpl } = makeHubFetch({ get: { status: 200, body: { settings: { ...SETTINGS, producerMode } } } });
+      expect((await syncRepoSettings(args({ fetchImpl, projectId: id }))).outcome).toBe('adopted');
+      const stored: any = (await storage.getProject(id))?.hubRepoSettings;
+      expect(stored.producerMode, String(producerMode)).toBe('listed');
+    }
+  });
+
   it('sends If-None-Match from lastEtag, and a 304 writes nothing', async () => {
     await mkProject(storage, 'p1');
     const before = await storage.getProject('p1');
