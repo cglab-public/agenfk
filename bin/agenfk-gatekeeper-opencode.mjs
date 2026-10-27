@@ -14,11 +14,13 @@ const GATEKEEPER_BIN = path.join(os.homedir(), '.agenfk', 'bin', 'agenfk-gatekee
 
 export default async function agenfkGatekeeperOpencode(_context) {
     return {
-        'tool.execute.before': async (input) => {
+        // OpenCode passes the arguments on `output.args` (@opencode-ai/plugin);
+        // `input.args` is kept for older callers.
+        'tool.execute.before': async (input, output) => {
             const tool = (input.tool || '').toLowerCase();
             if (tool !== 'edit' && tool !== 'write' && tool !== 'notebookedit') return;
 
-            const args = input.args || {};
+            const args = output?.args || input.args || {};
             const filePath = args.filePath || args.file_path || args.notebookPath || args.notebook_path || '';
             if (!filePath) return;
 

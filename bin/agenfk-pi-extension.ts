@@ -186,6 +186,23 @@ export function gateTargetPath(input: Record<string, unknown> | undefined | null
   return undefined;
 }
 
+/** The input key holding the command a tool is about to run, whatever the tool is called. */
+export function toolCommandKey(input: Record<string, unknown> | undefined | null): 'command' | 'cmd' | undefined {
+  if (!input) return undefined;
+  for (const key of ['command', 'cmd'] as const) {
+    const v = input[key];
+    if (typeof v === 'string' && v.trim()) return key;
+  }
+  return undefined;
+}
+
+/** The file a non-writing tool is about to read, whatever the tool is called. */
+export function toolReadPath(input: Record<string, unknown> | undefined | null): string | undefined {
+  if (!input) return undefined;
+  for (const v of [input.path, input.file_path, input.filePath]) if (typeof v === 'string' && v.trim()) return v;
+  return undefined;
+}
+
 // ── Pure helpers (exported for tests) ────────────────────────────────────────
 
 /**
@@ -641,28 +658,34 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
   pi.on('tool_call', (event, ctx) => {
     try {
       const name = event?.toolName;
+      // Apart from the write tools, a tool is judged by what it carries, not its
+      // name: plugin tools such as pi-patty-bg-tasks' bash_bg run commands too
+      // (BUG dac2720a).
+      const input = event?.input;
+      const commandKey = toolCommandKey(input);
+      const readPath = toolReadPath(input);
       if (GATED_WRITE_TOOLS.has(String(name))) {
-        const filePath = gateTargetPath(event?.input as Record<string, unknown> | undefined);
+        const filePath = gateTargetPath(input as Record<string, unknown> | undefined);
         const v = deps.gatekeeperVerdict(filePath);
         if (v && v.decision === 'block') return { block: true, reason: v.reason };
-      } else if (name === 'bash') {
-        const command = event?.input?.command ?? event?.input?.cmd;
-        // Force the real model onto agenfk PR-registration commands BEFORE they run
-        // so the pr.opened/pr.updated event can't carry a guessed model. Mutate
-        // event.input in place (pi's supported way to modify tool arguments).
-        const model = modelFor(ctx);
-        if (event?.input && typeof command === 'string') {
-          const rewritten = injectDeterministicModel(command, model);
-          if (rewritten !== command) {
-            if ('command' in event.input) event.input.command = rewritten;
-            else if ('cmd' in event.input) event.input.cmd = rewritten;
-          }
+      } else {
+        // A command and a path are checked independently: a tool carrying both
+        // must not get its path through on the strength of a harmless command.
+        if (input && commandKey) {
+          const command = input[commandKey] as string;
+          // Force the real model onto agenfk PR-registration commands BEFORE they run
+          // so the pr.opened/pr.updated event can't carry a guessed model. Mutate
+          // the key that holds the command (pi's supported way to modify tool
+          // arguments), never a blank sibling the tool does not run.
+          const rewritten = injectDeterministicModel(command, modelFor(ctx));
+          if (rewritten !== command) input[commandKey] = rewritten;
+          const v = deps.enforcerVerdict(command);
+          if (v && v.decision === 'block') return { block: true, reason: v.reason };
         }
-        const v = deps.enforcerVerdict(command);
-        if (v && v.decision === 'block') return { block: true, reason: v.reason };
-      } else if (name === 'read') {
-        const v = deps.readVerdict(event?.input?.path ?? event?.input?.file_path);
-        if (v && v.decision === 'block') return { block: true, reason: v.reason };
+        if (readPath !== undefined) {
+          const v = deps.readVerdict(readPath);
+          if (v && v.decision === 'block') return { block: true, reason: v.reason };
+        }
       }
     } catch { /* never break the host */ }
     return undefined;
