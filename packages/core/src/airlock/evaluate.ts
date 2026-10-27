@@ -201,7 +201,7 @@ function rawVerdict(policy: AirlockPolicy, input: AirlockInput): AirlockVerdict 
       approved = true;
       continue;
     }
-    const approval: AirlockApproval = { decision: 'needs-human-approval', rule: f.rule, reason: f.reason, approvalKey };
+    const approval: AirlockApproval = { decision: 'needs-human-approval', rule: f.rule, reason: f.reason, approvalKey, capabilities: [...f.caps] };
     if (f.target !== undefined) approval.target = f.target;
     return approval;
   }

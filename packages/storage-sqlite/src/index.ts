@@ -28,6 +28,9 @@ import {
   AirlockDecisionRecord,
   AirlockApprovalRequest,
   AirlockApprovalRecord,
+  AirlockApprovalTransition,
+  AirlockApprovalCapability,
+  AirlockGrantScope,
   AirlockStaleRevisionError,
   normalizeAirlockPolicy,
 } from '@agenfk/core';
@@ -521,9 +524,14 @@ export class SQLiteStorageProvider implements StorageProvider {
         granted_by TEXT,
         authority TEXT,
         expires_at TEXT,
-        consumed_at TEXT
+        consumed_at TEXT,
+        denied_at TEXT,
+        denied_by TEXT,
+        capabilities TEXT,
+        generation INTEGER NOT NULL DEFAULT 1
       );
     `);
+    this.migrateAirlockApprovalsTable();
     this.migrateFlowsTable();
     this.migrateTerminalSessionsTable();
     this.backfillFlowRevisions();
@@ -711,6 +719,17 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (!columns.includes('auto_approve')) {
       this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0');
     }
+  }
+
+  /** GH-294 T5: a table created before denials gains their columns (CREATE TABLE IF NOT EXISTS never adds one). */
+  private migrateAirlockApprovalsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(airlock_approvals)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes('denied_at')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN denied_at TEXT');
+    if (!columns.includes('denied_by')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN denied_by TEXT');
+    if (!columns.includes('capabilities')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN capabilities TEXT');
+    if (!columns.includes('generation')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN generation INTEGER NOT NULL DEFAULT 1');
   }
 
   /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
@@ -1700,10 +1719,13 @@ export class SQLiteStorageProvider implements StorageProvider {
   }
 
   private rowToAirlockApproval(r: any): AirlockApprovalRecord {
+    let capabilities: AirlockApprovalCapability[] = [];
+    try { capabilities = r.capabilities ? JSON.parse(r.capabilities) : []; } catch { capabilities = []; }
     return {
       key: r.key,
       rule: r.rule,
       summary: r.summary,
+      capabilities,
       projectId: r.project_id ?? null,
       itemId: r.item_id ?? null,
       sessionId: r.session_id ?? null,
@@ -1713,30 +1735,48 @@ export class SQLiteStorageProvider implements StorageProvider {
       authority: r.authority ?? null,
       expiresAt: r.expires_at ?? null,
       consumedAt: r.consumed_at ?? null,
+      deniedAt: r.denied_at ?? null,
+      deniedBy: r.denied_by ?? null,
+      generation: Number(r.generation ?? 1),
     };
   }
 
-  async upsertAirlockApproval(req: AirlockApprovalRequest): Promise<AirlockApprovalRecord> {
-    // A repeated request refreshes what it asks for and who asked. A grant that
-    // is still usable is left as it is; one already consumed or expired is
-    // spent, so the request opens again as pending for a person to decide.
-    // (SET expressions read the row as it was before this update.)
+  async upsertAirlockApproval(req: AirlockApprovalRequest, now: string = new Date().toISOString()): Promise<AirlockApprovalRecord> {
+    // A repeated request refreshes what it asks for and who asked - unless a
+    // grant is held and still usable: that grant belongs to the session and
+    // card that asked, and a request from elsewhere must not take it over. A
+    // grant already consumed or expired is spent, so the request opens again
+    // as pending, as a new generation, for a person to decide. A request now
+    // asked by another session or card is a new generation too, so an answer
+    // the board gave to the old asker cannot land on the new one. A denial is
+    // left as it is: it holds until someone grants the request. Every other
+    // transition (grant, deny, consume) also bumps the generation, so an
+    // answer is only ever valid for the version the person saw.
+    // (SET expressions and the WHERE read the row as it was before this update.)
     const spent = `(airlock_approvals.consumed_at IS NOT NULL
       OR (airlock_approvals.expires_at IS NOT NULL AND airlock_approvals.expires_at <= :now))`;
+    const usable = `(airlock_approvals.granted_at IS NOT NULL AND NOT ${spent})`;
     this.database.prepare(
-      `INSERT INTO airlock_approvals (key, rule, summary, project_id, item_id, session_id, requested_at)
-       VALUES (:key, :rule, :summary, :project, :item, :session, :requested)
+      `INSERT INTO airlock_approvals (key, rule, summary, capabilities, project_id, item_id, session_id, requested_at, generation)
+       VALUES (:key, :rule, :summary, :caps, :project, :item, :session, :requested, 1)
        ON CONFLICT(key) DO UPDATE SET
-         rule = excluded.rule, summary = excluded.summary, project_id = excluded.project_id,
-         item_id = excluded.item_id, session_id = excluded.session_id, requested_at = excluded.requested_at,
+         rule = excluded.rule, summary = excluded.summary, capabilities = excluded.capabilities,
+         project_id = excluded.project_id, item_id = excluded.item_id, session_id = excluded.session_id,
+         requested_at = excluded.requested_at,
+         generation = CASE WHEN ${spent}
+             OR airlock_approvals.session_id IS NOT excluded.session_id
+             OR airlock_approvals.item_id IS NOT excluded.item_id
+           THEN airlock_approvals.generation + 1 ELSE airlock_approvals.generation END,
          granted_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.granted_at END,
          granted_by = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.granted_by END,
          authority = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.authority END,
          expires_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.expires_at END,
-         consumed_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.consumed_at END`
+         consumed_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.consumed_at END
+       WHERE NOT ${usable}`
     ).run({
-      key: req.key, rule: req.rule, summary: req.summary, project: req.projectId ?? null, item: req.itemId ?? null,
-      session: req.sessionId ?? null, requested: req.requestedAt, now: new Date().toISOString(),
+      key: req.key, rule: req.rule, summary: req.summary, caps: JSON.stringify(req.capabilities ?? []),
+      project: req.projectId ?? null, item: req.itemId ?? null,
+      session: req.sessionId ?? null, requested: req.requestedAt, now,
     });
     return (await this.getAirlockApproval(req.key))!;
   }
@@ -1748,27 +1788,77 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async listAirlockApprovals(query: { pending?: boolean } = {}): Promise<AirlockApprovalRecord[]> {
     const sql = query.pending
-      ? 'SELECT * FROM airlock_approvals WHERE granted_at IS NULL ORDER BY requested_at DESC'
+      ? 'SELECT * FROM airlock_approvals WHERE granted_at IS NULL AND denied_at IS NULL ORDER BY requested_at DESC'
       : 'SELECT * FROM airlock_approvals ORDER BY requested_at DESC';
     return (this.database.prepare(sql).all() as any[]).map((r) => this.rowToAirlockApproval(r));
   }
 
-  async grantAirlockApproval(key: string, grant: { grantedBy: string; authority: string; expiresAt?: string | null }): Promise<AirlockApprovalRecord | null> {
-    const result = this.database.prepare(
-      'UPDATE airlock_approvals SET granted_at = ?, granted_by = ?, authority = ?, expires_at = ?, consumed_at = NULL WHERE key = ?'
-    ).run(new Date().toISOString(), grant.grantedBy, grant.authority, grant.expiresAt ?? null, key);
-    if (Number(result.changes ?? 0) === 0) return null;
-    return this.getAirlockApproval(key);
+  /** The row after a conditional answer: changed, already so (unchanged), or refused. */
+  private async answered(key: string, changed: boolean, alreadySo: (row: AirlockApprovalRecord) => boolean): Promise<AirlockApprovalTransition | null> {
+    const row = await this.getAirlockApproval(key);
+    if (!row) return null;
+    return { ...row, transition: changed ? 'changed' : alreadySo(row) ? 'unchanged' : 'refused' };
   }
 
-  async consumeAirlockApproval(key: string): Promise<boolean> {
-    // One statement, so two callers racing for the same grant cannot both consume it.
-    const now = new Date().toISOString();
+  async grantAirlockApproval(
+    key: string,
+    grant: { grantedBy: string; authority: string; expiresAt?: string | null; generation?: number },
+  ): Promise<AirlockApprovalTransition | null> {
+    // Only a request nobody has granted (pending, or denied) of the generation
+    // the person answered: a replay never renews a grant or revives a used one.
+    const gen = grant.generation ?? null;
     const result = this.database.prepare(
-      `UPDATE airlock_approvals SET consumed_at = ?
+      `UPDATE airlock_approvals SET granted_at = :at, granted_by = :by, authority = :authority, expires_at = :expires,
+         consumed_at = NULL, denied_at = NULL, denied_by = NULL, generation = generation + 1
+       WHERE key = :key AND granted_at IS NULL AND consumed_at IS NULL AND (:gen IS NULL OR generation = :gen)`
+    ).run({ at: new Date().toISOString(), by: grant.grantedBy, authority: grant.authority, expires: grant.expiresAt ?? null, key, gen });
+    return this.answered(key, Number(result.changes ?? 0) > 0,
+      (r) => !!r.grantedAt && !r.consumedAt && (gen === null || r.generation === gen));
+  }
+
+  async denyAirlockApproval(key: string, denial: { deniedBy: string; generation?: number }, now: string = new Date().toISOString()): Promise<AirlockApprovalTransition | null> {
+    // A request not yet used: pending, or granted and not spent. The grant goes with it.
+    const gen = denial.generation ?? null;
+    const result = this.database.prepare(
+      `UPDATE airlock_approvals SET denied_at = :now, denied_by = :by,
+         granted_at = NULL, granted_by = NULL, authority = NULL, expires_at = NULL, consumed_at = NULL,
+         generation = generation + 1
+       WHERE key = :key AND denied_at IS NULL AND consumed_at IS NULL AND (:gen IS NULL OR generation = :gen)`
+    ).run({ now, by: denial.deniedBy, key, gen });
+    return this.answered(key, Number(result.changes ?? 0) > 0,
+      (r) => !!r.deniedAt && (gen === null || r.generation === gen));
+  }
+
+  async consumeAirlockApproval(key: string, now: string = new Date().toISOString()): Promise<boolean> {
+    // One statement, so two callers racing for the same grant cannot both consume it.
+    const result = this.database.prepare(
+      `UPDATE airlock_approvals SET consumed_at = ?, generation = generation + 1
        WHERE key = ? AND granted_at IS NOT NULL AND consumed_at IS NULL
          AND (expires_at IS NULL OR expires_at > ?)`
     ).run(now, key, now);
     return Number(result.changes ?? 0) > 0;
+  }
+
+  async consumeAirlockApprovals(keys: string[], scope: AirlockGrantScope, now: string = new Date().toISOString()): Promise<boolean> {
+    // One transaction: every grant the call needs is consumed, or none is.
+    const db = this.database;
+    const consume = db.prepare(
+      `UPDATE airlock_approvals SET consumed_at = :now, generation = generation + 1
+       WHERE key = :key AND granted_at IS NOT NULL AND consumed_at IS NULL AND denied_at IS NULL
+         AND (expires_at IS NULL OR expires_at > :now)
+         AND session_id IS :session AND item_id IS :item`
+    );
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const key of new Set(keys)) {
+        const r = consume.run({ now, key, session: scope.sessionId ?? null, item: scope.itemId ?? null });
+        if (Number(r.changes ?? 0) === 0) { db.exec('ROLLBACK'); return false; }
+      }
+      db.exec('COMMIT');
+      return true;
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
   }
 }

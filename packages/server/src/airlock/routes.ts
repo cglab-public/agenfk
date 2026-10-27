@@ -6,6 +6,17 @@
  *   PUT  /airlock/policy     a local write: refused while the hub owns the policy
  *   POST /airlock/evaluate   judge one tool call (adapters, CLI, MCP); loopback only
  *   GET  /airlock/decisions  the capped decision log, newest first
+ *   GET  /airlock/approvals  human-approval requests: pending, and the recent ones (T5)
+ *   POST /airlock/approvals/:key/grant|deny   a person's answer, on the board (T5)
+ *
+ * APPROVALS (T5): a needs-human-approval verdict records a pending request under
+ * its approval key (bound to the rule, the project and every capability). A
+ * person grants it on the board - no passkey, but never the agent: the board
+ * header is required and the agent's internal header is refused - and the grant
+ * is single-use and expires after AIRLOCK_GRANT_TTL_MS. Evaluate hands usable
+ * grants to the engine as card.grants and consumes each one the allowed call
+ * used, atomically, so a grant lets exactly one call through. A denial holds
+ * (the same request is denied) until someone grants it.
  *
  * WHO MAY WRITE (user decision, 2026-10-27; no passkeys anywhere in Airlock):
  *  - a hub-joined installation can NOT overrule the policy. Every local write is
@@ -32,7 +43,10 @@ import {
   modelFromPi,
   normalizeAirlockPolicy,
   writePrivateFileSync,
+  type AirlockApprovalCapability,
+  type AirlockApprovalRecord,
   type AirlockClient,
+  type AirlockGrantScope,
   type AirlockPolicy,
   type AirlockVerdict,
   type Capability,
@@ -57,6 +71,10 @@ export const AIRLOCK_BODY_LIMIT = '256kb';
 export const MAX_AIRLOCK_FIELD = 256;
 /** Capabilities one tool call may carry. */
 export const MAX_AIRLOCK_CAPABILITIES = 32;
+/** How long a person's grant stays usable. */
+export const AIRLOCK_GRANT_TTL_MS = 30 * 60 * 1000;
+/** Answered requests the board lists beside the pending ones. */
+const RECENT_APPROVALS = 50;
 
 export interface AirlockRouteDeps {
   storage: () => StorageProvider;
@@ -70,6 +88,28 @@ export interface AirlockRouteDeps {
   stateFile?: () => string;
   /** Pull the hub's policy now (GET ?refresh=1). Absent, or not joined: refresh is a no-op. Never throws. */
   refreshFromHub?: () => Promise<void>;
+  /** The clock grants are judged by (epoch ms). Defaults to Date.now. */
+  now?: () => number;
+}
+
+export type AirlockApprovalStatus = 'pending' | 'granted' | 'consumed' | 'expired' | 'denied';
+
+/** Where a request stands at `now`. */
+export function approvalStatusOf(row: AirlockApprovalRecord, now: number): AirlockApprovalStatus {
+  if (row.deniedAt) return 'denied';
+  if (!row.grantedAt) return 'pending';
+  if (row.consumedAt) return 'consumed';
+  if (row.expiresAt && Date.parse(row.expiresAt) <= now) return 'expired';
+  return 'granted';
+}
+
+/** Approvals and denials are a person's, made on the board: never the agent's. */
+function refuseUnlessBoard(req: any, res: any): boolean {
+  if (req.headers?.['x-agenfk-internal'] !== undefined || req.headers?.['x-agenfk-ui'] !== '1') {
+    res.status(403).json({ error: 'Airlock approvals are made by a person on the board (agenfk ui), never by an agent.' });
+    return true;
+  }
+  return false;
 }
 
 export interface AirlockPolicyView {
@@ -163,6 +203,17 @@ const URL_QUERY = /([a-z][a-z0-9+.-]{0,30}:\/\/[^\s'"?#]{0,2048})\?([^\s'"#]{0,4
 const AUTHORIZATION_VALUE = /\b((?:proxy-)?authorization)[ \t]*:[ \t]*(?!\[REDACTED\])(?:(?:basic|bearer|digest|negotiate|ntlm|token|aws4-hmac-sha256)[ \t]+)?[^\s'"]+/gi;
 /** Options whose argument is a credential, whole. */
 const CREDENTIAL_OPTIONS = new Set(['-u', '-U', '-b', '--user', '--proxy-user', '--cookie', '--oauth2-bearer']);
+/**
+ * An option whose name says it carries a secret (`--secret-string`,
+ * `--password`, `--master-user-password`, `--api-key`, `--token`, `-auth`...):
+ * its argument goes, separate or `=value`. Over-redaction (`--key-type`) is the
+ * accepted failure.
+ */
+const SECRET_OPTION_NAME = /secret|passw|token|key|credential|auth/i;
+const isSecretOption = (word: string): boolean => {
+  const m = /^-{1,2}([A-Za-z0-9][A-Za-z0-9_.-]{0,100})$/.exec(word);
+  return !!m && SECRET_OPTION_NAME.test(m[1]);
+};
 /** Options whose argument is a header; its value always goes, its name stays. */
 const HEADER_OPTIONS = new Set(['-H', '--header', '--proxy-header']);
 
@@ -228,9 +279,15 @@ function redactWords(words: string[]): string[] {
       if (i + 1 < out.length) { out[i + 1] = redactHeaderArgument(out[i + 1]); i++; }
       continue;
     }
+    if (isSecretOption(w)) {
+      if (i + 1 < out.length) out[++i] = R;
+      continue;
+    }
     const long = /^(--[A-Za-z0-9-]+)=([\s\S]*)$/.exec(w);
     if (long && CREDENTIAL_OPTIONS.has(long[1])) { out[i] = `${long[1]}=${R}`; continue; }
     if (long && HEADER_OPTIONS.has(long[1])) { out[i] = `${long[1]}=${redactHeaderArgument(long[2])}`; continue; }
+    const assigned = /^(-{1,2}[A-Za-z0-9][A-Za-z0-9_.-]{0,100})=[\s\S]*$/.exec(w);
+    if (assigned && isSecretOption(assigned[1])) { out[i] = `${assigned[1]}=${R}`; continue; }
     const attached = /^-([HuUb])([\s\S]+)$/.exec(w);
     if (attached) { out[i] = attached[1] === 'H' ? `-H${redactHeaderArgument(attached[2])}` : `-${attached[1]}${R}`; continue; }
     // A sensitive header anywhere else (an echoed line, a config piped in).
@@ -250,15 +307,45 @@ function redactWords(words: string[]): string[] {
  * failure, not a leak.
  */
 export function redactTarget(text: string): string {
-  const bounded = text.length > MAX_REDACT_INPUT ? text.slice(0, MAX_REDACT_INPUT) : text;
-  let s = redactWords(shellWords(bounded)).join(' ');
-  s = s.replace(URL_USERINFO, `$1${R}@`);
-  s = s.replace(URL_QUERY, (_m, base: string, query: string) => `${base}?${query.replace(/=[^&]*/g, `=${R}`)}`);
-  s = s.replace(AUTHORIZATION_VALUE, `$1: ${R}`);
-  s = s.replace(SECRET_ASSIGNMENT, `$1=${R}`);
-  const { text: redacted } = redactLog(s, { home: os.homedir(), env: process.env });
+  const redacted = redactText(text.length > MAX_REDACT_INPUT ? text.slice(0, MAX_REDACT_INPUT) : text);
   return redacted.length > MAX_TARGET_CHARS ? `${redacted.slice(0, MAX_TARGET_CHARS)}…` : redacted;
 }
+
+/** The redaction redactTarget applies, without its input bound or its excerpt cap. */
+function redactText(text: string): string {
+  return redactTextTracked(text).text;
+}
+
+/**
+ * redactText, also saying whether any stage replaced a value. Tracked stage by
+ * stage rather than inferred from `[REDACTED]` markers in the output, which the
+ * input itself can contain. The home directory becoming `~` is not a redaction.
+ */
+function redactTextTracked(text: string): { text: string; redacted: boolean } {
+  const words = shellWords(text);
+  let s = redactWords(words).join(' ');
+  let redacted = s !== words.join(' ');
+  const stage = (next: string) => { if (next !== s) redacted = true; s = next; };
+  stage(s.replace(URL_USERINFO, `$1${R}@`));
+  stage(s.replace(URL_QUERY, (_m, base: string, query: string) => `${base}?${query.replace(/=[^&]*/g, `=${R}`)}`));
+  stage(s.replace(AUTHORIZATION_VALUE, `$1: ${R}`));
+  stage(s.replace(SECRET_ASSIGNMENT, `$1=${R}`));
+  const log = redactLog(s, { home: os.homedir(), env: process.env });
+  if (log.count > 0) redacted = true;
+  return { text: log.text, redacted };
+}
+
+/**
+ * Shell syntax that runs code, anywhere and however quoted: substitutions,
+ * process substitution, parameter expansion, command separators and pipes,
+ * and interpreters handed code inline (`bash -c`, `python -c`, `node -e`, eval).
+ */
+const RUNS_CODE = new RegExp([
+  /\$\(|`|<\(|>\(|\$\{|[;|&]/.source,
+  /\b(?:ba|z|k|da|fi|c|tc)?sh\b[^\n]*?\s-[A-Za-z]*c\b/.source,
+  /\b(?:python[\d.]*|node|deno|bun|perl|ruby|php|lua|osascript)\b[^\n]*?\s-(?:[A-Za-z]*[ec]\b|-eval\b)/.source,
+  /\beval\b/.source,
+].join('|'));
 
 /** The verdict worth a log line: anything but a plain allow (observe logs what enforce would do). */
 function loggedVerdict(verdict: AirlockVerdict): Exclude<AirlockVerdict, { decision: 'allow' }> | null {
@@ -266,8 +353,92 @@ function loggedVerdict(verdict: AirlockVerdict): Exclude<AirlockVerdict, { decis
   return verdict.observed ?? null;
 }
 
+/**
+ * The longest capability an approval stores and shows whole. A person approves
+ * what they read, so an approval is never an excerpt: a longer value is stored
+ * as far as it goes, marked incomplete, and that request cannot be approved.
+ */
+export const MAX_APPROVAL_VALUE = 64 * 1024;
+
+/** A capability's whole redacted value, for a person to approve; `complete: false` when it is too long. */
+export function approvalValue(text: string, kind: Capability['kind'] = 'command'): { value: string; complete: boolean; concealed: boolean } {
+  const complete = text.length <= MAX_APPROVAL_VALUE;
+  const original = complete ? text : text.slice(0, MAX_APPROVAL_VALUE);
+  const { text: value, redacted } = redactTextTracked(original);
+  // THE invariant, checked once at the end of the whole pipeline: a COMMAND
+  // with anything redacted cannot be approved, because whether a hidden span
+  // runs code cannot be decided from shell text (bash -''c, newlines, $var).
+  // A path or URL only names a target, so its redaction hides a value, never
+  // code, unless the original itself looks like code. Over-refusing is the
+  // accepted failure: the agent can run it without the secret, or a person can
+  // change the policy.
+  const concealed = redacted && (kind === 'command' || RUNS_CODE.test(original));
+  return { value, complete, concealed };
+}
+
+/** A bound capability as a person reads it: kind, redacted value, and a path's access. */
+export function approvalCapabilities(caps: readonly Capability[]): AirlockApprovalCapability[] {
+  return caps.map(c => {
+    const { value, complete, concealed } = approvalValue(capabilityText(c), c.kind);
+    return {
+      kind: c.kind,
+      value,
+      ...(c.kind === 'path' ? { access: c.access } : {}),
+      ...(complete ? {} : { complete: false }),
+      ...(concealed ? { concealed: true } : {}),
+    };
+  });
+}
+
+/** The same capabilities as the capped, redacted excerpts the log and the hub carry. */
+const excerptCapabilities = (caps: readonly Capability[]): AirlockApprovalCapability[] =>
+  caps.map(c => ({ kind: c.kind, value: redactTarget(capabilityText(c)), ...(c.kind === 'path' ? { access: c.access } : {}) }));
+
+/** The verdict as the caller gets it: an approval's raw capabilities stay on the server. */
+function publicVerdict(v: AirlockVerdict): unknown {
+  const strip = (x: AirlockVerdict | undefined) => {
+    if (!x || x.decision !== 'needs-human-approval') return x;
+    const { capabilities: _raw, ...rest } = x;
+    return rest;
+  };
+  if (v.decision === 'allow' && v.observed) return { ...v, observed: strip(v.observed) };
+  return strip(v);
+}
+
+/**
+ * The verdict once the grants a person made are applied (T5). An approval the
+ * call needs that is granted, unused and unexpired is handed to the engine as
+ * card.grants, one finding at a time, until the call is allowed or stops on
+ * something no grant covers. A grant is spent only by a call it lets through,
+ * and only once: each is consumed in one statement, so of two racing calls one
+ * gets it and the other is judged without it. A dry run sees grants, spends none.
+ */
+async function verdictWithGrants(
+  storage: StorageProvider,
+  judge: (grants: string[]) => AirlockVerdict,
+  scope: AirlockGrantScope,
+  at: number,
+  dryRun: boolean,
+): Promise<{ verdict: AirlockVerdict; used: string[] }> {
+  const grants: string[] = [];
+  let verdict = judge(grants);
+  while (verdict.decision === 'needs-human-approval' && !grants.includes(verdict.approvalKey)) {
+    const row = await storage.getAirlockApproval(verdict.approvalKey);
+    if (!row || approvalStatusOf(row, at) !== 'granted') break;
+    grants.push(verdict.approvalKey);
+    verdict = judge(grants);
+  }
+  if (!grants.length || verdict.decision !== 'allow' || dryRun) return { verdict, used: [] };
+  // All the grants the call needs, in one transaction, and only in the scope
+  // (session and card) that asked for each: lose one (a race, or another
+  // session's grant) and none is spent; the call is judged again with none.
+  if (await storage.consumeAirlockApprovals(grants, scope, new Date(at).toISOString())) return { verdict, used: grants };
+  return { verdict: judge([]), used: [] };
+}
+
 export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
   const stateFile = deps.stateFile ?? defaultAirlockStateFile;
+  const now = deps.now ?? Date.now;
 
   app.get('/airlock/policy', async (req: any, res: any, next: any) => {
     try {
@@ -367,16 +538,68 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       if (capabilities.length > MAX_AIRLOCK_CAPABILITIES) {
         return res.status(400).json({ error: `a tool call may carry at most ${MAX_AIRLOCK_CAPABILITIES} capabilities (commands, paths, URLs); this one has ${capabilities.length}` });
       }
-      const view = await resolveAirlockPolicy(deps.storage(), deps.hubJoined());
+      const storage = deps.storage();
+      const dryRun = body.dryRun === true;
+      const view = await resolveAirlockPolicy(storage, deps.hubJoined());
       const work = deps.activeWork(sessionId);
-      // Grants arrive with the approval flow (T5); until then none is held.
-      const card = work ? { itemId: work.itemId, projectId: work.projectId, grants: [] as string[] } : undefined;
-      const verdict = evaluateAirlock(view.effective, { client: body.client, model, toolName, capabilities, card });
+      const at = now();
+      const judge = (grants: string[]) => evaluateAirlock(view.effective, {
+        client: body.client, model, toolName, capabilities,
+        card: { itemId: work?.itemId, projectId: work?.projectId, grants },
+      });
+      const targetOf = (v: { target?: string }) => (v.target && capabilities.find(c => capabilityText(c).includes(v.target!))) || capabilities[0];
+
+      const nowIso = new Date(at).toISOString();
+      const scope: AirlockGrantScope = { sessionId: sessionId ?? null, itemId: work?.itemId ?? null };
+      const granted = await verdictWithGrants(storage, judge, scope, at, dryRun);
+      let verdict = granted.verdict;
+      for (const key of granted.used) {
+        deps.recordHubEvent({ type: 'airlock.approval', payload: { action: 'consumed', key, itemId: work?.itemId ?? null } });
+      }
+      if (granted.used.length) deps.emit('airlock_approvals_changed', { keys: granted.used });
+      if (verdict.decision === 'needs-human-approval') {
+        const approval = verdict;
+        const prior = await storage.getAirlockApproval(approval.approvalKey);
+        if (prior?.deniedAt) {
+          // A person said no to exactly this: it is denied until someone grants it.
+          verdict = {
+            decision: 'deny',
+            rule: approval.rule,
+            reason: `${approval.reason}. Denied on the board by a person (approval ${approval.approvalKey}); it stays denied until someone approves it there.`,
+            ...(approval.target !== undefined ? { target: approval.target } : {}),
+          };
+        } else if (!dryRun) {
+          // Every capability the key binds, so the person sees all a grant lets through.
+          const raw = approval.capabilities?.length ? approval.capabilities : [targetOf(approval)].filter(Boolean) as Capability[];
+          // The row carries every value whole, for the person deciding; the hub an excerpt.
+          const bound = approvalCapabilities(raw);
+          const excerpts = excerptCapabilities(raw);
+          const summary = excerpts.map(c => c.value).join(' · ') || approval.rule;
+          const row = await storage.upsertAirlockApproval({
+            key: approval.approvalKey,
+            rule: approval.rule,
+            summary,
+            capabilities: bound,
+            projectId: work?.projectId ?? null,
+            itemId: work?.itemId ?? null,
+            sessionId: sessionId ?? null,
+            requestedAt: nowIso,
+          }, nowIso);
+          // The hub hears of a request when it (re)opens, not on every retry.
+          if (approvalStatusOf(row, at) === 'pending' && (!prior || approvalStatusOf(prior, at) !== 'pending')) {
+            deps.recordHubEvent({
+              type: 'airlock.approval',
+              payload: { action: 'requested', key: approval.approvalKey, rule: approval.rule, summary, capabilities: excerpts, itemId: work?.itemId ?? null, projectId: work?.projectId ?? null },
+            });
+          }
+          deps.emit('airlock_approvals_changed', { key: approval.approvalKey });
+        }
+      }
       const applies = !(verdict.decision === 'allow' && (verdict.why === 'mode-off' || verdict.why === 'model-not-selected'));
 
-      const logged = body.dryRun === true ? null : loggedVerdict(verdict);
+      const logged = dryRun ? null : loggedVerdict(verdict);
       if (logged) {
-        const target = (logged.target && capabilities.find(c => capabilityText(c).includes(logged.target!))) || capabilities[0];
+        const target = targetOf(logged);
         const record = {
           ts: new Date().toISOString(),
           client: body.client as string,
@@ -390,13 +613,14 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
           itemId: work?.itemId ?? null,
           sessionId: sessionId ?? null,
         };
-        await deps.storage().recordAirlockDecision(record);
+        await storage.recordAirlockDecision(record);
         // The session id stays on this machine; the hub gets the redacted decision.
         const { sessionId: _local, ...shared } = record;
         deps.recordHubEvent({ type: 'airlock.decision', payload: { ...shared, revision: view.revision, source: view.source } });
+        deps.emit('airlock_decision', { decision: record.decision, rule: record.rule });
       }
 
-      res.json({ verdict, mode: view.effective.mode, applies, revision: view.revision, source: view.source });
+      res.json({ verdict: publicVerdict(verdict), mode: view.effective.mode, applies, revision: view.revision, source: view.source });
     } catch (e) { next(e); }
   });
 
@@ -406,4 +630,70 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       res.json({ decisions: await deps.storage().listAirlockDecisions(Number.isFinite(limit) && limit > 0 ? { limit } : {}) });
     } catch (e) { next(e); }
   });
+
+  app.get('/airlock/approvals', async (_req: any, res: any, next: any) => {
+    try {
+      const at = now();
+      const rows = (await deps.storage().listAirlockApprovals()).map(r => ({ ...r, status: approvalStatusOf(r, at) }));
+      res.json({
+        pending: rows.filter(r => r.status === 'pending'),
+        recent: rows.filter(r => r.status !== 'pending' && r.status !== 'denied').slice(0, RECENT_APPROVALS),
+        // Denials hold until someone grants them, so every one stays reachable: all of them, uncapped.
+        denied: rows.filter(r => r.status === 'denied'),
+      });
+    } catch (e) { next(e); }
+  });
+
+  const answer = (action: 'grant' | 'deny') => async (req: any, res: any, next: any) => {
+    try {
+      if (refuseUnlessBoard(req, res)) return;
+      const key = String(req.params.key ?? '');
+      if (!key || key.length > MAX_AIRLOCK_FIELD) return res.status(400).json({ error: 'an approval key is required' });
+      const generation = req.body?.generation;
+      if (typeof generation !== 'number' || !Number.isInteger(generation) || generation < 1) {
+        return res.status(400).json({ error: 'generation (the request generation this answer is for, from GET /airlock/approvals) is required' });
+      }
+      const storage = deps.storage();
+      const by = os.userInfo().username;
+      if (action === 'grant') {
+        const current = await storage.getAirlockApproval(key);
+        if (current?.capabilities?.some(c => c.concealed === true)) {
+          return res.status(409).json({
+            error: 'AIRLOCK_APPROVAL_CONCEALED',
+            message: 'This request cannot be approved: redaction would hide code that runs (a secret-looking value holds $(…), backticks, <(…) or a command separator). Deny it, or have the agent pass the secret without running anything inside it.',
+          });
+        }
+        if (current?.capabilities?.some(c => c.complete === false)) {
+          return res.status(409).json({
+            error: 'AIRLOCK_APPROVAL_INCOMPLETE',
+            message: `This request could not be shown in full (a value is longer than ${MAX_APPROVAL_VALUE} characters), so it cannot be approved: nobody can approve what they could not read. Deny it, or have the agent split the call.`,
+          });
+        }
+      }
+      const row = action === 'grant'
+        ? await storage.grantAirlockApproval(key, { grantedBy: by, authority: 'board', expiresAt: new Date(now() + AIRLOCK_GRANT_TTL_MS).toISOString(), generation })
+        : await storage.denyAirlockApproval(key, { deniedBy: by, generation }, new Date(now()).toISOString());
+      if (!row) return res.status(404).json({ error: `No Airlock approval request has the key ${key}` });
+      const { transition, ...approval } = row;
+      const status = approvalStatusOf(approval, now());
+      const landed = action === 'grant' ? status === 'granted' : status === 'denied';
+      if (transition === 'refused' || !landed) {
+        return res.status(409).json({
+          error: 'AIRLOCK_APPROVAL_NOT_OPEN',
+          message: `That answer is for a request that is no longer open (it is ${status}, generation ${approval.generation}). Reload the list.`,
+          approval: { ...approval, status },
+        });
+      }
+      if (transition === 'changed') {
+        deps.recordHubEvent({
+          type: 'airlock.approval',
+          payload: { action: action === 'grant' ? 'granted' : 'denied', key, rule: approval.rule, generation: approval.generation, itemId: approval.itemId ?? null, projectId: approval.projectId ?? null, expiresAt: approval.expiresAt },
+        });
+        deps.emit('airlock_approvals_changed', { key });
+      }
+      res.json({ approval: { ...approval, status } });
+    } catch (e) { next(e); }
+  };
+  app.post('/airlock/approvals/:key/grant', answer('grant'));
+  app.post('/airlock/approvals/:key/deny', answer('deny'));
 }

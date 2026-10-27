@@ -222,4 +222,127 @@ describe('airlock approvals (storage only; the grant flow is T5)', () => {
     const pending = await storage.listAirlockApprovals({ pending: true });
     expect(pending.map(p => p.key)).toEqual(['b']);
   });
+  it('deny (T5): leaves pending, revokes an unused grant, survives a re-request, and a grant clears it', async () => {
+    const req = { key: 'd1', rule: 'cloud-mutation', summary: 's', requestedAt: '2026-01-01T00:00:00.000Z' };
+    await storage.upsertAirlockApproval(req);
+    await storage.grantAirlockApproval('d1', { grantedBy: 'ana', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z' });
+    const denied = await storage.denyAirlockApproval('d1', { deniedBy: 'bo' });
+    expect(denied).toMatchObject({ deniedBy: 'bo', grantedAt: null, expiresAt: null });
+    expect(denied?.deniedAt).toBeTruthy();
+    expect(await storage.consumeAirlockApproval('d1')).toBe(false);
+    expect(await storage.listAirlockApprovals({ pending: true })).toEqual([]);
+
+    const again = await storage.upsertAirlockApproval({ ...req, requestedAt: '2026-01-02T00:00:00.000Z' });
+    expect(again.deniedAt).toBeTruthy();
+
+    const granted = await storage.grantAirlockApproval('d1', { grantedBy: 'ana', authority: 'board' });
+    expect(granted).toMatchObject({ deniedAt: null, deniedBy: null });
+    expect(await storage.consumeAirlockApproval('d1')).toBe(true);
+    expect(await storage.denyAirlockApproval('nope', { deniedBy: 'bo' })).toBeNull();
+  });
+
+  it('consume and the re-request judge expiry by the clock they are given', async () => {
+    const req = { key: 'c1', rule: 'cloud-mutation', summary: 's', requestedAt: '2026-01-01T00:00:00.000Z' };
+    await storage.upsertAirlockApproval(req);
+    await storage.grantAirlockApproval('c1', { grantedBy: 'ana', authority: 'board', expiresAt: '2030-01-01T00:00:00.000Z' });
+    expect(await storage.consumeAirlockApproval('c1', '2031-01-01T00:00:00.000Z')).toBe(false);
+    const again = await storage.upsertAirlockApproval(req, '2031-01-01T00:00:00.000Z');
+    expect(again.grantedAt).toBeNull();
+  });
+
+  it('an approvals table from before denials gains their columns on init', async () => {
+    await storage.shutdown();
+    const old = path.join(dir, 'old-approvals.sqlite');
+    const db = new DatabaseSync(old);
+    db.exec(`CREATE TABLE airlock_approvals (key TEXT PRIMARY KEY, rule TEXT NOT NULL, summary TEXT NOT NULL, project_id TEXT, item_id TEXT,
+      session_id TEXT, requested_at TEXT NOT NULL, granted_at TEXT, granted_by TEXT, authority TEXT, expires_at TEXT, consumed_at TEXT);
+      INSERT INTO airlock_approvals (key, rule, summary, requested_at) VALUES ('old', 'cloud-mutation', 's', '2026-01-01T00:00:00.000Z');`);
+    db.close();
+    storage = new SQLiteStorageProvider();
+    await storage.init({ path: old });
+    expect(await storage.denyAirlockApproval('old', { deniedBy: 'bo' })).toMatchObject({ key: 'old', deniedBy: 'bo' });
+  });
+});
+
+describe('airlock approvals: review fixes (T5 round 1)', () => {
+  const scope = { sessionId: 's1', itemId: 'i1' };
+  const ask = (key: string, over: Record<string, unknown> = {}) =>
+    storage.upsertAirlockApproval({ key, rule: 'cloud-mutation', summary: 's', sessionId: 's1', itemId: 'i1', requestedAt: '2026-01-01T00:00:00.000Z', ...over });
+
+  it('consumes a set of grants all together or not at all', async () => {
+    await ask('a'); await ask('b');
+    const ga = (await storage.getAirlockApproval('a'))!.generation!;
+    await storage.grantAirlockApproval('a', { grantedBy: 'x', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z', generation: ga });
+    expect(await storage.consumeAirlockApprovals(['a', 'b'], scope)).toBe(false);
+    expect((await storage.getAirlockApproval('a'))?.consumedAt).toBeNull();
+    const gb = (await storage.getAirlockApproval('b'))!.generation!;
+    await storage.grantAirlockApproval('b', { grantedBy: 'x', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z', generation: gb });
+    expect(await storage.consumeAirlockApprovals(['a', 'b'], scope)).toBe(true);
+    expect(await storage.consumeAirlockApprovals(['a'], scope)).toBe(false);
+  });
+
+  it('a grant is consumed only in the scope (session and card) that asked for it', async () => {
+    await ask('c');
+    const g = (await storage.getAirlockApproval('c'))!.generation!;
+    await storage.grantAirlockApproval('c', { grantedBy: 'x', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z', generation: g });
+    expect(await storage.consumeAirlockApprovals(['c'], { sessionId: 's2', itemId: 'i1' })).toBe(false);
+    expect(await storage.consumeAirlockApprovals(['c'], { sessionId: 's1', itemId: 'i2' })).toBe(false);
+    expect(await storage.consumeAirlockApprovals(['c'], scope)).toBe(true);
+  });
+
+  it('a re-request from another scope does not take over a usable grant', async () => {
+    await ask('d');
+    const g = (await storage.getAirlockApproval('d'))!.generation!;
+    await storage.grantAirlockApproval('d', { grantedBy: 'x', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z', generation: g });
+    await ask('d', { sessionId: 's2' });
+    expect((await storage.getAirlockApproval('d'))?.sessionId).toBe('s1');
+  });
+
+  it('a reopened request is a new generation; a grant for the old one changes nothing', async () => {
+    await ask('e');
+    const g1 = (await storage.getAirlockApproval('e'))!.generation!;
+    await storage.grantAirlockApproval('e', { grantedBy: 'x', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z', generation: g1 });
+    expect(await storage.consumeAirlockApprovals(['e'], scope)).toBe(true);
+    const consumed = await storage.getAirlockApproval('e');
+    const replay = await storage.grantAirlockApproval('e', { grantedBy: 'x', authority: 'board', expiresAt: '2100-01-01T00:00:00.000Z', generation: g1 });
+    expect(replay?.transition).toBe('refused');
+    expect(await storage.getAirlockApproval('e')).toMatchObject({ consumedAt: consumed!.consumedAt, expiresAt: consumed!.expiresAt });
+    await ask('e');
+    const g2 = (await storage.getAirlockApproval('e'))!.generation!;
+    expect(g2).toBeGreaterThan(g1);
+    expect((await storage.grantAirlockApproval('e', { grantedBy: 'x', authority: 'board', generation: g1 }))?.transition).toBe('refused');
+    expect((await storage.grantAirlockApproval('e', { grantedBy: 'x', authority: 'board', generation: g2 }))?.transition).toBe('changed');
+    // The grant is itself a new version: an answer for the one the person now sees is idempotent.
+    const g3 = (await storage.getAirlockApproval('e'))!.generation!;
+    expect(g3).toBeGreaterThan(g2);
+    expect((await storage.grantAirlockApproval('e', { grantedBy: 'x', authority: 'board', generation: g3 }))?.transition).toBe('unchanged');
+  });
+
+  it('every transition is a new generation: grant, deny, consume, reopen, and a change of who asked', async () => {
+    await ask('g');
+    const gens = [(await storage.getAirlockApproval('g'))!.generation!];
+    const gen = async () => (await storage.getAirlockApproval('g'))!.generation!;
+    await ask('g', { sessionId: 's2' });                      // pending, asked by someone else
+    gens.push(await gen());
+    await ask('g', { sessionId: 's2', itemId: 'i9' });        // and from another card
+    gens.push(await gen());
+    await ask('g', { sessionId: 's2', itemId: 'i9' });        // the same asker again: same version
+    expect(await gen()).toBe(gens[gens.length - 1]);
+    await storage.grantAirlockApproval('g', { grantedBy: 'x', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z', generation: await gen() });
+    gens.push(await gen());
+    await storage.denyAirlockApproval('g', { deniedBy: 'x', generation: await gen() });
+    gens.push(await gen());
+    await storage.grantAirlockApproval('g', { grantedBy: 'x', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z', generation: await gen() });
+    gens.push(await gen());
+    expect(await storage.consumeAirlockApprovals(['g'], { sessionId: 's2', itemId: 'i9' })).toBe(true);
+    gens.push(await gen());
+    await ask('g', { sessionId: 's2', itemId: 'i9' });        // reopened
+    gens.push(await gen());
+    for (let i = 1; i < gens.length; i++) expect(gens[i], `step ${i}`).toBeGreaterThan(gens[i - 1]);
+  });
+
+  it('stores the structured, redacted capabilities a request is bound to', async () => {
+    await ask('f', { capabilities: [{ kind: 'path', value: '~/.aws/credentials', access: 'read' }, { kind: 'url', value: 'https://x.example/' }] });
+    expect((await storage.getAirlockApproval('f'))?.capabilities).toEqual([{ kind: 'path', value: '~/.aws/credentials', access: 'read' }, { kind: 'url', value: 'https://x.example/' }]);
+  });
 });

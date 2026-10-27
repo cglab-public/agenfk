@@ -145,13 +145,30 @@ export interface StorageProvider extends AgEnFKPlugin {
   recordAirlockDecision(decision: AirlockDecisionRecord): Promise<void>;
   /** Newest first. */
   listAirlockDecisions(query?: { limit?: number }): Promise<AirlockDecisionRecord[]>;
-  upsertAirlockApproval(request: AirlockApprovalRequest): Promise<AirlockApprovalRecord>;
+  /** `now` (ISO) judges whether a held grant is spent; it defaults to the wall clock. */
+  upsertAirlockApproval(request: AirlockApprovalRequest, now?: string): Promise<AirlockApprovalRecord>;
   getAirlockApproval(key: string): Promise<AirlockApprovalRecord | null>;
   listAirlockApprovals(query?: { pending?: boolean }): Promise<AirlockApprovalRecord[]>;
-  /** Null when no request has that key. */
-  grantAirlockApproval(key: string, grant: { grantedBy: string; authority: string; expiresAt?: string | null }): Promise<AirlockApprovalRecord | null>;
-  /** True once, for a granted, unexpired, unconsumed request; false otherwise. */
-  consumeAirlockApproval(key: string): Promise<boolean>;
+  /**
+   * Grant a pending (or denied) request. With `generation`, only that
+   * generation: a stale or replayed answer is refused and changes nothing. A
+   * grant already held is left as it is (no renewed expiry); a used one is
+   * never brought back. Null when no request has that key.
+   */
+  grantAirlockApproval(key: string, grant: { grantedBy: string; authority: string; expiresAt?: string | null; generation?: number }): Promise<AirlockApprovalTransition | null>;
+  /** True once, for a granted, unexpired, unconsumed request; false otherwise. `now` defaults to the wall clock. */
+  consumeAirlockApproval(key: string, now?: string): Promise<boolean>;
+  /**
+   * Consume every grant in `keys`, all in one transaction, only where each is
+   * granted, unused, unexpired and asked for by `scope`; if any one is not,
+   * none is consumed and the answer is false.
+   */
+  consumeAirlockApprovals(keys: string[], scope: AirlockGrantScope, now?: string): Promise<boolean>;
+  /**
+   * A person said no: the request is denied, and any grant not yet used is
+   * revoked. It stays denied until someone grants it. Null when no request has that key.
+   */
+  denyAirlockApproval(key: string, denial: { deniedBy: string; generation?: number }, now?: string): Promise<AirlockApprovalTransition | null>;
 }
 
 export type AirlockScope = 'local' | 'hub';
@@ -179,10 +196,29 @@ export interface AirlockDecisionRecord {
   sessionId?: string | null;
 }
 
+/** One capability an approval binds, as a person reads it: redacted before it is stored. */
+export interface AirlockApprovalCapability {
+  kind: 'command' | 'path' | 'url';
+  value: string;
+  access?: 'read' | 'write';
+  /** false: the value was too long to store whole, so the request cannot be approved. */
+  complete?: boolean;
+  /** true: redaction replaced a span holding code that runs, so the request cannot be approved. */
+  concealed?: boolean;
+}
+
+/** Who may spend a grant: the session and card that asked for it. */
+export interface AirlockGrantScope {
+  sessionId: string | null;
+  itemId: string | null;
+}
+
 export interface AirlockApprovalRequest {
   key: string;
   rule: string;
   summary: string;
+  /** Every capability the key binds (redacted). */
+  capabilities?: AirlockApprovalCapability[];
   projectId?: string | null;
   itemId?: string | null;
   sessionId?: string | null;
@@ -195,7 +231,15 @@ export interface AirlockApprovalRecord extends AirlockApprovalRequest {
   authority: string | null;
   expiresAt: string | null;
   consumedAt: string | null;
+  /** Set when a person denied the request; cleared by a grant. */
+  deniedAt?: string | null;
+  deniedBy?: string | null;
+  /** Bumped each time the request (re)opens as pending; an answer names the generation it answers. */
+  generation?: number;
 }
+
+/** A grant or denial: the row as it now stands, and whether this call changed it. */
+export type AirlockApprovalTransition = AirlockApprovalRecord & { transition: 'changed' | 'unchanged' | 'refused' };
 
 export interface TokenTracker extends AgEnFKPlugin {
   trackUsage(itemId: string, input: number, output: number, model: string): Promise<void>;
@@ -256,7 +300,9 @@ export type HubEventType =
   // the hub owns the policy, and an accepted policy change.
   | 'airlock.decision'
   | 'airlock.local-write-refused'
-  | 'airlock.policy-changed';
+  | 'airlock.policy-changed'
+  // A human-approval request: requested, granted or denied on the board, or a grant used.
+  | 'airlock.approval';
 
 export interface HubActor {
   osUser: string;

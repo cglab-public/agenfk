@@ -36,7 +36,7 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
-import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, FolderCog, type LucideIcon } from 'lucide-react';
+import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, FolderCog, ShieldCheck, type LucideIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
 import {
@@ -52,6 +52,7 @@ import { isNewerVersion } from '../versionCompare';
 import { describeHerdr, type HerdrView } from '../herdrSessions';
 import { HerdrMark } from './HerdrMark';
 import { ProjectSuiteControl, hasSuiteControl } from './ProjectSuiteControl';
+import { AirlockSettings } from './AirlockSettings';
 import { API_URL } from '../apiUrl';
 import { api, type AppSettingsDto, type SoundTimingDto } from '../api';
 import type { Project } from '../types';
@@ -374,8 +375,11 @@ function initials(name: string | null, login: string): string {
  * `projectId`: the project open on the board (7ddeaf7c). With one, the panel
  * has a Project section for its suite settings - the only place a browser,
  * which has no project page, can reach them.
+ *
+ * `initialSection`: the section to open on (GH-294: `agenfk airlock edit` links
+ * `?settings=airlock`). An id no section has opens the first one.
  */
-export function SettingsPanel({ projectId }: { projectId?: string | null } = {}): React.ReactElement {
+export function SettingsPanel({ projectId, initialSection }: { projectId?: string | null; initialSection?: string | null } = {}): React.ReactElement {
   const queryClient = useQueryClient();
   const { data: settings, isError: readFailed } = useQuery<AppSettingsDto>({
     queryKey: ['settings'],
@@ -981,6 +985,14 @@ export function SettingsPanel({ projectId }: { projectId?: string | null } = {})
       rows: <ProjectSuiteRows key={projectId} projectId={projectId} />,
     }] : []),
     {
+      // GH-294: the agents' tool-call policy and the approvals it waits on.
+      id: 'airlock',
+      label: 'Airlock',
+      icon: ShieldCheck,
+      scope: 'The tool-call policy for pi and OpenCode agents on this installation, and the approvals it is waiting on.',
+      rows: <AirlockSettings />,
+    },
+    {
       id: 'agents',
       label: 'Agents',
       icon: Bot,
@@ -1038,7 +1050,7 @@ export function SettingsPanel({ projectId }: { projectId?: string | null } = {})
     },
   ];
 
-  const [current, setCurrent] = React.useState(sections[0].id);
+  const [current, setCurrent] = React.useState(initialSection ?? sections[0].id);
   const shown = sections.find(s => s.id === current) ?? sections[0];
 
   return (

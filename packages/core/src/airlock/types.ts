@@ -112,6 +112,8 @@ export type AirlockApproval = {
   reason: string;
   approvalKey: string;
   target?: string;
+  /** Every capability the approval key binds: what a grant would let through. */
+  capabilities: Capability[];
 };
 export type AirlockVerdict =
   | {

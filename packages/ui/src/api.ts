@@ -109,6 +109,61 @@ export interface AppSettingsDto {
 /** 7b640e64: what the machine makes of maxConcurrentSuiteRuns. */
 export interface SettingsRuntimeDto { cpus: number; automaticSuiteRuns: number; suiteRunLimit: number }
 
+/** GH-294: the Airlock policy as the board edits it (mirrors @agenfk/core's AirlockPolicy). */
+export type AirlockModeDto = 'off' | 'observe' | 'enforce';
+export type AirlockRuleActionDto = 'deny' | 'needs-human-approval' | 'off';
+export interface AirlockModelSelectorDto { client?: 'pi' | 'opencode' | '*'; provider?: string; model?: string }
+export interface AirlockPolicyDto {
+  schemaVersion: 1;
+  mode: AirlockModeDto;
+  models: AirlockModelSelectorDto[];
+  appliesWhenModelUnknown: boolean;
+  hosts: { allow: string[]; deny: string[] };
+  iocHosts: { revision: string; hosts: string[]; updatedAt: string | null };
+  rules: { uploadToUnlistedHost: AirlockRuleActionDto; credentialReadWithNetwork: AirlockRuleActionDto; namespaceEscape: AirlockRuleActionDto; cloudMutation: AirlockRuleActionDto };
+}
+/** GET /airlock/policy. `hubManaged`: the hub owns the policy and a local write is refused. */
+export interface AirlockPolicyViewDto {
+  effective: AirlockPolicyDto;
+  source: 'hub' | 'local';
+  revision: number;
+  hubManaged: boolean;
+}
+export interface AirlockApprovalCapabilityDto { kind: 'command' | 'path' | 'url'; value: string; access?: 'read' | 'write'; complete?: boolean; concealed?: boolean }
+export interface AirlockApprovalDto {
+  key: string;
+  rule: string;
+  summary: string;
+  /** Every capability a grant would let through, redacted. */
+  capabilities?: AirlockApprovalCapabilityDto[];
+  /** The request's generation: an answer names the one it answers. */
+  generation: number;
+  projectId: string | null;
+  itemId: string | null;
+  sessionId: string | null;
+  requestedAt: string;
+  grantedAt: string | null;
+  grantedBy: string | null;
+  expiresAt: string | null;
+  consumedAt: string | null;
+  deniedAt?: string | null;
+  deniedBy?: string | null;
+  status: 'pending' | 'granted' | 'consumed' | 'expired' | 'denied';
+}
+export interface AirlockDecisionDto {
+  id?: number;
+  ts: string;
+  client: string;
+  model: string | null;
+  tool: string;
+  capabilityKind: string | null;
+  target: string | null;
+  decision: 'allow' | 'deny' | 'needs-human-approval';
+  rule: string | null;
+  mode: AirlockModeDto;
+  itemId?: string | null;
+}
+
 export const api = {
   listProjects: async () => {
     try {
@@ -400,6 +455,34 @@ export const api = {
       console.error('API Error updating settings:', e);
       throw e;
     }
+  },
+
+  /** GH-294: the effective Airlock policy and who owns it. */
+  getAirlockPolicy: async (): Promise<AirlockPolicyViewDto> => {
+    const { data } = await axios.get(`${API_URL}/airlock/policy`);
+    return data;
+  },
+  /** A local write, compare-and-swapped on the revision read; refused (409) while the hub owns the policy. */
+  saveAirlockPolicy: async (body: { policy: AirlockPolicyDto; expectedRevision: number }): Promise<AirlockPolicyViewDto> => {
+    const { data } = await axios.put(`${API_URL}/airlock/policy`, body, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
+  },
+  getAirlockApprovals: async (): Promise<{ pending: AirlockApprovalDto[]; recent: AirlockApprovalDto[]; denied?: AirlockApprovalDto[] }> => {
+    const { data } = await axios.get(`${API_URL}/airlock/approvals`);
+    return data;
+  },
+  /** A person's single-use, expiring grant: the board header marks it as theirs. */
+  grantAirlockApproval: async (key: string, generation: number): Promise<{ approval: AirlockApprovalDto }> => {
+    const { data } = await axios.post(`${API_URL}/airlock/approvals/${encodeURIComponent(key)}/grant`, { generation }, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
+  },
+  denyAirlockApproval: async (key: string, generation: number): Promise<{ approval: AirlockApprovalDto }> => {
+    const { data } = await axios.post(`${API_URL}/airlock/approvals/${encodeURIComponent(key)}/deny`, { generation }, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
+  },
+  getAirlockDecisions: async (limit = 50): Promise<{ decisions: AirlockDecisionDto[] }> => {
+    const { data } = await axios.get(`${API_URL}/airlock/decisions`, { params: { limit } });
+    return data;
   },
 
   /** 7b640e64: the CPUs the server sees, what automatic comes to, and the suite-run limit in force. */
