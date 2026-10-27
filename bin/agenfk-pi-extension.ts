@@ -68,7 +68,7 @@ interface PiEvent {
   [k: string]: unknown;
 }
 interface PiUi { notify?: (message: string, type?: 'info' | 'warning' | 'error') => void }
-interface PiContext { getModel?: () => PiModel | undefined; ui?: PiUi }
+interface PiContext { getModel?: () => PiModel | undefined; ui?: PiUi; cwd?: string }
 interface PiMessage { customType: string; content: string; display?: boolean }
 interface PiSendOptions { deliverAs?: 'steer' | 'followUp' | 'nextTurn'; triggerTurn?: boolean }
 interface PiApi {
@@ -182,6 +182,29 @@ export function gateTargetPath(input: Record<string, unknown> | undefined | null
     if (candidate.startsWith('local://')) return candidate.slice('local://'.length);
     if (candidate.includes('://')) continue; // a device, not a file
     return candidate;
+  }
+  return undefined;
+}
+
+// A patch names its files in header lines ('*** Update File: src/a.ts').
+const PATCH_HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm;
+
+const PATCH_BEGIN = /^\*\*\* Begin Patch\s*$/m;
+
+/** Every distinct file a patch touches, or [] when the text names none. */
+export function patchTargets(text: string): string[] {
+  return [...new Set([...text.matchAll(PATCH_HEADER)].map((m) => m[1].trim()).filter(Boolean))];
+}
+
+/**
+ * The patch a tool carries, whatever the tool is called (apply_patch puts it in
+ * patchText, patch or input). Only a real patch envelope counts, so text that
+ * merely mentions a header is not mistaken for a write.
+ */
+export function toolPatch(input: Record<string, unknown> | undefined | null): string | undefined {
+  if (!input) return undefined;
+  for (const v of [input.patchText, input.patch, input.input]) {
+    if (typeof v === 'string' && PATCH_BEGIN.test(v) && patchTargets(v).length) return v;
   }
   return undefined;
 }
@@ -664,11 +687,26 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
       const input = event?.input;
       const commandKey = toolCommandKey(input);
       const readPath = toolReadPath(input);
+      const patch = toolPatch(input);
+      if (patch !== undefined) {
+        // A patch is gated by every file it touches, whatever the tool is called
+        // (BUG 59d3ad7c): it names them in its text, not in a path argument.
+        // An embedded session applies the patch in its own ctx.cwd, which need
+        // not be this process's directory (where the hook would resolve it).
+        const sessionDir = typeof ctx?.cwd === 'string' && ctx.cwd ? ctx.cwd : undefined;
+        for (const target of patchTargets(patch)) {
+          const filePath = sessionDir ? path.resolve(sessionDir, target) : target;
+          const v = deps.gatekeeperVerdict(filePath);
+          if (v && v.decision === 'block') return { block: true, reason: v.reason };
+        }
+      }
       if (GATED_WRITE_TOOLS.has(String(name))) {
-        const filePath = gateTargetPath(input as Record<string, unknown> | undefined);
-        const v = deps.gatekeeperVerdict(filePath);
-        if (v && v.decision === 'block') return { block: true, reason: v.reason };
+        if (patch === undefined) {
+          const v = deps.gatekeeperVerdict(gateTargetPath(input as Record<string, unknown> | undefined));
+          if (v && v.decision === 'block') return { block: true, reason: v.reason };
+        }
       } else {
+        // A patch does not exempt a tool from the command and path checks.
         // A command and a path are checked independently: a tool carrying both
         // must not get its path through on the strength of a harmless command.
         if (input && commandKey) {
