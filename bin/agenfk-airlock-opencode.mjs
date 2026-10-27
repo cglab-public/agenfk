@@ -19,6 +19,11 @@
  * decides: block only when the last-known mode is enforce and the session is
  * covered by the policy.
  *
+ * Launch gate (layer 2): in enforce mode, a session the policy covers that is
+ * not running inside the Airlock sandbox (agenfk airlock opencode) has every
+ * tool call refused, whatever it carries; see gateEnforces and airlockSandboxCheck in
+ * the script.
+ *
  * Installed to ~/.config/opencode/plugins/agenfk-airlock.mjs.
  */
 
@@ -94,7 +99,18 @@ export default async function agenfkAirlock(context) {
                 }
                 return;
             }
-            if (!mod.hasCapabilities(args)) return;
+            // The launch gate (layer 2): in enforce mode, a covered session
+            // outside the Airlock sandbox has every tool call refused, whatever
+            // it carries. Checked per call, so a switch to a covered model is
+            // caught on the next one.
+            const gate = async () => {
+                if (typeof mod.gateEnforces !== 'function' || typeof mod.airlockSandboxCheck !== 'function') return; // a script older than the gate
+                const known = sessionID ? lastKnown.get(sessionID) : undefined;
+                if (!mod.gateEnforces({ lastKnown: known && known.modelKey === modelKey ? known : null, stateFile, session })) return;
+                const check = await mod.airlockSandboxCheck();
+                if (!check?.sandboxed) throw new Error(mod.launchGateMessage('opencode', check?.reason));
+            };
+            if (!mod.hasCapabilities(args)) { await gate(); return; }
 
             const result = await mod.requestVerdict({
                 client: 'opencode',
@@ -114,6 +130,7 @@ export default async function agenfkAirlock(context) {
                 }
                 const message = mod.blockMessage(result.verdict);
                 if (message) throw new Error(message);
+                await gate();
                 return;
             }
 
@@ -121,6 +138,7 @@ export default async function agenfkAirlock(context) {
             const known = sessionID ? lastKnown.get(sessionID) : undefined;
             const fallback = mod.decideWhenUnreachable(known && known.modelKey === modelKey ? known : null, stateFile, session);
             if (fallback.block) throw new Error(fallback.reason);
+            await gate();
         },
     };
 }

@@ -102,6 +102,11 @@ export interface PiExtensionDeps {
   airlockVerdict?: (request: AirlockRequest) => AirlockResult | null;
   /** The policy copy the server writes to ~/.agenfk/airlock-state.json, or null. */
   readAirlockState?: () => AirlockState | null;
+  /**
+   * Is this pi inside the Airlock sandbox (agenfk airlock pi)? Wired, it turns
+   * on the launch gate; optional so a caller that never wires it is unaffected.
+   */
+  isSandboxed?: () => boolean | AirlockSandboxStatus;
 }
 
 // ── Airlock (GH-294) ─────────────────────────────────────────────────────────
@@ -210,17 +215,71 @@ export function airlockWhenUnreachable(
     }
   }
   if (!state || state.mode !== 'enforce') return { block: false };
-  let covered: boolean;
-  if (!model?.id) covered = state.appliesWhenModelUnknown !== false;
-  else {
-    const models = Array.isArray(state.models) ? state.models : [];
-    covered = models.length === 0 || models.some((s) =>
-      !!s && typeof s === 'object' &&
-      (s.client === undefined || s.client === '*' || s.client === 'pi') &&
-      airlockGlob(s.provider, model.provider) && airlockGlob(s.model, model.id));
-  }
-  return covered ? blocked : { block: false };
+  return airlockStateCovers(state, model) ? blocked : { block: false };
 }
+
+/** Does the policy in the state file cover a pi session on this model? Mirrors core's modelSelected. */
+function airlockStateCovers(state: AirlockState, model: AirlockSessionModel | null): boolean {
+  if (!model?.id) return state.appliesWhenModelUnknown !== false;
+  const models = Array.isArray(state.models) ? state.models : [];
+  return models.length === 0 || models.some((s) =>
+    !!s && typeof s === 'object' &&
+    (s.client === undefined || s.client === '*' || s.client === 'pi') &&
+    airlockGlob(s.provider, model.provider) && airlockGlob(s.model, model.id));
+}
+
+// ── Airlock launch gate (layer 2) ────────────────────────────────────────────
+
+const AIRLOCK_PROXY_VARS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'];
+
+export interface AirlockConfinement { confined: boolean; reason?: string }
+export interface AirlockSandboxStatus { sandboxed: boolean; reason?: string }
+
+/**
+ * Is this process inside the Airlock sandbox? The marker and the proxy env
+ * `agenfk airlock pi` sets, ~/.agenfk unwritable, AND a direct connection
+ * refused by the sandbox (`prove`, see proveConfinement in
+ * bin/agenfk-airlock.mjs). Env vars and a chmod alone are not enough. Mirrors
+ * airlockSandboxCheck there.
+ */
+export function airlockSandboxed(
+  env: Record<string, string | undefined> = process.env,
+  homeDir: string = os.homedir(),
+  access: (p: string, mode: number) => void = fs.accessSync,
+  prove: () => AirlockConfinement | null = processConfinement,
+): AirlockSandboxStatus {
+  const set = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+  if (!set(env.AGENFK_AIRLOCK_SANDBOX)) return { sandboxed: false };
+  if (!AIRLOCK_PROXY_VARS.some((k) => set(env[k]))) return { sandboxed: false };
+  try {
+    access(path.join(homeDir, '.agenfk'), fs.constants.W_OK);
+    return { sandboxed: false, reason: '~/.agenfk is writable, which it never is inside the sandbox' };
+  } catch (e) {
+    const code = (e as { code?: string })?.code ?? '';
+    if (!['EPERM', 'EACCES', 'EROFS'].includes(code)) return { sandboxed: false, reason: `~/.agenfk could not be checked (${code || 'error'})` };
+  }
+  const proof = prove();
+  return proof?.confined ? { sandboxed: true } : { sandboxed: false, reason: proof?.reason ?? 'the confinement probe gave no answer' };
+}
+
+/**
+ * The confinement proof, run once per process through the shared script
+ * (pi's hooks are synchronous, the probe is a socket). A probe that could not
+ * run at all is not remembered, so a later call tries again.
+ */
+let confinementResult: AirlockConfinement | null = null;
+function processConfinement(): AirlockConfinement | null {
+  if (confinementResult) return confinementResult;
+  const r = runHookScript('agenfk-airlock.mjs', [], { probe: 'confinement' });
+  if (r && typeof r.confined === 'boolean') confinementResult = { confined: r.confined, reason: typeof r.reason === 'string' ? r.reason : undefined };
+  return confinementResult;
+}
+
+export const airlockLaunchGateReason = (reason?: string): string =>
+  '[agenfk airlock] this pi session is covered by the Airlock policy in enforce mode but is not running ' +
+  `inside the Airlock sandbox, so every tool call is refused.${reason ? ` The sandbox could not be confirmed: ${reason}.` : ''} ` +
+  'Exit and relaunch it with: agenfk airlock pi';
+
 
 /** The block a verdict asks for, or null to let the call through. */
 export function airlockBlock(verdict: AirlockVerdict): { block: true; reason: string } | null {
@@ -803,6 +862,7 @@ export function defaultDeps(): PiExtensionDeps {
         return null;
       }
     },
+    isSandboxed: () => airlockSandboxed(),
   };
 }
 
@@ -894,6 +954,34 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
     return fallback.block ? { block: true, reason: fallback.reason as string } : null;
   };
 
+  /**
+   * The launch gate: in enforce mode, a covered session outside the sandbox
+   * has every tool call refused, whatever it carries. Per call, with the model
+   * of that call, so a switch to a covered model is caught on the next one.
+   * "Enforce and covered" is this process's last answer for that model, unless
+   * the state file holds a newer policy, else the state file.
+   */
+  const airlockGate = (ctx: PiContext | undefined): { block: true; reason: string } | null => {
+    const sandboxed = deps.isSandboxed;
+    if (!sandboxed) return null;
+    let state: AirlockState | null = null;
+    try { state = deps.readAirlockState ? deps.readAirlockState() : null; } catch { state = null; }
+    const model = airlockModelFor(ctx);
+    const modelKey = model ? `${model.provider ?? ''}/${model.id ?? ''}` : '';
+    const known = airlockLastKnown && airlockLastKnown.modelKey === modelKey ? airlockLastKnown : null;
+    const enforcing = known && !airlockStateIsNewer(state, known)
+      ? known.mode === 'enforce' && known.applies
+      : !!state && state.mode === 'enforce' && airlockStateCovers(state, model);
+    if (!enforcing) return null;
+    // Probed only when the gate applies: the proof is a socket, once per process.
+    let status: AirlockSandboxStatus;
+    try {
+      const s = sandboxed();
+      status = typeof s === 'boolean' ? { sandboxed: s } : s;
+    } catch { status = { sandboxed: false }; }
+    return status.sandboxed ? null : { block: true, reason: airlockLaunchGateReason(status.reason) };
+  };
+
   // #4 — load confirmation. On session_start, prove the extension loaded and that
   // pi's event bus dispatches to it (the open question on every pi upgrade). The
   // detected model rides along so this doubles as a model-resolution smoke test.
@@ -959,6 +1047,8 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
       // refused edit is reported as the workflow's, not the policy's.
       const airlock = airlockCheck(event, ctx);
       if (airlock) return airlock;
+      const gate = airlockGate(ctx);
+      if (gate) return gate;
     } catch { /* never break the host */ }
     return undefined;
   });

@@ -33,6 +33,9 @@ export async function requestVerdict(payload) {
   globalThis.__airlockFake.calls.push(payload);
   return globalThis.__airlockFake.answer(payload);
 }
+// These tests judge verdicts as a session inside the Airlock sandbox sees them;
+// the launch gate (a covered session outside it) is airlock-launch-gate.test.ts.
+export async function airlockSandboxCheck() { return { sandboxed: true }; }
 `,
   );
 });
