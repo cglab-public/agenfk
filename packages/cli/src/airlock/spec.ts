@@ -183,6 +183,11 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     ...HOME_CREDENTIAL_STORES.map((p) => j(home, p)),
     j(home, '.pi', 'agent', 'auth.json'),
     j(home, '.local', 'share', 'opencode', 'auth.json'),
+    // Where the token the launcher's proxy reports carry lives (TEL-1), its
+    // temp files included: an agent holding it could forge them. verify-token
+    // stays readable: the agent's own workflow (agenfk verify, review record)
+    // needs it.
+    j(home, '.agenfk', 'airlock'),
   ];
 
   const clientState = session.client === 'pi'

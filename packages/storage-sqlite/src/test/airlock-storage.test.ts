@@ -150,6 +150,41 @@ describe('airlock decision log', () => {
     expect(targets.has('curl http://host-3/')).toBe(true);
     expect(targets.has(`curl http://host-${cap + 2}/`)).toBe(true);
   });
+
+  it('TEL-1: a decision keeps its source (tool or proxy) and client', async () => {
+    await storage.recordAirlockDecision({ ...decision(0), source: 'tool' });
+    await storage.recordAirlockDecision({ ...decision(1), client: 'opencode', source: 'proxy', tool: 'proxy', capabilityKind: 'host', target: 'evil.example:443' });
+    const [proxy, tool] = await storage.listAirlockDecisions({ limit: 10 });
+    expect(proxy).toMatchObject({ source: 'proxy', client: 'opencode', target: 'evil.example:443', capabilityKind: 'host' });
+    expect(tool).toMatchObject({ source: 'tool', client: 'pi' });
+  });
+
+  it('TEL-1: a decision recorded without a source is a tool decision', async () => {
+    await storage.recordAirlockDecision(decision(0));
+    expect((await storage.listAirlockDecisions({ limit: 1 }))[0].source).toBe('tool');
+  });
+
+  it('TEL-1: a decision log made before sources gains the column; its rows read as tool decisions', async () => {
+    await storage.shutdown();
+    const old = path.join(dir, 'pre-source.sqlite');
+    const db = new DatabaseSync(old);
+    db.exec(`
+      CREATE TABLE airlock_decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, client TEXT NOT NULL, model TEXT, tool TEXT NOT NULL,
+        capability_kind TEXT, target TEXT, decision TEXT NOT NULL, rule TEXT, mode TEXT NOT NULL, item_id TEXT, session_id TEXT
+      );
+      INSERT INTO airlock_decisions (ts, client, tool, decision, mode) VALUES ('2026-01-01T00:00:00.000Z', 'pi', 'bash', 'deny', 'enforce');
+    `);
+    db.close();
+    storage = new SQLiteStorageProvider();
+    await storage.init({ path: old });
+    const columns = ((storage as any).database.prepare('PRAGMA table_info(airlock_decisions)').all() as { name: string }[]).map(c => c.name);
+    expect(columns).toContain('source');
+    const [before] = await storage.listAirlockDecisions({ limit: 1 });
+    expect(before).toMatchObject({ source: 'tool', client: 'pi', tool: 'bash' });
+    await storage.recordAirlockDecision({ ...decision(5), source: 'proxy' });
+    expect((await storage.listAirlockDecisions({ limit: 1 }))[0].source).toBe('proxy');
+  });
 });
 
 describe('airlock approvals (storage only; the grant flow is T5)', () => {

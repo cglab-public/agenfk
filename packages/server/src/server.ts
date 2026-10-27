@@ -62,6 +62,7 @@ import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
+import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/reportToken.js';
 import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs } from './hub/airlockSync.js';
 import { readActiveWorkForSession } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
@@ -3221,6 +3222,16 @@ async function releaseHubAirlockOnLeave(): Promise<void> {
   }
 }
 
+// GH-294 TEL-1: the sandbox proxy's reports carry their own token
+// (~/.agenfk/airlock/report-token), checked and made here when missing or
+// unsafe. Unreadable inside the sandbox, unlike verify-token. The route reads
+// the file per request, so a token that cannot be made means reports are refused.
+try {
+  ensureAirlockReportToken();
+} catch (e) {
+  console.warn(`[SERVER_START] Warning: could not check or create ~/.agenfk/airlock/report-token (${(e as Error).message}); Airlock proxy decisions will not be accepted.`);
+}
+
 // Airlock (GH-294): the policy, its authority and the one evaluator. Not under
 // /settings: PUT /settings is unauthenticated and has no notion of the hub
 // owning a value (AFK_ARCHITECTURE.md). A hub-joined installation cannot write
@@ -3231,6 +3242,7 @@ registerAirlockRoutes(app, {
   recordHubEvent: (event) => recordHubEvent(event as RecordEventInput).catch(() => { /* never fails a request */ }),
   emit: (event, payload) => io.emit(event, payload),
   activeWork: (sessionId) => readActiveWorkForSession(sessionId),
+  reportToken: airlockReportTokenReader(),
   refreshFromHub: async () => {
     if (!hubClient.isEnabled || !hubClient.hubConfig) return;
     await runAirlockSync({

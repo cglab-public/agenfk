@@ -49,6 +49,7 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
     realpath: (p: string) => p,
     isDirectory: () => false,
     platform: 'darwin',
+    ensurePrivateDir: vi.fn(),
     ...over,
     warnings,
   } as LaunchDeps & { warnings: string[] };

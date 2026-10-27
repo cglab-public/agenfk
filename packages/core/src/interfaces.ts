@@ -194,6 +194,8 @@ export interface AirlockDecisionRecord {
   mode: AirlockMode;
   itemId?: string | null;
   sessionId?: string | null;
+  /** Who made it: a tool call judged by POST /airlock/evaluate, or the sandbox proxy (TEL-1). Absent reads as 'tool'. */
+  source?: 'tool' | 'proxy';
 }
 
 /** One capability an approval binds, as a person reads it: redacted before it is stored. */

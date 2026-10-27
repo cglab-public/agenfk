@@ -12,12 +12,17 @@
  *      that host over TLS).
  *   4. The spec is built (spec.ts) and the client launched through the runtime;
  *      its exit code comes back, and SIGINT/SIGTERM/SIGHUP are passed on.
+ *   5. What the sandbox proxy denies is reported to the server (proxyReport.ts,
+ *      TEL-1), with a report token the sandbox cannot read:
+ *      fire-and-forget, so a server that is slow or down changes nothing
+ *      about the session.
  */
 import os from 'os';
 import path from 'path';
 import { normalizeAirlockPolicy, type AirlockClient } from '@agenfk/core';
 import { buildSandboxSpec, writeRootHolding, ENV_NAME, type SandboxSpec } from './spec';
 import type { AirlockRuntime } from './runtime';
+import { ProxyDecisionReporter, type ProxyReportBody } from './proxyReport';
 
 export class AirlockLaunchError extends Error {
   constructor(message: string) {
@@ -63,6 +68,25 @@ export interface LaunchDeps {
   platform: NodeJS.Platform;
   /** Linux: this process's network namespace (readlink /proc/self/ns/net), or null. */
   hostNetns?: string | null;
+  /**
+   * POST /airlock/proxy-decisions, sending `token` as x-agenfk-airlock-report.
+   * Absent: the proxy's decisions are not reported.
+   */
+  postProxyDecisions?: (body: ProxyReportBody, signal: AbortSignal, token: string) => Promise<unknown>;
+  /**
+   * ~/.agenfk/airlock/report-token (the server makes it), read here, outside
+   * the sandbox, which cannot read it, again before every batch (the server
+   * may replace it mid-session). It goes only into the report's header, never
+   * into the sandbox's env or argv. Null when it is missing.
+   */
+  reportToken?: () => string | null;
+  /**
+   * Make `dir` a real 0700 directory (create it, or tighten a looser one);
+   * throws when it cannot. The launcher does it for ~/.agenfk/airlock before
+   * the spec is built: on Linux the sandbox masks only a denied path that
+   * exists at launch, and the server may create the directory later.
+   */
+  ensurePrivateDir: (dir: string) => void;
 }
 
 export interface LaunchOptions {
@@ -321,6 +345,15 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     d.warn(`${why}; the sandbox's pattern deny still covers them on this platform.`);
   }
 
+  const airlockDir = path.join(d.home, '.agenfk', 'airlock');
+  try {
+    d.ensurePrivateDir(airlockDir);
+  } catch (e) {
+    throw new AirlockLaunchError(
+      `Could not make ${airlockDir} a private (0700) directory (${(e as Error)?.message ?? e}), so nothing was launched: the sandbox can only hide it from the agent if it exists at launch. Fix its ownership or permissions and retry.`,
+    );
+  }
+
   let spec: SandboxSpec;
   try {
     spec = buildSandboxSpec(policy, {
@@ -352,7 +385,26 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
   for (const s of spec.skipped) d.warn(`Airlock: "${s.entry}" left out of the sandbox (${s.reason}).`);
   d.log(`Airlock: launching ${client} in the sandbox (${d.runtime.id}; policy ${policy.mode}, ${view.source ?? 'local'} revision ${view.revision ?? 0}; inference ${endpoint.host}).`);
 
-  const launched = await d.runtime.launch(spec, { file, args: clientArgs, cwd: path.resolve(d.cwd) });
+  const post = d.postProxyDecisions;
+  const token = post ? str(d.reportToken?.() ?? null) : null;
+  if (post && !token) d.warn('Airlock: ~/.agenfk/airlock/report-token is missing, so the sandbox proxy\'s denials are not reported to the server (the AgEnFK server creates it when it starts: agenfk restart).');
+  const reporter = post && token
+    ? new ProxyDecisionReporter({
+      // Read again for each batch, so a token the server replaced keeps landing.
+      post: async (body, signal) => {
+        const current = str(d.reportToken?.() ?? null);
+        if (current) await post(body, signal, current);
+      },
+      client,
+      model: [provider, session.model.id].filter(Boolean).join('/') || null,
+      sessionId: str(d.env.AGENFK_SESSION_ID),
+    })
+    : null;
+  const launched = await d.runtime.launch(
+    spec,
+    { file, args: clientArgs, cwd: path.resolve(d.cwd) },
+    reporter ? { onProxyDecision: (decision) => reporter.report(decision) } : undefined,
+  );
   const offs = SIGNALS.map((sig) => d.onSignal(sig, () => { launched.kill(sig); }));
   try {
     const exit = await launched.exited;
@@ -361,5 +413,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
   } finally {
     offs.forEach((off) => off());
     await d.runtime.dispose();
+    // The proxy has stopped: the last batch, bounded by the report timeout.
+    await reporter?.close();
   }
 }

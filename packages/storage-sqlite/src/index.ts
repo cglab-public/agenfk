@@ -509,7 +509,8 @@ export class SQLiteStorageProvider implements StorageProvider {
         rule TEXT,
         mode TEXT NOT NULL,
         item_id TEXT,
-        session_id TEXT
+        session_id TEXT,
+        source TEXT NOT NULL DEFAULT 'tool'
       );
       CREATE INDEX IF NOT EXISTS idx_airlock_decisions_ts ON airlock_decisions(ts);
       CREATE TABLE IF NOT EXISTS airlock_approvals (
@@ -532,6 +533,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       );
     `);
     this.migrateAirlockApprovalsTable();
+    this.migrateAirlockDecisionsTable();
     this.migrateFlowsTable();
     this.migrateTerminalSessionsTable();
     this.backfillFlowRevisions();
@@ -730,6 +732,18 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (!columns.includes('denied_by')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN denied_by TEXT');
     if (!columns.includes('capabilities')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN capabilities TEXT');
     if (!columns.includes('generation')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN generation INTEGER NOT NULL DEFAULT 1');
+  }
+
+  /**
+   * GH-294 TEL-1: the decision log gains `source` ('tool' | 'proxy'). Every row
+   * written before it was a tool-call decision (the proxy reported nothing), so
+   * 'tool' is what those rows were, not a guess.
+   */
+  private migrateAirlockDecisionsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(airlock_decisions)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes('source')) this.database.exec("ALTER TABLE airlock_decisions ADD COLUMN source TEXT NOT NULL DEFAULT 'tool'");
   }
 
   /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
@@ -1691,9 +1705,9 @@ export class SQLiteStorageProvider implements StorageProvider {
   async recordAirlockDecision(d: AirlockDecisionRecord): Promise<void> {
     const db = this.database;
     const result = db.prepare(
-      `INSERT INTO airlock_decisions (ts, client, model, tool, capability_kind, target, decision, rule, mode, item_id, session_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(d.ts, d.client, d.model ?? null, d.tool, d.capabilityKind ?? null, d.target ?? null, d.decision, d.rule ?? null, d.mode, d.itemId ?? null, d.sessionId ?? null);
+      `INSERT INTO airlock_decisions (ts, client, model, tool, capability_kind, target, decision, rule, mode, item_id, session_id, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(d.ts, d.client, d.model ?? null, d.tool, d.capabilityKind ?? null, d.target ?? null, d.decision, d.rule ?? null, d.mode, d.itemId ?? null, d.sessionId ?? null, d.source ?? 'tool');
     const lastId = Number(result.lastInsertRowid);
     // ids only grow, so everything at or below (newest - cap) is the overflow.
     db.prepare('DELETE FROM airlock_decisions WHERE id <= ?').run(lastId - SQLiteStorageProvider.AIRLOCK_DECISION_CAP);
@@ -1715,6 +1729,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       mode: r.mode,
       itemId: r.item_id ?? null,
       sessionId: r.session_id ?? null,
+      source: r.source === 'proxy' ? 'proxy' : 'tool',
     }));
   }
 

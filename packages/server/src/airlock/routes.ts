@@ -5,6 +5,7 @@
  *   GET  /airlock/policy     the effective policy and where it came from
  *   PUT  /airlock/policy     a local write: refused while the hub owns the policy
  *   POST /airlock/evaluate   judge one tool call (adapters, CLI, MCP); loopback only
+ *   POST /airlock/proxy-decisions   what the sandbox proxy allowed and denied (TEL-1); loopback only
  *   GET  /airlock/decisions  the capped decision log, newest first
  *   GET  /airlock/approvals  human-approval requests: pending, and the recent ones (T5)
  *   POST /airlock/approvals/:key/grant|deny   a person's answer, on the board (T5)
@@ -30,6 +31,16 @@
  * DEFAULT_AIRLOCK_POLICY (off). A hub row with no hub config (left the hub) is
  * still the hub's: T3 copies it to local on leaving.
  *
+ * PROXY DECISIONS (TEL-1): the launcher's sandbox proxy (packages/cli/src/airlock)
+ * reports its decisions (denials) in batches, from loopback AND with the report
+ * token as x-agenfk-airlock-report (reportToken.ts), which the sandbox cannot read.
+ * Each lands in the same decision log as source 'proxy' (a tool call's is source 'tool'), goes to the hub
+ * redacted and without the session id, as evaluate's do, and an identical one
+ * repeated within AIRLOCK_PROXY_DEDUPE_MS is dropped so a retry loop does not
+ * flood the log; the dedupe is capped, and so is each client's rate (the rest
+ * is dropped and counted). The proxy decided before it reported: nothing here
+ * can change a verdict.
+ *
  * Every dependency is handed in, so the routes are testable without the rest of
  * server.ts and server.ts keeps owning the hub client and the socket.
  */
@@ -46,6 +57,7 @@ import {
   type AirlockApprovalCapability,
   type AirlockApprovalRecord,
   type AirlockClient,
+  type AirlockDecisionRecord,
   type AirlockGrantScope,
   type AirlockPolicy,
   type AirlockVerdict,
@@ -56,6 +68,7 @@ import {
   type StoredAirlockPolicy,
 } from '@agenfk/core';
 import { redactLog } from '../hub/redact.js';
+import { AIRLOCK_REPORT_HEADER } from './reportToken.js';
 
 export const HUB_OWNS_AIRLOCK_POLICY = 'HUB_OWNS_AIRLOCK_POLICY';
 export const AIRLOCK_REVISION_CONFLICT = 'AIRLOCK_REVISION_CONFLICT';
@@ -73,6 +86,16 @@ export const MAX_AIRLOCK_FIELD = 256;
 export const MAX_AIRLOCK_CAPABILITIES = 32;
 /** How long a person's grant stays usable. */
 export const AIRLOCK_GRANT_TTL_MS = 30 * 60 * 1000;
+/** Decisions one proxy report may carry (the launcher sends at most this many per batch). */
+export const MAX_PROXY_DECISIONS = 200;
+/** An identical proxy decision repeated within this long is not logged again. */
+export const AIRLOCK_PROXY_DEDUPE_MS = 10_000;
+/** Distinct decisions the dedupe remembers; past it the oldest is forgotten first. */
+export const AIRLOCK_PROXY_DEDUPE_CAP = 5_000;
+/** Proxy decisions logged per client per minute; the rest are dropped and counted. */
+export const AIRLOCK_PROXY_RATE_PER_MIN = 600;
+/** A host as the proxy names it: a DNS name or an address literal (IPv6 included); ASRT's own limit is 255. */
+const PROXY_HOST = /^[A-Za-z0-9._:\[\]%-]{1,255}$/;
 /** Answered requests the board lists beside the pending ones. */
 const RECENT_APPROVALS = 50;
 
@@ -84,6 +107,14 @@ export interface AirlockRouteDeps {
   emit: (event: string, payload?: unknown) => void;
   /** The card the session's workflow last authorised, for the decision log. */
   activeWork: (sessionId?: string) => { itemId: string; projectId?: string } | null;
+  /**
+   * The Airlock report token (~/.agenfk/airlock/report-token, reportToken.ts)
+   * the unsandboxed launcher sends as x-agenfk-airlock-report with proxy
+   * decisions, as it is now. Absent, null or empty: every report is refused.
+   */
+  reportToken?: () => string | null;
+  /** Overrides AIRLOCK_PROXY_DEDUPE_CAP and AIRLOCK_PROXY_RATE_PER_MIN (tests). */
+  proxyLimits?: { dedupeCap?: number; ratePerMin?: number };
   /** Where adapters read the last-known policy when the server is unreachable. */
   stateFile?: () => string;
   /** Pull the hub's policy now (GET ?refresh=1). Absent, or not joined: refresh is a no-op. Never throws. */
@@ -190,6 +221,19 @@ function sessionModelOf(raw: unknown): SessionModel | null {
   const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
   return modelFromPi(null, { provider: str(m.provider) ?? str(m.providerID), model: str(m.id) ?? str(m.model) ?? str(m.modelID) });
 }
+
+/** Why a request's model is refused (400), or null when it is fine. */
+function modelErrorOf(model: SessionModel | null): string | null {
+  if (!model) return 'model must be "provider/model" or { provider, id }';
+  if ((model.provider?.length ?? 0) > MAX_AIRLOCK_FIELD || (model.id?.length ?? 0) > MAX_AIRLOCK_FIELD) {
+    return `model provider and id must each be at most ${MAX_AIRLOCK_FIELD} characters`;
+  }
+  return null;
+}
+
+/** `provider/id` as the decision log names a model, or null when neither is known. */
+const modelLabel = (model: SessionModel): string | null =>
+  model.provider || model.id ? [model.provider, model.id].filter(Boolean).join('/') : null;
 
 const capabilityText = (cap: Capability): string =>
   cap.kind === 'command' ? cap.command : cap.kind === 'path' ? cap.path : cap.url;
@@ -440,6 +484,45 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
   const stateFile = deps.stateFile ?? defaultAirlockStateFile;
   const now = deps.now ?? Date.now;
 
+  /**
+   * One decision into the log, to the hub and to the board. The session id
+   * stays on this machine; the hub gets the redacted decision, with its source
+   * ('tool' | 'proxy') and client, and the policy revision and where that
+   * policy came from (policySource).
+   */
+  const logDecision = async (record: AirlockDecisionRecord, view: AirlockPolicyView): Promise<void> => {
+    await deps.storage().recordAirlockDecision(record);
+    const { sessionId: _local, ...shared } = record;
+    deps.recordHubEvent({ type: 'airlock.decision', payload: { ...shared, revision: view.revision, policySource: view.source } });
+    deps.emit('airlock_decision', { decision: record.decision, rule: record.rule, source: record.source });
+  };
+
+  /**
+   * When each proxy decision was last logged, by everything that makes it the
+   * same decision. Kept in the order they were logged (a key logged again moves
+   * to the end), so the oldest is the first key: at the cap it is evicted in O(1).
+   */
+  const dedupeCap = deps.proxyLimits?.dedupeCap ?? AIRLOCK_PROXY_DEDUPE_CAP;
+  const ratePerMin = deps.proxyLimits?.ratePerMin ?? AIRLOCK_PROXY_RATE_PER_MIN;
+  const proxyLastLogged = new Map<string, number>();
+  const proxySeenRecently = (key: string, at: number): boolean => {
+    const last = proxyLastLogged.get(key);
+    if (last !== undefined && at - last < AIRLOCK_PROXY_DEDUPE_MS) return true;
+    proxyLastLogged.delete(key);
+    proxyLastLogged.set(key, at);
+    if (proxyLastLogged.size > dedupeCap) proxyLastLogged.delete(proxyLastLogged.keys().next().value as string);
+    return false;
+  };
+  /** Proxy decisions logged per client in the current minute. */
+  const proxyRate = new Map<string, { windowStart: number; count: number }>();
+  const proxyRateAllows = (client: string, at: number): boolean => {
+    let r = proxyRate.get(client);
+    if (!r || at - r.windowStart >= 60_000) { r = { windowStart: at, count: 0 }; proxyRate.set(client, r); }
+    if (r.count >= ratePerMin) return false;
+    r.count++;
+    return true;
+  };
+
   app.get('/airlock/policy', async (req: any, res: any, next: any) => {
     try {
       // `?refresh=1` (or true) pulls the hub's policy now instead of at the next
@@ -527,10 +610,8 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       const tooLong = (['toolName', 'sessionId'] as const).find(k => typeof body[k] === 'string' && body[k].length > MAX_AIRLOCK_FIELD);
       if (tooLong) return res.status(400).json({ error: `${tooLong} is longer than ${MAX_AIRLOCK_FIELD} characters` });
       const model = sessionModelOf(body.model);
-      if (!model) return res.status(400).json({ error: 'model must be "provider/model" or { provider, id }' });
-      if ((model.provider?.length ?? 0) > MAX_AIRLOCK_FIELD || (model.id?.length ?? 0) > MAX_AIRLOCK_FIELD) {
-        return res.status(400).json({ error: `model provider and id must each be at most ${MAX_AIRLOCK_FIELD} characters` });
-      }
+      const modelError = modelErrorOf(model);
+      if (!model || modelError) return res.status(400).json({ error: modelError });
       const toolName = typeof body.toolName === 'string' ? body.toolName : '';
       const sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : undefined;
 
@@ -603,7 +684,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
         const record = {
           ts: new Date().toISOString(),
           client: body.client as string,
-          model: model.provider || model.id ? [model.provider, model.id].filter(Boolean).join('/') : null,
+          model: modelLabel(model),
           tool: toolName.slice(0, 200),
           capabilityKind: target?.kind ?? null,
           target: target ? redactTarget(capabilityText(target)) : null,
@@ -612,15 +693,93 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
           mode: view.effective.mode,
           itemId: work?.itemId ?? null,
           sessionId: sessionId ?? null,
+          source: 'tool' as const,
         };
-        await storage.recordAirlockDecision(record);
-        // The session id stays on this machine; the hub gets the redacted decision.
-        const { sessionId: _local, ...shared } = record;
-        deps.recordHubEvent({ type: 'airlock.decision', payload: { ...shared, revision: view.revision, source: view.source } });
-        deps.emit('airlock_decision', { decision: record.decision, rule: record.rule });
+        await logDecision(record, view);
       }
 
       res.json({ verdict: publicVerdict(verdict), mode: view.effective.mode, applies, revision: view.revision, source: view.source });
+    } catch (e) { next(e); }
+  });
+
+  app.post('/airlock/proxy-decisions', async (req: any, res: any, next: any) => {
+    try {
+      if (!isLoopback(req.socket?.remoteAddress)) {
+        return res.status(403).json({ error: 'Airlock proxy decisions are only accepted from this machine' });
+      }
+      // Loopback is not enough: the sandboxed agent reaches this port from
+      // loopback too. Only the unsandboxed launcher holds the report token (the
+      // sandbox cannot read ~/.agenfk/airlock/), so only it can
+      // report. Its own header and its own token: verify-token, which the agent
+      // can read, is no use here, in either header.
+      const token = deps.reportToken?.();
+      if (!token || req.headers?.[AIRLOCK_REPORT_HEADER] !== token) {
+        return res.status(403).json({ error: 'Airlock proxy decisions are only accepted from the Airlock launcher' });
+      }
+      const body = req.body ?? {};
+      if (!CLIENTS.includes(body.client)) {
+        return res.status(400).json({ error: `client must be one of ${CLIENTS.join(', ')}` });
+      }
+      if (typeof body.sessionId === 'string' && body.sessionId.length > MAX_AIRLOCK_FIELD) {
+        return res.status(400).json({ error: `sessionId is longer than ${MAX_AIRLOCK_FIELD} characters` });
+      }
+      const model = sessionModelOf(body.model);
+      const modelError = modelErrorOf(model);
+      if (!model || modelError) return res.status(400).json({ error: modelError });
+      const list = body.decisions;
+      if (!Array.isArray(list)) return res.status(400).json({ error: 'decisions (an array) is required' });
+      if (list.length > MAX_PROXY_DECISIONS) {
+        return res.status(400).json({ error: `a report may carry at most ${MAX_PROXY_DECISIONS} decisions; this one has ${list.length}` });
+      }
+      // The envelope is refused whole (above); one entry that does not fit is
+      // skipped and counted, so an odd denial does not lose the rest of the batch.
+      const valid = (d: any): boolean => !!d && typeof d === 'object'
+        && typeof d.host === 'string' && PROXY_HOST.test(d.host)
+        && (d.port === null || d.port === undefined || (Number.isInteger(d.port) && d.port >= 0 && d.port <= 65535))
+        && (d.decision === 'allow' || d.decision === 'deny')
+        && typeof d.rule === 'string' && !!d.rule && d.rule.length <= MAX_AIRLOCK_FIELD;
+
+      const sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : undefined;
+      const view = await resolveAirlockPolicy(deps.storage(), deps.hubJoined());
+      const work = deps.activeWork(sessionId);
+      const at = now();
+      let recorded = 0;
+      let skipped = 0;
+      let dropped = 0;
+      let invalid = 0;
+      for (const d of list) {
+        if (!valid(d)) {
+          invalid++;
+          continue;
+        }
+        const port: number | null = d.port ?? null;
+        if (proxySeenRecently(JSON.stringify([body.client, sessionId ?? null, d.host, port, d.decision, d.rule]), at)) {
+          skipped++;
+          continue;
+        }
+        if (!proxyRateAllows(body.client, at)) {
+          dropped++;
+          continue;
+        }
+        const ts = typeof d.ts === 'string' && !Number.isNaN(Date.parse(d.ts)) ? new Date(d.ts).toISOString() : new Date(at).toISOString();
+        await logDecision({
+          ts,
+          client: body.client as string,
+          model: modelLabel(model),
+          tool: 'proxy',
+          capabilityKind: 'host',
+          // A host name can carry data (a secret as a DNS label), so it is redacted like any target.
+          target: redactTarget(port === null ? d.host : `${d.host}:${port}`),
+          decision: d.decision,
+          rule: d.rule,
+          mode: view.effective.mode,
+          itemId: work?.itemId ?? null,
+          sessionId: sessionId ?? null,
+          source: 'proxy',
+        }, view);
+        recorded++;
+      }
+      res.json({ recorded, skipped, dropped, invalid });
     } catch (e) { next(e); }
   });
 

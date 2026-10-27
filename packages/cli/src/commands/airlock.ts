@@ -9,6 +9,7 @@ import { getApiUrl } from '@agenfk/telemetry';
 import { resolveDashboardUrl } from '../uiUrl.js';
 import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
 import { AsrtRuntime } from '../airlock/runtime.js';
+import { PROXY_REPORT_TIMEOUT_MS } from '../airlock/proxyReport.js';
 
 /**
  * `agenfk airlock` (GH-294): read the Airlock policy and ask what it would
@@ -51,6 +52,43 @@ function whichOnPath(file: string, env: NodeJS.ProcessEnv = process.env): string
   return null;
 }
 
+/**
+ * `dir` as a real 0700 directory: created, or set to exactly 0700 (looser, or
+ * owner-restrictive like 0600 that the owner could not use). Throws when it
+ * cannot be; the launch is then refused. POSIX modes only: Windows has none to
+ * set (and the sandbox refuses Windows before this is reached).
+ */
+export function ensurePrivateDir(dir: string, platform: NodeJS.Platform = process.platform): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const st = fs.lstatSync(dir);
+  if (!st.isDirectory()) throw new Error('it is not a directory');
+  if (platform !== 'win32' && (st.mode & 0o777) !== 0o700) fs.chmodSync(dir, 0o700);
+}
+
+/**
+ * The Airlock report token, read as the server reads it: without following a
+ * link or blocking on a FIFO (this process runs the sandbox's proxy), and only
+ * from a regular file. Null when missing or not one.
+ */
+function readReportToken(file: string): string | null {
+  let fd: number;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+  } catch {
+    return null;
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > 128) return null;
+    const buf = Buffer.alloc(128);
+    return buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, 0)).toString('utf8').trim() || null;
+  } catch {
+    return null;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 const realpath = (p: string): string => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 
 /** The real launcher's dependencies: this machine, this server, ASRT. */
@@ -82,6 +120,12 @@ export function defaultLaunchDeps(): LaunchDeps {
     realpath: (p) => { try { return fs.realpathSync(p); } catch { return null; } },
     isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
     platform: process.platform,
+    // Fire-and-forget: the reporter races this against its own timeout too.
+    postProxyDecisions: (body, signal, token) => axios.post(`${getApiUrl()}/airlock/proxy-decisions`, body, {
+      timeout: PROXY_REPORT_TIMEOUT_MS, signal, headers: { 'x-agenfk-airlock-report': token },
+    }),
+    ensurePrivateDir: (dir) => ensurePrivateDir(dir),
+    reportToken: () => readReportToken(path.join(home, '.agenfk', 'airlock', 'report-token')),
     hostNetns: (() => { try { return process.platform === 'linux' ? fs.readlinkSync('/proc/self/ns/net') : null; } catch { return null; } })(),
     onSignal: (signal, handler) => {
       process.on(signal, handler);
