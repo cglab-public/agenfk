@@ -34,3 +34,4 @@ export * from './privateFile';
 export * from './hubDeadletter';
 export * from './releaseChannel';
 export * from './commandFacts';
+export * from './airlock';
