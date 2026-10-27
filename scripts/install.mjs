@@ -1321,7 +1321,9 @@ async function run() {
     const gatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper.mjs');
     const internalBinDir = path.join(agenfkHome, 'bin');
     await fs.mkdir(internalBinDir, { recursive: true });
-    for (const script of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs']) {
+    // agenfk-airlock.mjs (GH-294) is spawned by pi and imported by the OpenCode
+    // Airlock plugin; it imports resolveApiUrl from agenfk-gatekeeper.mjs beside it.
+    for (const script of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs', 'agenfk-airlock.mjs']) {
         const src = path.join(rootDir, 'bin', script);
         if (existsSync(src)) {
             await fs.copyFile(src, path.join(internalBinDir, script));
@@ -1422,6 +1424,12 @@ async function run() {
             if (existsSync(opencodePrHookSource)) {
                 await fs.copyFile(opencodePrHookSource, path.join(opencodePluginsDir, 'agenfk-pr-hook.mjs'));
                 detail(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-pr-hook.mjs')}`);
+            }
+            // GH-294: Airlock judges tool calls through ~/.agenfk/bin/agenfk-airlock.mjs.
+            const opencodeAirlockSource = path.join(rootDir, 'bin', 'agenfk-airlock-opencode.mjs');
+            if (existsSync(opencodeAirlockSource)) {
+                await fs.copyFile(opencodeAirlockSource, path.join(opencodePluginsDir, 'agenfk-airlock.mjs'));
+                detail(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-airlock.mjs')}`);
             }
         } else if (!onlyPlatform) {
             detail(`  Opencode not found. Skipping Opencode plugin installation.`);
