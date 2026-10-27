@@ -11,6 +11,10 @@ import {
   type SandboxSession,
 } from '../airlock/spec';
 
+// The launcher refuses Windows (AsrtRuntime.check, tested there), so these POSIX
+// sandbox specs never run on it; their literal POSIX paths would not hold either.
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+
 const HOME = '/home/u';
 const session = (over: Partial<SandboxSession> = {}): SandboxSession => ({
   client: 'pi',
@@ -85,7 +89,7 @@ describe('buildSandboxSpec: network', () => {
   });
 });
 
-describe('buildSandboxSpec: filesystem', () => {
+describePosix('buildSandboxSpec: filesystem', () => {
   it('denies reads of the credential stores', () => {
     const { denyRead } = buildSandboxSpec(policy(), session()).filesystem;
     for (const p of ['/home/u/.aws/credentials', '/home/u/.ssh/id_*', '/home/u/.netrc', '/home/u/.docker/config.json',
@@ -189,7 +193,7 @@ describe('buildSandboxSpec: deny wins (review fixes 1 and 2)', () => {
   });
 });
 
-describe('buildSandboxSpec: credential stores and injection (review fixes 4 and 5)', () => {
+describePosix('buildSandboxSpec: credential stores and injection (review fixes 4 and 5)', () => {
   it('denies reads of every credential store layer 1 knows, plus the clients\' own key files', () => {
     const { denyRead } = buildSandboxSpec(policy(), session()).filesystem;
     for (const p of HOME_CREDENTIAL_STORES) expect(denyRead).toContain(`/home/u/${p}`);

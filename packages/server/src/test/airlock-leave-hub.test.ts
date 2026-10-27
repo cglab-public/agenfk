@@ -39,7 +39,7 @@ beforeAll(async () => {
   delete process.env.AGENFK_HUB_TOKEN;
   delete process.env.AGENFK_HUB_ORG;
   process.env.AGENFK_DB_PATH = TEST_DB;
-  for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+  await removeTestDb(TEST_DB);
 
   const seed = new SQLiteStorageProvider();
   await seed.init({ path: TEST_DB });

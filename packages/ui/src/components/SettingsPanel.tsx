@@ -990,7 +990,8 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
       label: 'Airlock',
       icon: ShieldCheck,
       scope: 'The tool-call policy for pi and OpenCode agents on this installation, and the approvals it is waiting on.',
-      rows: <AirlockSettings />,
+      // One composite panel rather than setting rows: the policy editor, approvals and decisions.
+      rows: <div data-testid="setting-panel"><AirlockSettings /></div>,
     },
     {
       id: 'agents',

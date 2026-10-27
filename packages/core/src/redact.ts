@@ -148,7 +148,10 @@ function unquoted(text: string, start: number, end: number, mode: 'outer' | 'ins
  * separator and any case, as Windows does.
  */
 function homePattern(home: string): RegExp | null {
-  const trimmed = home.replace(/[\\/]+$/, '');
+  // A loop, not /[\\/]+$/: that regex backtracks polynomially on a long run of separators (CodeQL).
+  let end = home.length;
+  while (end > 0 && (home[end - 1] === '/' || home[end - 1] === '\\')) end--;
+  const trimmed = home.slice(0, end);
   if (trimmed.length < 2) return null;
   const windows = /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.includes('\\');
   const body = trimmed.split(/[\\/]/).map(escapeRe).join(windows ? '[\\\\/]' : '/');

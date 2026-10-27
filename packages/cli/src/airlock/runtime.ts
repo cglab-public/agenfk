@@ -179,7 +179,8 @@ export class AsrtRuntime implements AirlockRuntime {
   constructor(deps: AsrtRuntimeDeps = {}) {
     // Node 22.12+ loads the ESM package through require (ASRT itself needs 22.12).
     this.load = deps.load ?? (async () => require(ASRT_PACKAGE));
-    this.spawn = deps.spawn ?? nodeSpawn;
+    // windowsHide: the guard in windows-hide-guard.test.ts reads it here (GitHub #200).
+    this.spawn = deps.spawn ?? ((command, args, options) => nodeSpawn(command, args, { ...options, windowsHide: true }));
     this.platform = deps.platform ?? process.platform;
   }
 

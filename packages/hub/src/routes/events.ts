@@ -577,8 +577,8 @@ export function eventsRouter(ctx: HubServerContext): Router {
       try {
         await recordAirlockDecision(ctx.db, orgId, e, userKey, e.payload);
       } catch (err) {
-        // The id is the sender's: JSON-escaped and cut, so it cannot forge log lines.
-        console.warn(`[AIRLOCK] stored event ${JSON.stringify(String(e.eventId).slice(0, 200))} but could not list it as a denial:`, (err as Error).message);
+        // The id is the sender's: JSON-escaped and cut, and an argument, never the format string.
+        console.warn('[AIRLOCK] stored event %s but could not list it as a denial: %s', JSON.stringify(String(e.eventId).slice(0, 200)), (err as Error).message);
       }
     }
     // Learning proposals (TEL-3) for Admin -> Airlock, the same way: after the
@@ -587,7 +587,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
       try {
         await recordAirlockLearningProposal(ctx.db, orgId, e, e.payload);
       } catch (err) {
-        console.warn(`[AIRLOCK] stored event ${JSON.stringify(String(e.eventId).slice(0, 200))} but could not list its proposed hosts:`, (err as Error).message);
+        console.warn('[AIRLOCK] stored event %s but could not list its proposed hosts: %s', JSON.stringify(String(e.eventId).slice(0, 200)), (err as Error).message);
       }
     }
 

@@ -44,7 +44,7 @@ beforeAll(async () => {
   process.env.AGENFK_HUB_TOKEN = 'agk_test';
   process.env.AGENFK_HUB_ORG = 'org-airlock';
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB);
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     fetchCalls.push(String(url));
     if (String(url) === 'http://hub.invalid/v1/airlock/policy') {

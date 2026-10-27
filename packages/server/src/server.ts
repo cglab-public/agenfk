@@ -13209,6 +13209,9 @@ export const API_PATH_PREFIXES = [
   // `/hub/refusals` feeds the board's refusal indicator (#223). The board has
   // no page under /hub, so nothing of the SPA is shadowed by claiming it.
   '/hub',
+  // `/airlock` is the Airlock policy, decisions, approvals and learning (GH-294).
+  // The board has no page under /airlock, so nothing of the SPA is shadowed.
+  '/airlock',
 ];
 
 /**

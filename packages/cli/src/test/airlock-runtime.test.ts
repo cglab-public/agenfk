@@ -18,6 +18,10 @@ import {
   sandboxCommandLine,
 } from '../airlock/runtime';
 
+// The launcher refuses Windows (AsrtRuntime.check, tested there), so these POSIX
+// sandbox specs never run on it; their literal POSIX paths would not hold either.
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+
 const session: SandboxSession = {
   client: 'pi',
   home: '/home/u',
@@ -78,7 +82,7 @@ describe('toAsrtConfig', () => {
   });
 });
 
-describe('sandboxCommandLine', () => {
+describePosix('sandboxCommandLine', () => {
   it('runs the program with its arguments intact and the spec env set (a real shell parses it)', () => {
     const script = 'console.log(JSON.stringify([process.argv.slice(1), process.env.NO_PROXY, process.env.NODE_USE_ENV_PROXY, process.env.AGENFK_AIRLOCK_SANDBOX]))';
     const line = sandboxCommandLine(spec, { file: process.execPath, args: ['-e', script, 'a b', "it's", '$HOME', '`id`'], cwd: '/' });

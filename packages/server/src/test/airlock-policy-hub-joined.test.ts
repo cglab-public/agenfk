@@ -40,7 +40,7 @@ beforeAll(async () => {
   process.env.AGENFK_HUB_TOKEN = 'agk_test';
   process.env.AGENFK_HUB_ORG = 'org-airlock';
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB);
   vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests'); }));
   server = await import('../server');
   await server.initStorage();

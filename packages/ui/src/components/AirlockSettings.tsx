@@ -542,6 +542,7 @@ export function AirlockSettings(): React.ReactElement {
   return (
     <div data-testid="airlock-settings">
       {policy.isError && <Problem>Could not read the Airlock policy. Check that AgEnFK is running.</Problem>}
+      {policy.isPending && <p className="text-[12px] text-ink-tertiary">Reading the Airlock policy…</p>}
       {view && (
         <>
           <div className={BLOCK}>

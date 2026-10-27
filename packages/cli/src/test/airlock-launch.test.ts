@@ -12,6 +12,10 @@ import { registerAirlockCommands } from '../commands/airlock';
 import type { AirlockRuntime, SandboxCommand, SandboxExit } from '../airlock/runtime';
 import type { SandboxSpec } from '../airlock/spec';
 
+// The launcher refuses Windows (AsrtRuntime.check, tested there), so these POSIX
+// sandbox specs never run on it; their literal POSIX paths would not hold either.
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+
 const HOME = '/home/u';
 const CWD = '/work/repo';
 
@@ -58,7 +62,7 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
 const specOf = (d: LaunchDeps): SandboxSpec => (d.runtime.launch as any).mock.calls[0][0];
 const cmdOf = (d: LaunchDeps): SandboxCommand => (d.runtime.launch as any).mock.calls[0][1];
 
-describe('runAirlockLaunch: pi', () => {
+describePosix('runAirlockLaunch: pi', () => {
   it('launches pi inside the sandbox with the effective policy, its inference host, the marker and the masked key', async () => {
     const d = deps();
     const code = await runAirlockLaunch('pi', ['--model', 'openai/gpt-5', '-p', 'hi'], { keyEnv: [] }, d);
@@ -172,7 +176,7 @@ describe('runAirlockLaunch: refusals', () => {
   });
 });
 
-describe('runAirlockLaunch: opencode', () => {
+describePosix('runAirlockLaunch: opencode', () => {
   it('launches opencode with its model from -m, its own state writable and its marker', async () => {
     const d = deps({ env: { ANTHROPIC_API_KEY: 'x' } });
     await runAirlockLaunch('opencode', ['-m', 'anthropic/claude-x'], { keyEnv: [] }, d);
@@ -247,7 +251,7 @@ function tree(dirs: Record<string, Array<[string, boolean] | [string, boolean, b
   return (dir: string) => (dir in dirs ? (dirs[dir] === null ? null : dirs[dir]!.map(([name, isDir, isLink]) => ({ name, isDir, isLink: !!isLink }))) : []);
 }
 
-describe('nested .agenfk directories (review fix 3)', () => {
+describePosix('nested .agenfk directories (review fix 3)', () => {
   const ws = '/work/repo';
   const listDir = tree({
     [ws]: [['a', true], ['node_modules', true], ['.git', true], ['f.txt', false]],
@@ -296,7 +300,7 @@ describe('a denied inference host (review fixes 1 and 2)', () => {
   });
 });
 
-describe('symlinked .agenfk directories (second pass, fix 3)', () => {
+describePosix('symlinked .agenfk directories (second pass, fix 3)', () => {
   const ws = '/work/repo';
   const links: Record<string, string> = {
     [`${ws}/a/.agenfk`]: '/outside/secret-agenfk',

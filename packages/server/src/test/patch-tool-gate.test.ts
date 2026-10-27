@@ -62,7 +62,7 @@ async function opencode(tool: string, args: Record<string, unknown>): Promise<st
 describe('OpenCode gatekeeper: a patch is gated by the files it touches', () => {
   it('blocks the patch tool updating a file the gatekeeper refuses', async () => {
     expect(await opencode('patch', { patchText: patch('*** Update File: src/a.blocked') }))
-      .toMatch(/WORKFLOW VIOLATION: .*src\/a\.blocked/);
+      .toMatch(/WORKFLOW VIOLATION: .*src[\\/]a\.blocked/);
   });
 
   it('blocks apply_patch (older OpenCode) adding a file', async () => {
@@ -174,7 +174,8 @@ describe('pi gatekeeper: a patch is gated by the files it touches', () => {
     const deps = makeDeps();
     activate(pi as any, deps);
     await fire('tool_call', { toolName: 'apply_patch', input: { patchText: patch('*** Update File: src/ok.ts') } }, { cwd: '/managed/repo' });
-    expect(deps.gatekeeperVerdict).toHaveBeenCalledWith(path.join('/managed/repo', 'src', 'ok.ts'));
+    // resolve, as the hook does: on Windows it adds the drive.
+    expect(deps.gatekeeperVerdict).toHaveBeenCalledWith(path.resolve('/managed/repo', 'src', 'ok.ts'));
   });
 
   it('checks the destination of a move', async () => {
