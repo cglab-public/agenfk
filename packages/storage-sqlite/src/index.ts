@@ -1638,6 +1638,37 @@ export class SQLiteStorageProvider implements StorageProvider {
     return (await this.getAirlockPolicy(row.scope))!;
   }
 
+  async deleteAirlockPolicy(scope: AirlockScope): Promise<boolean> {
+    const result = this.database.prepare('DELETE FROM airlock_policy WHERE scope = ?').run(scope);
+    return Number(result.changes) > 0;
+  }
+
+  async releaseAirlockHubPolicy(expectedHubRevision: number, meta: { updatedAt: string; updatedBy: string }): Promise<StoredAirlockPolicy | null> {
+    const db = this.database;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const hub = db.prepare("SELECT revision, data FROM airlock_policy WHERE scope = 'hub'").get() as { revision: number; data: string } | undefined;
+      if (!hub || Number(hub.revision) !== expectedHubRevision) {
+        db.exec('ROLLBACK');
+        return null;
+      }
+      const local = db.prepare("SELECT revision FROM airlock_policy WHERE scope = 'local'").get() as { revision: number } | undefined;
+      db.prepare(
+        `INSERT INTO airlock_policy (scope, revision, data, updated_at, updated_by, authority, etag)
+         VALUES ('local', ?, ?, ?, ?, 'local', NULL)
+         ON CONFLICT(scope) DO UPDATE SET
+           revision = excluded.revision, data = excluded.data, updated_at = excluded.updated_at,
+           updated_by = excluded.updated_by, authority = excluded.authority, etag = excluded.etag`
+      ).run((local ? Number(local.revision) : 0) + 1, hub.data, meta.updatedAt, meta.updatedBy);
+      db.prepare("DELETE FROM airlock_policy WHERE scope = 'hub' AND revision = ?").run(expectedHubRevision);
+      db.exec('COMMIT');
+    } catch (err) {
+      try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw err;
+    }
+    return this.getAirlockPolicy('local');
+  }
+
   async recordAirlockDecision(d: AirlockDecisionRecord): Promise<void> {
     const db = this.database;
     const result = db.prepare(

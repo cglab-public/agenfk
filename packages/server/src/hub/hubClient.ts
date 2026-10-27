@@ -14,6 +14,34 @@ export function hubConfigPath(): string {
   return path.join(os.homedir(), '.agenfk', 'hub.json');
 }
 
+/**
+ * Whether hub.json is there, and usable. Only 'absent' means this machine left
+ * its hub (`agenfk hub logout` deletes the file): a file that cannot be read or
+ * parsed is a fault, and must not be taken for a logout - leaving the hub hands
+ * the Airlock policy to whoever runs on this machine (GH-294).
+ */
+export function hubConfigFileState(): 'absent' | 'present' | 'unreadable' {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(hubConfigPath(), 'utf8');
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'absent' : 'unreadable';
+  }
+  try {
+    const cfg = JSON.parse(raw);
+    return cfg && typeof cfg.url === 'string' && typeof cfg.token === 'string' && typeof cfg.orgId === 'string'
+      ? 'present' : 'unreadable';
+  } catch {
+    return 'unreadable';
+  }
+}
+
+/** Confirmed out of the hub: no hub.json and no AGENFK_HUB_* override configuring one. */
+export function hubConfirmedAbsent(): boolean {
+  const env = process.env.AGENFK_HUB_URL || process.env.AGENFK_HUB_TOKEN || process.env.AGENFK_HUB_ORG;
+  return !env && hubConfigFileState() === 'absent';
+}
+
 function readHubConfigFile(): HubConfig | null {
   try {
     const raw = fs.readFileSync(hubConfigPath(), 'utf8');

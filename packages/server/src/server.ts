@@ -20,6 +20,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint, NO_VERIFY_COMMAND, VERIFY_COMMAND_FLAG } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
+import { hubConfirmedAbsent } from "./hub/hubClient.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { publishPendingReceipts } from "./hub/receiptPublisher.js";
@@ -61,6 +62,7 @@ import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
+import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs } from './hub/airlockSync.js';
 import { readActiveWorkForSession } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
@@ -1613,6 +1615,9 @@ const initStorage = async () => {
   // f8d0a752: the server-wide suite-run limit, read from the settings it lives in.
   await loadSuiteRunSetting();
   await pruneRecordsOnStart();
+  // GH-294: left the hub while the server was down (`agenfk hub logout`): the
+  // hub's Airlock policy becomes the local one before anything reads it.
+  if (!hubClient.isEnabled && hubConfirmedAbsent()) await releaseHubAirlockOnLeave();
   // GH-294: adapters fall back to this file when the server is unreachable, so
   // it is rebuilt from the stored policy at every start (a failed write or a
   // hand edit does not outlive a restart).
@@ -1723,6 +1728,7 @@ if (hubDisabledForTests) {
     etagCache: flowSyncEtagCache,
     emit: (event, payload) => io.emit(event, payload),
     resolveRepo: resolveProjectRepo,
+    activeHubConfig: () => hubClient.hubConfig,
   });
   console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
 
@@ -3196,6 +3202,23 @@ app.delete("/terminal-sessions/:id", asyncHandler(async (req: any, res: any) => 
   res.status(204).end();
 }));
 
+/**
+ * Leaving the hub (GH-294, T3): the hub's Airlock row is copied to local and
+ * dropped, so the org's protection stays in force and becomes editable here.
+ * Never throws: a failure is logged, and the hub row - still in force - stays.
+ */
+async function releaseHubAirlockOnLeave(): Promise<void> {
+  try {
+    const out = await releaseHubAirlockPolicy({ storage });
+    if (out.released) {
+      console.log('[AIRLOCK] Left the hub: its Airlock policy is now this installation\'s local policy.');
+      io.emit('airlock_policy_changed', { source: 'local' });
+    }
+  } catch (e) {
+    console.error('[AIRLOCK] Could not keep the hub policy on leaving the hub:', (e as Error).message);
+  }
+}
+
 // Airlock (GH-294): the policy, its authority and the one evaluator. Not under
 // /settings: PUT /settings is unauthenticated and has no notion of the hub
 // owning a value (AFK_ARCHITECTURE.md). A hub-joined installation cannot write
@@ -3206,6 +3229,16 @@ registerAirlockRoutes(app, {
   recordHubEvent: (event) => recordHubEvent(event as RecordEventInput).catch(() => { /* never fails a request */ }),
   emit: (event, payload) => io.emit(event, payload),
   activeWork: (sessionId) => readActiveWorkForSession(sessionId),
+  refreshFromHub: async () => {
+    if (!hubClient.isEnabled || !hubClient.hubConfig) return;
+    await runAirlockSync({
+      storage,
+      hubConfig: hubClient.hubConfig,
+      fetchImpl: globalThis.fetch as any,
+      emit: (event, payload) => io.emit(event, payload),
+      activeHubConfig: () => hubClient.hubConfig,
+    });
+  },
 });
 
 app.get("/settings", asyncHandler(async (_req: any, res: any) => {
@@ -11502,6 +11535,11 @@ app.post('/internal/hub/reload', asyncHandler(async (req: any, res: any) => {
   }
   const changed = hubClient.reloadConfig();
   if (changed) startHubSubsystems();
+  // GH-294: answers to Airlock syncs started under the old config are not
+  // adopted. Leaving the hub (hub.json confirmed gone, not merely unreadable)
+  // keeps the org's Airlock policy, now as the local one.
+  if (changed) invalidateAirlockSyncs();
+  if (changed && !hubClient.isEnabled && hubConfirmedAbsent()) await releaseHubAirlockOnLeave();
   // A rejoin or repoint may change which org's JIRA this installation sees.
   clearHubJiraStatusCache();
   res.json({

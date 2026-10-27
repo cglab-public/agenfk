@@ -68,6 +68,8 @@ export interface AirlockRouteDeps {
   activeWork: (sessionId?: string) => { itemId: string; projectId?: string } | null;
   /** Where adapters read the last-known policy when the server is unreachable. */
   stateFile?: () => string;
+  /** Pull the hub's policy now (GET ?refresh=1). Absent, or not joined: refresh is a no-op. Never throws. */
+  refreshFromHub?: () => Promise<void>;
 }
 
 export interface AirlockPolicyView {
@@ -267,9 +269,15 @@ function loggedVerdict(verdict: AirlockVerdict): Exclude<AirlockVerdict, { decis
 export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
   const stateFile = deps.stateFile ?? defaultAirlockStateFile;
 
-  app.get('/airlock/policy', async (_req: any, res: any, next: any) => {
+  app.get('/airlock/policy', async (req: any, res: any, next: any) => {
     try {
-      // `?refresh=1` is accepted for the hub sync (T3), which owns the refetch.
+      // `?refresh=1` (or true) pulls the hub's policy now instead of at the next
+      // flow-sync tick; a hub that fails leaves what is stored, as the tick does.
+      const q = req.query?.refresh;
+      const refresh = Array.isArray(q) ? q[q.length - 1] : q;
+      if ((refresh === '1' || refresh === 'true') && deps.hubJoined() && deps.refreshFromHub) {
+        try { await deps.refreshFromHub(); } catch (e) { console.error('[AIRLOCK] refresh from hub failed:', (e as Error).message); }
+      }
       res.json(await resolveAirlockPolicy(deps.storage(), deps.hubJoined()));
     } catch (e) { next(e); }
   });

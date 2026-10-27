@@ -651,6 +651,26 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_repo_settings_org ON repo_settings(org_id);
 
+  -- Airlock (GH-294). The org's Airlock policy: one row per org, which every
+  -- joined installation adopts and no installation can overrule. revision
+  -- moves on a policy save; ioc_revision moves when only the IOC host list
+  -- changes, so an installation's cached ETag (both numbers) busts on either.
+  -- policy_json holds the normalised policy WITHOUT its IOC list, which lives
+  -- in ioc_hosts_json: a policy save and an IOC save each write only their own
+  -- columns, each compare-and-swapped on its own revision, so neither can
+  -- overwrite the other. Timestamps are ISO TEXT written by the app, identical
+  -- in both dialects.
+  CREATE TABLE IF NOT EXISTS airlock_policies (
+    org_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    policy_json TEXT NOT NULL,
+    ioc_revision INTEGER NOT NULL DEFAULT 0,
+    ioc_hosts_json TEXT NOT NULL DEFAULT '[]',
+    ioc_updated_at TEXT,
+    updated_at TEXT NOT NULL,
+    updated_by_email TEXT
+  );
+
   -- The command's history. One row per revision, written by whoever moved it:
   -- the installation that claimed it first (source 'init', its installation id)
   -- or the admin who revised it (source 'admin', their user and email). A

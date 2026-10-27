@@ -586,6 +586,18 @@ const SCHEMA_PG = `
   );
   CREATE INDEX IF NOT EXISTS idx_repo_settings_org ON repo_settings(org_id);
 
+  -- Airlock (GH-294). Mirrors the SQLite DDL; see the comment there.
+  CREATE TABLE IF NOT EXISTS airlock_policies (
+    org_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    policy_json TEXT NOT NULL,
+    ioc_revision INTEGER NOT NULL DEFAULT 0,
+    ioc_hosts_json TEXT NOT NULL DEFAULT '[]',
+    ioc_updated_at TEXT,
+    updated_at TEXT NOT NULL,
+    updated_by_email TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS repo_command_revisions (
     org_id TEXT NOT NULL,
     remote_url TEXT NOT NULL,

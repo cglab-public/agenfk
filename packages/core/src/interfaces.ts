@@ -133,6 +133,14 @@ export interface StorageProvider extends AgEnFKPlugin {
    * it rejects with an AirlockStaleRevisionError.
    */
   putAirlockPolicy(row: StoredAirlockPolicy, expectedRevision: number): Promise<StoredAirlockPolicy>;
+  /** Remove a scope's row (leaving the hub drops the hub row once it is copied to local). True when one was removed. */
+  deleteAirlockPolicy(scope: AirlockScope): Promise<boolean>;
+  /**
+   * Leaving the hub, in one transaction: the hub row (only if it is at
+   * `expectedHubRevision`) becomes the local row at the next local revision and
+   * the hub row is deleted. Null, with nothing changed, when there is no such hub row.
+   */
+  releaseAirlockHubPolicy(expectedHubRevision: number, meta: { updatedAt: string; updatedBy: string }): Promise<StoredAirlockPolicy | null>;
   /** Appends to the decision log, trimming the oldest past its cap. */
   recordAirlockDecision(decision: AirlockDecisionRecord): Promise<void>;
   /** Newest first. */

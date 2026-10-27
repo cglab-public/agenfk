@@ -34,14 +34,15 @@ function coversBuiltin(pattern: string): string | null {
 
 function hostList(raw: unknown, dropBuiltins: boolean): HostPattern[] {
   if (!Array.isArray(raw)) return [];
-  const out: HostPattern[] = [];
+  // A Set, not out.includes: a list of thousands deduplicates in linear time.
+  const seen = new Set<HostPattern>();
   for (const p of raw) {
     if (typeof p !== 'string' || !isValidHostPattern(p)) continue;
     const n = normalizeHost(p);
     if (dropBuiltins && coversBuiltin(n)) continue;
-    if (!out.includes(n)) out.push(n);
+    seen.add(n);
   }
-  return out;
+  return [...seen];
 }
 
 function selector(raw: unknown): ModelSelector | null {

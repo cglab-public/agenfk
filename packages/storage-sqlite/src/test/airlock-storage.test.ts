@@ -52,6 +52,32 @@ const decision = (n: number) => ({
 });
 
 describe('airlock policy rows', () => {
+  it('releaseAirlockHubPolicy moves the hub row to local in one step, at the next local revision', async () => {
+    await storage.putAirlockPolicy(row(2, 'off', 'local'), 0);
+    await storage.putAirlockPolicy(row(7, 'enforce', 'hub'), 0);
+    const local = await storage.releaseAirlockHubPolicy(7, { updatedAt: '2026-10-27T00:00:00.000Z', updatedBy: 'left the hub' });
+    expect(local?.revision).toBe(3);
+    expect(local?.authority).toBe('local');
+    expect((await storage.getAirlockPolicy('local'))?.policy.mode).toBe('enforce');
+    expect(await storage.getAirlockPolicy('hub')).toBeNull();
+  });
+
+  it('releaseAirlockHubPolicy changes nothing when the hub row is not the expected one', async () => {
+    await storage.putAirlockPolicy(row(8, 'enforce', 'hub'), 0);
+    expect(await storage.releaseAirlockHubPolicy(7, { updatedAt: 'x', updatedBy: 'y' })).toBeNull();
+    expect((await storage.getAirlockPolicy('hub'))?.revision).toBe(8);
+    expect(await storage.getAirlockPolicy('local')).toBeNull();
+  });
+
+  it('deleteAirlockPolicy removes only that scope, and says whether it removed one', async () => {
+    await storage.putAirlockPolicy(row(1, 'enforce', 'hub'), 0);
+    await storage.putAirlockPolicy(row(1, 'observe', 'local'), 0);
+    expect(await storage.deleteAirlockPolicy('hub')).toBe(true);
+    expect(await storage.getAirlockPolicy('hub')).toBeNull();
+    expect((await storage.getAirlockPolicy('local'))?.policy.mode).toBe('observe');
+    expect(await storage.deleteAirlockPolicy('hub')).toBe(false);
+  });
+
   it('fresh db: null for both scopes', async () => {
     expect(await storage.getAirlockPolicy('local')).toBeNull();
     expect(await storage.getAirlockPolicy('hub')).toBeNull();
