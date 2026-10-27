@@ -1,9 +1,14 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import axios from 'axios';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { execFileSync } from 'child_process';
 import { getApiUrl } from '@agenfk/telemetry';
 import { resolveDashboardUrl } from '../uiUrl.js';
+import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
+import { AsrtRuntime } from '../airlock/runtime.js';
 
 /**
  * `agenfk airlock` (GH-294): read the Airlock policy and ask what it would
@@ -33,7 +38,66 @@ function openInBrowser(url: string): void {
   }
 }
 
-export function registerAirlockCommands(program: Command): void {
+/** Absolute path of an executable on PATH, or null. */
+function whichOnPath(file: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, file);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch { /* next */ }
+  }
+  return null;
+}
+
+const realpath = (p: string): string => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+
+/** The real launcher's dependencies: this machine, this server, ASRT. */
+export function defaultLaunchDeps(): LaunchDeps {
+  const home = os.homedir();
+  return {
+    fetchPolicy: async () => (await axios.get(`${getApiUrl()}/airlock/policy`, { timeout: 5000 })).data,
+    runtime: new AsrtRuntime(),
+    env: process.env,
+    home,
+    cwd: realpath(process.cwd()),
+    tmpDir: realpath(os.tmpdir()),
+    apiUrl: getApiUrl(),
+    readJson: (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } },
+    exists: (file) => fs.existsSync(file),
+    which: (file) => whichOnPath(file),
+    runtimePackageDir: realpath(AsrtRuntime.packageDir()),
+    // The installed copy, and the package this CLI runs from (dist/commands -> package root).
+    installDirs: [...new Set([path.join(home, '.agenfk-system'), realpath(path.resolve(__dirname, '..', '..'))])],
+    log: (m) => console.error(chalk.gray(m)),
+    warn: (m) => console.error(chalk.yellow(m)),
+    listDir: (dir) => {
+      try {
+        return fs.readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory(), isLink: e.isSymbolicLink() }));
+      } catch {
+        return null;
+      }
+    },
+    realpath: (p) => { try { return fs.realpathSync(p); } catch { return null; } },
+    isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
+    platform: process.platform,
+    hostNetns: (() => { try { return process.platform === 'linux' ? fs.readlinkSync('/proc/self/ns/net') : null; } catch { return null; } })(),
+    onSignal: (signal, handler) => {
+      process.on(signal, handler);
+      return () => { process.off(signal, handler); };
+    },
+  };
+}
+
+type Launch = (client: 'pi' | 'opencode', args: string[], opts: LaunchOptions) => Promise<number>;
+
+export function registerAirlockCommands(
+  program: Command,
+  overrides: { launch?: Launch; exit?: (code: number) => void } = {},
+): void {
+  const launch: Launch = overrides.launch ?? ((client, args, opts) => runAirlockLaunch(client, args, opts, defaultLaunchDeps()));
+  const exit = overrides.exit ?? ((code: number) => process.exit(code));
   const airlock = program
     .command('airlock')
     .description('Airlock: the per-tool-call policy for pi and OpenCode sessions (read-only here; change it on the board)');
@@ -106,4 +170,24 @@ export function registerAirlockCommands(program: Command): void {
       console.log(chalk.gray('On a hub-joined installation the hub owns the policy: an org admin changes it there.'));
       if (options.open) openInBrowser(url);
     });
+
+  for (const client of ['pi', 'opencode'] as const) {
+    airlock
+      .command(client)
+      .description(`Launch ${client} inside the Airlock sandbox: egress only to the policy's hosts and the session's inference host, credential stores unreadable, AgEnFK's own files unwritable. Every argument after "${client}" goes to ${client}.`)
+      .option('--key-env <name>', 'An env var holding the model key, to mask (repeatable; the provider\'s usual one is masked already)', (v: string, acc: string[]) => [...acc, v], [] as string[])
+      .argument('[args...]', `arguments for ${client}`)
+      .allowUnknownOption()
+      .allowExcessArguments()
+      .helpOption(false)
+      .action(async (args: string[], options: { keyEnv?: string[] }) => {
+        try {
+          exit(await launch(client, args ?? [], { keyEnv: options.keyEnv ?? [] }));
+        } catch (e) {
+          const message = e instanceof AirlockLaunchError ? e.message : (e as Error)?.message ?? String(e);
+          console.error(chalk.red(`❌ ${message}`));
+          exit(1);
+        }
+      });
+  }
 }
