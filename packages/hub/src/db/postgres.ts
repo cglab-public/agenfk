@@ -612,6 +612,29 @@ const SCHEMA_PG = `
     PRIMARY KEY (org_id, installation_id)
   );
 
+  CREATE TABLE IF NOT EXISTS airlock_decisions (
+    org_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    client TEXT,
+    model TEXT,
+    tool TEXT,
+    capability_kind TEXT,
+    target TEXT,
+    decision TEXT NOT NULL,
+    rule TEXT,
+    mode TEXT,
+    source TEXT NOT NULL,
+    alert TEXT,
+    item_id TEXT,
+    revision INTEGER,
+    policy_source TEXT,
+    PRIMARY KEY (org_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_decisions_org_time ON airlock_decisions(org_id, occurred_at, event_id);
+
   CREATE TABLE IF NOT EXISTS repo_command_revisions (
     org_id TEXT NOT NULL,
     remote_url TEXT NOT NULL,

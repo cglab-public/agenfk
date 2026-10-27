@@ -692,6 +692,36 @@ const SCHEMA_SQLITE = `
     PRIMARY KEY (org_id, installation_id)
   );
 
+  -- The org's recent Airlock denials and alerts (GH-294, HUB-1): the
+  -- airlock.decision events that denied (or, in observe mode, would have) or
+  -- that raised an alert, out of the events table, which keeps every decision
+  -- including the far more numerous allows. Columns are the payload's fields,
+  -- cut to size at ingest, so the admin's filters read columns rather than
+  -- JSON. Kept as long as the events are (no hub event is purged); keyed by
+  -- org, and ordered by (occurred_at, event_id) for the newest-first cursor.
+  CREATE TABLE IF NOT EXISTS airlock_decisions (
+    org_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    client TEXT,
+    model TEXT,
+    tool TEXT,
+    capability_kind TEXT,
+    target TEXT,
+    decision TEXT NOT NULL,
+    rule TEXT,
+    mode TEXT,
+    source TEXT NOT NULL,
+    alert TEXT,
+    item_id TEXT,
+    revision INTEGER,
+    policy_source TEXT,
+    PRIMARY KEY (org_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_decisions_org_time ON airlock_decisions(org_id, occurred_at, event_id);
+
   -- The command's history. One row per revision, written by whoever moved it:
   -- the installation that claimed it first (source 'init', its installation id)
   -- or the admin who revised it (source 'admin', their user and email). A

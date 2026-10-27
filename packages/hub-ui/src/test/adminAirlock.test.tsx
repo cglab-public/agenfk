@@ -13,7 +13,11 @@
  *  - lists every installation with the revision it applied against the
  *    current one, those behind highlighted and a refused policy named (HUB-2);
  *  - lists the policy's revision history: who, when, from what to what, a
- *    page at a time.
+ *    page at a time;
+ *  - lists the org's recent denials and alerts newest first (HUB-1): an
+ *    observe-mode one named as what enforce would have done, an alert
+ *    highlighted with its category, filterable by client, installation,
+ *    source, alert and mode, a page at a time.
  */
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
@@ -51,11 +55,14 @@ const NONE = { policy: null, revision: 0, iocRevision: 0, updatedAt: null, updat
 const NO_INSTALLATIONS = { currentRevision: 0, currentIocRevision: 0, installations: [] };
 const NO_HISTORY = { entries: [], next: null };
 
-function hubAnswers(body: unknown, installations: unknown = NO_INSTALLATIONS, history: unknown = NO_HISTORY) {
+const NO_DECISIONS = { decisions: [], next: null };
+
+function hubAnswers(body: unknown, installations: unknown = NO_INSTALLATIONS, history: unknown = NO_HISTORY, decisions: unknown = NO_DECISIONS) {
   get.mockImplementation(async (url: string) => {
     if (url === '/v1/admin/airlock') return { data: body };
     if (url === '/v1/admin/airlock/installations') return { data: installations };
     if (url === '/v1/admin/airlock/history') return { data: history };
+    if (url === '/v1/admin/airlock/decisions') return { data: decisions };
     throw new Error(`unexpected GET ${url}`);
   });
 }
@@ -285,6 +292,128 @@ describe('Admin → Airlock', () => {
       hubAnswers(NONE);
       renderPage();
       expect(await screen.findByText(/no changes yet/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('recent denials', () => {
+    const denial = (over: Record<string, unknown>) => ({
+      eventId: 'ev-x', at: '2026-10-27T10:00:00.000Z', installationId: 'inst-alice', userKey: 'alice@acme.test',
+      client: 'pi', model: 'cloudflare-workers-ai/qwen', tool: 'bash', capabilityKind: 'url', target: 'https://evil.example/upload',
+      decision: 'deny', rule: 'uploadToUnlistedHost', mode: 'enforce', source: 'tool', alert: null, itemId: null,
+      revision: 4, policySource: 'hub',
+      ...over,
+    });
+    const RECENT = {
+      next: null,
+      decisions: [
+        denial({ eventId: 'ev-3', at: '2026-10-27T12:00:00.000Z', target: '169.254.169.254', source: 'proxy', tool: 'proxy', alert: 'metadata-endpoint', mode: 'observe', decision: 'deny', rule: 'metadataHost' }),
+        denial({ eventId: 'ev-2', at: '2026-10-27T11:00:00.000Z', target: 'aws s3 rm s3://prod', decision: 'needs-human-approval', rule: 'cloudMutation', client: 'opencode', userKey: 'bob@acme.test', installationId: 'inst-bob' }),
+        denial({ eventId: 'ev-1' }),
+      ],
+    };
+    const FLEET = {
+      currentRevision: 4, currentIocRevision: 0,
+      installations: [
+        installation({ installationId: 'inst-alice', gitEmail: 'alice@acme.test' }),
+        installation({ installationId: 'inst-bob', gitEmail: 'bob@acme.test' }),
+      ],
+    };
+
+    const section = async () => {
+      const table = await screen.findByRole('table', { name: /recent denials/i });
+      return table.closest('section') as HTMLElement;
+    };
+    const rowsOf = async () => within(await screen.findByRole('table', { name: /recent denials/i })).getAllByRole('row').slice(1);
+    const decisionCalls = () => get.mock.calls.filter(c => c[0] === '/v1/admin/airlock/decisions');
+
+    it('lists the org denials newest first: when, who, client, what and the rule', async () => {
+      hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
+      renderPage();
+      const rows = await rowsOf();
+      expect(rows).toHaveLength(3);
+      expect(rows[0]).toHaveTextContent('169.254.169.254');
+      expect(rows[1]).toHaveTextContent('aws s3 rm s3://prod');
+      expect(rows[1]).toHaveTextContent('bob@acme.test');
+      expect(rows[1]).toHaveTextContent('opencode');
+      expect(rows[1]).toHaveTextContent(/needs approval/i);
+      expect(rows[1]).toHaveTextContent('cloudMutation');
+      expect(rows[2]).toHaveTextContent('2026-10-27 10:00 UTC');
+      expect(rows[2]).toHaveTextContent(/denied/i);
+      expect(rows[2]).toHaveTextContent('uploadToUnlistedHost');
+    });
+
+    it('names an observe-mode denial as what enforce would have done', async () => {
+      hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
+      renderPage();
+      const rows = await rowsOf();
+      expect(rows[0]).toHaveTextContent(/observe: would deny/i);
+      expect(rows[2]).not.toHaveTextContent(/observe/i);
+    });
+
+    it('highlights an alert and names its category', async () => {
+      hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
+      renderPage();
+      const rows = await rowsOf();
+      expect(rows[0]).toHaveAttribute('data-alert', 'metadata-endpoint');
+      expect(rows[0].className).toMatch(/bg-status-danger-bg/);
+      expect(rows[0]).toHaveTextContent(/metadata endpoint/i);
+      expect(rows[2]).not.toHaveAttribute('data-alert');
+      expect(rows[2].className).not.toMatch(/bg-status-danger-bg/);
+    });
+
+    it('asks the hub again with each filter chosen', async () => {
+      hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
+      renderPage();
+      const s = await section();
+      await waitFor(() => expect(within(s).getByRole('option', { name: 'bob@acme.test' })).toBeInTheDocument());
+      fireEvent.change(within(s).getByLabelText(/^client$/i), { target: { value: 'pi' } });
+      fireEvent.change(within(s).getByLabelText(/^installation$/i), { target: { value: 'inst-bob' } });
+      fireEvent.change(within(s).getByLabelText(/^source$/i), { target: { value: 'proxy' } });
+      fireEvent.change(within(s).getByLabelText(/^alert$/i), { target: { value: 'ioc-host' } });
+      fireEvent.change(within(s).getByLabelText(/^policy mode$/i), { target: { value: 'observe' } });
+      await waitFor(() => expect(get).toHaveBeenCalledWith('/v1/admin/airlock/decisions', {
+        params: { client: 'pi', installation: 'inst-bob', source: 'proxy', alert: 'ioc-host', mode: 'observe' },
+      }));
+      // The first read carried no filter at all.
+      expect(decisionCalls()[0][1]).toEqual({ params: {} });
+    });
+
+    it('offers every alert category, and any alert', async () => {
+      hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
+      renderPage();
+      const s = await section();
+      const alert = within(s).getByLabelText(/^alert$/i);
+      const values = within(alert).getAllByRole('option').map(o => (o as HTMLOptionElement).value);
+      expect(values).toEqual(['', 'any', 'cloud-storage', 'metadata-endpoint', 'ioc-host']);
+    });
+
+    it('loads the next page with the cursor and the filters chosen, and stops at the last page', async () => {
+      get.mockImplementation(async (url: string, config?: { params?: Record<string, string> }) => {
+        if (url === '/v1/admin/airlock') return { data: STORED };
+        if (url === '/v1/admin/airlock/installations') return { data: FLEET };
+        if (url === '/v1/admin/airlock/history') return { data: NO_HISTORY };
+        if (url === '/v1/admin/airlock/decisions') {
+          return config?.params?.cursor === 'page-2'
+            ? { data: { decisions: [denial({ eventId: 'ev-old', target: 'older.example' })], next: null } }
+            : { data: { decisions: [denial({ eventId: 'ev-new', target: 'newer.example' })], next: 'page-2' } };
+        }
+        throw new Error(`unexpected GET ${url}`);
+      });
+      renderPage();
+      const s = await section();
+      fireEvent.change(within(s).getByLabelText(/^source$/i), { target: { value: 'proxy' } });
+      await waitFor(() => expect(get).toHaveBeenCalledWith('/v1/admin/airlock/decisions', { params: { source: 'proxy' } }));
+      fireEvent.click(await within(s).findByRole('button', { name: /load more/i }));
+      await waitFor(async () => expect(await rowsOf()).toHaveLength(2));
+      expect((await rowsOf())[1]).toHaveTextContent('older.example');
+      expect(get).toHaveBeenCalledWith('/v1/admin/airlock/decisions', { params: { source: 'proxy', cursor: 'page-2' } });
+      await waitFor(() => expect(within(s).queryByRole('button', { name: /load more/i })).toBeNull());
+    });
+
+    it('says when there is nothing to show', async () => {
+      hubAnswers(STORED);
+      renderPage();
+      expect(await screen.findByText(/no denials or alerts/i)).toBeInTheDocument();
     });
   });
 });

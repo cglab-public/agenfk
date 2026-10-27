@@ -1,6 +1,6 @@
 import { airlockPolicyErrors, normalizeAirlockPolicy, type AirlockPolicy } from '@agenfk/core';
 import type { DB } from '../db.js';
-import { listAudit } from './configAudit.js';
+import { decodeCursor, encodeCursor, listAudit } from './configAudit.js';
 
 /**
  * The org's Airlock policy (GH-294, T3): one row per org, kept by its admins
@@ -422,4 +422,146 @@ export async function listAirlockHistory(
     })),
     next: page.next,
   };
+}
+
+// ── The org's recent denials and alerts (HUB-1) ────────────────────────────
+
+/** What an installation flags a decision as (TEL-2); anything else is no alert. */
+export const AIRLOCK_ALERTS = ['cloud-storage', 'metadata-endpoint', 'ioc-host'] as const;
+export type AirlockAlert = typeof AIRLOCK_ALERTS[number];
+export const AIRLOCK_SOURCES = ['tool', 'proxy'] as const;
+export const AIRLOCK_MODES = ['off', 'observe', 'enforce'] as const;
+const DECISIONS = ['allow', 'deny', 'needs-human-approval'] as const;
+
+/** The longest target kept; the installation redacts it, this is the hub's own bound. */
+export const MAX_DECISION_TARGET_CHARS = 1000;
+/** The longest of every other text field kept. */
+export const MAX_DECISION_FIELD_CHARS = 200;
+/** The longest event id kept here (a UUID is 36), so a page's cursor stays a bounded size. */
+export const MAX_DECISION_EVENT_ID_CHARS = 200;
+/** The largest a cursor over those ids can be: [ISO time, id] as JSON, every character escaped, in base64url. */
+export const MAX_DECISION_CURSOR_CHARS = Math.ceil(((MAX_DECISION_EVENT_ID_CHARS + 30) * 6 + 10) / 3) * 4;
+/** The largest a Postgres INTEGER holds. */
+const MAX_INT32 = 2147483647;
+
+export const AIRLOCK_DECISIONS_PAGE_MAX = 100;
+const AIRLOCK_DECISIONS_PAGE_DEFAULT = 50;
+
+const oneOf = <T extends string>(list: readonly T[], v: unknown): T | null =>
+  typeof v === 'string' && (list as readonly string[]).includes(v) ? v as T : null;
+/** A text column's value: Postgres text cannot hold NUL, so it is dropped; then cut to size. */
+const text = (v: unknown, max = MAX_DECISION_FIELD_CHARS): string | null => {
+  if (typeof v !== 'string') return null;
+  const t = v.replace(/\u0000/g, '').slice(0, max);
+  return t.length > 0 ? t : null;
+};
+
+/**
+ * An installation's `airlock.decision`, kept for the admin when it denied -
+ * in observe mode, what enforce would have done - or raised an alert. Its
+ * time is the decision's own (`ts`), or the event's when that cannot be read;
+ * one dated past the hub's clock is not kept, as it would sit at the top of
+ * the newest-first list for good. So is one whose event id is longer than
+ * MAX_DECISION_EVENT_ID_CHARS. The event itself is kept either way: this is
+ * written after the events are committed (routes/events.ts), so a row that
+ * fails here costs only itself.
+ */
+export async function recordAirlockDecision(
+  db: DB, orgId: string, e: { eventId: string; installationId: string; occurredAt: string }, userKey: string, payload: unknown,
+): Promise<boolean> {
+  if (e.eventId.length > MAX_DECISION_EVENT_ID_CHARS) return false;
+  const p = (payload ?? {}) as Record<string, unknown>;
+  const decision = oneOf(DECISIONS, p.decision);
+  if (!decision) return false;
+  const alert = oneOf(AIRLOCK_ALERTS, p.alert);
+  if (decision === 'allow' && !alert) return false;
+  const at = typeof p.ts === 'string' && Number.isFinite(Date.parse(p.ts)) ? reportTimeOf(p.ts) : reportTimeOf(e.occurredAt);
+  if (!at) return false;
+  const result = await db.run(
+    `INSERT INTO airlock_decisions
+       (org_id, event_id, installation_id, user_key, occurred_at, client, model, tool, capability_kind, target,
+        decision, rule, mode, source, alert, item_id, revision, policy_source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (org_id, event_id) DO NOTHING`,
+    [
+      orgId, e.eventId, e.installationId, userKey, at,
+      text(p.client), text(p.model), text(p.tool), text(p.capabilityKind), text(p.target, MAX_DECISION_TARGET_CHARS),
+      decision, text(p.rule), oneOf(AIRLOCK_MODES, p.mode), oneOf(AIRLOCK_SOURCES, p.source) ?? 'tool', alert,
+      text(p.itemId), wholeAtLeast(p.revision, 0) && p.revision <= MAX_INT32 ? p.revision : null, oneOf(['hub', 'local'] as const, p.policySource),
+    ],
+  );
+  return result.changes > 0;
+}
+
+export interface AirlockDecisionView {
+  eventId: string;
+  at: string;
+  installationId: string;
+  userKey: string;
+  client: string | null;
+  model: string | null;
+  tool: string | null;
+  capabilityKind: string | null;
+  target: string | null;
+  decision: string;
+  rule: string | null;
+  mode: string | null;
+  source: string;
+  alert: AirlockAlert | null;
+  itemId: string | null;
+  revision: number | null;
+  policySource: string | null;
+}
+
+export interface AirlockDecisionFilter {
+  client?: string;
+  installation?: string;
+  source?: typeof AIRLOCK_SOURCES[number];
+  /** A category, or 'any' for every alert. */
+  alert?: AirlockAlert | 'any';
+  mode?: typeof AIRLOCK_MODES[number];
+  limit?: number;
+  cursor?: string;
+}
+
+/** One page of the org's denials and alerts, newest first; `next` resumes after its last row. */
+export async function listAirlockDecisions(
+  db: DB, orgId: string, f: AirlockDecisionFilter = {},
+): Promise<{ decisions: AirlockDecisionView[]; next: string | null }> {
+  const limit = Math.min(Math.max(1, Math.floor(f.limit ?? AIRLOCK_DECISIONS_PAGE_DEFAULT)), AIRLOCK_DECISIONS_PAGE_MAX);
+  const where: string[] = ['org_id = ?'];
+  const params: unknown[] = [orgId];
+  if (f.client) { where.push('client = ?'); params.push(f.client); }
+  if (f.installation) { where.push('installation_id = ?'); params.push(f.installation); }
+  if (f.source) { where.push('source = ?'); params.push(f.source); }
+  if (f.alert === 'any') where.push('alert IS NOT NULL');
+  else if (f.alert) { where.push('alert = ?'); params.push(f.alert); }
+  if (f.mode) { where.push('mode = ?'); params.push(f.mode); }
+  const cursor = f.cursor ? decodeCursor(f.cursor) : null;
+  if (cursor) { where.push('(occurred_at < ? OR (occurred_at = ? AND event_id < ?))'); params.push(cursor[0], cursor[0], cursor[1]); }
+  const rows = await db.all<any>(
+    `SELECT * FROM airlock_decisions WHERE ${where.join(' AND ')} ORDER BY occurred_at DESC, event_id DESC LIMIT ${limit + 1}`,
+    params,
+  );
+  const decisions = rows.slice(0, limit).map((r): AirlockDecisionView => ({
+    eventId: String(r.event_id),
+    at: iso(r.occurred_at) as string,
+    installationId: String(r.installation_id),
+    userKey: String(r.user_key),
+    client: r.client ?? null,
+    model: r.model ?? null,
+    tool: r.tool ?? null,
+    capabilityKind: r.capability_kind ?? null,
+    target: r.target ?? null,
+    decision: String(r.decision),
+    rule: r.rule ?? null,
+    mode: r.mode ?? null,
+    source: String(r.source),
+    alert: r.alert ?? null,
+    itemId: r.item_id ?? null,
+    revision: numOrNull(r.revision),
+    policySource: r.policy_source ?? null,
+  }));
+  const last = decisions[decisions.length - 1];
+  return { decisions, next: rows.length > limit && last ? encodeCursor(last.at, last.eventId) : null };
 }

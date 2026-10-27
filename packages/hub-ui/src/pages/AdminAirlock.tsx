@@ -15,6 +15,11 @@ import { Callout, QueryError, buttonClass, cardClass, controlClass } from '../co
  * Below them (HUB-2): each installation with the revision it last reported
  * applying, those behind the current one highlighted and named as such, and
  * the policy's revision history from the config audit.
+ *
+ * Last (HUB-1): the org's recent denials and alerts, newest first and a page
+ * at a time, filterable by client, installation, source, alert and mode. One
+ * made in observe mode is named as what enforce would have done; one that
+ * raised an alert is highlighted with its category.
  */
 
 type Mode = 'off' | 'observe' | 'enforce';
@@ -68,6 +73,28 @@ interface AirlockHistoryEntry {
   action: string;
   before: Revisions | null;
   after: Revisions | null;
+}
+
+type AirlockAlert = 'cloud-storage' | 'metadata-endpoint' | 'ioc-host';
+
+export interface AirlockDecision {
+  eventId: string;
+  at: string;
+  installationId: string;
+  userKey: string;
+  client: string | null;
+  model: string | null;
+  tool: string | null;
+  capabilityKind: string | null;
+  target: string | null;
+  decision: 'allow' | 'deny' | 'needs-human-approval';
+  rule: string | null;
+  mode: Mode | null;
+  source: 'tool' | 'proxy';
+  alert: AirlockAlert | null;
+  itemId: string | null;
+  revision: number | null;
+  policySource: 'hub' | 'local' | null;
 }
 
 const MODES: { value: Mode; label: string; help: string }[] = [
@@ -152,6 +179,24 @@ const useHistory = () => useInfiniteQuery<HistoryPage, Error, { pages: HistoryPa
   getNextPageParam: last => last.next ?? null,
 });
 
+interface DecisionsPage { decisions: AirlockDecision[]; next: string | null }
+
+/** The hub's filters, as chosen; an empty value is not sent. */
+interface DecisionFilters { client: string; installation: string; source: string; alert: string; mode: string }
+const NO_FILTERS: DecisionFilters = { client: '', installation: '', source: '', alert: '', mode: '' };
+
+const useDecisions = (filters: DecisionFilters) => useInfiniteQuery<DecisionsPage, Error, { pages: DecisionsPage[] }, unknown[], string | null>({
+  queryKey: ['admin-airlock-decisions', filters],
+  initialPageParam: null,
+  queryFn: async ({ pageParam }) => {
+    const params: Record<string, string> = {};
+    for (const [k, v] of Object.entries(filters)) if (v) params[k] = v;
+    if (pageParam) params.cursor = pageParam;
+    return (await api.get('/v1/admin/airlock/decisions', { params })).data as DecisionsPage;
+  },
+  getNextPageParam: last => last.next ?? null,
+});
+
 /** A save moves the revision: the installations' standing and the history move with it. */
 const invalidateAll = (qc: ReturnType<typeof useQueryClient>) => {
   for (const key of ['admin-airlock', 'admin-airlock-installations', 'admin-airlock-history']) {
@@ -171,6 +216,7 @@ export function AdminAirlock() {
       <IocCard key={`ioc-${view.iocRevision}`} view={view} />
       <InstallationsCard />
       <HistoryCard />
+      <DecisionsCard />
     </div>
   );
 }
@@ -418,6 +464,124 @@ function HistoryCard() {
               </li>
             ))}
           </ul>
+          {q.hasNextPage && (
+            <div className="mt-2">
+              <button type="button" className={buttonClass('secondary')} disabled={q.isFetchingNextPage} onClick={() => q.fetchNextPage()}>
+                {q.isFetchingNextPage ? 'Loading…' : 'Load more'}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+const ALERTS: { value: AirlockAlert; label: string }[] = [
+  { value: 'cloud-storage', label: 'Cloud storage' },
+  { value: 'metadata-endpoint', label: 'Metadata endpoint' },
+  { value: 'ioc-host', label: 'IOC host' },
+];
+const alertLabel = (a: AirlockAlert) => ALERTS.find(x => x.value === a)?.label ?? a;
+
+/** The verdict in words; in observe mode, what enforce would have done. */
+function verdictOf(d: AirlockDecision): string {
+  const observe = d.mode === 'observe';
+  if (d.decision === 'deny') return observe ? 'Observe: would deny' : 'Denied';
+  if (d.decision === 'needs-human-approval') return observe ? 'Observe: would need approval' : 'Needs approval';
+  return 'Allowed';
+}
+
+function DecisionFilter({ label, value, onChange, options }: {
+  label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[];
+}) {
+  return (
+    <label className="block">
+      <span className="eyebrow text-ink-tertiary">{label}</span>
+      <select aria-label={label} className={`${controlClass} mt-1.5`} value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </label>
+  );
+}
+
+function DecisionsCard() {
+  const [filters, setFilters] = useState<DecisionFilters>(NO_FILTERS);
+  const q = useDecisions(filters);
+  const installations = useInstallations();
+  const decisions = q.data?.pages.flatMap(p => p.decisions) ?? [];
+  const filtered = Object.values(filters).some(Boolean);
+  const set = (key: keyof DecisionFilters) => (v: string) => setFilters(f => ({ ...f, [key]: v }));
+  return (
+    <section className={cardClass}>
+      <h3 className="text-body font-semibold text-ink">Recent denials</h3>
+      <p className="mt-1 text-small text-ink-tertiary">
+        What Airlock stopped or held for approval across the org, newest first, and every call that raised an alert.
+        In observe mode nothing is stopped; what enforce would have done is listed.
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <DecisionFilter label="Client" value={filters.client} onChange={set('client')} options={[
+          { value: '', label: 'Any' }, { value: 'pi', label: 'pi' }, { value: 'opencode', label: 'opencode' },
+        ]} />
+        <DecisionFilter label="Installation" value={filters.installation} onChange={set('installation')} options={[
+          { value: '', label: 'Any' },
+          ...(installations.data?.installations ?? []).map(i => ({ value: i.installationId, label: whoOf(i) })),
+        ]} />
+        <DecisionFilter label="Source" value={filters.source} onChange={set('source')} options={[
+          { value: '', label: 'Any' }, { value: 'tool', label: 'Tool call' }, { value: 'proxy', label: 'Sandbox proxy' },
+        ]} />
+        <DecisionFilter label="Alert" value={filters.alert} onChange={set('alert')} options={[
+          { value: '', label: 'Any' }, { value: 'any', label: 'Alerts only' }, ...ALERTS,
+        ]} />
+        <DecisionFilter label="Policy mode" value={filters.mode} onChange={set('mode')} options={[
+          { value: '', label: 'Any' }, { value: 'enforce', label: 'Enforce' }, { value: 'observe', label: 'Observe' },
+        ]} />
+      </div>
+      {q.isError && !q.data ? <QueryError error={q.error} onRetry={() => q.refetch()} /> : !q.data ? (
+        <p role="status" className="mt-3 text-small text-ink-tertiary">Loading…</p>
+      ) : decisions.length === 0 ? (
+        <p className="mt-3 text-small text-ink-tertiary">
+          {filtered ? 'No denials or alerts match these filters.' : 'No denials or alerts yet.'}
+        </p>
+      ) : (
+        <>
+          <div className="mt-3 -mx-5 relative overflow-x-auto">
+            <table aria-label="Recent denials" className="w-full text-body">
+              <thead>
+                <tr className="eyebrow text-ink-tertiary">
+                  <th className="text-left px-5 py-2">When</th>
+                  <th className="text-left px-2 py-2">Who</th>
+                  <th className="text-left px-2 py-2">Client</th>
+                  <th className="text-left px-2 py-2">What</th>
+                  <th className="text-left px-2 py-2">Verdict</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border-soft">
+                {decisions.map(d => (
+                  <tr key={d.eventId} data-alert={d.alert ?? undefined} className={d.alert ? 'bg-status-danger-bg' : undefined}>
+                    <td className="px-5 py-2.5 text-small text-ink-secondary whitespace-nowrap">{utc(d.at)}</td>
+                    <td className="px-2 py-2.5">
+                      <div className="text-small text-ink">{d.userKey}</div>
+                      <div className="font-mono text-caption text-ink-tertiary">{d.installationId}</div>
+                    </td>
+                    <td className="px-2 py-2.5 text-small text-ink-secondary">
+                      <div>{d.client ?? '—'}</div>
+                      <div className="text-caption text-ink-tertiary">{d.source === 'proxy' ? 'sandbox proxy' : 'tool call'}</div>
+                    </td>
+                    <td className="px-2 py-2.5 text-small">
+                      <div className="text-ink-secondary">{d.tool ?? '—'}</div>
+                      <div className="font-mono text-caption text-ink break-all">{d.target ?? '—'}</div>
+                    </td>
+                    <td className="px-2 py-2.5 text-small">
+                      <span className={`font-semibold ${d.decision === 'allow' ? 'text-ink-secondary' : 'text-status-danger-text'}`}>{verdictOf(d)}</span>
+                      {d.rule && <div className="font-mono text-caption text-ink-tertiary">{d.rule}</div>}
+                      {d.alert && <div className="mt-0.5 text-caption font-semibold text-status-danger-text">Alert: {alertLabel(d.alert)}</div>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {q.hasNextPage && (
             <div className="mt-2">
               <button type="button" className={buttonClass('secondary')} disabled={q.isFetchingNextPage} onClick={() => q.fetchNextPage()}>

@@ -12,6 +12,7 @@ import { asyncRoute } from '../util/asyncRoute.js';
  * so the suite fails until this list is updated.
  */
 export const ORG_ID_CHILD_TABLES: readonly string[] = [
+  'airlock_decisions',
   'airlock_installations',
   'airlock_policies',
   'api_keys',

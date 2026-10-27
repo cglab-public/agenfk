@@ -5,7 +5,7 @@ import { recomputeBackdatedDays, utcDayOf } from '../rollup.js';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { upsertInstallation } from '../services/installations.js';
-import { recordAirlockApplied, recordAirlockRefused, reportTimeOf } from '../services/airlock.js';
+import { recordAirlockApplied, recordAirlockDecision, recordAirlockRefused, reportTimeOf } from '../services/airlock.js';
 import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
@@ -227,6 +227,8 @@ export function eventsRouter(ctx: HubServerContext): Router {
     // forwardEvents is a no-op and nothing is queued.
     const forwardable: Array<Record<string, unknown>> = [];
     const rejections: EventRejection[] = [];
+    // Airlock decisions stored in this batch, projected after the transaction.
+    const airlockDecisions: Array<{ e: HubEvent; userKey: string }> = [];
     // Days of the events actually stored (not skipped, not refused), for the
     // backdated rollup repair after the transaction (#223).
     const ingestedDays = new Set<string>();
@@ -470,6 +472,11 @@ export function eventsRouter(ctx: HubServerContext): Router {
         } else if (keyInstallation && e.type === 'airlock.policy-refused') {
           await recordAirlockRefused(ctx.db, orgId, e.installationId, e.payload, e.occurredAt);
         }
+        // A denial or an alert (HUB-1) is also kept for the admin's recent-denials
+        // list, once the events are committed (below). Any key the event was
+        // accepted from: it is a report like the event itself, not state
+        // another installation's standing depends on.
+        if (e.type === 'airlock.decision') airlockDecisions.push({ e, userKey });
 
         // Fleet upgrade events transition the matching directive_target.
         // Identified by directiveId in the payload + the event's installation_id.
@@ -557,6 +564,20 @@ export function eventsRouter(ctx: HubServerContext): Router {
         + `${keyInstallation ? ` (installation ${keyInstallation})` : ' (org-wide key)'}.`,
       );
     }
+    // The recent-denials list (HUB-1), after the transaction and outside it, one
+    // row at a time: a row that cannot be written - whatever the reason - is
+    // skipped and logged, and never fails or rolls back the events themselves.
+    // A savepoint would keep it atomic with its event, but pg-mem, which the
+    // suite runs Postgres on, cannot parse one.
+    for (const { e, userKey } of airlockDecisions) {
+      try {
+        await recordAirlockDecision(ctx.db, orgId, e, userKey, e.payload);
+      } catch (err) {
+        // The id is the sender's: JSON-escaped and cut, so it cannot forge log lines.
+        console.warn(`[AIRLOCK] stored event ${JSON.stringify(String(e.eventId).slice(0, 200))} but could not list it as a denial:`, (err as Error).message);
+      }
+    }
+
     // Roll up the past days this batch stored (#223). The timer only rolls up
     // from the latest rolled-up day forward, so an event dated before it — an
     // outbox catching up after days offline, or a deadletter requeue resending

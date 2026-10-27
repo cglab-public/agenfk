@@ -5,10 +5,16 @@ import { requireApiKey } from '../auth/apiKey.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 import { rateLimit, clientIp } from '../util/rateLimit.js';
 import { withLock } from '../util/withLock.js';
+import { decodeCursor } from '../services/configAudit.js';
 import {
+  AIRLOCK_ALERTS,
+  AIRLOCK_MODES,
+  AIRLOCK_SOURCES,
   AirlockPolicyError,
+  MAX_DECISION_CURSOR_CHARS,
   airlockEtagOf,
   getAirlockPolicy,
+  listAirlockDecisions,
   listAirlockHistory,
   listAirlockInstallations,
   putAirlockIocHosts,
@@ -24,9 +30,11 @@ import {
  *   PUT /v1/admin/airlock/ioc    the admin's save of the IOC host list
  *   GET /v1/admin/airlock/installations   each installation's applied revision (HUB-2)
  *   GET /v1/admin/airlock/history         the policy's revisions, from the config audit
+ *   GET /v1/admin/airlock/decisions       the org's recent denials and alerts (HUB-1)
  *
- * What an installation applies arrives through its event stream
- * (`airlock.policy-applied` / `airlock.policy-refused`, routes/events.ts).
+ * What an installation applies, and what it denied, arrive through its event
+ * stream (`airlock.policy-applied` / `airlock.policy-refused` /
+ * `airlock.decision`, routes/events.ts).
  *
  * The org always comes from the credential (the api key or the session), never
  * from the body, so one org can neither read nor write another's policy.
@@ -105,6 +113,45 @@ export function airlockAdminRouter(ctx: HubServerContext): Router {
     res.json(await listAirlockHistory(ctx.db, req.session!.orgId, {
       limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
       cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
+    }));
+  }));
+
+  // Filters: client, installation, source, alert (a category or 'any'), mode;
+  // an unknown value for one with a fixed set is refused rather than ignored,
+  // so a typo does not read as "nothing happened".
+  router.get('/decisions', guard, asyncRoute(async (req: Request, res: Response) => {
+    const q = (name: string): string | undefined => {
+      const v = req.query[name];
+      return typeof v === 'string' && v.length > 0 ? v.slice(0, 200) : undefined;
+    };
+    const known = <T extends string>(name: string, list: readonly T[]): T | undefined | null => {
+      const v = q(name);
+      if (v === undefined) return undefined;
+      return (list as readonly string[]).includes(v) ? v as T : null;
+    };
+    const source = known('source', AIRLOCK_SOURCES);
+    const alert = known('alert', [...AIRLOCK_ALERTS, 'any'] as const);
+    const mode = known('mode', AIRLOCK_MODES);
+    if (source === null || alert === null || mode === null) {
+      return res.status(400).json({ error: 'source, alert and mode take one of their known values' });
+    }
+    // A cursor is only ever one this route handed out: anything else is refused,
+    // not read as "from the top", which would serve page one again as page two.
+    const rawCursor = req.query.cursor;
+    let cursor: string | undefined;
+    if (rawCursor !== undefined) {
+      if (typeof rawCursor !== 'string' || rawCursor.length > MAX_DECISION_CURSOR_CHARS || !decodeCursor(rawCursor)) {
+        return res.status(400).json({ error: 'cursor is not one this list handed out' });
+      }
+      cursor = rawCursor;
+    }
+    const limit = Number(req.query.limit);
+    res.json(await listAirlockDecisions(ctx.db, req.session!.orgId, {
+      client: q('client'),
+      installation: q('installation'),
+      source, alert, mode,
+      limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+      cursor,
     }));
   }));
 
