@@ -722,6 +722,24 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_airlock_decisions_org_time ON airlock_decisions(org_id, occurred_at, event_id);
 
+  -- Airlock learning proposals (GH-294, TEL-3): the latest report of each
+  -- host each installation forwarded (airlock.learning-proposal), host names
+  -- and counts only. The admin's list groups them by host, so the same host
+  -- proposed by many installations is one row. reported_at is the event's
+  -- own ISO occurredAt, so an older report landing late changes nothing.
+  CREATE TABLE IF NOT EXISTS airlock_learning_reports (
+    org_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    hits INTEGER NOT NULL,
+    proxy_hits INTEGER NOT NULL DEFAULT 0,
+    clients_json TEXT NOT NULL DEFAULT '[]',
+    first_seen TEXT,
+    last_seen TEXT,
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, host, installation_id)
+  );
+
   -- The command's history. One row per revision, written by whoever moved it:
   -- the installation that claimed it first (source 'init', its installation id)
   -- or the admin who revised it (source 'admin', their user and email). A

@@ -9,6 +9,7 @@
  *   GET  /airlock/decisions  the capped decision log, newest first; ?itemId= &client= &source= &alert= (TEL-2)
  *   GET  /airlock/approvals  human-approval requests: pending, and the recent ones (T5)
  *   POST /airlock/approvals/:key/grant|deny   a person's answer, on the board (T5)
+ *   /airlock/learning[/import|/accept|/forward]   learning mode's proposed allowlist (TEL-3, learn.ts)
  *
  * APPROVALS (T5): a needs-human-approval verdict records a pending request under
  * its approval key (bound to the rule, the project and every capability). A
@@ -73,6 +74,7 @@ import {
 } from '@agenfk/core';
 import { redactLog } from '../hub/redact.js';
 import { AIRLOCK_REPORT_HEADER } from './reportToken.js';
+import { registerAirlockLearning } from './learn.js';
 
 export const HUB_OWNS_AIRLOCK_POLICY = 'HUB_OWNS_AIRLOCK_POLICY';
 export const AIRLOCK_REVISION_CONFLICT = 'AIRLOCK_REVISION_CONFLICT';
@@ -487,6 +489,13 @@ async function verdictWithGrants(
 export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
   const stateFile = deps.stateFile ?? defaultAirlockStateFile;
   const now = deps.now ?? Date.now;
+  // TEL-3 learning mode (learn.ts): its routes, and the two hooks below that feed it.
+  const learning = registerAirlockLearning(app, {
+    ...deps, now,
+    resolvePolicy: () => resolveAirlockPolicy(deps.storage(), deps.hubJoined()),
+    writeStateFile: (view) => tryWriteAirlockStateFile(view as AirlockPolicyView, stateFile()),
+    redact: redactTarget,
+  });
 
   /**
    * One decision into the log, to the hub and to the board. The session id
@@ -711,6 +720,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
         };
         await logDecision(record, view, target ? capabilityText(target) : undefined);
       }
+      if (!dryRun) await learning.observeTool(capabilities, body.client, work?.itemId ?? null);
 
       res.json({ verdict: publicVerdict(verdict), mode: view.effective.mode, applies, revision: view.revision, source: view.source });
     } catch (e) { next(e); }
@@ -793,6 +803,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
         }, view, port === null ? d.host : `${d.host}:${port}`);
         recorded++;
       }
+      await learning.observeProxy(list.filter(valid).map((d: any) => d.host), body.client, work?.itemId ?? null);
       res.json({ recorded, skipped, dropped, invalid });
     } catch (e) { next(e); }
   });

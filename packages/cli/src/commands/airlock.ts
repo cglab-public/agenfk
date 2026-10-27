@@ -10,6 +10,7 @@ import { resolveDashboardUrl } from '../uiUrl.js';
 import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
 import { AsrtRuntime } from '../airlock/runtime.js';
 import { PROXY_REPORT_TIMEOUT_MS } from '../airlock/proxyReport.js';
+import { runLearnImport } from '../airlock/learnImport.js';
 
 /**
  * `agenfk airlock` (GH-294): read the Airlock policy and ask what it would
@@ -213,6 +214,31 @@ export function registerAirlockCommands(
       console.log(`Change the Airlock policy on the board: ${url}`);
       console.log(chalk.gray('On a hub-joined installation the hub owns the policy: an org admin changes it there.'));
       if (options.open) openInBrowser(url);
+    });
+
+  airlock
+    .command('learn')
+    .description('Learning mode (TEL-3): feed the proposed allowlist. --import-pi-sessions reads pi session logs here and sends only host names and counts. Accepting the proposal is a person\'s, on the board (or the hub). Writes no policy.')
+    .option('--import-pi-sessions', 'Import the hosts existing pi sessions reached')
+    .option('--dir <dir>', 'Where the pi session logs are (default ~/.pi/agent/sessions)')
+    .option('--json', 'Print the result as JSON')
+    .action(async (options) => {
+      if (!options.importPiSessions) {
+        console.error(chalk.red('Nothing to do: pass --import-pi-sessions.'));
+        exit(1);
+        return;
+      }
+      try {
+        const result = await runLearnImport({ dir: options.dir }, {
+          post: (url, body) => axios.post(url, body, { timeout: 30_000 }),
+          apiUrl: getApiUrl(),
+          log: (m) => { if (!options.json) console.log(chalk.gray(m)); },
+        });
+        if (options.json) { console.log(JSON.stringify(result, null, 2)); return; }
+        const notes = [result.invalid && `${result.invalid} refused`, result.excluded && `${result.excluded} already covered by the policy`].filter(Boolean).join(', ');
+        console.log(`Learned ${result.recorded} host${result.recorded === 1 ? '' : 's'}${notes ? ` (${notes})` : ''}.`);
+        console.log(`Review the proposed allowlist on the board: ${airlockBoardUrl()}`);
+      } catch (e) { fail(e); }
     });
 
   for (const client of ['pi', 'opencode'] as const) {

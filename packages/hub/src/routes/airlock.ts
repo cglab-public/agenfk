@@ -20,6 +20,7 @@ import {
   putAirlockIocHosts,
   putAirlockPolicy,
 } from '../services/airlock.js';
+import { registerAirlockLearningRoutes } from './airlockLearning.js';
 
 /**
  * Airlock (GH-294, T3): the org's policy, kept on the hub.
@@ -164,6 +165,9 @@ export function airlockAdminRouter(ctx: HubServerContext): Router {
       sendAirlockError(res, e);
     }
   }));
+
+  // Learning proposals (TEL-3): routes/airlockLearning.ts.
+  registerAirlockLearningRoutes(router, ctx, guard);
 
   return router;
 }

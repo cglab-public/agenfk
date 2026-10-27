@@ -14,6 +14,7 @@ import { asyncRoute } from '../util/asyncRoute.js';
 export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'airlock_decisions',
   'airlock_installations',
+  'airlock_learning_reports',
   'airlock_policies',
   'api_keys',
   'auth_config',

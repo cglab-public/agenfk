@@ -35,6 +35,7 @@ import {
   AirlockStaleRevisionError,
   normalizeAirlockPolicy,
 } from '@agenfk/core';
+import { mergeHostObservation, type AirlockHostObservation, type AirlockLearnedHost } from '@agenfk/core';
 
 // node:sqlite is a built-in module available from Node.js v22+.
 // Using require() to avoid ESM/CJS interop issues in the compiled output.
@@ -536,6 +537,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     `);
     this.migrateAirlockApprovalsTable();
     this.migrateAirlockDecisionsTable();
+    this.createAirlockLearningTable();
     this.migrateFlowsTable();
     this.migrateTerminalSessionsTable();
     this.backfillFlowRevisions();
@@ -1888,5 +1890,98 @@ export class SQLiteStorageProvider implements StorageProvider {
       db.exec('ROLLBACK');
       throw err;
     }
+  }
+
+  // ── Airlock learning (GH-294, TEL-3) ───────────────────────────────────────
+  // One row per observed host, apart from the capped decision log so a
+  // proposal is not limited to the last few thousand verdicts. Hits are kept
+  // by source because the proxy's word and the agent's are not worth the same.
+  //
+  // Two budgets, each forgetting the row RECEIVED longest ago (received_at,
+  // the server's clock - never a date a caller reported): rows with proxy
+  // evidence, and agent-only rows. Agent-reported traffic (tool calls, an
+  // import), which the agent can invent, can therefore never evict a row the
+  // sandbox proxy vouched for.
+
+  /** Agent-only hosts kept (no proxy evidence). */
+  static readonly AIRLOCK_LEARNED_HOST_CAP = 5000;
+  /** Hosts with proxy evidence kept, apart from the agent-only ones. */
+  static readonly AIRLOCK_LEARNED_PROXY_HOST_CAP = 5000;
+
+  private createAirlockLearningTable(): void {
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS airlock_learned_hosts (
+        host TEXT PRIMARY KEY,
+        tool_hits INTEGER NOT NULL DEFAULT 0,
+        proxy_hits INTEGER NOT NULL DEFAULT 0,
+        import_hits INTEGER NOT NULL DEFAULT 0,
+        first_seen TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        received_at TEXT NOT NULL DEFAULT '',
+        clients TEXT NOT NULL DEFAULT '[]',
+        cards TEXT NOT NULL DEFAULT '[]'
+      );
+    `);
+    const columns = (this.database.prepare('PRAGMA table_info(airlock_learned_hosts)').all() as { name: string }[]).map((c) => c.name);
+    if (!columns.includes('received_at')) this.database.exec("ALTER TABLE airlock_learned_hosts ADD COLUMN received_at TEXT NOT NULL DEFAULT ''");
+    this.database.exec('DROP INDEX IF EXISTS idx_airlock_learned_hosts_last_seen');
+    this.database.exec('CREATE INDEX IF NOT EXISTS idx_airlock_learned_hosts_received ON airlock_learned_hosts(received_at)');
+  }
+
+  private rowToAirlockLearnedHost(r: any): AirlockLearnedHost {
+    const list = (text: unknown): string[] => {
+      try {
+        const v = JSON.parse(String(text));
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+      } catch { return []; }
+    };
+    return {
+      host: r.host,
+      hits: { tool: Number(r.tool_hits), proxy: Number(r.proxy_hits), import: Number(r.import_hits) },
+      firstSeen: r.first_seen,
+      lastSeen: r.last_seen,
+      receivedAt: r.received_at || r.last_seen,
+      clients: list(r.clients),
+      cards: list(r.cards),
+    };
+  }
+
+  async recordAirlockHostObservations(observations: AirlockHostObservation[]): Promise<void> {
+    if (!observations.length) return;
+    const db = this.database;
+    const read = db.prepare('SELECT * FROM airlock_learned_hosts WHERE host = ?');
+    const write = db.prepare(
+      `INSERT INTO airlock_learned_hosts (host, tool_hits, proxy_hits, import_hits, first_seen, last_seen, received_at, clients, cards)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(host) DO UPDATE SET
+         tool_hits = excluded.tool_hits, proxy_hits = excluded.proxy_hits, import_hits = excluded.import_hits,
+         first_seen = excluded.first_seen, last_seen = excluded.last_seen, received_at = excluded.received_at,
+         clients = excluded.clients, cards = excluded.cards`
+    );
+    // One transaction: each row is read and rewritten with nothing in between.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const o of observations) {
+        const current = read.get(o.host) as any;
+        const row = mergeHostObservation(current ? this.rowToAirlockLearnedHost(current) : null, o);
+        write.run(row.host, row.hits.tool, row.hits.proxy, row.hits.import, row.firstSeen, row.lastSeen, row.receivedAt, JSON.stringify(row.clients), JSON.stringify(row.cards));
+      }
+      // Each budget on its own: an agent-only row never pushes out a proxy row.
+      const prune = (where: string, cap: number) => db.prepare(
+        `DELETE FROM airlock_learned_hosts WHERE host IN (
+           SELECT host FROM airlock_learned_hosts WHERE ${where} ORDER BY received_at DESC, host LIMIT -1 OFFSET ?)`
+      ).run(cap);
+      prune('proxy_hits = 0', SQLiteStorageProvider.AIRLOCK_LEARNED_HOST_CAP);
+      prune('proxy_hits > 0', SQLiteStorageProvider.AIRLOCK_LEARNED_PROXY_HOST_CAP);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  async listAirlockLearnedHosts(): Promise<AirlockLearnedHost[]> {
+    const rows = this.database.prepare('SELECT * FROM airlock_learned_hosts ORDER BY received_at DESC, host').all() as any[];
+    return rows.map((r) => this.rowToAirlockLearnedHost(r));
   }
 }

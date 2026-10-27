@@ -224,6 +224,7 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   // Airlock (GH-294): the org's policy every joined installation adopts, and its IOC host list.
   { method: 'PUT', path: '/v1/admin/airlock', area: 'airlock', action: 'airlock.update', target: () => "the org's Airlock policy", snapshot: airlockSnap },
   { method: 'PUT', path: '/v1/admin/airlock/ioc', area: 'airlock', action: 'airlock.ioc', target: () => "the org's Airlock IOC host list", snapshot: airlockSnap },
+  { method: 'POST', path: '/v1/admin/airlock/learning/accept', area: 'airlock', action: 'airlock.learning-accept', target: () => "the org's Airlock policy (proposed hosts allowed)", snapshot: airlockSnap },
   // JIRA (the org's app) and the org itself
   { method: 'PUT', path: '/v1/admin/jira', area: 'jira', action: 'jira.update', target: () => "the org's JIRA app", snapshot: jiraSnap },
   { method: 'POST', path: '/v1/admin/jira/disconnect-all', area: 'jira', action: 'jira.disconnect-all', target: () => 'every JIRA connection', noBody: true },

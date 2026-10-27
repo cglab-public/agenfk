@@ -28,6 +28,7 @@ import {
   type AirlockDecisionFilterDto,
 } from '../api';
 import { useSocketEvent } from '../SocketContext';
+import { AirlockLearning } from './AirlockLearning';
 import { AIRLOCK_ALERT_LABEL, isAirlockAlert } from '../airlockAlerts';
 
 const MODES: Array<{ value: AirlockModeDto; label: string }> = [
@@ -572,6 +573,7 @@ export function AirlockSettings(): React.ReactElement {
       )}
       <Approvals />
       <Decisions />
+      <AirlockLearning />
     </div>
   );
 }

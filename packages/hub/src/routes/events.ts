@@ -6,6 +6,7 @@ import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { upsertInstallation } from '../services/installations.js';
 import { recordAirlockApplied, recordAirlockDecision, recordAirlockRefused, reportTimeOf } from '../services/airlock.js';
+import { recordAirlockLearningProposal } from '../services/airlockLearning.js';
 import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
@@ -229,6 +230,8 @@ export function eventsRouter(ctx: HubServerContext): Router {
     const rejections: EventRejection[] = [];
     // Airlock decisions stored in this batch, projected after the transaction.
     const airlockDecisions: Array<{ e: HubEvent; userKey: string }> = [];
+    // Airlock learning proposals stored in this batch (TEL-3), projected after it too.
+    const airlockProposals: HubEvent[] = [];
     // Days of the events actually stored (not skipped, not refused), for the
     // backdated rollup repair after the transaction (#223).
     const ingestedDays = new Set<string>();
@@ -477,6 +480,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
         // accepted from: it is a report like the event itself, not state
         // another installation's standing depends on.
         if (e.type === 'airlock.decision') airlockDecisions.push({ e, userKey });
+        if (e.type === 'airlock.learning-proposal') airlockProposals.push(e);
 
         // Fleet upgrade events transition the matching directive_target.
         // Identified by directiveId in the payload + the event's installation_id.
@@ -575,6 +579,15 @@ export function eventsRouter(ctx: HubServerContext): Router {
       } catch (err) {
         // The id is the sender's: JSON-escaped and cut, so it cannot forge log lines.
         console.warn(`[AIRLOCK] stored event ${JSON.stringify(String(e.eventId).slice(0, 200))} but could not list it as a denial:`, (err as Error).message);
+      }
+    }
+    // Learning proposals (TEL-3) for Admin -> Airlock, the same way: after the
+    // transaction, one event at a time, a failure skipped and logged.
+    for (const e of airlockProposals) {
+      try {
+        await recordAirlockLearningProposal(ctx.db, orgId, e, e.payload);
+      } catch (err) {
+        console.warn(`[AIRLOCK] stored event ${JSON.stringify(String(e.eventId).slice(0, 200))} but could not list its proposed hosts:`, (err as Error).message);
       }
     }
 

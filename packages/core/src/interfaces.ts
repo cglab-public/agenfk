@@ -18,6 +18,7 @@ import {
   AgentRunQuery,
 } from './types';
 import type { AirlockMode, StoredAirlockPolicy } from './airlock/types';
+import type { AirlockHostObservation, AirlockLearnedHost } from './airlock/learnTypes';
 import type { AirlockAlert } from './airlock/types';
 
 export interface PluginConfig {
@@ -170,6 +171,10 @@ export interface StorageProvider extends AgEnFKPlugin {
    * revoked. It stays denied until someone grants it. Null when no request has that key.
    */
   denyAirlockApproval(key: string, denial: { deniedBy: string; generation?: number }, now?: string): Promise<AirlockApprovalTransition | null>;
+  /** Learning mode (TEL-3): merge host sightings into one row per host (mergeHostObservation), in one transaction, capped. */
+  recordAirlockHostObservations(observations: AirlockHostObservation[]): Promise<void>;
+  /** Every learned host, most recently seen first. */
+  listAirlockLearnedHosts(): Promise<AirlockLearnedHost[]>;
 }
 
 export type AirlockScope = 'local' | 'hub';
@@ -319,7 +324,9 @@ export type HubEventType =
   | 'airlock.policy-applied'
   | 'airlock.policy-refused'
   // A human-approval request: requested, granted or denied on the board, or a grant used.
-  | 'airlock.approval';
+  | 'airlock.approval'
+  // Learning mode (TEL-3): a person's proposed allowlist, host names and counts, for an org admin to accept.
+  | 'airlock.learning-proposal';
 
 export interface HubActor {
   osUser: string;

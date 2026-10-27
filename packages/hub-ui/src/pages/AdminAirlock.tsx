@@ -3,6 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
 import { Callout, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
+import { AirlockLearningCard } from './AdminAirlockLearning';
 
 /**
  * Admin → Airlock (GH-294). The org's Airlock policy: what a coding agent's
@@ -217,6 +218,7 @@ export function AdminAirlock() {
       <InstallationsCard />
       <HistoryCard />
       <DecisionsCard />
+      <AirlockLearningCard />
     </div>
   );
 }
