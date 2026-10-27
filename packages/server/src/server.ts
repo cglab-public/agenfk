@@ -60,6 +60,8 @@ import * as net from "net";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
+import { registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
+import { readActiveWorkForSession } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
 import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
@@ -118,6 +120,10 @@ app.use(cors({
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "x-agenfk-internal", "x-agenfk-ui"]
 }));
+// The airlock routes take small bodies (GH-294): parsed here, ahead of the
+// 50mb parser below, which then leaves an already-parsed body alone. Too large
+// is a 413 from the error handler.
+app.use('/airlock', bodyParser.json({ limit: AIRLOCK_BODY_LIMIT }));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
@@ -1607,6 +1613,10 @@ const initStorage = async () => {
   // f8d0a752: the server-wide suite-run limit, read from the settings it lives in.
   await loadSuiteRunSetting();
   await pruneRecordsOnStart();
+  // GH-294: adapters fall back to this file when the server is unreachable, so
+  // it is rebuilt from the stored policy at every start (a failed write or a
+  // hand edit does not outlive a restart).
+  await reconcileAirlockStateFile(storage, hubClient.isEnabled);
 
   // Apply pending migration (written by install/upgrade when a db.json was detected)
   const migrationPath = path.join(os.homedir(), '.agenfk', 'migration.json');
@@ -3185,6 +3195,18 @@ app.delete("/terminal-sessions/:id", asyncHandler(async (req: any, res: any) => 
   io.emit('items_updated');
   res.status(204).end();
 }));
+
+// Airlock (GH-294): the policy, its authority and the one evaluator. Not under
+// /settings: PUT /settings is unauthenticated and has no notion of the hub
+// owning a value (AFK_ARCHITECTURE.md). A hub-joined installation cannot write
+// it locally; a standalone one always can (no passkeys, 2026-10-27).
+registerAirlockRoutes(app, {
+  storage: () => storage,
+  hubJoined: () => hubClient.isEnabled,
+  recordHubEvent: (event) => recordHubEvent(event as RecordEventInput).catch(() => { /* never fails a request */ }),
+  emit: (event, payload) => io.emit(event, payload),
+  activeWork: (sessionId) => readActiveWorkForSession(sessionId),
+});
 
 app.get("/settings", asyncHandler(async (_req: any, res: any) => {
   // Always 200 with the defaults. A fresh install has nothing stored, and a

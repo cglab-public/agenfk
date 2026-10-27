@@ -17,6 +17,7 @@ import {
   RunEvent,
   AgentRunQuery,
 } from './types';
+import type { AirlockMode, StoredAirlockPolicy } from './airlock/types';
 
 export interface PluginConfig {
   [key: string]: any;
@@ -122,6 +123,70 @@ export interface StorageProvider extends AgEnFKPlugin {
   updatePrSizing(repo: string, prNumber: number, sizing: PrSizing, shadow?: PrSizing): Promise<Pr>;
   getPrByRepoNumber(repo: string, prNumber: number): Promise<Pr | null>;
   getPrsByItemId(itemId: string): Promise<Pr[]>;
+
+  // Airlock (GH-294). The policy is one JSON row per scope, written by
+  // compare-and-swap on its revision; never in app_settings.
+  getAirlockPolicy(scope: AirlockScope): Promise<StoredAirlockPolicy | null>;
+  /**
+   * Store `row` (at `row.revision`) when the stored revision of its scope is
+   * `expectedRevision` (0 when there is none). Otherwise nothing is written and
+   * it rejects with an AirlockStaleRevisionError.
+   */
+  putAirlockPolicy(row: StoredAirlockPolicy, expectedRevision: number): Promise<StoredAirlockPolicy>;
+  /** Appends to the decision log, trimming the oldest past its cap. */
+  recordAirlockDecision(decision: AirlockDecisionRecord): Promise<void>;
+  /** Newest first. */
+  listAirlockDecisions(query?: { limit?: number }): Promise<AirlockDecisionRecord[]>;
+  upsertAirlockApproval(request: AirlockApprovalRequest): Promise<AirlockApprovalRecord>;
+  getAirlockApproval(key: string): Promise<AirlockApprovalRecord | null>;
+  listAirlockApprovals(query?: { pending?: boolean }): Promise<AirlockApprovalRecord[]>;
+  /** Null when no request has that key. */
+  grantAirlockApproval(key: string, grant: { grantedBy: string; authority: string; expiresAt?: string | null }): Promise<AirlockApprovalRecord | null>;
+  /** True once, for a granted, unexpired, unconsumed request; false otherwise. */
+  consumeAirlockApproval(key: string): Promise<boolean>;
+}
+
+export type AirlockScope = 'local' | 'hub';
+
+/** Thrown by putAirlockPolicy when the stored revision is not the expected one. */
+export interface AirlockStaleRevisionError extends Error {
+  code: 'AIRLOCK_STALE_REVISION';
+  currentRevision: number;
+}
+
+/** One logged Airlock verdict. `target` is redacted before it is stored. */
+export interface AirlockDecisionRecord {
+  id?: number;
+  ts: string;
+  client: string;
+  model: string | null;
+  tool: string;
+  capabilityKind: string | null;
+  target: string | null;
+  /** In observe mode, the decision enforce would have made. */
+  decision: 'allow' | 'deny' | 'needs-human-approval';
+  rule: string | null;
+  mode: AirlockMode;
+  itemId?: string | null;
+  sessionId?: string | null;
+}
+
+export interface AirlockApprovalRequest {
+  key: string;
+  rule: string;
+  summary: string;
+  projectId?: string | null;
+  itemId?: string | null;
+  sessionId?: string | null;
+  requestedAt: string;
+}
+
+export interface AirlockApprovalRecord extends AirlockApprovalRequest {
+  grantedAt: string | null;
+  grantedBy: string | null;
+  authority: string | null;
+  expiresAt: string | null;
+  consumedAt: string | null;
 }
 
 export interface TokenTracker extends AgEnFKPlugin {
@@ -178,7 +243,12 @@ export type HubEventType =
   | 'hub:repoint:failed'
   // PR registration events emitted by the spoke on register/update.
   | 'pr.opened'
-  | 'pr.updated';
+  | 'pr.updated'
+  // Airlock (GH-294): a logged verdict, a local policy write refused because
+  // the hub owns the policy, and an accepted policy change.
+  | 'airlock.decision'
+  | 'airlock.local-write-refused'
+  | 'airlock.policy-changed';
 
 export interface HubActor {
   osUser: string;

@@ -129,6 +129,7 @@ export interface StoredAirlockPolicy {
   policy: AirlockPolicy;
   updatedAt: string;
   updatedBy: string;
-  authority: 'passkey' | 'hub';
+  /** 'local': written on this (standalone) installation; 'hub': adopted from the org's hub. No passkeys (2026-10-27). */
+  authority: 'local' | 'hub';
   etag?: string | null;
 }
