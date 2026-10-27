@@ -6,7 +6,7 @@
  *   PUT  /airlock/policy     a local write: refused while the hub owns the policy
  *   POST /airlock/evaluate   judge one tool call (adapters, CLI, MCP); loopback only
  *   POST /airlock/proxy-decisions   what the sandbox proxy allowed and denied (TEL-1); loopback only
- *   GET  /airlock/decisions  the capped decision log, newest first
+ *   GET  /airlock/decisions  the capped decision log, newest first; ?itemId= &client= &source= &alert= (TEL-2)
  *   GET  /airlock/approvals  human-approval requests: pending, and the recent ones (T5)
  *   POST /airlock/approvals/:key/grant|deny   a person's answer, on the board (T5)
  *
@@ -47,7 +47,9 @@
 import * as os from 'os';
 import * as path from 'path';
 import {
+  AIRLOCK_ALERTS,
   DEFAULT_AIRLOCK_POLICY,
+  airlockAlertOf,
   airlockPolicyErrors,
   capabilitiesOf,
   evaluateAirlock,
@@ -57,6 +59,8 @@ import {
   type AirlockApprovalCapability,
   type AirlockApprovalRecord,
   type AirlockClient,
+  type AirlockAlert,
+  type AirlockDecisionQuery,
   type AirlockDecisionRecord,
   type AirlockGrantScope,
   type AirlockPolicy,
@@ -489,12 +493,22 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
    * stays on this machine; the hub gets the redacted decision, with its source
    * ('tool' | 'proxy') and client, and the policy revision and where that
    * policy came from (policySource).
+   *
+   * TEL-2: a decision that is an alert (airlockAlertOf) carries its category
+   * in `alert`, on the record and so in the hub payload (the hub reads the
+   * field; there is no separate hub event), and is raised once on the board
+   * as airlock_alert. It is judged on `judgedTarget`, the whole target before
+   * redaction and the excerpt cap (a host past the excerpt still alerts); only
+   * the category and the redacted record leave this function.
    */
-  const logDecision = async (record: AirlockDecisionRecord, view: AirlockPolicyView): Promise<void> => {
+  const logDecision = async (logged: AirlockDecisionRecord, view: AirlockPolicyView, judgedTarget?: string): Promise<void> => {
+    const alert = airlockAlertOf({ ...logged, target: judgedTarget ?? logged.target }, view.effective);
+    const record: AirlockDecisionRecord = alert ? { ...logged, alert } : logged;
     await deps.storage().recordAirlockDecision(record);
     const { sessionId: _local, ...shared } = record;
     deps.recordHubEvent({ type: 'airlock.decision', payload: { ...shared, revision: view.revision, policySource: view.source } });
     deps.emit('airlock_decision', { decision: record.decision, rule: record.rule, source: record.source });
+    if (alert) deps.emit('airlock_alert', shared);
   };
 
   /**
@@ -695,7 +709,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
           sessionId: sessionId ?? null,
           source: 'tool' as const,
         };
-        await logDecision(record, view);
+        await logDecision(record, view, target ? capabilityText(target) : undefined);
       }
 
       res.json({ verdict: publicVerdict(verdict), mode: view.effective.mode, applies, revision: view.revision, source: view.source });
@@ -776,7 +790,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
           itemId: work?.itemId ?? null,
           sessionId: sessionId ?? null,
           source: 'proxy',
-        }, view);
+        }, view, port === null ? d.host : `${d.host}:${port}`);
         recorded++;
       }
       res.json({ recorded, skipped, dropped, invalid });
@@ -785,8 +799,31 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
 
   app.get('/airlock/decisions', async (req: any, res: any, next: any) => {
     try {
-      const limit = Number(req.query?.limit);
-      res.json({ decisions: await deps.storage().listAirlockDecisions(Number.isFinite(limit) && limit > 0 ? { limit } : {}) });
+      const q = req.query ?? {};
+      const limit = Number(q.limit);
+      const query: AirlockDecisionQuery = Number.isFinite(limit) && limit > 0 ? { limit } : {};
+      // A filter is one value it knows; anything else is refused, not read as "no filter".
+      const one = (k: string): string | undefined | null =>
+        q[k] === undefined ? undefined : typeof q[k] === 'string' && q[k].length <= MAX_AIRLOCK_FIELD ? q[k] : null;
+      const itemId = one('itemId');
+      const client = one('client');
+      const source = one('source');
+      const alert = one('alert');
+      if (itemId === null) return res.status(400).json({ error: `itemId must be one card id of at most ${MAX_AIRLOCK_FIELD} characters` });
+      if (client === null || (client !== undefined && !CLIENTS.includes(client as AirlockClient))) {
+        return res.status(400).json({ error: `client must be one of ${CLIENTS.join(', ')}` });
+      }
+      if (source === null || (source !== undefined && source !== 'tool' && source !== 'proxy')) {
+        return res.status(400).json({ error: 'source must be one of tool, proxy' });
+      }
+      if (alert === null || (alert !== undefined && alert !== 'any' && !AIRLOCK_ALERTS.includes(alert as AirlockAlert))) {
+        return res.status(400).json({ error: `alert must be one of any, ${AIRLOCK_ALERTS.join(', ')}` });
+      }
+      if (itemId !== undefined) query.itemId = itemId;
+      if (client !== undefined) query.client = client;
+      if (source !== undefined) query.source = source as 'tool' | 'proxy';
+      if (alert !== undefined) query.alert = alert as AirlockAlert | 'any';
+      res.json({ decisions: await deps.storage().listAirlockDecisions(query) });
     } catch (e) { next(e); }
   });
 

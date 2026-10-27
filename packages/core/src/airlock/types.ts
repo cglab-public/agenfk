@@ -8,6 +8,10 @@
 
 export type AirlockMode = 'off' | 'observe' | 'enforce';
 export type AirlockClient = 'pi' | 'opencode';
+
+/** What makes a decision an alert (TEL-2). Here, not in alerts.ts, so interfaces.ts stays free of node imports. */
+export const AIRLOCK_ALERTS = Object.freeze(['cloud-storage', 'metadata-endpoint', 'ioc-host'] as const);
+export type AirlockAlert = (typeof AIRLOCK_ALERTS)[number];
 /** 'api.x.com' | '*.x.com' | '*' | '10.0.0.0/8' | 'fd00::/8' | '169.254.169.254' */
 export type HostPattern = string;
 

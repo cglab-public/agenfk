@@ -18,6 +18,7 @@ import {
   AgentRunQuery,
 } from './types';
 import type { AirlockMode, StoredAirlockPolicy } from './airlock/types';
+import type { AirlockAlert } from './airlock/types';
 
 export interface PluginConfig {
   [key: string]: any;
@@ -144,7 +145,7 @@ export interface StorageProvider extends AgEnFKPlugin {
   /** Appends to the decision log, trimming the oldest past its cap. */
   recordAirlockDecision(decision: AirlockDecisionRecord): Promise<void>;
   /** Newest first. */
-  listAirlockDecisions(query?: { limit?: number }): Promise<AirlockDecisionRecord[]>;
+  listAirlockDecisions(query?: AirlockDecisionQuery): Promise<AirlockDecisionRecord[]>;
   /** `now` (ISO) judges whether a held grant is spent; it defaults to the wall clock. */
   upsertAirlockApproval(request: AirlockApprovalRequest, now?: string): Promise<AirlockApprovalRecord>;
   getAirlockApproval(key: string): Promise<AirlockApprovalRecord | null>;
@@ -196,6 +197,17 @@ export interface AirlockDecisionRecord {
   sessionId?: string | null;
   /** Who made it: a tool call judged by POST /airlock/evaluate, or the sandbox proxy (TEL-1). Absent reads as 'tool'. */
   source?: 'tool' | 'proxy';
+  /** TEL-2: the alert this decision is (airlockAlertOf), if any. Absent: no alert. */
+  alert?: AirlockAlert;
+}
+
+/** Which decisions to read (TEL-2); every filter given must match. `alert: 'any'` is every alert. */
+export interface AirlockDecisionQuery {
+  limit?: number;
+  itemId?: string;
+  client?: string;
+  source?: 'tool' | 'proxy';
+  alert?: AirlockAlert | 'any';
 }
 
 /** One capability an approval binds, as a person reads it: redacted before it is stored. */

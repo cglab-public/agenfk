@@ -162,7 +162,14 @@ export interface AirlockDecisionDto {
   rule: string | null;
   mode: AirlockModeDto;
   itemId?: string | null;
+  /** TEL-1: a tool call judged by evaluate, or the sandbox proxy. Absent reads as 'tool'. */
+  source?: 'tool' | 'proxy';
+  /** TEL-2: the alert this decision is, if any. */
+  alert?: AirlockAlertDto;
 }
+export type AirlockAlertDto = 'cloud-storage' | 'metadata-endpoint' | 'ioc-host';
+/** TEL-2: GET /airlock/decisions filters; an omitted one is not sent. */
+export interface AirlockDecisionFilterDto { itemId?: string; client?: 'pi' | 'opencode'; source?: 'tool' | 'proxy'; alert?: AirlockAlertDto | 'any' }
 
 export const api = {
   listProjects: async () => {
@@ -480,8 +487,10 @@ export const api = {
     const { data } = await axios.post(`${API_URL}/airlock/approvals/${encodeURIComponent(key)}/deny`, { generation }, { headers: { 'x-agenfk-ui': '1' } });
     return data;
   },
-  getAirlockDecisions: async (limit = 50): Promise<{ decisions: AirlockDecisionDto[] }> => {
-    const { data } = await axios.get(`${API_URL}/airlock/decisions`, { params: { limit } });
+  getAirlockDecisions: async (limit = 50, filter: AirlockDecisionFilterDto = {}): Promise<{ decisions: AirlockDecisionDto[] }> => {
+    const params: Record<string, unknown> = { limit };
+    for (const [k, v] of Object.entries(filter)) if (v) params[k] = v;
+    const { data } = await axios.get(`${API_URL}/airlock/decisions`, { params });
     return data;
   },
 

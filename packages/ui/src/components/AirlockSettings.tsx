@@ -25,8 +25,10 @@ import {
   api,
   type AirlockPolicyDto, type AirlockPolicyViewDto, type AirlockModelSelectorDto,
   type AirlockRuleActionDto, type AirlockModeDto, type AirlockApprovalDto,
+  type AirlockDecisionFilterDto,
 } from '../api';
 import { useSocketEvent } from '../SocketContext';
+import { AIRLOCK_ALERT_LABEL, isAirlockAlert } from '../airlockAlerts';
 
 const MODES: Array<{ value: AirlockModeDto; label: string }> = [
   { value: 'off', label: 'Off: nothing is checked' },
@@ -463,14 +465,32 @@ const DECISION_TONE: Record<string, string> = {
   allow: 'text-status-ok-text',
 };
 
+/** TEL-2: the server filters, so the list is the newest matching decisions. '' is every one. */
+const DECISION_CLIENTS = [{ value: '', label: 'All clients' }, { value: 'pi', label: 'pi' }, { value: 'opencode', label: 'opencode' }] as const;
+const DECISION_SOURCES = [{ value: '', label: 'All sources' }, { value: 'tool', label: 'Tool calls' }, { value: 'proxy', label: 'Sandbox proxy' }] as const;
+
 function Decisions(): React.ReactElement {
-  const { data, isError } = useQuery({ queryKey: ['airlock-decisions'], queryFn: () => api.getAirlockDecisions(20) });
+  const [client, setClient] = React.useState<'' | 'pi' | 'opencode'>('');
+  const [source, setSource] = React.useState<'' | 'tool' | 'proxy'>('');
+  const filter: AirlockDecisionFilterDto = { ...(client ? { client } : {}), ...(source ? { source } : {}) };
+  const { data, isError } = useQuery({ queryKey: ['airlock-decisions', filter], queryFn: () => api.getAirlockDecisions(20, filter) });
   const decisions = data?.decisions ?? [];
+  const filtered = !!(client || source);
   return (
     <div className={BLOCK}>
       <h3 className={SUBHEAD}>Recent decisions</h3>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <select aria-label="Filter by client" value={client} onChange={e => setClient(e.target.value as typeof client)} className={clsx(FIELD, 'w-auto')}>
+          {DECISION_CLIENTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <select aria-label="Filter by source" value={source} onChange={e => setSource(e.target.value as typeof source)} className={clsx(FIELD, 'w-auto')}>
+          {DECISION_SOURCES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </div>
       {isError && <p className="mt-2 text-[12px] text-status-warn-text">Could not read the decision log.</p>}
-      {!isError && decisions.length === 0 && <p className="mt-2 text-[12px] text-ink-tertiary">Nothing stopped or flagged yet.</p>}
+      {!isError && decisions.length === 0 && (
+        <p className="mt-2 text-[12px] text-ink-tertiary">{filtered ? 'No decisions match these filters.' : 'Nothing stopped or flagged yet.'}</p>
+      )}
       {decisions.length > 0 && (
         <ul className="mt-2 space-y-1.5" aria-label="Recent decisions">
           {decisions.map((d, i) => (
@@ -478,7 +498,8 @@ function Decisions(): React.ReactElement {
               <div className="flex flex-wrap items-baseline gap-x-2">
                 <span className={clsx('font-semibold', DECISION_TONE[d.decision] ?? 'text-ink')}>{d.decision}</span>
                 {d.rule && <span className="text-ink-secondary">{d.rule}</span>}
-                <span className="text-ink-tertiary">{`${when(d.ts)} · ${d.client}${d.model ? ` · ${d.model}` : ''}${d.mode === 'observe' ? ' · observed' : ''}`}</span>
+                {isAirlockAlert(d.alert) && <span className="font-semibold text-status-danger-text">{AIRLOCK_ALERT_LABEL[d.alert]}</span>}
+                <span className="text-ink-tertiary">{`${when(d.ts)} · ${d.client} · ${d.source ?? 'tool'}${d.model ? ` · ${d.model}` : ''}${d.mode === 'observe' ? ' · observed' : ''}`}</span>
               </div>
               {d.target && <code className="block break-all text-ink-tertiary">{d.target}</code>}
             </li>

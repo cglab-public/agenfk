@@ -26,6 +26,7 @@ import {
   AirlockScope,
   StoredAirlockPolicy,
   AirlockDecisionRecord,
+  AirlockDecisionQuery,
   AirlockApprovalRequest,
   AirlockApprovalRecord,
   AirlockApprovalTransition,
@@ -510,7 +511,8 @@ export class SQLiteStorageProvider implements StorageProvider {
         mode TEXT NOT NULL,
         item_id TEXT,
         session_id TEXT,
-        source TEXT NOT NULL DEFAULT 'tool'
+        source TEXT NOT NULL DEFAULT 'tool',
+        alert TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_airlock_decisions_ts ON airlock_decisions(ts);
       CREATE TABLE IF NOT EXISTS airlock_approvals (
@@ -744,6 +746,8 @@ export class SQLiteStorageProvider implements StorageProvider {
       this.database.prepare('PRAGMA table_info(airlock_decisions)').all() as { name: string }[]
     ).map((c) => c.name);
     if (!columns.includes('source')) this.database.exec("ALTER TABLE airlock_decisions ADD COLUMN source TEXT NOT NULL DEFAULT 'tool'");
+    // TEL-2: the alert a decision is. Rows written before it were never classified: NULL, no alert.
+    if (!columns.includes('alert')) this.database.exec('ALTER TABLE airlock_decisions ADD COLUMN alert TEXT');
   }
 
   /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
@@ -1705,17 +1709,25 @@ export class SQLiteStorageProvider implements StorageProvider {
   async recordAirlockDecision(d: AirlockDecisionRecord): Promise<void> {
     const db = this.database;
     const result = db.prepare(
-      `INSERT INTO airlock_decisions (ts, client, model, tool, capability_kind, target, decision, rule, mode, item_id, session_id, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(d.ts, d.client, d.model ?? null, d.tool, d.capabilityKind ?? null, d.target ?? null, d.decision, d.rule ?? null, d.mode, d.itemId ?? null, d.sessionId ?? null, d.source ?? 'tool');
+      `INSERT INTO airlock_decisions (ts, client, model, tool, capability_kind, target, decision, rule, mode, item_id, session_id, source, alert)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(d.ts, d.client, d.model ?? null, d.tool, d.capabilityKind ?? null, d.target ?? null, d.decision, d.rule ?? null, d.mode, d.itemId ?? null, d.sessionId ?? null, d.source ?? 'tool', d.alert ?? null);
     const lastId = Number(result.lastInsertRowid);
     // ids only grow, so everything at or below (newest - cap) is the overflow.
     db.prepare('DELETE FROM airlock_decisions WHERE id <= ?').run(lastId - SQLiteStorageProvider.AIRLOCK_DECISION_CAP);
   }
 
-  async listAirlockDecisions(query: { limit?: number } = {}): Promise<AirlockDecisionRecord[]> {
+  async listAirlockDecisions(query: AirlockDecisionQuery = {}): Promise<AirlockDecisionRecord[]> {
     const limit = Math.max(1, Math.min(Math.floor(query.limit ?? 200), SQLiteStorageProvider.AIRLOCK_DECISION_CAP));
-    const rows = this.database.prepare('SELECT * FROM airlock_decisions ORDER BY id DESC LIMIT ?').all(limit) as any[];
+    const where: string[] = [];
+    const params: string[] = [];
+    if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
+    if (query.client !== undefined) { where.push('client = ?'); params.push(query.client); }
+    if (query.source !== undefined) { where.push('source = ?'); params.push(query.source); }
+    if (query.alert === 'any') where.push('alert IS NOT NULL');
+    else if (query.alert !== undefined) { where.push('alert = ?'); params.push(query.alert); }
+    const sql = `SELECT * FROM airlock_decisions${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC LIMIT ?`;
+    const rows = this.database.prepare(sql).all(...params, limit) as any[];
     return rows.map((r) => ({
       id: Number(r.id),
       ts: r.ts,
@@ -1730,6 +1742,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       itemId: r.item_id ?? null,
       sessionId: r.session_id ?? null,
       source: r.source === 'proxy' ? 'proxy' : 'tool',
+      ...(r.alert ? { alert: r.alert } : {}),
     }));
   }
 
