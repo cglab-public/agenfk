@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
 import { Callout, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
@@ -11,6 +11,10 @@ import { Callout, QueryError, buttonClass, cardClass, controlClass } from '../co
  *
  * The policy and the IOC host list are saved separately: the list changes more
  * often, and saving it does not make a new policy revision.
+ *
+ * Below them (HUB-2): each installation with the revision it last reported
+ * applying, those behind the current one highlighted and named as such, and
+ * the policy's revision history from the config audit.
  */
 
 type Mode = 'off' | 'observe' | 'enforce';
@@ -34,6 +38,36 @@ export interface AirlockView {
   iocRevision: number;
   updatedAt: string | null;
   updatedByEmail: string | null;
+}
+
+export interface AirlockInstallation {
+  installationId: string;
+  osUser: string | null;
+  gitName: string | null;
+  gitEmail: string | null;
+  lastSeen: string | null;
+  appliedRevision: number | null;
+  appliedIocRevision: number | null;
+  appliedAt: string | null;
+  reportedAt: string | null;
+  refusedRevision: number | null;
+  refusedIocRevision: number | null;
+  refusedError: string | null;
+  refusedAt: string | null;
+  behind: boolean;
+}
+
+interface AirlockInstallations { currentRevision: number; currentIocRevision: number; installations: AirlockInstallation[] }
+
+interface Revisions { revision: number; iocRevision: number }
+interface AirlockHistoryEntry {
+  id: string;
+  at: string;
+  actorEmail: string | null;
+  source: string;
+  action: string;
+  before: Revisions | null;
+  after: Revisions | null;
 }
 
 const MODES: { value: Mode; label: string; help: string }[] = [
@@ -102,6 +136,29 @@ const useAirlock = () => useQuery<AirlockView>({
   queryFn: async () => (await api.get('/v1/admin/airlock')).data as AirlockView,
 });
 
+const useInstallations = () => useQuery<AirlockInstallations>({
+  queryKey: ['admin-airlock-installations'],
+  queryFn: async () => (await api.get('/v1/admin/airlock/installations')).data as AirlockInstallations,
+});
+
+interface HistoryPage { entries: AirlockHistoryEntry[]; next: string | null }
+
+/** Newest first, a page at a time: `next` is the hub's cursor past the page's last entry. */
+const useHistory = () => useInfiniteQuery<HistoryPage, Error, { pages: HistoryPage[] }, unknown[], string | null>({
+  queryKey: ['admin-airlock-history'],
+  initialPageParam: null,
+  queryFn: async ({ pageParam }) =>
+    (await api.get('/v1/admin/airlock/history', { params: pageParam ? { cursor: pageParam } : {} })).data as HistoryPage,
+  getNextPageParam: last => last.next ?? null,
+});
+
+/** A save moves the revision: the installations' standing and the history move with it. */
+const invalidateAll = (qc: ReturnType<typeof useQueryClient>) => {
+  for (const key of ['admin-airlock', 'admin-airlock-installations', 'admin-airlock-history']) {
+    qc.invalidateQueries({ queryKey: [key] });
+  }
+};
+
 export function AdminAirlock() {
   const airlock = useAirlock();
   if (airlock.isError && !airlock.data) return <QueryError error={airlock.error} onRetry={() => airlock.refetch()} />;
@@ -112,6 +169,8 @@ export function AdminAirlock() {
       {/* Keyed by revision: a save reloads the form from what the hub stored. */}
       <PolicyCard key={`policy-${view.revision}`} view={view} />
       <IocCard key={`ioc-${view.iocRevision}`} view={view} />
+      <InstallationsCard />
+      <HistoryCard />
     </div>
   );
 }
@@ -138,7 +197,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
         rules,
       },
     })).data as AirlockView,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-airlock'] }),
+    onSuccess: () => invalidateAll(qc),
   });
   const edit = <T,>(set: (v: T) => void) => (v: T) => { save.reset(); set(v); };
 
@@ -226,7 +285,7 @@ function IocCard({ view }: { view: AirlockView }) {
   const [hosts, setHosts] = useState((view.policy?.iocHosts.hosts ?? []).join('\n'));
   const save = useMutation({
     mutationFn: async () => (await api.put('/v1/admin/airlock/ioc', { hosts: linesOf(hosts) })).data as AirlockView,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-airlock'] }),
+    onSuccess: () => invalidateAll(qc),
   });
   return (
     <form className={`${cardClass} max-w-form`} onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
@@ -255,5 +314,119 @@ function IocCard({ view }: { view: AirlockView }) {
         </>
       )}
     </form>
+  );
+}
+
+const whoOf = (i: AirlockInstallation) => i.gitEmail ?? i.gitName ?? i.osUser ?? i.installationId;
+
+/** What an installation applies, in words; the revision alone when it has the IOC list too. */
+function standingOf(i: AirlockInstallation, current: AirlockInstallations): { text: string; tone: string } {
+  if (current.currentRevision === 0) return { text: 'No hub policy', tone: 'text-ink-tertiary' };
+  if (i.appliedRevision === null) return { text: 'Behind: not reported yet', tone: 'text-status-warn-text' };
+  if (!i.behind) return { text: 'Up to date', tone: 'text-status-ok-text' };
+  return i.appliedRevision < current.currentRevision
+    ? { text: `Behind: revision ${i.appliedRevision} of ${current.currentRevision}`, tone: 'text-status-warn-text' }
+    : { text: 'Behind: older IOC list', tone: 'text-status-warn-text' };
+}
+
+function InstallationsCard() {
+  const q = useInstallations();
+  return (
+    <section className={cardClass}>
+      <h3 className="text-body font-semibold text-ink">Installations</h3>
+      {q.isError && !q.data ? <QueryError error={q.error} onRetry={() => q.refetch()} /> : !q.data ? (
+        <p role="status" className="mt-1 text-small text-ink-tertiary">Loading…</p>
+      ) : q.data.installations.length === 0 ? (
+        <p className="mt-1 text-small text-ink-tertiary">No installation has joined this hub yet.</p>
+      ) : (
+        <>
+          <p className="mt-1 text-small text-ink-tertiary">
+            {q.data.currentRevision > 0
+              ? `Current revision ${q.data.currentRevision}. `
+              : 'No hub policy yet. '}
+            Each installation reports the revision it applies after its sync; one behind is highlighted.
+          </p>
+          <div className="mt-3 -mx-5 relative overflow-x-auto">
+            <table aria-label="Installations" className="w-full text-body">
+              <thead>
+                <tr className="eyebrow text-ink-tertiary">
+                  <th className="text-left px-5 py-2">Installation</th>
+                  <th className="text-left px-2 py-2">Applied</th>
+                  <th className="text-left px-2 py-2">Since</th>
+                  <th className="text-left px-2 py-2">State</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border-soft">
+                {q.data.installations.map(i => {
+                  const standing = standingOf(i, q.data!);
+                  return (
+                    <tr key={i.installationId} data-behind={i.behind ? 'true' : 'false'} className={i.behind ? 'bg-status-warn-bg' : undefined}>
+                      <td className="px-5 py-2.5">
+                        <div className="text-small text-ink">{whoOf(i)}</div>
+                        <div className="font-mono text-caption text-ink-tertiary">{i.installationId}</div>
+                      </td>
+                      <td className="px-2 py-2.5 text-small text-ink-secondary">
+                        {i.appliedRevision === null ? '—' : `Revision ${i.appliedRevision}`}
+                      </td>
+                      <td className="px-2 py-2.5 text-small text-ink-secondary">{i.appliedAt ? utc(i.appliedAt) : '—'}</td>
+                      <td className="px-2 py-2.5 text-small">
+                        <span className={`font-semibold ${standing.tone}`}>{standing.text}</span>
+                        {i.refusedError !== null && (
+                          <div className="mt-0.5 text-caption text-status-danger-text">
+                            Refused {i.refusedRevision === null ? 'the hub policy' : `revision ${i.refusedRevision}`}
+                            {i.refusedIocRevision !== null ? ` with IOC list ${i.refusedIocRevision}` : ''}: {i.refusedError}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** One audit row as a revision change, in words. */
+function changeOf(e: AirlockHistoryEntry): string {
+  if (!e.after) return 'Policy removed';
+  if (!e.before) return `First saved as revision ${e.after.revision}`;
+  if (e.action === 'airlock.ioc') return `IOC list ${e.before.iocRevision} → ${e.after.iocRevision}`;
+  return `Revision ${e.before.revision} → ${e.after.revision}`;
+}
+
+function HistoryCard() {
+  const q = useHistory();
+  const entries = q.data?.pages.flatMap(p => p.entries) ?? [];
+  return (
+    <section className={`${cardClass} max-w-form`}>
+      <h3 className="text-body font-semibold text-ink">Revision history</h3>
+      {q.isError && !q.data ? <QueryError error={q.error} onRetry={() => q.refetch()} /> : !q.data ? (
+        <p role="status" className="mt-1 text-small text-ink-tertiary">Loading…</p>
+      ) : entries.length === 0 ? (
+        <p className="mt-1 text-small text-ink-tertiary">No changes yet.</p>
+      ) : (
+        <>
+          <ul aria-label="Revision history" className="mt-2 divide-y divide-border-soft">
+            {entries.map(e => (
+              <li key={e.id} className="py-2 text-small">
+                <span className="text-ink">{changeOf(e)}</span>
+                <span className="text-ink-tertiary">, by {e.actorEmail ?? e.source} on {utc(e.at)}</span>
+              </li>
+            ))}
+          </ul>
+          {q.hasNextPage && (
+            <div className="mt-2">
+              <button type="button" className={buttonClass('secondary')} disabled={q.isFetchingNextPage} onClick={() => q.fetchNextPage()}>
+                {q.isFetchingNextPage ? 'Loading…' : 'Load more'}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }

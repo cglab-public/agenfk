@@ -301,6 +301,9 @@ export type HubEventType =
   | 'airlock.decision'
   | 'airlock.local-write-refused'
   | 'airlock.policy-changed'
+  // Which hub policy revision this installation applies, and a hub policy it refused as invalid (HUB-2).
+  | 'airlock.policy-applied'
+  | 'airlock.policy-refused'
   // A human-approval request: requested, granted or denied on the board, or a grant used.
   | 'airlock.approval';
 

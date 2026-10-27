@@ -598,6 +598,20 @@ const SCHEMA_PG = `
     updated_by_email TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS airlock_installations (
+    org_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    applied_revision INTEGER,
+    applied_ioc_revision INTEGER,
+    applied_at TEXT,
+    reported_at TEXT,
+    refused_revision INTEGER,
+    refused_ioc_revision INTEGER,
+    refused_error TEXT,
+    refused_at TEXT,
+    PRIMARY KEY (org_id, installation_id)
+  );
+
   CREATE TABLE IF NOT EXISTS repo_command_revisions (
     org_id TEXT NOT NULL,
     remote_url TEXT NOT NULL,

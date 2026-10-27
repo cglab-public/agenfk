@@ -120,9 +120,12 @@ export class HubClient {
    * (hubOutboxRewriteOrgId). While unconfigured, the outbox is capped
    * (AGENFK_HUB_OUTBOX_CAP, default 10000, oldest pruned) so a
    * never-connected install can't grow the DB without bound.
+   *
+   * Returns whether the event reached the outbox, for a caller that sends a
+   * state once and must know to send it again (the Airlock report, HUB-2).
    */
-  recordEvent(input: RecordEventInput): void {
-    if (!this.storage) return;
+  recordEvent(input: RecordEventInput): boolean {
+    if (!this.storage) return false;
     try {
       const actor = resolveActor(input.cwd);
       const event: HubEvent = {
@@ -143,9 +146,11 @@ export class HubClient {
       };
       this.storage.hubOutboxAppend(event.eventId, event.occurredAt, JSON.stringify(event));
       if (!this.config) this.enforceOutboxCap();
+      return true;
     } catch (e) {
       // Never let hub event recording crash request handling.
       console.error('[HUB] recordEvent failed:', (e as Error).message);
+      return false;
     }
   }
 

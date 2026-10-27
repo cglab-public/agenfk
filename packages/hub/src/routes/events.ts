@@ -5,6 +5,7 @@ import { recomputeBackdatedDays, utcDayOf } from '../rollup.js';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { upsertInstallation } from '../services/installations.js';
+import { recordAirlockApplied, recordAirlockRefused, reportTimeOf } from '../services/airlock.js';
 import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
@@ -40,7 +41,7 @@ import { asyncRoute } from '../util/asyncRoute.js';
  * Backward compatible: the legacy counters are unchanged and this field is
  * purely additive; old spokes ignore it.
  */
-export type EventRejectionReason = 'invalid' | 'org_mismatch' | 'foreign_installation' | 'hidden_user';
+export type EventRejectionReason = 'invalid' | 'org_mismatch' | 'foreign_installation' | 'hidden_user' | 'future_dated';
 export interface EventRejection {
   /** Best-effort: null when the event had no usable eventId (often why it is invalid). */
   eventId: string | null;
@@ -326,6 +327,12 @@ export function eventsRouter(ctx: HubServerContext): Router {
         if (e.orgId !== orgId) { rejected++; rejections.push({ eventId: e.eventId, reason: 'org_mismatch' }); continue; }
         if (keyInstallation && e.installationId !== keyInstallation) { rejected++; rejections.push({ eventId: e.eventId, reason: 'foreign_installation' }); continue; }
         if (foreignInstalls.has(e.installationId)) { rejected++; rejections.push({ eventId: e.eventId, reason: 'foreign_installation' }); continue; }
+        // An Airlock report is ordered by its own time (HUB-2): one dated further ahead of
+        // this hub's clock than the allowed skew would freeze every later report out.
+        if ((e.type === 'airlock.policy-applied' || e.type === 'airlock.policy-refused') && !reportTimeOf(e.occurredAt)) {
+          const reason = Number.isFinite(Date.parse(e.occurredAt)) ? 'future_dated' : 'invalid';
+          rejected++; rejections.push({ eventId: e.eventId, reason }); continue;
+        }
         if (e.type === 'tokens.logged') { skipped++; continue; }
         // Resolve BEFORE the hidden check: hiding applies to the person, so a
         // merged-away key must not be a hole in the rule.
@@ -452,6 +459,16 @@ export function eventsRouter(ctx: HubServerContext): Router {
               );
             }
           }
+        }
+
+        // Airlock (GH-294, HUB-2): which hub policy revision this installation
+        // applies, and a hub policy it refused. Like the fleet reports below, only
+        // a key bound to the machine may speak for it: an org-wide key could
+        // otherwise mark every installation up to date.
+        if (keyInstallation && e.type === 'airlock.policy-applied') {
+          await recordAirlockApplied(ctx.db, orgId, e.installationId, e.payload, e.occurredAt);
+        } else if (keyInstallation && e.type === 'airlock.policy-refused') {
+          await recordAirlockRefused(ctx.db, orgId, e.installationId, e.payload, e.occurredAt);
         }
 
         // Fleet upgrade events transition the matching directive_target.

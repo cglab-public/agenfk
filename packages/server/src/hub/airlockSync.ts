@@ -25,6 +25,15 @@
  *    installation has left.
  *
  * It is org-scoped: runFlowSyncTick calls it once per tick, projects or not.
+ *
+ * After each sync, runAirlockSync tells the hub what this installation applies
+ * (HUB-2): the revision of the hub row it holds, and a hub policy it refused
+ * as invalid. Each state is reported once per configuration, and again once
+ * an hour (AIRLOCK_REPORT_RESEND_MS), so a report the hub never stored - an
+ * outbox write that failed, a key bound to its machine only later - heals on
+ * its own. The report is a side effect only: it runs after storage is
+ * settled, and a report that fails changes nothing that is applied (it is
+ * tried again on the next sync).
  */
 import {
   airlockPolicyErrors,
@@ -43,7 +52,19 @@ export type AirlockSyncOutcome =
   | { outcome: 'none' }
   | { outcome: 'stale'; revision: number; iocRevision: number }
   | { outcome: 'superseded' }
-  | { outcome: 'error'; error: string };
+  /** `refused`: the hub answered, and its answer was not one to adopt (malformed, incomplete or invalid). */
+  | { outcome: 'error'; error: string; refused?: { revision: number | null; iocRevision: number | null } };
+
+/**
+ * What the installation tells the hub it applies; the server sends it through
+ * its hub event outbox. A reporter returning false did not enqueue it.
+ */
+export type AirlockApplyReport =
+  | { type: 'airlock.policy-applied'; payload: { revision: number; iocRevision: number } }
+  | { type: 'airlock.policy-refused'; payload: { revision: number | null; iocRevision: number | null; error: string } };
+
+/** Sends one report; false when it could not be enqueued. */
+export type AirlockApplyReporter = (r: AirlockApplyReport) => boolean | void;
 
 export interface SyncAirlockPolicyArgs {
   storage: StorageProvider;
@@ -70,6 +91,12 @@ export function airlockAuthorityOf(hubConfig: Pick<HubConfig, 'url' | 'orgId'>):
 
 let generation = 0;
 let tail: Promise<unknown> = Promise.resolve();
+/** How long a reported state goes before it is sent again: twelve flow-sync ticks at the default 5 minutes. */
+export const AIRLOCK_REPORT_RESEND_MS = 60 * 60 * 1000;
+
+type Sent = { key: string; at: number } | null;
+/** The last state reported, per kind, and when: a state is sent once per interval, not once per tick. */
+let lastReported: { applied: Sent; refused: Sent } = { applied: null, refused: null };
 
 function exclusive<T>(fn: () => Promise<T>): Promise<T> {
   const run = tail.catch(() => undefined).then(fn);
@@ -85,6 +112,8 @@ export function currentAirlockGeneration(): number {
 /** The hub configuration changed: answers to syncs already in flight are not adopted. */
 export function invalidateAirlockSyncs(): void {
   generation++;
+  // Whichever hub this installation answers to now has heard nothing from it yet.
+  lastReported = { applied: null, refused: null };
 }
 
 // ── The answer ──────────────────────────────────────────────────────────────
@@ -119,6 +148,10 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
   const startedIn = args.generation ?? generation;
   const authority = airlockAuthorityOf(hubConfig);
   const fail = (error: string): AirlockSyncOutcome => ({ outcome: 'error', error });
+  /** The state the hub offered and this installation refused: its policy revision and its IOC revision. */
+  let offeredIoc: number | null = null;
+  const refuse = (error: string, revision: number | null): AirlockSyncOutcome =>
+    ({ outcome: 'error', error, refused: { revision, iocRevision: offeredIoc } });
   /** Still the configuration this sync belongs to, and still the hub we are joined to. */
   const current = (): boolean => {
     if (generation !== startedIn) return false;
@@ -150,7 +183,14 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
   } catch {
     return fail('Invalid JSON from hub');
   }
-  if (!isObject(body)) return fail('Hub returned a malformed Airlock answer');
+  if (!isObject(body)) return refuse('Hub returned a malformed Airlock answer', null);
+  // The hub sends the IOC revision beside the policy (and inside it); the refusal names it, so
+  // an apply of the IOC list still held cannot be taken for an answer to it.
+  const iocOf = (v: unknown): number | null => {
+    const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
+    return typeof n === 'number' && Number.isInteger(n) && n >= 0 ? n : null;
+  };
+  offeredIoc = iocOf(body.iocRevision) ?? (isObject(body.policy) && isObject(body.policy.iocHosts) ? iocOf(body.policy.iocHosts.revision) : null);
   const etag = res.headers.get('etag');
 
   if (body.policy === null) {
@@ -165,15 +205,14 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
       return { outcome: 'none' } as const;
     });
   }
-  if (!isObject(body.policy)) return fail('Hub returned a malformed Airlock policy');
   const revision = body.revision;
-  if (typeof revision !== 'number' || !Number.isInteger(revision) || revision < 1) {
-    return fail('Hub returned an Airlock policy with no revision');
-  }
+  const wholeRevision = typeof revision === 'number' && Number.isInteger(revision) && revision >= 1;
+  if (!isObject(body.policy)) return refuse('Hub returned a malformed Airlock policy', wholeRevision ? revision : null);
+  if (!wholeRevision) return refuse('Hub returned an Airlock policy with no revision', null);
   const incomplete = completenessErrors(body.policy);
-  if (incomplete.length) return fail(`Hub returned an incomplete Airlock policy: ${incomplete.join('; ')}`);
+  if (incomplete.length) return refuse(`Hub returned an incomplete Airlock policy: ${incomplete.join('; ')}`, revision);
   const errors = airlockPolicyErrors(body.policy);
-  if (errors.length) return fail(`Hub returned an invalid Airlock policy: ${errors.join('; ')}`);
+  if (errors.length) return refuse(`Hub returned an invalid Airlock policy: ${errors.join('; ')}`, revision);
   const policy = normalizeAirlockPolicy(body.policy);
   const iocRevision = Number(policy.iocHosts.revision) || 0;
 
@@ -199,16 +238,67 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
   });
 }
 
+/** Longest refusal reason sent to the hub: the validation list can be long, the hub keeps a summary. */
+const MAX_REPORTED_ERROR = 500;
+
+/**
+ * Tell the hub what this installation applies after a sync: the hub row it
+ * holds from this authority (adopted, revalidated or kept over a stale or
+ * refused answer), and the refusal. A transport failure, a superseded sync and
+ * a hub with no policy say nothing new, so they report nothing.
+ */
+async function reportApplied(
+  args: SyncAirlockPolicyArgs, out: AirlockSyncOutcome, report: AirlockApplyReporter,
+): Promise<void> {
+  const refused = out.outcome === 'error' ? out.refused : undefined;
+  if (!['adopted', 'not-modified', 'stale'].includes(out.outcome) && !refused) return;
+  const authority = airlockAuthorityOf(args.hubConfig);
+  const send = (kind: 'applied' | 'refused', key: string, r: AirlockApplyReport): void => {
+    const last = lastReported[kind];
+    const now = Date.now();
+    if (last && last.key === key && now - last.at < AIRLOCK_REPORT_RESEND_MS) return;
+    try {
+      // Recorded as sent only once it is enqueued: otherwise the next sync sends it again.
+      if (report(r) !== false) lastReported[kind] = { key, at: now };
+    } catch (e) {
+      // Left unrecorded, so the next sync sends it again; what is applied is untouched.
+      console.error('[HUB_AIRLOCK] could not report to the hub:', (e as Error).message);
+    }
+  };
+  const stored = await args.storage.getAirlockPolicy('hub');
+  if (stored && stored.updatedBy === authority) {
+    const iocRevision = iocRevisionOf(stored);
+    send('applied', `${authority} ${stored.revision}:${iocRevision}`,
+      { type: 'airlock.policy-applied', payload: { revision: stored.revision, iocRevision } });
+  }
+  if (refused && out.outcome === 'error') {
+    const error = out.error.slice(0, MAX_REPORTED_ERROR);
+    send('refused', `${authority} ${refused.revision}:${refused.iocRevision} ${error}`,
+      { type: 'airlock.policy-refused', payload: { revision: refused.revision, iocRevision: refused.iocRevision, error } });
+  }
+}
+
 /**
  * One sync as the tick and `GET /airlock/policy?refresh=1` both run it:
- * logging a failure, announcing an adoption.
+ * logging a failure, announcing an adoption, and - given `report` - telling
+ * the hub what is applied.
  */
 export async function runAirlockSync(args: SyncAirlockPolicyArgs & {
   emit: (event: string, payload: any) => void;
+  report?: AirlockApplyReporter;
 }): Promise<AirlockSyncOutcome> {
+  const startedIn = args.generation ?? generation;
   const out = await syncAirlockPolicy(args);
   if (out.outcome === 'error') console.error('[HUB_AIRLOCK] sync failed:', out.error);
   if (out.outcome === 'adopted') args.emit('airlock_policy_changed', { revision: out.revision, source: 'hub' });
+  // A sync that outlived its configuration speaks for a hub this installation no longer answers to.
+  if (args.report && generation === startedIn) {
+    try {
+      await reportApplied(args, out, args.report);
+    } catch (e) {
+      console.error('[HUB_AIRLOCK] could not report to the hub:', (e as Error).message);
+    }
+  }
   return out;
 }
 

@@ -671,6 +671,27 @@ const SCHEMA_SQLITE = `
     updated_by_email TEXT
   );
 
+  -- Which Airlock policy each installation applies (GH-294, HUB-2), as it last
+  -- reported through its event stream: the revision and IOC revision applied
+  -- and when it first applied them (applied_at) and last said so
+  -- (reported_at), and the last hub policy (revision and IOC revision) it
+  -- refused as invalid. Keyed by org
+  -- too, so a row is only ever read within its org. Timestamps are the
+  -- reports' own ISO occurredAt, so an older report landing late is refused.
+  CREATE TABLE IF NOT EXISTS airlock_installations (
+    org_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    applied_revision INTEGER,
+    applied_ioc_revision INTEGER,
+    applied_at TEXT,
+    reported_at TEXT,
+    refused_revision INTEGER,
+    refused_ioc_revision INTEGER,
+    refused_error TEXT,
+    refused_at TEXT,
+    PRIMARY KEY (org_id, installation_id)
+  );
+
   -- The command's history. One row per revision, written by whoever moved it:
   -- the installation that claimed it first (source 'init', its installation id)
   -- or the admin who revised it (source 'admin', their user and email). A

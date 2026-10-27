@@ -1,5 +1,6 @@
 import { airlockPolicyErrors, normalizeAirlockPolicy, type AirlockPolicy } from '@agenfk/core';
 import type { DB } from '../db.js';
+import { listAudit } from './configAudit.js';
 
 /**
  * The org's Airlock policy (GH-294, T3): one row per org, kept by its admins
@@ -199,4 +200,226 @@ export async function airlockAuditSnapshot(db: DB, orgId: string): Promise<unkno
   if (!view.policy) return null;
   const { rules, ...policy } = view.policy;
   return { ...view, policy: { ...policy, rules: Object.entries(rules).map(([rule, action]) => ({ rule, action })) } };
+}
+
+// ── Which policy each installation applies (HUB-2) ─────────────────────────
+
+/** The longest refusal reason kept; the installation already cuts it, this is the hub's own bound. */
+export const MAX_REFUSAL_CHARS = 500;
+
+const wholeAtLeast = (v: unknown, min: number): v is number => typeof v === 'number' && Number.isInteger(v) && v >= min;
+
+/** How far past the hub's clock a report may be dated: an installation's clock may run a little ahead. */
+export const MAX_REPORT_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * A report's time as the hub orders reports by it: the installation's
+ * occurredAt in one format (ISO UTC, so text order is time order). Null - the
+ * report is refused - when it cannot be read or is dated more than the skew
+ * past the hub's clock: a report from the future would freeze every later one
+ * out, and moving it to the time it arrived would reorder it among others.
+ */
+export function reportTimeOf(occurredAt: unknown, now: Date = new Date()): string | null {
+  const t = typeof occurredAt === 'string' ? Date.parse(occurredAt) : NaN;
+  if (!Number.isFinite(t) || t > now.getTime() + MAX_REPORT_CLOCK_SKEW_MS) return null;
+  return new Date(t).toISOString();
+}
+
+/**
+ * Whether an applied state covers a refused one: it holds that policy revision
+ * or a later one AND that IOC revision or a later one. Applying 5/ioc1 does
+ * not answer a refusal of 5/ioc2, however often it is reported. A refusal
+ * with no revision (a malformed answer) is covered by any apply; one with no
+ * IOC revision is judged on the policy revision alone.
+ */
+const covers = (appliedRev: string, appliedIoc: string, refusedRev: string, refusedIoc: string) =>
+  `((${refusedRev} IS NULL OR ${refusedRev} <= ${appliedRev}) AND (${refusedIoc} IS NULL OR ${refusedIoc} <= ${appliedIoc}))`;
+
+/** An applied report clears a refusal it covers and does not predate. */
+const CLEARS_REFUSAL = `(airlock_installations.refused_at IS NOT NULL
+  AND airlock_installations.refused_at <= excluded.reported_at
+  AND ${covers('excluded.applied_revision', 'excluded.applied_ioc_revision', 'airlock_installations.refused_revision', 'airlock_installations.refused_ioc_revision')})`;
+
+/**
+ * The same rule from the other side, stricter: a refusal landing after an
+ * applied report that covers it and is STRICTLY later is already answered - a
+ * late delivery must not bring it back. One the apply does not cover is kept,
+ * whatever its time; so is one at the same instant (the installation sends
+ * the state it keeps and its refusal together) and one with no revision,
+ * which no apply can be shown to answer. Either is still cleared by a later apply.
+ */
+const ANSWERED_REFUSAL = `(airlock_installations.reported_at IS NOT NULL
+  AND airlock_installations.reported_at > excluded.refused_at
+  AND excluded.refused_revision IS NOT NULL
+  AND ${covers('airlock_installations.applied_revision', 'airlock_installations.applied_ioc_revision', 'excluded.refused_revision', 'excluded.refused_ioc_revision')})`;
+
+/**
+ * An installation's `airlock.policy-applied` report. A report older than the
+ * stored one (by reportTimeOf) changes nothing, so reports landing out of
+ * order cannot roll the revision back. applied_at stays when the same
+ * revisions are reported again; a refusal of this revision or an earlier one,
+ * reported before this, is cleared.
+ */
+export async function recordAirlockApplied(
+  db: DB, orgId: string, installationId: string, payload: unknown, occurredAt: string,
+): Promise<boolean> {
+  const p = (payload ?? {}) as Record<string, unknown>;
+  if (!wholeAtLeast(p.revision, 0) || !wholeAtLeast(p.iocRevision, 0)) return false;
+  const at = reportTimeOf(occurredAt);
+  if (!at) return false;
+  const result = await db.run(
+    `INSERT INTO airlock_installations (org_id, installation_id, applied_revision, applied_ioc_revision, applied_at, reported_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (org_id, installation_id) DO UPDATE SET
+       applied_at = CASE
+         WHEN airlock_installations.applied_revision = excluded.applied_revision
+          AND airlock_installations.applied_ioc_revision = excluded.applied_ioc_revision
+          AND airlock_installations.applied_at IS NOT NULL
+         THEN airlock_installations.applied_at ELSE excluded.applied_at END,
+       applied_revision = excluded.applied_revision,
+       applied_ioc_revision = excluded.applied_ioc_revision,
+       reported_at = excluded.reported_at,
+       refused_revision = CASE WHEN ${CLEARS_REFUSAL} THEN NULL ELSE airlock_installations.refused_revision END,
+       refused_ioc_revision = CASE WHEN ${CLEARS_REFUSAL} THEN NULL ELSE airlock_installations.refused_ioc_revision END,
+       refused_error = CASE WHEN ${CLEARS_REFUSAL} THEN NULL ELSE airlock_installations.refused_error END,
+       refused_at = CASE WHEN ${CLEARS_REFUSAL} THEN NULL ELSE airlock_installations.refused_at END
+     WHERE airlock_installations.reported_at IS NULL OR airlock_installations.reported_at <= excluded.reported_at`,
+    [orgId, installationId, p.revision, p.iocRevision, at, at],
+  );
+  return result.changes > 0;
+}
+
+/**
+ * An installation's `airlock.policy-refused` report: what it applies is left
+ * as it was, and a refusal an applied report has already answered is ignored.
+ */
+export async function recordAirlockRefused(
+  db: DB, orgId: string, installationId: string, payload: unknown, occurredAt: string,
+): Promise<boolean> {
+  const p = (payload ?? {}) as Record<string, unknown>;
+  const revision = p.revision === null || p.revision === undefined ? null : p.revision;
+  if (revision !== null && !wholeAtLeast(revision, 0)) return false;
+  if (typeof p.error !== 'string') return false;
+  const iocRevision = p.iocRevision === null || p.iocRevision === undefined ? null : p.iocRevision;
+  if (iocRevision !== null && !wholeAtLeast(iocRevision, 0)) return false;
+  const at = reportTimeOf(occurredAt);
+  if (!at) return false;
+  const result = await db.run(
+    `INSERT INTO airlock_installations (org_id, installation_id, refused_revision, refused_ioc_revision, refused_error, refused_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (org_id, installation_id) DO UPDATE SET
+       refused_revision = excluded.refused_revision,
+       refused_ioc_revision = excluded.refused_ioc_revision,
+       refused_error = excluded.refused_error,
+       refused_at = excluded.refused_at
+     WHERE (airlock_installations.refused_at IS NULL OR airlock_installations.refused_at <= excluded.refused_at)
+       AND NOT ${ANSWERED_REFUSAL}`,
+    [orgId, installationId, revision, iocRevision, p.error.slice(0, MAX_REFUSAL_CHARS), at],
+  );
+  return result.changes > 0;
+}
+
+export interface AirlockInstallationView {
+  installationId: string;
+  osUser: string | null;
+  gitName: string | null;
+  gitEmail: string | null;
+  lastSeen: string | null;
+  appliedRevision: number | null;
+  appliedIocRevision: number | null;
+  appliedAt: string | null;
+  reportedAt: string | null;
+  refusedRevision: number | null;
+  refusedIocRevision: number | null;
+  refusedError: string | null;
+  refusedAt: string | null;
+  /** The org has a policy and this installation has not reported applying all of it. */
+  behind: boolean;
+}
+
+const numOrNull = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
+
+/**
+ * The org's installations - not retired, not a hidden person's (whose reports
+ * are dropped at ingest, so they would read as behind forever) - each with the
+ * revision it last reported applying, against the org's current one.
+ */
+export async function listAirlockInstallations(db: DB, orgId: string): Promise<{
+  currentRevision: number; currentIocRevision: number; installations: AirlockInstallationView[];
+}> {
+  const current = await getAirlockPolicy(db, orgId);
+  // LEFT JOIN + IS NULL for the hidden exclusion: a correlated NOT EXISTS on the
+  // outer alias does not run on pg-mem.
+  const rows = await db.all<any>(
+    `SELECT i.id, i.os_user, i.git_name, i.git_email, i.last_seen,
+            a.applied_revision, a.applied_ioc_revision, a.applied_at, a.reported_at,
+            a.refused_revision, a.refused_ioc_revision, a.refused_error, a.refused_at
+       FROM installations i
+       LEFT JOIN airlock_installations a ON a.org_id = i.org_id AND a.installation_id = i.id
+       LEFT JOIN hidden_users h ON h.org_id = i.org_id AND h.user_key = lower(i.git_email)
+      WHERE i.org_id = ? AND i.retired_at IS NULL AND h.user_key IS NULL
+      ORDER BY i.last_seen DESC, i.id`,
+    [orgId],
+  );
+  const installations = rows.map((r): AirlockInstallationView => {
+    const appliedRevision = numOrNull(r.applied_revision);
+    const appliedIocRevision = numOrNull(r.applied_ioc_revision);
+    const behind = current.revision > 0 && (
+      appliedRevision === null
+      || appliedRevision < current.revision
+      || (appliedRevision === current.revision && (appliedIocRevision ?? 0) < current.iocRevision));
+    return {
+      installationId: String(r.id),
+      osUser: r.os_user ?? null,
+      gitName: r.git_name ?? null,
+      gitEmail: r.git_email ?? null,
+      lastSeen: iso(r.last_seen ?? null),
+      appliedRevision,
+      appliedIocRevision,
+      appliedAt: iso(r.applied_at ?? null),
+      reportedAt: iso(r.reported_at ?? null),
+      refusedRevision: numOrNull(r.refused_revision),
+      refusedIocRevision: numOrNull(r.refused_ioc_revision),
+      refusedError: r.refused_error ?? null,
+      refusedAt: iso(r.refused_at ?? null),
+      behind,
+    };
+  });
+  return { currentRevision: current.revision, currentIocRevision: current.iocRevision, installations };
+}
+
+export interface AirlockHistoryEntry {
+  id: string;
+  at: string;
+  actorEmail: string | null;
+  source: string;
+  action: string;
+  before: { revision: number; iocRevision: number } | null;
+  after: { revision: number; iocRevision: number } | null;
+}
+
+/** The revisions of an audit snapshot (airlockAuditSnapshot), or null for "no policy". */
+function revisionsOf(snapshot: unknown): { revision: number; iocRevision: number } | null {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const s = snapshot as Record<string, unknown>;
+  if (typeof s.revision !== 'number') return null;
+  return { revision: s.revision, iocRevision: typeof s.iocRevision === 'number' ? s.iocRevision : 0 };
+}
+
+/**
+ * The policy's revision history, from the config audit (area 'airlock'):
+ * who changed it, when, and from which revision to which. The policies
+ * themselves stay in the Audit tab; this is the list of revisions.
+ */
+export async function listAirlockHistory(
+  db: DB, orgId: string, opts: { limit?: number; cursor?: string } = {},
+): Promise<{ entries: AirlockHistoryEntry[]; next: string | null }> {
+  const page = await listAudit(db, orgId, { area: 'airlock', limit: opts.limit, cursor: opts.cursor });
+  return {
+    entries: page.rows.map(r => ({
+      id: r.id, at: r.at, actorEmail: r.actorEmail, source: r.source, action: r.action,
+      before: revisionsOf(r.before), after: revisionsOf(r.after),
+    })),
+    next: page.next,
+  };
 }

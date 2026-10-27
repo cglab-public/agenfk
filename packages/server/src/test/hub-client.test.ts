@@ -51,6 +51,16 @@ describe('HubClient', () => {
     const client = new HubClient('install-1', { url: 'http://hub.test', token: 't', orgId: 'org' });
     expect(() => client.recordEvent({ type: 'item.updated', payload: {} })).not.toThrow();
   });
+
+  it('says whether the event reached the outbox (HUB-2)', () => {
+    const client = new HubClient('install-1', { url: 'http://hub.test', token: 't', orgId: 'org' });
+    expect(client.recordEvent({ type: 'item.updated', payload: {} })).toBe(false);
+    client.attachStorage(storage);
+    expect(client.recordEvent({ type: 'item.updated', payload: {} })).toBe(true);
+    vi.spyOn(storage, 'hubOutboxAppend').mockImplementation(() => { throw new Error('SQLITE_FULL'); });
+    expect(client.recordEvent({ type: 'item.updated', payload: {} })).toBe(false);
+    vi.restoreAllMocks();
+  });
 });
 
 describe('HubClient.reloadConfig', () => {

@@ -9,7 +9,11 @@
  *  - shows the mode, model selectors and host lists of the stored policy, and
  *    saves edits as a new revision (one host per line);
  *  - shows the hub's refusal (a metadata host allow-listed) inline;
- *  - keeps the IOC host list through its own route, once a policy exists.
+ *  - keeps the IOC host list through its own route, once a policy exists;
+ *  - lists every installation with the revision it applied against the
+ *    current one, those behind highlighted and a refused policy named (HUB-2);
+ *  - lists the policy's revision history: who, when, from what to what, a
+ *    page at a time.
  */
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
@@ -44,12 +48,24 @@ const STORED = {
 
 const NONE = { policy: null, revision: 0, iocRevision: 0, updatedAt: null, updatedByEmail: null };
 
-function hubAnswers(body: unknown) {
+const NO_INSTALLATIONS = { currentRevision: 0, currentIocRevision: 0, installations: [] };
+const NO_HISTORY = { entries: [], next: null };
+
+function hubAnswers(body: unknown, installations: unknown = NO_INSTALLATIONS, history: unknown = NO_HISTORY) {
   get.mockImplementation(async (url: string) => {
     if (url === '/v1/admin/airlock') return { data: body };
+    if (url === '/v1/admin/airlock/installations') return { data: installations };
+    if (url === '/v1/admin/airlock/history') return { data: history };
     throw new Error(`unexpected GET ${url}`);
   });
 }
+
+const installation = (over: Record<string, unknown>) => ({
+  installationId: 'inst-x', osUser: 'x', gitName: null, gitEmail: null, lastSeen: '2026-10-27T10:00:00.000Z',
+  appliedRevision: null, appliedIocRevision: null, appliedAt: null, reportedAt: null,
+  refusedRevision: null, refusedIocRevision: null, refusedError: null, refusedAt: null, behind: false,
+  ...over,
+});
 
 const renderPage = () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -153,5 +169,122 @@ describe('Admin → Airlock', () => {
     await screen.findByText(/no airlock policy yet/i);
     expect(screen.queryByRole('button', { name: /save ioc list/i })).toBeNull();
     expect(screen.getByText(/save a policy first/i)).toBeInTheDocument();
+  });
+
+  describe('installations', () => {
+    const FLEET = {
+      currentRevision: 4,
+      currentIocRevision: 2,
+      installations: [
+        installation({ installationId: 'inst-alice', gitEmail: 'alice@acme.test', appliedRevision: 4, appliedIocRevision: 2, appliedAt: '2026-10-27T10:00:00.000Z', behind: false }),
+        installation({ installationId: 'inst-bob', gitEmail: 'bob@acme.test', appliedRevision: 3, appliedIocRevision: 2, appliedAt: '2026-10-26T08:15:00.000Z', behind: true }),
+        installation({ installationId: 'inst-carol', osUser: 'carol', appliedRevision: null, behind: true }),
+        installation({
+          installationId: 'inst-dan', gitEmail: 'dan@acme.test', appliedRevision: 3, appliedIocRevision: 2, behind: true,
+          refusedRevision: 4, refusedIocRevision: 2, refusedError: 'Hub returned an invalid Airlock policy: hosts.allow: bad', refusedAt: '2026-10-27T11:00:00.000Z',
+        }),
+      ],
+    };
+
+    const rowOf = async (name: RegExp) => {
+      const table = await screen.findByRole('table', { name: /installations/i });
+      const row = within(table).getByText(name).closest('tr');
+      expect(row).not.toBeNull();
+      return row as HTMLElement;
+    };
+
+    it('lists each installation with the revision it applied, against the current one', async () => {
+      hubAnswers(STORED, FLEET);
+      renderPage();
+      const table = await screen.findByRole('table', { name: /installations/i });
+      expect(within(table).getAllByRole('row')).toHaveLength(1 + 4);
+      const alice = await rowOf(/alice@acme.test/);
+      expect(alice).toHaveTextContent(/revision 4/i);
+      expect(alice).toHaveTextContent('2026-10-27 10:00 UTC');
+      expect(alice).toHaveTextContent(/up to date/i);
+      expect(alice).toHaveAttribute('data-behind', 'false');
+      expect(screen.getByText(/current revision 4/i)).toBeInTheDocument();
+    });
+
+    it('highlights the installations that are behind, and says so in words', async () => {
+      hubAnswers(STORED, FLEET);
+      renderPage();
+      const bob = await rowOf(/bob@acme.test/);
+      expect(bob).toHaveAttribute('data-behind', 'true');
+      expect(bob).toHaveTextContent(/behind/i);
+      const carol = await rowOf(/^carol$/);
+      expect(carol).toHaveAttribute('data-behind', 'true');
+      expect(carol).toHaveTextContent(/not reported/i);
+    });
+
+    it('names a refused policy and why', async () => {
+      hubAnswers(STORED, FLEET);
+      renderPage();
+      const dan = await rowOf(/dan@acme.test/);
+      expect(dan).toHaveTextContent(/refused revision 4 with IOC list 2/i);
+      expect(dan).toHaveTextContent(/hosts\.allow: bad/);
+    });
+
+    it('says when no installation has joined yet', async () => {
+      hubAnswers(STORED);
+      renderPage();
+      expect(await screen.findByText(/no installation has joined/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('revision history', () => {
+    const HISTORY = {
+      next: null,
+      entries: [
+        { id: 'a3', at: '2026-10-22T12:00:00.000Z', actorEmail: 'sec@acme.test', source: 'board', action: 'airlock.ioc', before: { revision: 4, iocRevision: 1 }, after: { revision: 4, iocRevision: 2 } },
+        { id: 'a2', at: '2026-10-21T09:30:00.000Z', actorEmail: 'admin@acme.test', source: 'board', action: 'airlock.update', before: { revision: 3, iocRevision: 1 }, after: { revision: 4, iocRevision: 1 } },
+        { id: 'a1', at: '2026-10-01T08:00:00.000Z', actorEmail: 'admin@acme.test', source: 'board', action: 'airlock.update', before: null, after: { revision: 1, iocRevision: 0 } },
+      ],
+    };
+
+    it('lists who changed the policy, when, and from which revision to which, newest first', async () => {
+      hubAnswers(STORED, NO_INSTALLATIONS, HISTORY);
+      renderPage();
+      const list = await screen.findByRole('list', { name: /revision history/i });
+      const items = within(list).getAllByRole('listitem');
+      expect(items).toHaveLength(3);
+      expect(items[0]).toHaveTextContent(/IOC list 1 → 2/);
+      expect(items[0]).toHaveTextContent('sec@acme.test');
+      expect(items[0]).toHaveTextContent('2026-10-22 12:00 UTC');
+      expect(items[1]).toHaveTextContent(/revision 3 → 4/i);
+      expect(items[1]).toHaveTextContent('admin@acme.test');
+      expect(items[2]).toHaveTextContent(/first saved as revision 1/i);
+    });
+
+    it('loads the next page of history with the cursor the hub gave, and stops at the last page', async () => {
+      const entry = (id: string, from: number) => ({
+        id, at: '2026-10-01T08:00:00.000Z', actorEmail: 'admin@acme.test', source: 'board', action: 'airlock.update',
+        before: { revision: from, iocRevision: 0 }, after: { revision: from + 1, iocRevision: 0 },
+      });
+      get.mockImplementation(async (url: string, config?: { params?: { cursor?: string } }) => {
+        if (url === '/v1/admin/airlock') return { data: STORED };
+        if (url === '/v1/admin/airlock/installations') return { data: NO_INSTALLATIONS };
+        if (url === '/v1/admin/airlock/history') {
+          return config?.params?.cursor === 'page-2'
+            ? { data: { entries: [entry('h2', 1)], next: null } }
+            : { data: { entries: [entry('h3', 2)], next: 'page-2' } };
+        }
+        throw new Error(`unexpected GET ${url}`);
+      });
+      renderPage();
+      const list = await screen.findByRole('list', { name: /revision history/i });
+      expect(within(list).getAllByRole('listitem')).toHaveLength(1);
+      fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+      await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(2));
+      expect(within(list).getAllByRole('listitem')[1]).toHaveTextContent(/revision 1 → 2/i);
+      expect(get).toHaveBeenCalledWith('/v1/admin/airlock/history', { params: { cursor: 'page-2' } });
+      await waitFor(() => expect(screen.queryByRole('button', { name: /load more/i })).toBeNull());
+    });
+
+    it('says when the policy has no history yet', async () => {
+      hubAnswers(NONE);
+      renderPage();
+      expect(await screen.findByText(/no changes yet/i)).toBeInTheDocument();
+    });
   });
 });

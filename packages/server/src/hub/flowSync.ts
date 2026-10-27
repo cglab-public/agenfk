@@ -15,7 +15,7 @@ import { flowChecksErrors, normalizeFlowSteps } from '@agenfk/core';
 import type { HubConfig } from './types.js';
 import { syncRepoSettings, declaredVerifyCommand } from './repoSettingsSync.js';
 import { publishPendingReceipts } from './receiptPublisher.js';
-import { runAirlockSync, currentAirlockGeneration } from './airlockSync.js';
+import { runAirlockSync, currentAirlockGeneration, type AirlockApplyReporter } from './airlockSync.js';
 
 export type FetchLike = (url: string, opts: any) => Promise<{
   status: number;
@@ -190,6 +190,8 @@ export interface RunTickArgs {
   airlockStateFile?: string;
   /** The hub this installation is joined to now, so a tick that outlived a repoint writes nothing. */
   activeHubConfig?: () => Pick<HubConfig, 'url' | 'orgId'> | null;
+  /** Tells the hub which Airlock policy revision this installation applies (HUB-2). */
+  reportAirlock?: AirlockApplyReporter;
 }
 
 /** The org's Airlock policy, once per tick; contained, so it never costs the tick anything else. */
@@ -203,6 +205,7 @@ async function syncAirlockForTick(args: RunTickArgs, generation: number): Promis
       emit: args.emit,
       generation,
       activeHubConfig: args.activeHubConfig,
+      report: args.reportAirlock,
     });
   } catch (e) {
     console.error('[HUB_AIRLOCK] Unexpected error:', (e as Error).message);
@@ -308,6 +311,8 @@ export interface StartFlowSyncArgs {
   resolveRepo?: (projectId: string) => Promise<string | null>;
   /** The hub this installation is joined to now (the server's live config). */
   activeHubConfig?: () => Pick<HubConfig, 'url' | 'orgId'> | null;
+  /** Tells the hub which Airlock policy revision this installation applies (HUB-2). */
+  reportAirlock?: AirlockApplyReporter;
 }
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -332,6 +337,7 @@ export function startFlowSync(args: StartFlowSyncArgs): FlowSyncHandle {
         resolveRepo: args.resolveRepo,
         // A stopped loop's tick is not the current configuration's: it adopts nothing.
         activeHubConfig: () => (stopped ? null : (args.activeHubConfig ? args.activeHubConfig() : args.hubConfig)),
+        reportAirlock: args.reportAirlock,
       });
       consecutiveErrors = 0;
     } catch (e) {

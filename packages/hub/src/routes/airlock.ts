@@ -9,6 +9,8 @@ import {
   AirlockPolicyError,
   airlockEtagOf,
   getAirlockPolicy,
+  listAirlockHistory,
+  listAirlockInstallations,
   putAirlockIocHosts,
   putAirlockPolicy,
 } from '../services/airlock.js';
@@ -20,6 +22,11 @@ import {
  *   GET /v1/admin/airlock        the admin's read
  *   PUT /v1/admin/airlock        the admin's save of the policy
  *   PUT /v1/admin/airlock/ioc    the admin's save of the IOC host list
+ *   GET /v1/admin/airlock/installations   each installation's applied revision (HUB-2)
+ *   GET /v1/admin/airlock/history         the policy's revisions, from the config audit
+ *
+ * What an installation applies arrives through its event stream
+ * (`airlock.policy-applied` / `airlock.policy-refused`, routes/events.ts).
  *
  * The org always comes from the credential (the api key or the session), never
  * from the body, so one org can neither read nor write another's policy.
@@ -87,6 +94,18 @@ export function airlockAdminRouter(ctx: HubServerContext): Router {
     } catch (e) {
       sendAirlockError(res, e);
     }
+  }));
+
+  router.get('/installations', guard, asyncRoute(async (req: Request, res: Response) => {
+    res.json(await listAirlockInstallations(ctx.db, req.session!.orgId));
+  }));
+
+  router.get('/history', guard, asyncRoute(async (req: Request, res: Response) => {
+    const limit = Number(req.query.limit);
+    res.json(await listAirlockHistory(ctx.db, req.session!.orgId, {
+      limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+      cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
+    }));
   }));
 
   router.put('/ioc', guard, asyncRoute(async (req: Request, res: Response) => {

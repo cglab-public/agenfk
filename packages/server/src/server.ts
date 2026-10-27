@@ -1729,6 +1729,8 @@ if (hubDisabledForTests) {
     emit: (event, payload) => io.emit(event, payload),
     resolveRepo: resolveProjectRepo,
     activeHubConfig: () => hubClient.hubConfig,
+    // HUB-2: which Airlock revision this installation applies, through the outbox as fleet upgrades report.
+    reportAirlock: (r) => hubClient.recordEvent({ type: r.type, payload: r.payload }),
   });
   console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
 
