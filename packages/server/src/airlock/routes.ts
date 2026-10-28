@@ -11,6 +11,8 @@
  *   GET  /airlock/approvals  human-approval requests: pending, and the recent ones (T5)
  *   POST /airlock/approvals/:key/grant|deny   a person's answer, on the board (T5)
  *   /airlock/learning[/import|/accept|/forward]   learning mode's proposed allowlist (TEL-3, learn.ts)
+ *   GET  /airlock/dataset    whether past sessions can be imported: joined, and the hub's switch on (DS-3)
+ *   POST /airlock/dataset/import   past sessions' tool calls, as dataset rows; loopback, never from a sandbox
  *
  * APPROVALS (T5): a needs-human-approval verdict records a pending request under
  * its approval key (bound to the rule, the project and every capability). A
@@ -76,7 +78,7 @@ import {
   type StoredAirlockPolicy,
 } from '@agenfk/core';
 import { redactLog } from '../hub/redact.js';
-import { airlockDataset } from './dataset.js';
+import { airlockDataset, AIRLOCK_DATASET_IMPORT_MAX_CALLS } from './dataset.js';
 import { AIRLOCK_REPORT_HEADER } from './reportToken.js';
 import { registerAirlockLearning } from './learn.js';
 
@@ -936,6 +938,63 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       await learning.observeProxy(list.filter(valid).map((d: any) => d.host), body.client, work?.itemId ?? null);
       res.json({ recorded, skipped, dropped, invalid });
     } catch (e) { next(e); }
+  });
+
+  app.get('/airlock/dataset', (_req: any, res: any) => {
+    res.json({ joined: deps.hubJoined(), enabled: datasetOn() });
+  });
+
+  // DS-3: a person's import of past sessions (agenfk airlock dataset import). Never from a
+  // sandbox: an agent must not be able to plant rows in what the scorer learns from.
+  app.post('/airlock/dataset/import', async (req: any, res: any, next: any) => {
+    try {
+      if (!isLoopback(req.socket?.remoteAddress)) return res.status(403).json({ error: 'Imports are only accepted from this machine' });
+      if (req.airlockSession !== undefined) {
+        return res.status(403).json({ error: 'AIRLOCK_DATASET_FROM_SANDBOX', message: 'An Airlock session cannot import into the dataset: run agenfk airlock dataset import outside the sandbox.' });
+      }
+      if (!datasetOn()) {
+        return res.status(409).json({
+          error: 'AIRLOCK_DATASET_OFF',
+          message: deps.hubJoined()
+            ? "Your organization's hub has the Airlock dataset switched off, so nothing is imported. An org admin switches it on (Admin -> Airlock -> Dataset)."
+            : 'This installation is not joined to a hub, so there is no Airlock dataset to import into.',
+        });
+      }
+      const body = req.body ?? {};
+      if (!CLIENTS.includes(body.client) || typeof body.sessionId !== 'string' || !body.sessionId || body.sessionId.length > MAX_AIRLOCK_FIELD
+        || !Array.isArray(body.calls) || (body.model !== undefined && body.model !== null && typeof body.model !== 'string')) {
+        return res.status(400).json({ error: `client (${CLIENTS.join(', ')}), sessionId and calls (an array) are required` });
+      }
+      if (body.calls.length > AIRLOCK_DATASET_IMPORT_MAX_CALLS) {
+        return res.status(413).json({ error: `at most ${AIRLOCK_DATASET_IMPORT_MAX_CALLS} calls a request` });
+      }
+      const view = await resolveAirlockPolicy(deps.storage(), deps.hubJoined());
+      const run = await deps.storage().getAgentRunBySession(body.sessionId).catch(() => null);
+      const projectId = run?.projectId ?? null;
+      const effective = projectId ? (await projectPolicy(view.effective, projectId)).effective : view.effective;
+      const card = await cardOf(run?.itemId);
+      const model = sessionModelOf(body.model ?? null);
+      let sent = 0;
+      let skipped = 0;
+      for (const c of body.calls) {
+        const ok = c && typeof c === 'object' && typeof c.callId === 'string' && c.callId && c.callId.length <= MAX_AIRLOCK_FIELD
+          && typeof c.tool === 'string' && c.tool.length <= MAX_AIRLOCK_FIELD && c.args && typeof c.args === 'object' && !Array.isArray(c.args)
+          && typeof c.at === 'string' && Number.isFinite(Date.parse(c.at));
+        if (!ok) { skipped++; continue; }
+        const capabilities = capabilitiesOf(c.args);
+        if (capabilities.length > MAX_AIRLOCK_CAPABILITIES) { skipped++; continue; }
+        // What Airlock would say of it now: the current policy, no grants.
+        const verdict = evaluateAirlock(effective, { client: body.client, model: model ?? { provider: null, id: null }, toolName: c.tool, capabilities, card: { itemId: run?.itemId, projectId: projectId ?? undefined, grants: [] } });
+        const rowId = dataset.imported({
+          client: body.client, model: model ? modelLabel(model) : null, sessionId: body.sessionId, callId: c.callId, tool: c.tool, args: c.args,
+          at: new Date(c.at).toISOString(), capabilities,
+          verdict: { decision: verdict.decision, rule: 'rule' in verdict ? verdict.rule : null, ...(verdict.decision === 'allow' ? { why: verdict.why } : {}) },
+          mode: effective.mode, revision: view.revision, card,
+        });
+        if (rowId) sent++; else skipped++;
+      }
+      res.json({ sent, skipped });
+    } catch (e) { if (!projectUnknown(e, res)) next(e); }
   });
 
   app.get('/airlock/decisions', async (req: any, res: any, next: any) => {

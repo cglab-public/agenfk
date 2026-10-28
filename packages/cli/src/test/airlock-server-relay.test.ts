@@ -225,6 +225,19 @@ describe('startServerRelay: board-only writes refused (SX-4)', () => {
     expect(seen).toHaveLength(0);
   });
 
+  // DS-3 review (Codex gpt-6.1-sol 01a18355): an observe-mode launch with no report token
+  // forwards unmarked, so the server cannot tell the import came from a sandbox: refused here.
+  it('a dataset import is refused at the relay, marked or not', async () => {
+    for (const marker of [() => MARK, () => null]) {
+      relay = await startServerRelay({ target: targetUrl, marker, requireMarker: false });
+      for (const p of ['/airlock/dataset/import', '/AIRLOCK/dataset/import/', '/airlock//dataset/import?x=1']) {
+        expect((await send(relay.port, { method: 'POST', path: p, body: '{}' })).status, p).toBe(403);
+      }
+      await relay.close();
+    }
+    expect(seen).toHaveLength(0);
+  });
+
   it('the board-only routes are refused by method and path, without the header too', async () => {
     relay = await startServerRelay({ target: targetUrl, marker: () => MARK, requireMarker: true });
     const refused: Array<[string, string]> = [

@@ -209,6 +209,26 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub Airlock dataset (%s)', (back
       expect((await view(cookieOrgB)).body.rows).toBe(0);
     });
 
+    it('the database itself keeps one row per row id (two concurrent imports cannot both insert it)', async () => {
+      const insert = (eventId: string) => db.run(
+        `INSERT INTO airlock_dataset (org_id, event_id, kind, row_id, installation_id, user_key, occurred_at, received_at, imported, payload_json)
+         VALUES ('org-a', ?, 'row', 'same', 'i', 'u', ?, ?, 0, '{}')`, [eventId, new Date().toISOString(), new Date().toISOString()]);
+      await insert('e1');
+      await expect(insert('e2')).rejects.toThrow();
+      // labels share a row id freely
+      await db.run(`INSERT INTO airlock_dataset (org_id, event_id, kind, row_id, installation_id, user_key, occurred_at, received_at, imported, payload_json)
+         VALUES ('org-a', 'l1', 'label', 'same', 'i', 'u', ?, ?, 0, '{}')`, [new Date().toISOString(), new Date().toISOString()]);
+      await db.run(`INSERT INTO airlock_dataset (org_id, event_id, kind, row_id, installation_id, user_key, occurred_at, received_at, imported, payload_json)
+         VALUES ('org-a', 'l2', 'label', 'same', 'i', 'u', ?, ?, 0, '{}')`, [new Date().toISOString(), new Date().toISOString()]);
+    });
+
+    it('a row sent again under another event id (an import repeated) is kept once', async () => {
+      await setSwitch(true);
+      await sendRow(row('same-row'));
+      await sendRow(row('same-row'));
+      expect(await datasetRows()).toHaveLength(1);
+    });
+
     it('a row larger than the bound, or older than it, is not kept', async () => {
       await setSwitch(true);
       await sendRow(row('big', { capabilities: [{ kind: 'path', path: 'a.txt', access: 'write', content: 'x'.repeat(AIRLOCK_DATASET_LIMITS.maxRowBytes) }] }));

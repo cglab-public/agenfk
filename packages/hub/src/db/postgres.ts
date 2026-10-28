@@ -671,6 +671,8 @@ const SCHEMA_PG = `
   );
   CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_time ON airlock_dataset(org_id, occurred_at, event_id);
   CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_row ON airlock_dataset(org_id, row_id);
+  -- One row per row id (an import sent again, or twice at once, comes under new event ids).
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_airlock_dataset_row ON airlock_dataset(org_id, row_id) WHERE kind = 'row';
   -- The hosts each kept row reached (its payload's hosts, at most 50), so a learning
   -- accept labels the rows that reached a host exactly, by index, not by scanning.
   CREATE TABLE IF NOT EXISTS airlock_dataset_hosts (

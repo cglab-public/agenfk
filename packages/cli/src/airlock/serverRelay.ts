@@ -57,6 +57,9 @@ const BOARD_ONLY: ReadonlyArray<{ method: string | null; path: RegExp }> = [
   { method: 'PUT', path: /^\/api\/telemetry\/config$/ },
   { method: 'POST', path: /^\/github\/signout$/ },
   { method: 'POST', path: /^\/releases\/update$/ },
+  // DS-3: what the Airlock scorer learns from is a person's to import, never a sandbox's -
+  // whether or not this relay could mark the request (an observe launch with no token).
+  { method: 'POST', path: /^\/airlock\/dataset\/import$/ },
 ];
 
 /** Why a request from the sandbox must not reach the server, or null. */

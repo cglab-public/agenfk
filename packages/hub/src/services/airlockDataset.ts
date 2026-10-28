@@ -198,9 +198,15 @@ async function keepOne(db: DB, orgId: string, e: DatasetEvent, userKey: string, 
   const result = await db.run(
     `INSERT INTO airlock_dataset (org_id, event_id, kind, row_id, installation_id, user_key, occurred_at, received_at, imported, payload_json)
      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ${imported}, ?
-     WHERE EXISTS (SELECT 1 FROM airlock_dataset_settings WHERE org_id = ? AND enabled = 1)
-     ON CONFLICT (org_id, event_id) DO NOTHING`,
-    [orgId, e.eventId, kind, rowId, e.installationId, userKey, at, received, json, orgId],
+     WHERE EXISTS (SELECT 1 FROM airlock_dataset_settings WHERE org_id = ? AND enabled = 1)${kind === 'row'
+      // One row per row id: an import sent again comes under new event ids (DS-3); the
+      // unique index uq_airlock_dataset_row settles two at once (ON CONFLICT, untargeted,
+      // for rows only: a label is never under that index, and pg-mem would hold a label
+      // against it, ignoring the index's WHERE kind = 'row').
+      ? " AND NOT EXISTS (SELECT 1 FROM airlock_dataset WHERE org_id = ? AND kind = 'row' AND row_id = ?)"
+      : ''}
+     ${kind === 'row' ? 'ON CONFLICT DO NOTHING' : 'ON CONFLICT (org_id, event_id) DO NOTHING'}`,
+    [orgId, e.eventId, kind, rowId, e.installationId, userKey, at, received, json, orgId, ...(kind === 'row' ? [orgId, rowId] : [])],
   );
   // A kept row's hosts, for the exact host index (learning labels).
   if (kind === 'row' && result.changes > 0 && Array.isArray(p.hosts)) {

@@ -12,7 +12,8 @@ import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptio
 import { runAirlockExec, scopedCommandEnv, EXEC_CANNOT_SANDBOX, type ExecDeps } from '../airlock/exec.js';
 import { AsrtRuntime } from '../airlock/runtime.js';
 import { PROXY_REPORT_TIMEOUT_MS } from '../airlock/proxyReport.js';
-import { runLearnImport } from '../airlock/learnImport.js';
+import { runLearnImport, defaultPiSessionsDir } from '../airlock/learnImport.js';
+import { runDatasetImport, defaultOpenCodeDb, DatasetImportError } from '../airlock/datasetImport.js';
 
 /**
  * `agenfk airlock` (GH-294): read the Airlock policy and ask what it would
@@ -27,7 +28,7 @@ export function airlockBoardUrl(base: string = resolveDashboardUrl('')): string 
 }
 
 const fail = (e: any): void => {
-  const message = e?.response?.data?.error || e?.message || String(e);
+  const message = e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e);
   console.error(chalk.red(`❌ ${message}`));
   process.exit(1);
 };
@@ -336,6 +337,36 @@ export function registerAirlockCommands(
         console.log(`Learned ${result.recorded} host${result.recorded === 1 ? '' : 's'}${notes ? ` (${notes})` : ''}.`);
         console.log(`Review the proposed allowlist on the board: ${airlockBoardUrl()}`);
       } catch (e) { fail(e); }
+    });
+
+  airlock
+    .command('dataset')
+    .description('The Airlock dataset (DS-3): your organization\'s hub keeps full tool calls, secrets removed, to train Airlock\'s scorer, while an org admin has it switched on.')
+    .command('import')
+    .description('Send past pi and OpenCode sessions to the hub\'s Airlock dataset: every tool call, judged under the current policy and joined to its card, secrets removed here first. Only while this installation is joined to a hub whose dataset switch is on. Importing again adds nothing.')
+    .option('--pi-dir <dir>', 'Where pi\'s session logs are (default ~/.pi/agent/sessions)')
+    .option('--opencode-db <path>', 'OpenCode\'s database, read-only (default ~/.local/share/opencode/opencode.db)')
+    .option('--no-pi', 'Skip pi\'s sessions')
+    .option('--no-opencode', 'Skip OpenCode\'s sessions')
+    .option('--json', 'Print the result as JSON')
+    .action(async (options) => {
+      try {
+        const api = getApiUrl();
+        const result = await runDatasetImport({
+          piDir: options.pi === false ? null : (options.piDir ?? defaultPiSessionsDir()),
+          openCodeDb: options.opencode === false ? null : (options.opencodeDb ?? defaultOpenCodeDb()),
+        }, {
+          status: async () => (await axios.get(`${api}/airlock/dataset`, { timeout: 10_000 })).data,
+          post: async (body) => (await axios.post(`${api}/airlock/dataset/import`, body, { timeout: 60_000 })).data,
+          log: (m) => { if (!options.json) console.log(chalk.gray(m)); },
+        });
+        if (options.json) { console.log(JSON.stringify(result, null, 2)); return; }
+        const notes = [result.skipped && `${result.skipped} skipped`, result.tooLarge && `${result.tooLarge} too large to send`].filter(Boolean).join(', ');
+        console.log(`Sent ${result.sent} tool call${result.sent === 1 ? '' : 's'} from ${result.sessions} session${result.sessions === 1 ? '' : 's'} to the hub's Airlock dataset${notes ? ` (${notes})` : ''}.`);
+      } catch (e) {
+        if (options.json && e instanceof DatasetImportError) console.log(JSON.stringify({ error: e.message, progress: e.progress }, null, 2));
+        fail(e);
+      }
     });
 
   airlock

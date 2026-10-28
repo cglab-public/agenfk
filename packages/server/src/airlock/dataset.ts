@@ -25,6 +25,8 @@ import { hostsOfCapabilities, type Capability } from '@agenfk/core';
 export const AIRLOCK_DATASET_MAX_ROW_BYTES = 64 * 1024;
 /** Earlier calls of the same session a row carries (for script-then-run). */
 export const AIRLOCK_DATASET_RECENT = 5;
+/** Calls one import request may carry (DS-3); the CLI batches below it. */
+export const AIRLOCK_DATASET_IMPORT_MAX_CALLS = 500;
 const MAX_SESSIONS = 200;
 const MAX_APPROVAL_KEYS = 1000;
 const MAX_ROWS_PER_KEY = 20;
@@ -66,6 +68,26 @@ export interface ToolCallRow {
   /** A needs-human-approval request's key and generation (`key#generation`): the label for a person's answer joins this row. */
   approvalKey?: string;
 }
+
+/** A tool call of a past session (DS-3), judged under the current policy by the caller. */
+export interface ImportedCall {
+  client: string;
+  model: string | null;
+  sessionId: string;
+  callId: string;
+  tool: string;
+  args: unknown;
+  at: string;
+  capabilities: Capability[];
+  verdict: { decision: string; rule?: string | null; why?: string };
+  mode: string;
+  revision: number;
+  card: ToolCallRow['card'];
+}
+
+/** The same call of the same session always has the same row id, so importing it again adds nothing. */
+export const importedRowId = (client: string, sessionId: string, callId: string): string =>
+  createHash('sha256').update(`airlock-import:${client}:${sessionId}:${callId}`).digest('hex').slice(0, 32);
 
 export interface ProxyRow {
   client: string;
@@ -162,8 +184,7 @@ export function airlockDataset(deps: DatasetDeps) {
     return { ...(cutStrings({ ...row, args: '[…]', recent: [], capabilities: [], hosts: [] }, 256) as Record<string, unknown>), rowId: row.rowId, truncated: true };
   };
 
-  const send = (session: string | null, base: Record<string, unknown>, summary: Summary): string => {
-    const rowId = randomUUID();
+  const send = (session: string | null, base: Record<string, unknown>, summary: Summary, rowId: string = randomUUID()): string => {
     const recent = session ? sessions.get(session) ?? [] : [];
     // The window is trimmed as it is stored: at most AIRLOCK_DATASET_RECENT.
     const row = fitted({ rowId, ...base, session, recent });
@@ -200,6 +221,37 @@ export function airlockDataset(deps: DatasetDeps) {
         remember(byApprovalKey, r.approvalKey, [...rows, rowId].slice(-MAX_ROWS_PER_KEY), MAX_APPROVAL_KEYS);
       }
       return rowId;
+    },
+
+    /**
+     * A call of a past session (DS-3): built like a live row, marked imported, with its
+     * own time and a row id derived from the call. The window is that session's earlier
+     * imported calls (kept apart from live sessions). Null when the switch is off.
+     */
+    imported(r: ImportedCall): string | null {
+      rescope();
+      if (!deps.enabled()) return null;
+      const cut = { truncated: false };
+      const capabilities = bounded(r.capabilities, cut).map(capabilityOf);
+      const tool = deps.redactText(r.tool);
+      const session = sessionHash(`import:${r.client}:${r.sessionId}`);
+      return send(session, {
+        source: 'import',
+        imported: true,
+        at: r.at,
+        client: deps.redactText(r.client),
+        model: r.model === null ? null : deps.redactText(r.model),
+        tool,
+        args: clean(r.args, cut),
+        capabilities,
+        hosts: bounded(hostsOfCapabilities(r.capabilities), cut).map(deps.redactText),
+        verdict: clean(r.verdict, cut),
+        mode: r.mode,
+        revision: r.revision,
+        card: r.card && (clean(r.card, cut) as ToolCallRow['card']),
+        ...(cut.truncated ? { truncated: true } : {}),
+      }, { tool, capabilities: capabilities.map(c => ({ kind: c.kind, value: c.value.slice(0, 512) })), decision: r.verdict.decision },
+      importedRowId(r.client, r.sessionId, r.callId));
     },
 
     /** A decision of the sandbox proxy; null when the switch is off. */
