@@ -31,6 +31,8 @@ export interface AirlockRules {
   namespaceEscape: RuleAction;
   /** mutating verbs of aws / gcloud / az / kubectl / terraform / pulumi */
   cloudMutation: RuleAction;
+  /** gists, issue bodies from files, package registries, model hubs: data sent through a host the allow list may name */
+  publishThroughAllowedHost: RuleAction;
 }
 
 export interface AirlockPolicy {
@@ -57,6 +59,7 @@ export const DEFAULT_AIRLOCK_RULES: Readonly<AirlockRules> = Object.freeze({
   credentialReadWithNetwork: 'deny',
   namespaceEscape: 'deny',
   cloudMutation: 'needs-human-approval',
+  publishThroughAllowedHost: 'needs-human-approval',
 });
 
 /** Off until someone turns it on. Frozen: copy it (normalizeAirlockPolicy) before changing. */
@@ -80,6 +83,7 @@ export type AirlockRuleId =
   | 'upload-to-unlisted-host'
   | 'credential-read-with-network'
   | 'namespace-escape'
+  | 'publish-through-allowed-host'
   | 'cloud-mutation';
 
 export type Capability =

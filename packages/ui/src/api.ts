@@ -120,7 +120,7 @@ export interface AirlockPolicyDto {
   appliesWhenModelUnknown: boolean;
   hosts: { allow: string[]; deny: string[] };
   iocHosts: { revision: string; hosts: string[]; updatedAt: string | null };
-  rules: { uploadToUnlistedHost: AirlockRuleActionDto; credentialReadWithNetwork: AirlockRuleActionDto; namespaceEscape: AirlockRuleActionDto; cloudMutation: AirlockRuleActionDto };
+  rules: { uploadToUnlistedHost: AirlockRuleActionDto; credentialReadWithNetwork: AirlockRuleActionDto; namespaceEscape: AirlockRuleActionDto; cloudMutation: AirlockRuleActionDto; publishThroughAllowedHost: AirlockRuleActionDto };
 }
 /** GET /airlock/policy. `hubManaged`: the hub owns the policy and a local write is refused. */
 export interface AirlockPolicyViewDto {

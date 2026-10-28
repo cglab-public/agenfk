@@ -203,6 +203,24 @@ describe('hub airlockSync', () => {
       expect(row?.policy.mode).toBe('enforce');
     });
 
+    // c9bdbe61: a hub on an earlier release does not know rules added since. Its
+    // policy is complete for that hub; the rule it never decided on gets its default.
+    it('adopts a policy from a hub that predates the publish rule, with that rule at its default', async () => {
+      const { fetchImpl } = makeFetch(ok(hubPolicy(), 5));
+      const out = await sync(fetchImpl);
+      expect(out.outcome).toBe('adopted');
+      const row = await storage.getAirlockPolicy('hub');
+      expect(row?.policy.rules.publishThroughAllowedHost).toBe('needs-human-approval');
+      expect(row?.policy.rules.cloudMutation).toBe('needs-human-approval');
+    });
+
+    it("keeps the hub's publish rule when it sends one", async () => {
+      const rules = { ...hubPolicy().rules as object, publishThroughAllowedHost: 'deny' };
+      const { fetchImpl } = makeFetch(ok(hubPolicy({ rules }), 5));
+      expect((await sync(fetchImpl)).outcome).toBe('adopted');
+      expect((await storage.getAirlockPolicy('hub'))?.policy.rules.publishThroughAllowedHost).toBe('deny');
+    });
+
     it('adopts an IOC-only change at the same revision', async () => {
       await seedHubRow(3, 'enforce');
       const { fetchImpl } = makeFetch(ok(hubPolicy({}, 2, ['bad.example', 'worse.example']), 3, 2));

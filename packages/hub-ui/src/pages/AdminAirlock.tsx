@@ -25,7 +25,7 @@ import { AirlockLearningCard } from './AdminAirlockLearning';
 
 type Mode = 'off' | 'observe' | 'enforce';
 type RuleAction = 'deny' | 'needs-human-approval' | 'off';
-type RuleKey = 'uploadToUnlistedHost' | 'credentialReadWithNetwork' | 'namespaceEscape' | 'cloudMutation';
+type RuleKey = 'uploadToUnlistedHost' | 'credentialReadWithNetwork' | 'namespaceEscape' | 'cloudMutation' | 'publishThroughAllowedHost';
 interface ModelSelector { client?: string; provider?: string; model?: string }
 
 interface AirlockPolicy {
@@ -109,6 +109,7 @@ const RULES: { key: RuleKey; label: string }[] = [
   { key: 'credentialReadWithNetwork', label: 'Read a credential and use the network in one command' },
   { key: 'namespaceEscape', label: 'Enter another namespace (unshare, nsenter)' },
   { key: 'cloudMutation', label: 'Change cloud resources (aws, gcloud, az, kubectl, terraform, pulumi)' },
+  { key: 'publishThroughAllowedHost', label: 'Publish through an allowed host (gists, issue bodies from files, npm, Hugging Face, PyPI, image pushes)' },
 ];
 
 const ACTIONS: { value: RuleAction; label: string }[] = [
@@ -122,6 +123,7 @@ const DEFAULT_RULES: Record<RuleKey, RuleAction> = {
   credentialReadWithNetwork: 'deny',
   namespaceEscape: 'deny',
   cloudMutation: 'needs-human-approval',
+  publishThroughAllowedHost: 'needs-human-approval',
 };
 
 /** One entry per line; blank lines and surrounding spaces dropped. */

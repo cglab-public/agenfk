@@ -145,6 +145,18 @@ describe('Admin → Airlock', () => {
     expect(body.policy.rules.cloudMutation).toBe('needs-human-approval');
   });
 
+  it('edits the publish rule; a policy stored before it existed shows and saves its default (c9bdbe61)', async () => {
+    hubAnswers(STORED);
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    const publish = await screen.findByLabelText(/publish through an allowed host/i) as HTMLSelectElement;
+    expect(publish.value).toBe('needs-human-approval');
+    fireEvent.change(publish, { target: { value: 'deny' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect(put.mock.calls[0][1].policy.rules.publishThroughAllowedHost).toBe('deny');
+  });
+
   it("shows the hub's refusal inline", async () => {
     hubAnswers(STORED);
     put.mockRejectedValue({

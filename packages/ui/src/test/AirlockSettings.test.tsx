@@ -102,6 +102,16 @@ describe('Airlock panel: standalone', () => {
     expect(await screen.findByText(/Saved \(revision 4\)/)).toBeTruthy();
   });
 
+  it('the publish rule is editable; a policy stored before it existed shows its default (c9bdbe61)', async () => {
+    renderPanel();
+    const publish = await screen.findByLabelText('Publishing through an allowed host') as HTMLSelectElement;
+    await waitFor(() => expect(publish.value).toBe('needs-human-approval'));
+    fireEvent.change(publish, { target: { value: 'off' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveAirlockPolicy).mock.calls[0][0].policy.rules.publishThroughAllowedHost).toBe('off');
+  });
+
   it('a stale revision shows the conflict and offers a reload', async () => {
     vi.mocked(api.saveAirlockPolicy).mockRejectedValue({
       response: { status: 409, data: { error: 'AIRLOCK_REVISION_CONFLICT', message: 'The policy changed since it was read: it is at revision 5, not 3. Reload and apply the change again.', currentRevision: 5 } },

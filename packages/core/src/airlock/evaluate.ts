@@ -6,7 +6,7 @@
  *  3. every finding across every capability; any deny outranks any
  *     needs-human-approval. Deny order: built-in metadata hosts, IOC hosts, the
  *     deny list, namespace escape, credential read + network, upload to an
- *     unlisted host; then cloud mutation.
+ *     unlisted host; then publishing through an allowed host, then cloud mutation.
  *  4. an approval whose key is in card.grants is allowed ('approved')
  *  5. observe mode returns allow carrying the verdict enforce would give
  *
@@ -37,6 +37,7 @@ const RULE_ORDER: readonly AirlockRuleId[] = [
   'namespace-escape',
   'credential-read-with-network',
   'upload-to-unlisted-host',
+  'publish-through-allowed-host',
   'cloud-mutation',
 ];
 
@@ -44,6 +45,7 @@ const RULE_SETTING: Partial<Record<AirlockRuleId, keyof AirlockRules>> = {
   'upload-to-unlisted-host': 'uploadToUnlistedHost',
   'credential-read-with-network': 'credentialReadWithNetwork',
   'namespace-escape': 'namespaceEscape',
+  'publish-through-allowed-host': 'publishThroughAllowedHost',
   'cloud-mutation': 'cloudMutation',
 };
 
@@ -153,6 +155,9 @@ function findingsOf(policy: AirlockPolicy, input: AirlockInput): Finding[] {
             caps: [cap],
           });
         }
+      }
+      if (a.publish) {
+        findings.push({ rule: 'publish-through-allowed-host', reason: `${a.publish} sends data to a service, whatever host it is on`, target: a.publish, caps: [cap] });
       }
       if (a.cloudMutation) {
         findings.push({ rule: 'cloud-mutation', reason: `${a.cloudMutation} changes cloud resources`, target: a.cloudMutation, caps: [cap] });

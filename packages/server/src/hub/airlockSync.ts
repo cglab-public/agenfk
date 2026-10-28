@@ -38,7 +38,6 @@
 import {
   airlockPolicyErrors,
   normalizeAirlockPolicy,
-  DEFAULT_AIRLOCK_RULES,
   type StorageProvider,
   type StoredAirlockPolicy,
 } from '@agenfk/core';
@@ -121,6 +120,13 @@ export function invalidateAirlockSyncs(): void {
 const isObject = (v: unknown): v is Record<string, any> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** What the hub always sends; anything missing means the answer is not one to adopt. */
+/**
+ * The rules every hub sends. A rule added later (publishThroughAllowedHost,
+ * c9bdbe61) is absent from a hub on an earlier release: that hub never decided
+ * on it, so it takes its default instead of the whole policy being refused.
+ */
+const HUB_REQUIRED_RULES = ['uploadToUnlistedHost', 'credentialReadWithNetwork', 'namespaceEscape', 'cloudMutation'] as const;
+
 function completenessErrors(p: Record<string, any>): string[] {
   const errors: string[] = [];
   if (typeof p.mode !== 'string') errors.push('mode is missing');
@@ -132,7 +138,7 @@ function completenessErrors(p: Record<string, any>): string[] {
   }
   if (!isObject(p.rules)) errors.push('rules is missing');
   else {
-    const missing = Object.keys(DEFAULT_AIRLOCK_RULES).filter(k => typeof p.rules[k] !== 'string');
+    const missing = HUB_REQUIRED_RULES.filter(k => typeof p.rules[k] !== 'string');
     if (missing.length) errors.push(`rules is missing ${missing.join(', ')}`);
   }
   return errors;

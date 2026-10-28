@@ -42,7 +42,17 @@ const RULES: Array<{ key: keyof AirlockPolicyDto['rules']; label: string; descri
   { key: 'credentialReadWithNetwork', label: 'Credential read with network', description: 'Reading a credential file and reaching the network in the same command.' },
   { key: 'namespaceEscape', label: 'Namespace escape', description: 'unshare or nsenter run as a command.' },
   { key: 'cloudMutation', label: 'Cloud mutation', description: 'Changing cloud resources with aws, gcloud, az, kubectl, terraform or pulumi.' },
+  { key: 'publishThroughAllowedHost', label: 'Publishing through an allowed host', description: 'A gist, an issue body read from a file, a package or model upload: sent even when the host is allowed.' },
 ];
+
+/** Each rule's default: a policy stored before a rule existed shows it, as the server applies it. */
+const DEFAULT_RULES: AirlockPolicyDto['rules'] = {
+  uploadToUnlistedHost: 'deny',
+  credentialReadWithNetwork: 'deny',
+  namespaceEscape: 'deny',
+  cloudMutation: 'needs-human-approval',
+  publishThroughAllowedHost: 'needs-human-approval',
+};
 
 const ACTIONS: Array<{ value: AirlockRuleActionDto; label: string }> = [
   { value: 'deny', label: 'Deny' },
@@ -68,7 +78,7 @@ const draftOf = (p: AirlockPolicyDto): Draft => ({
   appliesWhenModelUnknown: p.appliesWhenModelUnknown,
   allow: p.hosts.allow.join('\n'),
   deny: p.hosts.deny.join('\n'),
-  rules: { ...p.rules },
+  rules: { ...DEFAULT_RULES, ...p.rules },
 });
 
 /** The draft as a policy, on top of what it was made from (the IOC list is the hub's, never the board's). */
