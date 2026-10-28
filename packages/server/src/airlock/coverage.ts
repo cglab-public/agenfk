@@ -36,7 +36,7 @@ export const AIRLOCK_CROSS_PROJECT = 'AIRLOCK_CROSS_PROJECT';
  * that could repoint it could choose a looser policy for its own project.
  */
 export const AIRLOCK_PROJECT_ROOT = 'AIRLOCK_PROJECT_ROOT';
-const PROJECT_ROOT_MESSAGE = 'An Airlock session cannot change a project\'s root or delete a project: its repository decides the project\'s Airlock overrides. Do it outside the sandbox (agenfk init, or the board).';
+const PROJECT_ROOT_MESSAGE = 'An Airlock session cannot change a project\'s root or delete a project: its repository decides the project\'s Airlock overrides. Do it outside the sandbox (agenfk update-project <id> --project-root <path>, or the board).';
 
 /**
  * The covered request the current async work belongs to, if any, with the

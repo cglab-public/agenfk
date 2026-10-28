@@ -60,7 +60,13 @@ describe('airlockRepoPins', () => {
     await expect(pins().repoOf('a')).rejects.toThrow(/timed out or failed/);
     origin['/work/a'] = { url: 'https://github.com/acme/api.git', cacheable: true };
     expect(await pins().repoOf('a')).toBe('https://github.com/acme/api.git');
-    expect(await pins().repoOf('none')).toBeNull();
+  });
+
+  // Story review (Codex 01a18313): `agenfk init` sets no root, and "no root" read as
+  // "no repository" silently dropped the repository's overrides.
+  it('a project with no root and no pin cannot be told: it throws, saying how to set the root', async () => {
+    await expect(pins().repoOf('none')).rejects.toThrow(/root is not set.*agenfk update-project none --project-root/);
+    expect(read).not.toHaveBeenCalled();
   });
 });
 

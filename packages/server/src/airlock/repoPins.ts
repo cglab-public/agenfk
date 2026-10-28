@@ -7,8 +7,10 @@
  * read once per project root (readAirlockRemoteUrl) and pinned in a file under
  * ~/.agenfk/airlock, which no sandbox may write; the launcher's policy fetch
  * reads it before its session's agent starts. It is read again only when the
- * root is not the one pinned, or after `forget` - when a person sets the root
- * (agenfk init, the board), the way to pick up a changed origin. A lookup that
+ * root is not the one pinned, or after `forget` - when the root is set outside a
+ * sandbox (agenfk update-project --project-root, the launcher for a project with
+ * none), the way to pick up a changed origin. A project with no root and no pin
+ * throws: its repository is unknown, not absent. A lookup that
  * failed pins nothing and throws, and Airlock refuses rather than guess; so does
  * a pin file that exists but cannot be read. The pin outlives the project's
  * root, and the first read for a root is never replaced by a later one.
@@ -57,7 +59,9 @@ export function airlockRepoPins(deps: RepoPinDeps) {
     // The pin outlives the root: a project whose root is gone (or was never
     // set again) keeps the repository it was pinned to.
     if (pin && typeof pin.url === 'string' && (root === null || pin.root === root)) return pin.url || null;
-    if (!root) return null;
+    // No root and no pin: not "no repository" but unknown (`agenfk init` sets no root);
+    // Airlock refuses what needs it rather than drop the repository's overrides.
+    if (!root) throw new Error(`its root is not set; set it outside the sandbox: agenfk update-project ${projectId} --project-root <path> (agenfk airlock pi|opencode does it when it launches)`);
     const started = generation.get(projectId) ?? 0;
     const answer = await deps.read(root);
     if (!answer.cacheable) throw new Error('the lookup of its git origin timed out or failed');
@@ -71,7 +75,7 @@ export function airlockRepoPins(deps: RepoPinDeps) {
   };
 
   return {
-    /** The project's pinned origin URL, or null for none; throws when it cannot be read. */
+    /** The project's pinned origin URL, or null for none; throws when it cannot be read or the project has no root. */
     repoOf(projectId: string): Promise<string | null> {
       const running = inFlight.get(projectId);
       if (running) return running;

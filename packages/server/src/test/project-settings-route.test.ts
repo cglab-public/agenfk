@@ -295,3 +295,23 @@ describe('a command declared by the repository', () => {
     expect(hidden.body.advice).not.toContain('by-hand-marker');
   });
 });
+
+// Airlock story review (Codex 01a18313): a linked worktree is one card's tree, never the
+// project's root, and the repository Airlock pins is read from the root.
+it('PUT /projects/:id/project-root refuses a linked git worktree, and takes its main checkout', async () => {
+  const main = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-root-main-')));
+  const linked = path.join(fs.realpathSync(os.tmpdir()), `agenfk-root-linked-${process.pid}-${Date.now()}`);
+  try {
+    execSync('git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init', { cwd: main });
+    execSync(`git worktree add -q "${linked}"`, { cwd: main });
+    const created = await request(server).post('/projects').send({ name: 'worktree-root' });
+    const put = (root: string) => request(server).put(`/projects/${created.body.id}/project-root`).set('x-agenfk-internal', VERIFY_TOKEN).send({ projectRoot: root });
+    const refused = await put(linked);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toMatch(/linked git worktree/);
+    expect((await put(main)).status).toBe(200);
+  } finally {
+    fs.rmSync(linked, { recursive: true, force: true });
+    fs.rmSync(main, { recursive: true, force: true });
+  }
+});

@@ -498,6 +498,13 @@ function ProjectOverridesCard({ view }: { view: AirlockView }) {
             installation (project:&lt;id&gt;). Its hosts are added to the policy&apos;s lists, and a host the policy denies stays
             denied; each rule it sets replaces the org&apos;s, to loosen or tighten it. Saving makes a new policy revision.
           </p>
+          <p className="mt-1 text-small text-ink-tertiary">
+            A repository is matched without its case, port or <span className="font-mono">.git</span> ending, so ssh and https
+            remotes of one repository name the same one; two keys that come to the same repository are merged. Each
+            installation reads a project&apos;s repository from its checkout once and keeps it, so a session cannot change which
+            override it gets; after a project&apos;s origin changes, run{' '}
+            <span className="font-mono">agenfk update-project &lt;id&gt; --project-root &lt;path&gt;</span> there to read it again.
+          </p>
           <datalist id="airlock-known-repos">
             {(repos.data ?? []).map(r => <option key={r.remoteUrl} value={r.remoteUrl} />)}
           </datalist>

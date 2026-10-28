@@ -45,6 +45,14 @@ export interface LaunchDeps {
   fetchPolicy(projectId?: string | null): Promise<PolicyView>;
   /** The AgEnFK project the workspace belongs to, or null outside one. */
   projectId?(): string | null;
+  /** The directory holding that project's .agenfk, or null outside one. */
+  projectRoot?(): string | null;
+  /**
+   * Record `root` as the project's root when the server has none, before the
+   * sandbox starts: the server reads (and pins) its repository from it, which
+   * picks the project's Airlock overrides. `agenfk init` sets no root.
+   */
+  ensureProjectRoot?(projectId: string, root: string): Promise<void>;
   runtime: AirlockRuntime;
   env: NodeJS.ProcessEnv;
   home: string;
@@ -285,6 +293,15 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
   // sandbox's tool calls under the project the launch is signed for.
   const launchNonce = airlockLaunchNonce(d.projectId?.() ?? null);
   const launchProject = airlockMarkerProject(launchNonce);
+  const root = d.projectRoot?.() ?? null;
+  if (launchProject && root && d.ensureProjectRoot) {
+    try {
+      await d.ensureProjectRoot(launchProject, root);
+    } catch (e) {
+      // The server refuses what needs the repository it cannot tell; the rest goes on.
+      d.warn(`Airlock: could not record ${root} as project ${launchProject}'s root (${(e as Error)?.message ?? e}). If your organization has per-repository overrides, set it: agenfk update-project ${launchProject} --project-root ${root}`);
+    }
+  }
   let view: PolicyView;
   try {
     view = await d.fetchPolicy(launchProject ?? null);

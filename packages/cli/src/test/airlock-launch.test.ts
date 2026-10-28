@@ -385,3 +385,52 @@ describe('PO-1 review: the launch marker is signed for the workspace\'s project'
     expect(airlockMarkerProject(verifyAirlockSessionMarker('airlock-report-token-0123456789abcdef', marker)!)).toBe('p-api');
   });
 });
+
+describe('story review: the launcher records its project\'s root before its sandbox starts', () => {
+  it('names the workspace\'s project and root before it asks for the policy', async () => {
+    const order: string[] = [];
+    const ensureProjectRoot = vi.fn(async () => { order.push('root'); });
+    const d = deps({ projectId: () => 'p-api', projectRoot: () => '/work/api', ensureProjectRoot,
+      fetchPolicy: vi.fn(async () => { order.push('policy'); return { effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 }; }) } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(ensureProjectRoot).toHaveBeenCalledWith('p-api', '/work/api');
+    expect(order).toEqual(['root', 'policy']);
+  });
+
+  it('outside a project there is nothing to record', async () => {
+    const ensureProjectRoot = vi.fn(async () => undefined);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, deps({ projectId: () => null, projectRoot: () => null, ensureProjectRoot } as any));
+    expect(ensureProjectRoot).not.toHaveBeenCalled();
+  });
+
+  it('a root it could not record is said, and the launch goes on (the server refuses what it cannot tell)', async () => {
+    const d = deps({ projectId: () => 'p-api', projectRoot: () => '/work/api', ensureProjectRoot: vi.fn(async () => { throw new Error('boom'); }) } as any);
+    expect(await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).toBe(0);
+    expect(d.warnings.join('\n')).toMatch(/could not record.*boom/i);
+  });
+});
+
+describe('ensureProjectRootVia', () => {
+  it('sets the root only when the project has none, with the verify token', async () => {
+    const { ensureProjectRootVia } = await import('../commands/airlock');
+    const get = vi.fn(async () => ({ data: { id: 'p', projectRoot: null } }));
+    const put = vi.fn(async () => ({ data: {} }));
+    await ensureProjectRootVia('http://127.0.0.1:3000', () => 'tok', get as any, put as any)('p', '/work/api');
+    expect(get).toHaveBeenCalledWith('http://127.0.0.1:3000/projects/p', expect.anything());
+    expect(put).toHaveBeenCalledWith('http://127.0.0.1:3000/projects/p/project-root', { projectRoot: '/work/api' }, expect.objectContaining({ headers: { 'x-agenfk-internal': 'tok' } }));
+    put.mockClear();
+    get.mockResolvedValue({ data: { id: 'p', projectRoot: '/elsewhere' } } as never);
+    await ensureProjectRootVia('http://127.0.0.1:3000', () => 'tok', get as any, put as any)('p', '/work/api');
+    expect(put).not.toHaveBeenCalled();
+  });
+});
+
+describe('story review 2: the root the launcher records is the main checkout\'s', () => {
+  it('a project found in a linked worktree is recorded at the same place in the main checkout', async () => {
+    const { mainCheckoutRoot } = await import('../commands/airlock');
+    expect(mainCheckoutRoot('/wt/feat/packages/svc', { top: '/wt/feat', main: '/repo' })).toBe(path.join('/repo', 'packages', 'svc'));
+    expect(mainCheckoutRoot('/repo/packages/svc', null)).toBe('/repo/packages/svc');
+    // a project root above the worktree is not in it: left as it is
+    expect(mainCheckoutRoot('/wt', { top: '/wt/feat', main: '/repo' })).toBe('/wt');
+  });
+});

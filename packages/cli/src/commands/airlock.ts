@@ -6,7 +6,7 @@ import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { getApiUrl } from '@agenfk/telemetry';
-import { resolveProjectIdentity } from '@agenfk/core';
+import { resolveProjectIdentity, linkedWorktreeOf } from '@agenfk/core';
 import { resolveDashboardUrl } from '../uiUrl.js';
 import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
 import { runAirlockExec, scopedCommandEnv, EXEC_CANNOT_SANDBOX, type ExecDeps } from '../airlock/exec.js';
@@ -107,6 +107,39 @@ function runtimePackageDir(): string {
   }
 }
 
+/**
+ * The project root to record for a launch from `root`: in a linked worktree, the
+ * same place in the main checkout (a monorepo's subpath kept). A worktree is one
+ * card's tree, never the project's root, and the server refuses one.
+ */
+export function mainCheckoutRoot(root: string, wt: { top: string; main: string } | null): string {
+  if (!wt) return root;
+  const rel = path.relative(wt.top, root);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return root;
+  return path.join(wt.main, rel);
+}
+
+/**
+ * The launcher's ensureProjectRoot: the project's root, set with the verify token
+ * (as agenfk update-project does) only when the server has none. The launcher is
+ * outside the sandbox, which cannot read that token.
+ */
+export function ensureProjectRootVia(
+  apiUrl: string,
+  token: () => string | null,
+  get: (url: string, opts: object) => Promise<{ data: any }> = axios.get,
+  put: (url: string, body: unknown, opts: object) => Promise<unknown> = axios.put,
+): (projectId: string, root: string) => Promise<void> {
+  return async (projectId, root) => {
+    const id = encodeURIComponent(projectId);
+    const { data } = await get(`${apiUrl}/projects/${id}`, { timeout: 5000 });
+    if (typeof data?.projectRoot === 'string' && data.projectRoot) return;
+    const t = token();
+    if (!t) throw new Error('~/.agenfk/verify-token is missing');
+    await put(`${apiUrl}/projects/${id}/project-root`, { projectRoot: root }, { timeout: 5000, headers: { 'x-agenfk-internal': t } });
+  };
+}
+
 /** GET /airlock/policy, for a project when one is named (PO-1). */
 const policyUrl = (apiUrl: string, projectId?: string | null): string =>
   `${apiUrl}/airlock/policy${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`;
@@ -117,6 +150,17 @@ export function defaultLaunchDeps(): LaunchDeps {
   return {
     fetchPolicy: async (projectId) => (await axios.get(policyUrl(getApiUrl(), projectId), { timeout: 5000 })).data,
     projectId: () => { try { return resolveProjectIdentity(process.cwd())?.projectId ?? null; } catch { return null; } },
+    projectRoot: () => {
+      try {
+        const root = resolveProjectIdentity(process.cwd())?.root;
+        return root ? mainCheckoutRoot(root, linkedWorktreeOf(process.cwd())) : null;
+      } catch {
+        return null;
+      }
+    },
+    ensureProjectRoot: ensureProjectRootVia(getApiUrl(), () => {
+      try { return fs.readFileSync(path.join(home, '.agenfk', 'verify-token'), 'utf8').trim(); } catch { return null; }
+    }),
     runtime: new AsrtRuntime(),
     env: process.env,
     home,

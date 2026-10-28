@@ -5664,6 +5664,10 @@ app.put("/projects/:id/project-root", limitExpensive, asyncHandler(async (req: a
   if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
     return res.status(400).json({ error: `Not a directory: ${candidate}` });
   }
+  // One card's tree, never the project's: and Airlock pins the repository it reads from the root.
+  if (await checkoutKind(candidate) === 'linked') {
+    return res.status(400).json({ error: `Refusing ${candidate}: it is a linked git worktree, one card's tree and never the project's root. Use the main checkout.` });
+  }
   try {
     const updated = await storage.updateProject(req.params.id, { projectRoot: candidate } as any);
     if (!updated) return res.status(404).json({ error: "Project not found" });

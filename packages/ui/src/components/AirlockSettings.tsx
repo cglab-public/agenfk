@@ -270,6 +270,11 @@ function OverrideRows({
         For one repository (host/owner/repo, a git remote, or owner/repo on GitHub) or one project (project:&lt;id&gt;). Its hosts are added to the
         policy&apos;s lists, and a host the policy denies stays denied; each rule it sets replaces the policy&apos;s, to loosen or tighten it.
       </p>
+      <p className={HELP}>
+        A repository is matched without its case, port or .git ending, so ssh and https remotes of one repository name the same one. A
+        project&apos;s repository is read from its checkout once and kept, so a session cannot change which override it gets; after a
+        project&apos;s origin changes, run <code className="font-mono">agenfk update-project &lt;id&gt; --project-root &lt;path&gt;</code> to read it again.
+      </p>
       {overrides.map((o, i) => {
         const n = i + 1;
         return (
