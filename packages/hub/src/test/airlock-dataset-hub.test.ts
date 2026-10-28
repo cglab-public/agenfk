@@ -9,8 +9,10 @@ import { ORG_ID_CHILD_TABLES } from '../routes/orgRename';
 import { EventEmitter } from 'events';
 import {
   AIRLOCK_DATASET_LIMITS,
+  capAirlockDatasetLabels,
   AIRLOCK_DATASET_QUESTIONS,
   pruneAirlockDataset,
+  pruneAllAirlockDatasets,
   recordAirlockDataset,
   setAirlockDatasetEnabled,
   writeLines,
@@ -356,7 +358,7 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub Airlock dataset (%s)', (back
       expect((await db.all<{ row_id: string }>("SELECT row_id FROM airlock_dataset WHERE org_id = 'org-a'")).map(r => r.row_id)).toEqual(['first']);
     });
 
-    it('a row the database throws on costs only itself, and the table is still pruned', async () => {
+    it('a row the database throws on does not stop the rows after it, the table is still pruned, and the call throws (story review F3)', async () => {
       await setSwitch(true);
       const day = 86_400_000;
       await sendRow(row('stale'), new Date(Date.now() - (AIRLOCK_DATASET_LIMITS.maxAgeDays - 1) * day).toISOString());
@@ -370,11 +372,10 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub Airlock dataset (%s)', (back
         },
       });
       const at = new Date().toISOString();
-      const kept = await recordAirlockDataset(throwing, 'org-a', [
+      await expect(recordAirlockDataset(throwing, 'org-a', [
         { e: event('org-a', 'inst-alice', 'airlock.dataset', row('boom'), at), userKey: 'u' },
         { e: event('org-a', 'inst-alice', 'airlock.dataset', row('after'), at), userKey: 'u' },
-      ], Date.now() + 2 * day);
-      expect(kept).toBe(1);
+      ], Date.now() + 2 * day)).rejects.toThrow('the database refused it');
       // 'stale' is now past the age: pruned, though a row before it threw
       expect((await db.all<{ row_id: string }>("SELECT row_id FROM airlock_dataset WHERE org_id = 'org-a' ORDER BY row_id")).map(r => r.row_id)).toEqual(['after']);
     });
@@ -383,6 +384,130 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub Airlock dataset (%s)', (back
       await setSwitch(true);
       await post(keyAlice, [event('org-a', 'inst-alice', 'airlock.dataset', row('bad\u0000id')), event('org-a', 'inst-alice', 'airlock.dataset', row('ok'))]);
       expect((await db.all<{ row_id: string }>("SELECT row_id FROM airlock_dataset WHERE org_id = 'org-a'")).map(r => r.row_id)).toEqual(['ok']);
+    });
+  });
+
+  describe('story review (Codex gpt-6.1-sol 01a18385)', () => {
+    it('F3: a batch whose dataset rows the database could not keep is answered 503, and its resend keeps them once', async () => {
+      await setSwitch(true);
+      const batch = [
+        event('org-a', 'inst-alice', 'airlock.dataset', row('r-retry')),
+        event('org-a', 'inst-alice', 'airlock.dataset-label', { rowId: 'r-retry', label: { kind: 'approval', decision: 'grant' } }),
+        event('org-a', 'inst-alice', 'item.created', { itemId: 'i-1' }),
+      ];
+      await db.run('ALTER TABLE airlock_dataset RENAME TO airlock_dataset_away');
+      const refused = await post(keyAlice, batch);
+      await db.run('ALTER TABLE airlock_dataset_away RENAME TO airlock_dataset');
+      expect(refused.status, JSON.stringify(refused.body)).toBe(503);
+      // no ingest acknowledgement, so the installation keeps the batch
+      expect(refused.body.ingested).toBeUndefined();
+      const again = await post(keyAlice, batch);
+      expect(again.status).toBe(200);
+      expect((await view()).body).toMatchObject({ rows: 1, labels: 1 });
+      expect(Number((await db.get<{ n: unknown }>("SELECT COUNT(*) AS n FROM events WHERE org_id = 'org-a' AND type = 'item.created'"))?.n)).toBe(1);
+    });
+
+    it('F5: labels that raced past the cap are pruned back to it, the earliest kept', async () => {
+      await setSwitch(true);
+      await sendRow(row('r-1'));
+      const cap = AIRLOCK_DATASET_LIMITS.maxLabelsPerRow;
+      const t0 = Date.now() - 60_000;
+      // as concurrent batches leave it: each saw cap - 1 and added one
+      for (let i = 0; i < cap + 3; i++) {
+        await db.run(
+          `INSERT INTO airlock_dataset (org_id, event_id, kind, row_id, installation_id, user_key, occurred_at, received_at, imported, payload_json)
+           VALUES ('org-a', ?, 'label', 'r-1', 'inst-alice', 'u', ?, ?, 0, ?)`,
+          [`lab-${String(i).padStart(2, '0')}`, new Date(t0 + i * 1000).toISOString(), new Date().toISOString(), JSON.stringify({ rowId: 'r-1', label: { n: i } })],
+        );
+      }
+      await capAirlockDatasetLabels(db, 'org-a');
+      const left = await db.all<{ event_id: string }>("SELECT event_id FROM airlock_dataset WHERE org_id = 'org-a' AND kind = 'label' ORDER BY event_id");
+      expect(left.map(l => l.event_id)).toEqual(Array.from({ length: cap }, (_, i) => `lab-${String(i).padStart(2, '0')}`));
+    });
+
+    /** A fresh row, then the switch off and a row past the age left behind (nothing sent since). */
+    const agedWhileOff = async () => {
+      await setSwitch(true);
+      await sendRow(row('fresh'));
+      await setSwitch(false);
+      const old = new Date(Date.now() - (AIRLOCK_DATASET_LIMITS.maxAgeDays + 1) * 86_400_000).toISOString();
+      await db.run(
+        `INSERT INTO airlock_dataset (org_id, event_id, kind, row_id, installation_id, user_key, occurred_at, received_at, imported, payload_json)
+         VALUES ('org-a', 'aged', 'row', 'aged', 'inst-alice', 'u', ?, ?, 0, ?)`,
+        [old, old, JSON.stringify(row('aged'))],
+      );
+    };
+
+    it('F6: a row past the age is gone from the count with the switch off and nothing sent', async () => {
+      await agedWhileOff();
+      expect((await view()).body.rows).toBe(1);
+    });
+
+    it('F6: a row past the age is gone from the export with the switch off and nothing sent', async () => {
+      await agedWhileOff();
+      const { lines } = await exportLines();
+      expect(lines.map((l: any) => l.id)).toEqual(['fresh']);
+    });
+
+    it('F6: the timer\'s sweep prunes every org, whether or not it is sending', async () => {
+      const old = new Date(Date.now() - (AIRLOCK_DATASET_LIMITS.maxAgeDays + 1) * 86_400_000).toISOString();
+      for (const org of ['org-a', 'org-b']) {
+        await db.run(
+          `INSERT INTO airlock_dataset (org_id, event_id, kind, row_id, installation_id, user_key, occurred_at, received_at, imported, payload_json)
+           VALUES (?, 'aged', 'row', 'aged', 'i', 'u', ?, ?, 0, '{}')`,
+          [org, old, old],
+        );
+      }
+      // and labels raced past the cap, back to it
+      await setSwitch(true);
+      await sendRow(row('r-1'));
+      for (let i = 0; i < AIRLOCK_DATASET_LIMITS.maxLabelsPerRow + 2; i++) {
+        await db.run(
+          `INSERT INTO airlock_dataset (org_id, event_id, kind, row_id, installation_id, user_key, occurred_at, received_at, imported, payload_json)
+           VALUES ('org-a', ?, 'label', 'r-1', 'i', 'u', ?, ?, 0, '{}')`,
+          [`lab-${i}`, new Date().toISOString(), new Date().toISOString()],
+        );
+      }
+      await pruneAllAirlockDatasets(db);
+      expect(await db.all("SELECT org_id FROM airlock_dataset WHERE row_id = 'aged'")).toEqual([]);
+      expect(Number((await db.get<{ n: unknown }>("SELECT COUNT(*) AS n FROM airlock_dataset WHERE kind = 'label'"))?.n)).toBe(AIRLOCK_DATASET_LIMITS.maxLabelsPerRow);
+    });
+  });
+
+  describe('story review, second pass (Codex gpt-6.1-sol 01a18385)', () => {
+    it('a resend after the row was kept but its hosts were not repairs the host index', async () => {
+      await setSwitch(true);
+      const e = { e: event('org-a', 'inst-alice', 'airlock.dataset', row('r-h', { hosts: ['api.example.com'] })), userKey: 'u' };
+      const failingHosts = new Proxy(db, {
+        get(target: any, prop) {
+          if (prop !== 'run') return typeof target[prop] === 'function' ? target[prop].bind(target) : target[prop];
+          return async (sql: string, params: unknown[]) => {
+            if (/INSERT INTO airlock_dataset_hosts/.test(sql)) throw new Error('hosts write failed');
+            return target.run(sql, params);
+          };
+        },
+      });
+      await expect(recordAirlockDataset(failingHosts, 'org-a', [e])).rejects.toThrow('hosts write failed');
+      expect(await db.all("SELECT row_id FROM airlock_dataset_hosts WHERE org_id = 'org-a'")).toEqual([]);
+      await recordAirlockDataset(db, 'org-a', [e]);
+      expect((await db.all<{ row_id: string }>("SELECT row_id FROM airlock_dataset_hosts WHERE org_id = 'org-a'")).map(h => h.row_id)).toEqual(['r-h']);
+    });
+
+    it('a row id kept from another event does not take this event\'s hosts', async () => {
+      await setSwitch(true);
+      await recordAirlockDataset(db, 'org-a', [{ e: event('org-a', 'inst-alice', 'airlock.dataset', row('r-x', { hosts: ['a.example.com'] })), userKey: 'u' }]);
+      await recordAirlockDataset(db, 'org-a', [{ e: event('org-a', 'inst-alice', 'airlock.dataset', row('r-x', { hosts: ['b.example.com'] })), userKey: 'u' }]);
+      expect((await db.all<{ host: string }>("SELECT host FROM airlock_dataset_hosts WHERE org_id = 'org-a'")).map(h => h.host)).toEqual(['a.example.com']);
+    });
+
+    it('labels sent at once, racing, stop at the cap', async () => {
+      await setSwitch(true);
+      await sendRow(row('r-race'));
+      const cap = AIRLOCK_DATASET_LIMITS.maxLabelsPerRow;
+      await Promise.all(Array.from({ length: cap + 10 }, (_, i) => recordAirlockDataset(db, 'org-a', [
+        { e: event('org-a', 'inst-alice', 'airlock.dataset-label', { rowId: 'r-race', label: { kind: 'approval', n: i } }), userKey: 'u' },
+      ])));
+      expect(Number((await db.get<{ n: unknown }>("SELECT COUNT(*) AS n FROM airlock_dataset WHERE org_id = 'org-a' AND kind = 'label'"))?.n)).toBe(cap);
     });
   });
 

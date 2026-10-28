@@ -636,7 +636,8 @@ function DatasetCard() {
             While on, every joined installation sends each tool call Airlock judges, in full (commands, paths, the content a
             write sends, URLs, the card it was for), with secrets removed before it leaves the machine, and the approvals
             people give. It is kept here to train Airlock&apos;s scorer, and only an admin can download it. Off by default;
-            turning it off stops new rows at once. Past sessions are only sent by{' '}
+            once it is off the hub keeps no new rows at once, and installations stop sending them at their next policy
+            sync (within minutes). Past sessions are only sent by{' '}
             <span className="font-mono">agenfk airlock dataset import</span>. Kept: the newest {count(d.limits.maxRows)} rows,
             none older than {d.limits.maxAgeDays} days.
           </p>

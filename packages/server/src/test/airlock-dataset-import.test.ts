@@ -124,6 +124,27 @@ describe('POST /airlock/dataset/import', () => {
     expect(b.recent.map((r: any) => r.capabilities[0].value)).toEqual(['git status']);
   });
 
+  // story review F4 (Codex gpt-6.1-sol 01a18385): joined by session id AND time
+  it('a session that moved from one card to another puts each call on the card it was under way for', async () => {
+    await storage.createItem({
+      id: 'card-8', projectId: 'p', type: 'TASK', title: 'Ship the writer', description: 'Write the CSV', status: 'IN_PROGRESS',
+      createdAt: new Date(), updatedAt: new Date(),
+    } as any);
+    await storage.createAgentRun({
+      id: 'run-2', itemId: 'card-8', projectId: 'p', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen',
+      sessionId: 'pi-sess-1', status: 'running', startedAt: '2026-10-20T12:00:00.000Z',
+    } as any);
+    await importCalls([
+      call('c1', 'bash', { command: 'ls' }, '2026-10-20T10:15:00.000Z'),
+      call('c2', 'bash', { command: 'pwd' }, '2026-10-20T13:00:00.000Z'),
+      // after run-1 ended, before run-2 started: on no card
+      call('c3', 'bash', { command: 'id' }, '2026-10-20T11:30:00.000Z'),
+      // before any run
+      call('c4', 'bash', { command: 'uname' }, '2026-10-20T09:00:00.000Z'),
+    ]);
+    expect(rows().map(r => r.card?.itemId ?? null)).toEqual(['card-7', 'card-8', null, null]);
+  });
+
   it('a session no agent run names has no card', async () => {
     await importCalls([call('c1', 'bash', { command: 'ls' })], { sessionId: 'unknown-session' });
     expect(rows()[0].card).toBeNull();

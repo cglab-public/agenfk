@@ -1261,6 +1261,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     const params: any[] = [];
     if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
     if (query.projectId !== undefined) { where.push('project_id = ?'); params.push(query.projectId); }
+    if (query.sessionId !== undefined) { where.push('session_id = ?'); params.push(query.sessionId); }
     if (query.status !== undefined) { where.push('status = ?'); params.push(query.status); }
     let sql = 'SELECT * FROM agent_runs';
     if (where.length) sql += ' WHERE ' + where.join(' AND ');

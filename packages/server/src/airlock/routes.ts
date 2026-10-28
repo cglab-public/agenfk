@@ -62,6 +62,7 @@ import {
   modelFromPi,
   normalizeAirlockPolicy,
   writePrivateFileSync,
+  type AgentRun,
   type AirlockApprovalCapability,
   type AirlockApprovalRecord,
   type AirlockClient,
@@ -969,10 +970,30 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
         return res.status(413).json({ error: `at most ${AIRLOCK_DATASET_IMPORT_MAX_CALLS} calls a request` });
       }
       const view = await resolveAirlockPolicy(deps.storage(), deps.hubJoined());
-      const run = await deps.storage().getAgentRunBySession(body.sessionId).catch(() => null);
-      const projectId = run?.projectId ?? null;
-      const effective = projectId ? (await projectPolicy(view.effective, projectId)).effective : view.effective;
-      const card = await cardOf(run?.itemId);
+      // Each call joins the run of its session that was under way at its time: the latest
+      // started at or before it, unless that one had already ended. A session that moved
+      // from one card to another does not put its earlier calls on the later card (story
+      // review F4); a call before any run, or after the last ended, is on no card.
+      const runs = (await deps.storage().listAgentRuns({ sessionId: body.sessionId, limit: 1000 }).catch(() => [] as AgentRun[]))
+        .filter(r => Number.isFinite(Date.parse(r.startedAt)))
+        .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+      const runAt = (at: number): AgentRun | null => {
+        const started = runs.filter(r => Date.parse(r.startedAt) <= at);
+        const r = started[started.length - 1];
+        return r && !(r.endedAt && Date.parse(r.endedAt) < at) ? r : null;
+      };
+      const policies = new Map<string | null, Promise<AirlockPolicy>>();
+      const policyFor = (projectId: string | null): Promise<AirlockPolicy> => {
+        if (!policies.has(projectId)) {
+          policies.set(projectId, projectId ? projectPolicy(view.effective, projectId).then(p => p.effective) : Promise.resolve(view.effective));
+        }
+        return policies.get(projectId)!;
+      };
+      const cards = new Map<string | undefined, ReturnType<typeof cardOf>>();
+      const cardFor = (itemId: string | undefined): ReturnType<typeof cardOf> => {
+        if (!cards.has(itemId)) cards.set(itemId, cardOf(itemId));
+        return cards.get(itemId)!;
+      };
       const model = sessionModelOf(body.model ?? null);
       let sent = 0;
       let skipped = 0;
@@ -983,6 +1004,10 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
         if (!ok) { skipped++; continue; }
         const capabilities = capabilitiesOf(c.args);
         if (capabilities.length > MAX_AIRLOCK_CAPABILITIES) { skipped++; continue; }
+        const run = runAt(Date.parse(c.at));
+        const projectId = run?.projectId ?? null;
+        const effective = await policyFor(projectId);
+        const card = await cardFor(run?.itemId);
         // What Airlock would say of it now: the current policy, no grants.
         const verdict = evaluateAirlock(effective, { client: body.client, model: model ?? { provider: null, id: null }, toolName: c.tool, capabilities, card: { itemId: run?.itemId, projectId: projectId ?? undefined, grants: [] } });
         const rowId = dataset.imported({

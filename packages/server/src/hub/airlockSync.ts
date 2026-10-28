@@ -110,8 +110,8 @@ export function currentAirlockGeneration(): number {
 
 /**
  * The hub's dataset switch (DS-1), as its last adopted answer said: off until a hub
- * says on, kept over a 304 or a failed sync, and off again whenever the hub
- * configuration changes. An answer without it (a hub from before the dataset) is off.
+ * says on, kept over a 304, and off again after a failed or refused sync or whenever
+ * the hub configuration changes. An answer without it (a hub from before the dataset) is off.
  */
 let datasetEnabled = false;
 /** Syncs started, and the latest whose answer set the switch: an answer from an earlier-started sync never overrides a later one's. */
@@ -121,6 +121,14 @@ let datasetDecidedBy = 0;
 let datasetEtag: string | null = null;
 export function airlockDatasetEnabled(): boolean {
   return datasetEnabled;
+}
+/**
+ * Off because a sync said so (an answer, a failed sync, a new hub configuration) -
+ * not merely because none has answered yet since this process started: rows queued
+ * while it was on are dropped from the outbox only then (story review F1).
+ */
+export function airlockDatasetDecidedOff(): boolean {
+  return !datasetEnabled && datasetDecidedBy > 0;
 }
 const setDataset = (seq: number, on: boolean, etag: string | null): void => {
   if (seq < datasetDecidedBy) return;
@@ -178,11 +186,26 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
   const { storage, hubConfig, fetchImpl } = args;
   const startedIn = args.generation ?? generation;
   const authority = airlockAuthorityOf(hubConfig);
-  const fail = (error: string): AirlockSyncOutcome => ({ outcome: 'error', error });
+  /** This sync's place in the order syncs started (0 until it asks the hub). */
+  let seq = 0;
+  /**
+   * A sync that failed or was refused turns the dataset switch off (story review F1):
+   * capture stays on only while the hub keeps saying so, never on an answer that
+   * could not be read - the switch an admin turned off reaches no further than that.
+   */
+  const datasetOffUnlessSuperseded = (): void => {
+    if (seq && current()) setDataset(seq, false, null);
+  };
+  const fail = (error: string): AirlockSyncOutcome => {
+    datasetOffUnlessSuperseded();
+    return { outcome: 'error', error };
+  };
   /** The state the hub offered and this installation refused: its policy revision and its IOC revision. */
   let offeredIoc: number | null = null;
-  const refuse = (error: string, revision: number | null): AirlockSyncOutcome =>
-    ({ outcome: 'error', error, refused: { revision, iocRevision: offeredIoc } });
+  const refuse = (error: string, revision: number | null): AirlockSyncOutcome => {
+    datasetOffUnlessSuperseded();
+    return { outcome: 'error', error, refused: { revision, iocRevision: offeredIoc } };
+  };
   /** Still the configuration this sync belongs to, and still the hub we are joined to. */
   const current = (): boolean => {
     if (generation !== startedIn) return false;
@@ -192,7 +215,7 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
   };
   // A caller that outlived its configuration does not even ask (its credential is the old one).
   if (!current()) return { outcome: 'superseded' };
-  const seq = ++syncsStarted;
+  seq = ++syncsStarted;
 
   // Revalidate only what THIS authority gave us: never another org's ETag.
   const stored = await storage.getAirlockPolicy('hub');
@@ -263,7 +286,13 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
     if (stored && stored.updatedBy === authority) {
       const older = revision < stored.revision
         || (revision === stored.revision && iocRevision < iocRevisionOf(stored));
-      if (older) return { outcome: 'stale', revision, iocRevision };
+      if (older) {
+        // The policy is not taken back to an older revision, but the dataset switch is
+        // the hub's word now, whatever revision it came with (story review, second
+        // pass): a hub restored from a backup that says off is off.
+        setDataset(seq, datasetOf(body), null);
+        return { outcome: 'stale', revision, iocRevision };
+      }
     }
     await storage.putAirlockPolicy({
       scope: 'hub',

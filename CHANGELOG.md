@@ -24,6 +24,15 @@ All notable changes to AgEnFK are documented here.
   standalone board's Settings → Airlock; a hub-joined board shows the hub's read-only.
 - A sandboxed session is held to the project it was launched for: the server refuses its requests that reach
   another project's cards or projects, or change a project's root or delete a project.
+- **Airlock dataset** (#294), for training the semantic scorer. A hub admin switches it on in Hub Admin →
+  Airlock → Dataset; it is **off by default**, and a standalone installation captures nothing. While it is on,
+  each judged tool call goes to the hub as a full row: the call (commands, paths, written content, URLs), the
+  verdict, the card's title, description and step, and the session's last few calls. Secrets are removed on
+  the installation before the row leaves it. A person's approve or deny, and a learning accept, is kept as a
+  label on its row. Past pi and OpenCode sessions go up only when someone runs
+  `agenfk airlock dataset import`, never because the switch was turned on. The hub keeps at most 100,000 rows
+  per org for 90 days (64 KB a row, 20 labels of 4 KB each), and only an admin can download it, as JSONL, from
+  the hub. There is no local export.
 
 *Known limits:*
 
@@ -37,6 +46,8 @@ All notable changes to AgEnFK are documented here.
   policy is refused (`AIRLOCK_PROJECT_UNKNOWN`) rather than applied without it.
 - A session launched by an older `agenfk` is refused (`AIRLOCK_LAUNCH_OUTDATED`): exit it and launch it again.
 - On macOS a sandboxed command can reach local services (macOS has no network namespace).
+- An installation learns that the dataset switch went off at its next policy sync (every few minutes). Until
+  then it may still send rows, which the hub drops. Rows it had queued are not sent after that sync.
 
 ## [2.1.0-beta.4] — 2026-10-28
 

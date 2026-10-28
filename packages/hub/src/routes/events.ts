@@ -598,11 +598,16 @@ export function eventsRouter(ctx: HubServerContext): Router {
       }
     }
 
-    // The Airlock dataset (DS-2), the same way: a failure is logged and costs only those rows.
+    // The Airlock dataset (DS-2), after the transaction too, but a failure is not
+    // swallowed: those rows exist nowhere else, so the batch is answered 503 (below,
+    // once every other side effect has run) and the installation sends it again.
+    // Events already stored are ignored on the resend; dataset rows are too.
+    let datasetFailed = false;
     try {
       await recordAirlockDataset(ctx.db, orgId, airlockDataset);
     } catch (err) {
-      console.warn('[AIRLOCK] could not keep %d dataset row(s): %s', airlockDataset.length, (err as Error).message);
+      datasetFailed = true;
+      console.warn('[AIRLOCK] could not keep %d dataset row(s), asking for the batch again: %s', airlockDataset.length, (err as Error).message);
     }
 
     // Roll up the past days this batch stored (#223). The timer only rolls up
@@ -642,6 +647,10 @@ export function eventsRouter(ctx: HubServerContext): Router {
       await selfBindUnboundKey(ctx, orgId, req.hubApiKey!.tokenHash, seenInstallations);
     }
 
+    if (datasetFailed) {
+      res.status(503).json({ error: 'The hub could not keep this batch\'s Airlock dataset rows; send it again.' });
+      return;
+    }
     res.json({ ingested, skipped, rejected, hiddenDropped, installationId: installationFromHeader, rejections });
   }));
 

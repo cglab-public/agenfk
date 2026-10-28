@@ -13,7 +13,8 @@ import { reportTimeOf } from './airlock.js';
  * through /v1/events; routes/events.ts hands them here instead of storing them as
  * events or forwarding them to a parent hub. While the switch is off they are
  * dropped. The table is bounded per org: rows past the age or the cap are pruned
- * at ingest, and a row larger than the cap is not kept.
+ * at ingest, on an hourly timer and before a count or export, and a row larger
+ * than the cap is not kept.
  *
  * The export is JSONL of Clef records (guarddist/decision_layout.py): the row as
  * `state`, the scorer's four questions, and the labels BESIDE the state, never in
@@ -93,6 +94,9 @@ export async function airlockDatasetEnabled(db: DB, orgId: string): Promise<bool
 }
 
 export async function getAirlockDatasetView(db: DB, orgId: string): Promise<AirlockDatasetView> {
+  // What it counts is what the bounds allow, whether or not anything was sent lately.
+  await pruneAirlockDataset(db, orgId);
+  await capAirlockDatasetLabels(db, orgId);
   const settings = await db.get<{ enabled: unknown; updated_at: string | null; updated_by_email: string | null }>(
     'SELECT enabled, updated_at, updated_by_email FROM airlock_dataset_settings WHERE org_id = ?', [orgId],
   );
@@ -142,8 +146,10 @@ interface DatasetEvent {
  * off - checked again as each is written. A row or label is not kept when its id
  * is missing or not storable, it is larger than the cap, it is dated past the
  * clock-skew allowance, or (a label) its row has its cap of labels. A row the
- * database refuses costs only itself; the table is pruned either way (one past
- * the age goes there). Returns how many were written.
+ * database refuses does not stop the others, but the call then throws, so the
+ * batch is not acknowledged and the installation sends it again (rows and labels
+ * already written are not written twice). The table is pruned either way (one
+ * past the age goes there). Returns how many were written.
  */
 export async function recordAirlockDataset(
   db: DB, orgId: string, events: Array<{ e: DatasetEvent; userKey: string }>, now: number = Date.now(),
@@ -151,18 +157,19 @@ export async function recordAirlockDataset(
   if (events.length === 0 || !(await airlockDatasetEnabled(db, orgId))) return 0;
   const received = new Date(now).toISOString();
   let kept = 0;
+  let failed: Error | null = null;
   try {
     for (const { e, userKey } of events) {
       try {
         kept += await keepOne(db, orgId, e, userKey, received, now);
       } catch (err) {
-        // One row the database refused costs only that row.
-        console.warn('[AIRLOCK] could not keep a dataset row: %s', (err as Error).message);
+        failed = err as Error;
       }
     }
   } finally {
     await pruneAirlockDataset(db, orgId, { now });
   }
+  if (failed) throw failed;
   return kept;
 }
 
@@ -183,19 +190,60 @@ async function keepOne(db: DB, orgId: string, e: DatasetEvent, userKey: string, 
   const at = reportTimeOf(e.occurredAt, new Date(now));
   if (!at) return 0;
   // A literal the hub computes, 0 or 1 (pg-mem cannot cast a parameter in INSERT ... SELECT).
-  const imported = p.imported === true ? 1 : 0;
-  // A label only while its row has fewer than the cap. Checked before the insert:
-  // a batch's labels are written one after another, so the cap holds within it,
-  // and batches racing can each add at most one past it.
+  const imported: 0 | 1 = p.imported === true ? 1 : 0;
+  // A label only while its row has fewer than the cap: the count and the insert run
+  // under one lock per row, so batches racing cannot each add one past it (story
+  // review, second pass). The lock is this hub process's; capAirlockDatasetLabels
+  // repairs what several hub processes writing one org at once could still leave.
   if (kind === 'label') {
-    const n = await db.get<{ n: unknown }>(
-      "SELECT COUNT(*) AS n FROM airlock_dataset WHERE org_id = ? AND kind = 'label' AND row_id = ?", [orgId, rowId],
-    );
-    if (Number(n?.n ?? 0) >= AIRLOCK_DATASET_LIMITS.maxLabelsPerRow) return 0;
+    return underRowLock(`${orgId}\u0000${rowId}`, async () => {
+      const n = await db.get<{ n: unknown }>(
+        "SELECT COUNT(*) AS n FROM airlock_dataset WHERE org_id = ? AND kind = 'label' AND row_id = ?", [orgId, rowId],
+      );
+      if (Number(n?.n ?? 0) >= AIRLOCK_DATASET_LIMITS.maxLabelsPerRow) return 0;
+      return (await insertOne(db, orgId, e, kind, rowId, userKey, at, received, imported, json)).changes;
+    });
   }
+  const result = await insertOne(db, orgId, e, kind, rowId, userKey, at, received, imported, json);
+  // A row's hosts, for the exact host index (learning labels): when it was kept now,
+  // and when this same event was kept before - a resend after a write that failed
+  // between the row and its hosts repairs them (story review, second pass). A row
+  // id kept from ANOTHER event is not this event's to index.
+  const ours = result.changes > 0 || (await db.get<{ event_id: string }>(
+    "SELECT event_id FROM airlock_dataset WHERE org_id = ? AND kind = 'row' AND row_id = ?", [orgId, rowId],
+  ))?.event_id === e.eventId;
+  if (ours && Array.isArray(p.hosts)) {
+    const hosts = [...new Set(p.hosts.filter((h): h is string => typeof h === 'string' && PLAIN_HOST.test(h)))].slice(0, MAX_ROW_HOSTS);
+    for (const host of hosts) {
+      await db.run(
+        'INSERT INTO airlock_dataset_hosts (org_id, host, row_id, occurred_at) VALUES (?, ?, ?, ?) ON CONFLICT (org_id, host, row_id) DO NOTHING',
+        [orgId, host, rowId, at],
+      );
+    }
+  }
+  return result.changes;
+}
+
+/** Work on one row's labels, one at a time within this process. */
+const rowLocks = new Map<string, Promise<unknown>>();
+async function underRowLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const run = (rowLocks.get(key) ?? Promise.resolve()).catch(() => undefined).then(fn);
+  const tail = run.catch(() => undefined);
+  rowLocks.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (rowLocks.get(key) === tail) rowLocks.delete(key);
+  }
+}
+
+async function insertOne(
+  db: DB, orgId: string, e: DatasetEvent, kind: 'row' | 'label', rowId: string, userKey: string,
+  at: string, received: string, imported: 0 | 1, json: string,
+): Promise<{ changes: number }> {
   // Kept only if the switch is still on as it is written - one statement, so a batch
   // already running stops the moment an admin turns it off.
-  const result = await db.run(
+  return db.run(
     `INSERT INTO airlock_dataset (org_id, event_id, kind, row_id, installation_id, user_key, occurred_at, received_at, imported, payload_json)
      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ${imported}, ?
      WHERE EXISTS (SELECT 1 FROM airlock_dataset_settings WHERE org_id = ? AND enabled = 1)${kind === 'row'
@@ -208,17 +256,6 @@ async function keepOne(db: DB, orgId: string, e: DatasetEvent, userKey: string, 
      ${kind === 'row' ? 'ON CONFLICT DO NOTHING' : 'ON CONFLICT (org_id, event_id) DO NOTHING'}`,
     [orgId, e.eventId, kind, rowId, e.installationId, userKey, at, received, json, orgId, ...(kind === 'row' ? [orgId, rowId] : [])],
   );
-  // A kept row's hosts, for the exact host index (learning labels).
-  if (kind === 'row' && result.changes > 0 && Array.isArray(p.hosts)) {
-    const hosts = [...new Set(p.hosts.filter((h): h is string => typeof h === 'string' && PLAIN_HOST.test(h)))].slice(0, MAX_ROW_HOSTS);
-    for (const host of hosts) {
-      await db.run(
-        'INSERT INTO airlock_dataset_hosts (org_id, host, row_id, occurred_at) VALUES (?, ?, ?, ?) ON CONFLICT (org_id, host, row_id) DO NOTHING',
-        [orgId, host, rowId, at],
-      );
-    }
-  }
-  return result.changes;
 }
 
 /** Rows a learning accept labels per host: the newest that reached it. */
@@ -286,6 +323,49 @@ export async function pruneAirlockDataset(
   );
 }
 
+/**
+ * Labels back down to their cap, the earliest kept: batches racing past the cap's
+ * check at ingest each add one. Not run at ingest (it reads every label of the org):
+ * on the timer and before a count or export.
+ */
+export async function capAirlockDatasetLabels(db: DB, orgId: string): Promise<void> {
+  // (no HAVING: pg-mem, which the suite runs Postgres on, cannot plan one)
+  const perRow = await db.all<{ row_id: string; n: unknown }>(
+    "SELECT row_id, COUNT(*) AS n FROM airlock_dataset WHERE org_id = ? AND kind = 'label' GROUP BY row_id",
+    [orgId],
+  );
+  for (const { row_id } of perRow.filter(r => Number(r.n) > AIRLOCK_DATASET_LIMITS.maxLabelsPerRow)) {
+    const labels = await db.all<{ event_id: string }>(
+      `SELECT event_id FROM airlock_dataset WHERE org_id = ? AND kind = 'label' AND row_id = ?
+        ORDER BY occurred_at, event_id`,
+      [orgId, row_id],
+    );
+    for (const { event_id } of labels.slice(AIRLOCK_DATASET_LIMITS.maxLabelsPerRow)) {
+      await db.run('DELETE FROM airlock_dataset WHERE org_id = ? AND event_id = ?', [orgId, event_id]);
+    }
+  }
+}
+
+/**
+ * Every org's table pruned, on a timer of its own: the age bound holds while
+ * nothing is sent - the switch off, or no installation reporting.
+ */
+export async function pruneAllAirlockDatasets(db: DB, now: number = Date.now()): Promise<void> {
+  const orgs = await db.all<{ org_id: string }>('SELECT DISTINCT org_id FROM airlock_dataset');
+  for (const { org_id } of orgs) {
+    await pruneAirlockDataset(db, org_id, { now });
+    await capAirlockDatasetLabels(db, org_id);
+  }
+}
+
+export function startAirlockDatasetPruneTimer(db: DB, intervalMs: number = 60 * 60_000): NodeJS.Timeout {
+  const t = setInterval(() => {
+    pruneAllAirlockDatasets(db).catch((e) => console.error('[AIRLOCK] dataset prune:', (e as Error).message));
+  }, intervalMs);
+  t.unref?.();
+  return t;
+}
+
 export interface AirlockClefRecord {
   id: string;
   state: unknown;
@@ -298,6 +378,8 @@ const parse = (text: string): unknown => { try { return JSON.parse(text); } catc
 
 /** The org's rows as Clef records, oldest first, a page at a time (the export streams them). */
 export async function* exportAirlockDataset(db: DB, orgId: string): AsyncGenerator<AirlockClefRecord> {
+  await pruneAirlockDataset(db, orgId);
+  await capAirlockDatasetLabels(db, orgId);
   let after: { occurred_at: string; event_id: string } | null = null;
   for (;;) {
     const page: Array<{ event_id: string; row_id: string; installation_id: string; user_key: string; occurred_at: string; imported: unknown; payload_json: string }> =

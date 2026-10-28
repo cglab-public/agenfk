@@ -6,9 +6,37 @@ import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { HubConfig, FlusherStatus } from './types.js';
 import { PENDING_ORG } from './hubClient.js';
 import { readDeadletterIndicator } from './deadletter.js';
+import { airlockDatasetDecidedOff } from './airlockSync.js';
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 500;
+/**
+ * A batch's payloads, at most: the hub reads a body of up to 10 MB, and Airlock
+ * dataset rows run to 64 KB each, so a count alone (500 of them) could make a
+ * batch the hub refuses every time, holding up everything behind it (story review F2).
+ */
+export const MAX_BATCH_BYTES = 8 * 1024 * 1024;
+
+/** The oldest rows whose payloads fit in maxBytes together - always the first, however large. */
+export function withinBatchBytes<T extends { payload: string }>(rows: T[], maxBytes: number = MAX_BATCH_BYTES): T[] {
+  let bytes = 0;
+  let n = 0;
+  for (const r of rows) {
+    bytes += Buffer.byteLength(r.payload, 'utf8') + 1;
+    if (n > 0 && bytes > maxBytes) break;
+    n++;
+  }
+  return rows.slice(0, n);
+}
+
+const isAirlockDatasetPayload = (payload: string): boolean => {
+  try {
+    const type = (JSON.parse(payload) as { type?: unknown }).type;
+    return type === 'airlock.dataset' || type === 'airlock.dataset-label';
+  } catch {
+    return false;
+  }
+};
 const HALT_AFTER_4XX_ATTEMPTS = 5;
 /**
  * 4xx codes that mean "come back later", not "your request is invalid". These
@@ -267,7 +295,18 @@ export class Flusher {
     // stamp, nothing to leak — the hub judges them); unparseable payloads
     // never ship: they can never deliver and would throw for the WHOLE batch
     // on the way into the POST.
-    const rows = this.storage.hubOutboxPeekDeliverable(this.batchSize, this.config.orgId);
+    let rows = this.storage.hubOutboxPeekDeliverable(this.batchSize, this.config.orgId);
+    // Airlock dataset rows queued while the hub's switch was on are not sent once a
+    // sync has turned it off (story review F1): the hub would drop them, but they
+    // need not leave this machine at all.
+    if (airlockDatasetDecidedOff()) {
+      const dropped = rows.filter(r => isAirlockDatasetPayload(r.payload));
+      if (dropped.length) {
+        this.storage.hubOutboxDelete(dropped.map(r => r.event_id));
+        rows = rows.filter(r => !dropped.includes(r));
+      }
+    }
+    rows = withinBatchBytes(rows);
     if (rows.length === 0) {
       this.status.lastFlushAt = new Date().toISOString();
       // A cycle with nothing deliverable is not a failed attempt. Without

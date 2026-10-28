@@ -25,7 +25,7 @@ import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { removeTestDb } from './helpers/testDb';
 import { runFlowSyncTick } from '../hub/flowSync';
-import { syncAirlockPolicy, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockAuthorityOf, airlockDatasetEnabled } from '../hub/airlockSync';
+import { syncAirlockPolicy, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockAuthorityOf, airlockDatasetEnabled, airlockDatasetDecidedOff } from '../hub/airlockSync';
 import { resolveAirlockPolicy } from '../airlock/routes';
 
 const HUB_URL = 'http://hub.example.test';
@@ -540,14 +540,44 @@ describe('hub airlockSync', () => {
       }
     });
 
-    it('a 304 or a hub that is down leaves it as it was; leaving the hub turns it off', async () => {
+    it('a 304 leaves it as it was; leaving the hub turns it off', async () => {
       await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"1:1:d1"' }).fetchImpl);
       await sync(makeFetch({ status: 304 }).fetchImpl);
       expect(airlockDatasetEnabled()).toBe(true);
-      await sync(makeFetch('throw').fetchImpl);
-      expect(airlockDatasetEnabled()).toBe(true);
       invalidateAirlockSyncs();
       expect(airlockDatasetEnabled()).toBe(false);
+    });
+
+    // story review F1 (Codex gpt-6.1-sol 01a18385): capture stays on only while the hub keeps saying so
+    it('a hub that is down, answers an error, or sends what cannot be read turns it off; the next answer decides again', async () => {
+      const on = { status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"1:1:d1"' };
+      for (const failing of ['throw', { status: 502 }, { status: 200, body: 'not json' }, { status: 200, body: { policy: { mode: 'enforce' }, revision: 1, dataset: { enabled: true } } }] as const) {
+        await sync(makeFetch(on as any).fetchImpl);
+        expect(airlockDatasetEnabled()).toBe(true);
+        expect(airlockDatasetDecidedOff()).toBe(false);
+        await sync(makeFetch(failing as any).fetchImpl);
+        expect(airlockDatasetEnabled(), JSON.stringify(failing)).toBe(false);
+        expect(airlockDatasetDecidedOff()).toBe(true);
+      }
+      await sync(makeFetch(on as any).fetchImpl);
+      expect(airlockDatasetEnabled()).toBe(true);
+    });
+
+    it('an answer with an older policy revision still turns it off: the policy is kept, the switch is the hub\'s word now', async () => {
+      await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 10, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"10:1:d1"' }).fetchImpl);
+      expect(airlockDatasetEnabled()).toBe(true);
+      // a hub restored from a backup: revision 9, switched off
+      const out = await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 9, iocRevision: 1, dataset: { enabled: false } }, etag: 'W/"9:1:d0"' }).fetchImpl);
+      expect(out.outcome).toBe('stale');
+      expect(airlockDatasetEnabled()).toBe(false);
+      expect((await storage.getAirlockPolicy('hub'))?.revision).toBe(10);
+    });
+
+    it('a process that has not heard from the hub yet is off, but not decided off', async () => {
+      vi.resetModules();
+      const fresh = await import('../hub/airlockSync');
+      expect(fresh.airlockDatasetEnabled()).toBe(false);
+      expect(fresh.airlockDatasetDecidedOff()).toBe(false);
     });
 
     it('of two overlapping syncs, the one that started later decides, whichever answers last', async () => {
