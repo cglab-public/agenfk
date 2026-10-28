@@ -344,7 +344,7 @@ function launchDeps(over: Partial<LaunchDeps> = {}) {
     dispose: vi.fn(async () => undefined),
   };
   const d: LaunchDeps = {
-    fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 })),
+    fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] })),
     runtime,
     reportToken: () => TOKEN,
     startRelay: relayStub.start,
@@ -476,7 +476,7 @@ describe('runAirlockLaunch: proxy decisions reach the server', () => {
     const h = launchDeps({
       postProxyDecisions: post,
       reportToken: () => null,
-      fetchPolicy: vi.fn(async () => ({ effective: { mode: 'observe', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 })),
+      fetchPolicy: vi.fn(async () => ({ effective: { mode: 'observe', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] })),
     });
     const run = runAirlockLaunch('pi', ['--model', 'openai/gpt-x'], { keyEnv: [] }, h.d);
     await vi.waitFor(() => expect(h.runtime.launch).toHaveBeenCalled());
@@ -620,7 +620,7 @@ describe('runAirlockLaunch: the relay to the server (SX-1, 8dd7c7c0)', () => {
     const h = launchDeps({
       reportToken: () => null,
       warn,
-      fetchPolicy: vi.fn(async () => ({ effective: { mode: 'observe', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 })),
+      fetchPolicy: vi.fn(async () => ({ effective: { mode: 'observe', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] })),
     });
     const run = runAirlockLaunch('pi', ['--model', 'openai/gpt-x'], { keyEnv: [] }, h.d);
     await vi.waitFor(() => expect(h.runtime.launch).toHaveBeenCalled());

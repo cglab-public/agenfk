@@ -324,6 +324,16 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     );
   }
 
+  // BUG 1a7dd9d2: a server older than this launcher runs the commands of the cards this
+  // session touches (verify, the suite) on the host. Enforcing on top of that would be a
+  // sandbox in name only, so it is refused; observing goes on, and says so.
+  const caps = Array.isArray(view?.capabilities) ? (view.capabilities as unknown[]) : [];
+  if (!caps.includes('sandboxed-commands')) {
+    const older = 'The AgEnFK server running is older than this agenfk: it would run the commands of the cards this session works on (verify, the suite) outside the sandbox.';
+    if (policy.mode === 'enforce') throw new AirlockLaunchError(`${older} Nothing was launched. Restart it on this version (agenfk restart), or upgrade it, and retry.`);
+    d.warn(`Airlock: ${older} Restart it (agenfk restart) to sandbox them.`);
+  }
+
   const file = d.which(client);
   if (!file) throw new AirlockLaunchError(`${client} is not installed (not found on PATH).`);
 

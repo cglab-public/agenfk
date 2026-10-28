@@ -550,6 +550,14 @@ async function verdictWithGrants(
   return { verdict: judge([]), used: [] };
 }
 
+/**
+ * What a launcher may rely on this server for (BUG 1a7dd9d2): `sandboxed-commands` - the
+ * commands it runs for a card a sandboxed session touched (verify, the suite, worktree
+ * setup) run in the sandbox while the policy enforces (SX-3). A launcher refuses an
+ * enforcing launch against a server that does not say so: an older one would run them on the host.
+ */
+export const AIRLOCK_SERVER_CAPABILITIES = Object.freeze(['sandboxed-commands']);
+
 export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
   const stateFile = deps.stateFile ?? defaultAirlockStateFile;
   const now = deps.now ?? Date.now;
@@ -695,7 +703,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       if ((refresh === '1' || refresh === 'true') && deps.hubJoined() && deps.refreshFromHub) {
         try { await deps.refreshFromHub(); } catch (e) { console.error('[AIRLOCK] refresh from hub failed:', (e as Error).message); }
       }
-      const view = await resolveAirlockPolicy(deps.storage(), deps.hubJoined());
+      const view = { ...(await resolveAirlockPolicy(deps.storage(), deps.hubJoined())), capabilities: AIRLOCK_SERVER_CAPABILITIES };
       const p = req.query?.projectId;
       const projectId = typeof p === 'string' && p ? p : null;
       if (!projectId) return res.json(view);

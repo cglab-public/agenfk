@@ -34,7 +34,7 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
   const warnings: string[] = [];
   const { runtime } = fakeRuntime();
   return {
-    fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 })),
+    fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] })),
     runtime,
     // enforce launches need it to mark the sandbox's requests to the server (SX-1)
     reportToken: () => 'airlock-report-token-0123456789abcdef',
@@ -140,12 +140,34 @@ describePosix('runAirlockLaunch: pi', () => {
   });
 });
 
+describe('runAirlockLaunch: a server older than this launcher (BUG 1a7dd9d2)', () => {
+  const olderServer = (mode: string) => vi.fn(async () => ({ effective: { mode, hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 }));
+
+  it('enforce: a server that does not say it sandboxes a covered card\'s commands is refused, nothing launched', async () => {
+    const d = deps({ fetchPolicy: olderServer('enforce') });
+    await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/older than this agenfk.*agenfk restart/s);
+    expect((d.runtime as any).launch).not.toHaveBeenCalled();
+  });
+
+  it('observe: it launches, with a warning saying the server\'s commands are not sandboxed', async () => {
+    const d = deps({ fetchPolicy: olderServer('observe') });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(d.warnings.join('\n')).toMatch(/older than this agenfk/);
+  });
+
+  it('a server that says so launches as before', async () => {
+    const d = deps();
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(d.warnings.join('\n')).not.toMatch(/older than this agenfk/);
+  });
+});
+
 describe('runAirlockLaunch: hub and policy', () => {
   it('builds from the effective policy only: a local row under a hub policy widens nothing', async () => {
     const d = deps({
       fetchPolicy: vi.fn(async () => ({
         effective: { mode: 'enforce', hosts: { allow: ['hub-only.example.com'], deny: [] } },
-        source: 'hub', revision: 9, hubManaged: true,
+        source: 'hub', revision: 9, hubManaged: true, capabilities: ['sandboxed-commands'],
         local: { policy: { mode: 'enforce', hosts: { allow: ['local-wide.example.com'], deny: [] } } },
       })),
     });
@@ -312,7 +334,7 @@ describePosix('nested .agenfk directories (review fix 3)', () => {
 
 describe('a denied inference host (review fixes 1 and 2)', () => {
   it('refuses the launch with a clear error', async () => {
-    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: ['*.openai.com'] } }, source: 'hub', revision: 2 })) });
+    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: ['*.openai.com'] } }, source: 'hub', revision: 2, capabilities: ['sandboxed-commands'] })) });
     await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/inference host.*denied/s);
     expect(d.runtime.launch).not.toHaveBeenCalled();
   });
@@ -404,7 +426,7 @@ describe('story review: the launcher records its project\'s root before its sand
     const order: string[] = [];
     const ensureProjectRoot = vi.fn(async () => { order.push('root'); });
     const d = deps({ projectId: () => 'p-api', projectRoot: () => '/work/api', ensureProjectRoot,
-      fetchPolicy: vi.fn(async () => { order.push('policy'); return { effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 }; }) } as any);
+      fetchPolicy: vi.fn(async () => { order.push('policy'); return { effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] }; }) } as any);
     await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
     expect(ensureProjectRoot).toHaveBeenCalledWith('p-api', '/work/api');
     expect(order).toEqual(['root', 'policy']);

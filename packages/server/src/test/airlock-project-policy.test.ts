@@ -87,6 +87,16 @@ describe('GET /airlock/policy?projectId=', () => {
   });
 });
 
+describe('the server says what its launches can rely on (BUG 1a7dd9d2)', () => {
+  it('both forms of GET /airlock/policy name sandboxed-commands: this server runs a covered card\'s commands in the sandbox', async () => {
+    for (const p of ['/airlock/policy', '/airlock/policy?projectId=p-api']) {
+      const res = await request(app).get(p);
+      expect(res.status, p).toBe(200);
+      expect(res.body.capabilities, p).toEqual(expect.arrayContaining(['sandboxed-commands']));
+    }
+  });
+});
+
 describe('POST /airlock/evaluate: by the active card\'s project', () => {
   it('a host the project denies is denied there, and allowed for another project', async () => {
     work = { itemId: 'c1', projectId: 'p-api' };
