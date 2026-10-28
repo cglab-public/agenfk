@@ -19,9 +19,11 @@
  */
 import os from 'os';
 import path from 'path';
-import { normalizeAirlockPolicy, type AirlockClient } from '@agenfk/core';
+import { randomBytes } from 'crypto';
+import { normalizeAirlockPolicy, mintAirlockSessionMarker, type AirlockClient } from '@agenfk/core';
 import { buildSandboxSpec, writeRootHolding, ENV_NAME, type SandboxSpec } from './spec';
 import type { AirlockRuntime } from './runtime';
+import { startServerRelay, type ServerRelay, type ServerRelayOptions } from './serverRelay';
 import { ProxyDecisionReporter, type ProxyReportBody } from './proxyReport';
 
 export class AirlockLaunchError extends Error {
@@ -80,6 +82,8 @@ export interface LaunchDeps {
    * into the sandbox's env or argv. Null when it is missing.
    */
   reportToken?: () => string | null;
+  /** Start the relay the sandbox reaches the server through (SX-1); startServerRelay unless a test hands one in. */
+  startRelay?: (opts: ServerRelayOptions) => Promise<ServerRelay>;
   /**
    * Make `dir` a real 0700 directory (create it, or tighten a looser one);
    * throws when it cannot. The launcher does it for ~/.agenfk/airlock before
@@ -328,10 +332,12 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     d.warn('pi\'s ~/.pi/agent/auth.json is not readable inside the Airlock sandbox. Give pi its key as an env var (it is masked: the agent sees a stand-in, the proxy sends the real one to the inference host), or with --key-env NAME.');
   }
 
-  let serverPort: number;
+  let serverOrigin: string;
+  let directServerPort: number;
   try {
     const u = new URL(d.apiUrl);
-    serverPort = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
+    serverOrigin = u.origin;
+    directServerPort = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
   } catch {
     throw new AirlockLaunchError(`The AgEnFK server address ${d.apiUrl} is not a URL.`);
   }
@@ -354,66 +360,97 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     );
   }
 
-  let spec: SandboxSpec;
+  // SX-1: the sandbox reaches the AgEnFK server only through a relay in this
+  // process, on a loopback port of its own: the server's port is never on the
+  // sandbox's allow list. The relay marks every request it forwards (a MAC keyed
+  // with the report token, read again for each request, so a token the server
+  // replaces keeps marking), however the request travelled; the server reads the
+  // mark to know which cards a sandboxed session touched and keeps their commands
+  // in the sandbox too.
+  const enforce = policy.mode === 'enforce';
+  if (!str(d.reportToken?.() ?? null)) {
+    if (enforce) {
+      throw new AirlockLaunchError(
+        '~/.agenfk/airlock/report-token is missing, so the sandbox\'s requests to the AgEnFK server cannot be marked, and the commands the server runs for this session could not be kept in the sandbox. Nothing was launched. The AgEnFK server creates it when it starts: agenfk restart.',
+      );
+    }
+    d.warn('Airlock: ~/.agenfk/airlock/report-token is missing, so the sandbox\'s requests to the AgEnFK server are not marked (observe mode: they still go through). The AgEnFK server creates it when it starts: agenfk restart.');
+  }
+  const launchNonce = randomBytes(16).toString('hex');
+  const relay = await (d.startRelay ?? startServerRelay)({
+    target: serverOrigin,
+    marker: () => {
+      const key = str(d.reportToken?.() ?? null);
+      return key ? mintAirlockSessionMarker(key, launchNonce) : null;
+    },
+    requireMarker: enforce,
+  });
   try {
-    spec = buildSandboxSpec(policy, {
-      client,
-      home: d.home,
-      workspace: path.resolve(d.cwd),
-      tempDirs: [d.tmpDir],
-      inferenceHosts: [endpoint.host],
-      serverPort,
-      installDirs: d.installDirs,
-      // A .agenfk made after launch is not a registered project; those that
-      // exist now are, whatever the platform does with patterns.
-      projectAgenfkDirs: [...projectAgenfkDirs(d), ...nested.dirs],
-      maskedEnv,
-      runtimePackageDir: d.runtimePackageDir,
-      hostNetns: d.platform === 'linux' ? d.hostNetns ?? null : null,
-    });
-  } catch (e) {
-    // A denied inference host: the session could not reach its model.
-    throw new AirlockLaunchError((e as Error).message);
-  }
-  const exposed = writeRootHolding(d.runtimePackageDir, spec);
-  if (exposed) {
-    throw new AirlockLaunchError(
-      `The sandbox runtime (${d.runtimePackageDir}) is inside ${exposed}, which the sandboxed agent may write: it could rewrite the runtime and run unsandboxed next time. ` +
-      'Run agenfk from its installed copy, from a workspace that does not contain it.',
-    );
-  }
-  for (const s of spec.skipped) d.warn(`Airlock: "${s.entry}" left out of the sandbox (${s.reason}).`);
-  d.log(`Airlock: launching ${client} in the sandbox (${d.runtime.id}; policy ${policy.mode}, ${view.source ?? 'local'} revision ${view.revision ?? 0}; inference ${endpoint.host}).`);
+    let spec: SandboxSpec;
+    try {
+      spec = buildSandboxSpec(policy, {
+        client,
+        home: d.home,
+        workspace: path.resolve(d.cwd),
+        tempDirs: [d.tmpDir],
+        inferenceHosts: [endpoint.host],
+        serverPort: relay.port,
+        serverUrl: `http://${relay.host}:${relay.port}`,
+        directServerPort,
+        installDirs: d.installDirs,
+        // A .agenfk made after launch is not a registered project; those that
+        // exist now are, whatever the platform does with patterns.
+        projectAgenfkDirs: [...projectAgenfkDirs(d), ...nested.dirs],
+        maskedEnv,
+        runtimePackageDir: d.runtimePackageDir,
+        hostNetns: d.platform === 'linux' ? d.hostNetns ?? null : null,
+      });
+    } catch (e) {
+      // A denied inference host: the session could not reach its model.
+      throw new AirlockLaunchError((e as Error).message);
+    }
+    const exposed = writeRootHolding(d.runtimePackageDir, spec);
+    if (exposed) {
+      throw new AirlockLaunchError(
+        `The sandbox runtime (${d.runtimePackageDir}) is inside ${exposed}, which the sandboxed agent may write: it could rewrite the runtime and run unsandboxed next time. ` +
+        'Run agenfk from its installed copy, from a workspace that does not contain it.',
+      );
+    }
+    for (const s of spec.skipped) d.warn(`Airlock: "${s.entry}" left out of the sandbox (${s.reason}).`);
+    d.log(`Airlock: launching ${client} in the sandbox (${d.runtime.id}; policy ${policy.mode}, ${view.source ?? 'local'} revision ${view.revision ?? 0}; inference ${endpoint.host}).`);
 
-  const post = d.postProxyDecisions;
-  const token = post ? str(d.reportToken?.() ?? null) : null;
-  if (post && !token) d.warn('Airlock: ~/.agenfk/airlock/report-token is missing, so the sandbox proxy\'s denials are not reported to the server (the AgEnFK server creates it when it starts: agenfk restart).');
-  const reporter = post && token
-    ? new ProxyDecisionReporter({
-      // Read again for each batch, so a token the server replaced keeps landing.
-      post: async (body, signal) => {
-        const current = str(d.reportToken?.() ?? null);
-        if (current) await post(body, signal, current);
-      },
-      client,
-      model: [provider, session.model.id].filter(Boolean).join('/') || null,
-      sessionId: str(d.env.AGENFK_SESSION_ID),
-    })
-    : null;
-  const launched = await d.runtime.launch(
-    spec,
-    { file, args: clientArgs, cwd: path.resolve(d.cwd) },
-    reporter ? { onProxyDecision: (decision) => reporter.report(decision) } : undefined,
-  );
-  const offs = SIGNALS.map((sig) => d.onSignal(sig, () => { launched.kill(sig); }));
-  try {
-    const exit = await launched.exited;
-    if (exit.code !== null) return exit.code;
-    return 128 + ((exit.signal && os.constants.signals[exit.signal]) || 1);
+    const post = d.postProxyDecisions;
+    const token = post ? str(d.reportToken?.() ?? null) : null;
+    if (post && !token) d.warn('Airlock: ~/.agenfk/airlock/report-token is missing, so the sandbox proxy\'s denials are not reported to the server (the AgEnFK server creates it when it starts: agenfk restart).');
+    const reporter = post && token
+      ? new ProxyDecisionReporter({
+        // Read again for each batch, so a token the server replaced keeps landing.
+        post: async (body, signal) => {
+          const current = str(d.reportToken?.() ?? null);
+          if (current) await post(body, signal, current);
+        },
+        client,
+        model: [provider, session.model.id].filter(Boolean).join('/') || null,
+        sessionId: str(d.env.AGENFK_SESSION_ID),
+      })
+      : null;
+    const launched = await d.runtime.launch(
+      spec,
+      { file, args: clientArgs, cwd: path.resolve(d.cwd) },
+      reporter ? { onProxyDecision: (decision) => reporter.report(decision) } : undefined,
+    );
+    const offs = SIGNALS.map((sig) => d.onSignal(sig, () => { launched.kill(sig); }));
+    try {
+      const exit = await launched.exited;
+      if (exit.code !== null) return exit.code;
+      return 128 + ((exit.signal && os.constants.signals[exit.signal]) || 1);
+    } finally {
+      offs.forEach((off) => off());
+      await d.runtime.dispose();
+      // The proxy has stopped: the last batch, bounded by the report timeout.
+      await reporter?.close();
+    }
   } finally {
-    offs.forEach((off) => off());
-    await d.runtime.dispose();
-    // The proxy has stopped: the last batch, bounded by the report timeout.
-    await reporter?.close();
+    await relay.close();
   }
 }

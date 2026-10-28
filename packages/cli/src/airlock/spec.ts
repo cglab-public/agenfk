@@ -27,8 +27,12 @@ export interface SandboxSession {
   tempDirs: string[];
   /** The session's inference endpoint host(s): allowed, and where a masked key is injected. */
   inferenceHosts: string[];
-  /** The local AgEnFK server's port, allowed on loopback. */
+  /** The port the sandbox reaches the AgEnFK server on (the launcher's relay, SX-1), allowed on loopback. */
   serverPort: number;
+  /** Where the sandbox's agenfk clients find the server (AGENFK_API_URL): the relay. */
+  serverUrl?: string;
+  /** The AgEnFK server's own port: never reachable from the sandbox, which goes through the relay. */
+  directServerPort?: number;
   /** Where AgEnFK is installed: never writable. */
   installDirs: string[];
   /** Project `.agenfk` directories found above the workspace: never writable. */
@@ -107,6 +111,31 @@ function hostPart(entry: string): string {
   return m ? m[1] : entry;
 }
 
+/**
+ * Would allowing `entry` let the sandbox reach the AgEnFK server directly, past
+ * the relay (SX-1)? Loopback on every port does, and so does loopback on the
+ * server's own port.
+ */
+function reachesServerDirectly(entry: string, directPort: number | undefined): boolean {
+  const m = /^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/.exec(entry);
+  if (!m) return false;
+  // As the resolver reads it: the URL parser turns 127.1 and 2130706433 into
+  // 127.0.0.1; matchHost reads mapped and expanded IPv6.
+  let host = m[1];
+  try {
+    host = new URL(`http://${host}/`).hostname;
+  } catch {
+    return false;
+  }
+  if (!matchHost(host.replace(/^\[|\]$/g, ''), LOOPBACK)) return false;
+  return m[2] === undefined || (directPort !== undefined && Number(m[2]) === directPort);
+}
+
+/** Every way to name this machine: loopback, the unspecified addresses, localhost names. */
+const LOOPBACK = ['127.0.0.0/8', '::1', '0.0.0.0', '::', 'localhost', '*.localhost'];
+
+const DIRECT_SERVER = 'it would let the sandbox reach the AgEnFK server directly, past the Airlock relay';
+
 /** A shell env var name. */
 export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -140,10 +169,14 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   };
 
   const allow: string[] = [];
-  const addAllow = (raw: string, what = ''): boolean => {
+  const addAllow = (raw: string, what = '', relayEntry = false): boolean => {
     const e = classify(raw);
     if (e.kind !== 'host') {
       skipped.push({ entry: raw, reason: `${what}${e.reason ?? 'the sandbox cannot allow an address range'}` });
+      return false;
+    }
+    if (!relayEntry && reachesServerDirectly(e.value, session.directServerPort)) {
+      skipped.push({ entry: raw, reason: `${what}${DIRECT_SERVER}` });
       return false;
     }
     const by = deniedBy(e.value);
@@ -157,14 +190,18 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   policy.hosts.allow.forEach((h) => addAllow(h));
   const inference: string[] = [];
   for (const raw of session.inferenceHosts) {
+    const c = classify(raw);
+    if (c.kind === 'host' && reachesServerDirectly(c.value, session.directServerPort)) {
+      throw new Error(`The session's inference host ${raw} is not allowed: ${DIRECT_SERVER}. Give the endpoint its own port. Nothing was launched.`);
+    }
     const by = classify(raw).kind === 'host' ? deniedBy(classify(raw).value as string) : null;
     if (by) {
       throw new Error(`The session's inference host ${raw} is denied by the Airlock policy (${by}), so the session could not reach its model. Nothing was launched.`);
     }
     if (addAllow(raw, 'inference host: ')) inference.push(classify(raw).value as string);
   }
-  addAllow(`127.0.0.1:${session.serverPort}`, 'the AgEnFK server: ');
-  addAllow(`localhost:${session.serverPort}`, 'the AgEnFK server: ');
+  addAllow(`127.0.0.1:${session.serverPort}`, 'the AgEnFK server: ', true);
+  addAllow(`localhost:${session.serverPort}`, 'the AgEnFK server: ', true);
 
   const deny: string[] = [];
   const denyResolved: string[] = [];
@@ -230,6 +267,8 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
       no_proxy: '',
       // The gate's Linux evidence refuses a process still in this namespace.
       ...(session.hostNetns ? { AGENFK_AIRLOCK_HOST_NETNS: session.hostNetns } : {}),
+      // Every agenfk client inside (CLI, hooks, the pi and OpenCode adapters) reads it first.
+      ...(session.serverUrl ? { AGENFK_API_URL: session.serverUrl } : {}),
     },
     // A TUI needs raw mode on its terminal: EPERM without it (measured, macOS).
     allowPty: true,

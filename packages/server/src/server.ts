@@ -63,6 +63,7 @@ import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
 import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/reportToken.js';
+import { airlockCoverageMiddleware, coverWritesIn } from './airlock/coverage.js';
 import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs } from './hub/airlockSync.js';
 import { readActiveWorkForSession } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
@@ -129,6 +130,10 @@ app.use(cors({
 app.use('/airlock', bodyParser.json({ limit: AIRLOCK_BODY_LIMIT }));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
+// SX-1 (8dd7c7c0): requests an Airlock sandbox sends carry its launcher's marker;
+// it never reaches a route, and every card such a request names is recorded as
+// covered, so the commands this server runs for that card's tree run sandboxed.
+app.use(airlockCoverageMiddleware({ storage: () => storage, reportToken: airlockReportTokenReader() }));
 
 // Initialised dynamically in initStorage() based on dbPath file extension.
 let storage: StorageProvider;
@@ -1608,7 +1613,8 @@ const initStorage = async () => {
   // handle on every OS, and on Windows a database nobody could delete.
   await closeStorage();
   // ec325925: every record write keeps only the captures something still reads.
-  storage = withRecordRetention(new SQLiteStorageProvider());
+  // SX-1: cards written while a request from an Airlock sandbox is handled are covered (airlock/coverage.ts).
+  storage = coverWritesIn(withRecordRetention(new SQLiteStorageProvider()));
 
   console.log(`[SERVER_START] Using Database: ${dbPath} (SQLite)`);
   restoreStagedSnapshot(dbPath);

@@ -538,6 +538,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     this.migrateAirlockApprovalsTable();
     this.migrateAirlockDecisionsTable();
     this.createAirlockLearningTable();
+    this.createAirlockCoverageTable();
     this.migrateFlowsTable();
     this.migrateTerminalSessionsTable();
     this.backfillFlowRevisions();
@@ -1983,5 +1984,50 @@ export class SQLiteStorageProvider implements StorageProvider {
   async listAirlockLearnedHosts(): Promise<AirlockLearnedHost[]> {
     const rows = this.database.prepare('SELECT * FROM airlock_learned_hosts ORDER BY received_at DESC, host').all() as any[];
     return rows.map((r) => this.rowToAirlockLearnedHost(r));
+  }
+
+  /** SX-1: the cards an Airlock sandbox touched. A table of its own, so no item write can clear one. */
+  private createAirlockCoverageTable(): void {
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS airlock_covered_items (
+        item_id TEXT PRIMARY KEY,
+        since TEXT NOT NULL
+      );
+    `);
+  }
+
+  /** Ids per IN (...) query: well under SQLite's bound-parameter limit. */
+  static readonly AIRLOCK_COVERAGE_BATCH = 500;
+
+  async markAirlockCovered(itemIds: string[], since: string): Promise<void> {
+    const ids = [...new Set(itemIds.filter((id) => typeof id === 'string' && id))];
+    if (!ids.length) return;
+    const insert = this.database.prepare('INSERT OR IGNORE INTO airlock_covered_items (item_id, since) VALUES (?, ?)');
+    this.database.exec('BEGIN');
+    try {
+      for (const id of ids) insert.run(id, since);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  async airlockCoveredAmong(itemIds: string[]): Promise<string[]> {
+    const ids = [...new Set(itemIds)];
+    const found: string[] = [];
+    for (let i = 0; i < ids.length; i += SQLiteStorageProvider.AIRLOCK_COVERAGE_BATCH) {
+      const batch = ids.slice(i, i + SQLiteStorageProvider.AIRLOCK_COVERAGE_BATCH);
+      const rows = this.database
+        .prepare(`SELECT item_id FROM airlock_covered_items WHERE item_id IN (${batch.map(() => '?').join(',')})`)
+        .all(...batch) as { item_id: string }[];
+      found.push(...rows.map((r) => r.item_id));
+    }
+    return found;
+  }
+
+  async airlockCoveredSince(itemId: string): Promise<string | null> {
+    const row = this.database.prepare('SELECT since FROM airlock_covered_items WHERE item_id = ?').get(itemId) as { since: string } | undefined;
+    return row?.since ?? null;
   }
 }

@@ -15,3 +15,4 @@ export {
   type AirlockLearnSource, type AirlockHostObservation, type AirlockLearnedHost, type AirlockLearningExclusion,
   type AirlockLearningEvidence, type AirlockProposedHost, type AirlockProposal, type AirlockImportTally,
 } from './learn';
+export { AIRLOCK_SESSION_HEADER, mintAirlockSessionMarker, verifyAirlockSessionMarker } from './sessionMarker';

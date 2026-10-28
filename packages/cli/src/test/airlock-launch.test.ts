@@ -36,6 +36,9 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
   return {
     fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 })),
     runtime,
+    // enforce launches need it to mark the sandbox's requests to the server (SX-1)
+    reportToken: () => 'airlock-report-token-0123456789abcdef',
+    startRelay: vi.fn(async () => ({ host: '127.0.0.1', port: 47001, close: vi.fn(async () => undefined) })),
     env: { OPENAI_API_KEY: 'sk-real' },
     home: HOME,
     cwd: CWD,
@@ -68,8 +71,10 @@ describePosix('runAirlockLaunch: pi', () => {
     const code = await runAirlockLaunch('pi', ['--model', 'openai/gpt-5', '-p', 'hi'], { keyEnv: [] }, d);
     expect(code).toBe(0);
     const spec = specOf(d);
-    expect(spec.network.allow).toEqual(expect.arrayContaining(['api.github.com', 'api.openai.com', '127.0.0.1:3123', 'localhost:3123']));
-    expect(spec.env).toMatchObject({ AGENFK_AIRLOCK_SANDBOX: 'pi', NODE_USE_ENV_PROXY: '1' });
+    // SX-1: the sandbox reaches the server only through the launcher's relay
+    expect(spec.network.allow).toEqual(expect.arrayContaining(['api.github.com', 'api.openai.com', '127.0.0.1:47001', 'localhost:47001']));
+    expect(spec.network.allow.some((h) => h.endsWith(':3123'))).toBe(false);
+    expect(spec.env).toMatchObject({ AGENFK_AIRLOCK_SANDBOX: 'pi', NODE_USE_ENV_PROXY: '1', AGENFK_API_URL: 'http://127.0.0.1:47001' });
     expect(spec.maskedEnv).toEqual([{ name: 'OPENAI_API_KEY', injectHosts: ['api.openai.com'] }]);
     expect(spec.filesystem.allowWrite).toEqual(expect.arrayContaining([CWD, '/tmp/t', '/home/u/.pi/agent']));
     expect(spec.filesystem.denyWrite).toEqual(expect.arrayContaining([

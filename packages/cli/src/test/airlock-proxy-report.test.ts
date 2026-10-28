@@ -21,7 +21,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
-import { normalizeAirlockPolicy } from '@agenfk/core';
+import { normalizeAirlockPolicy, verifyAirlockSessionMarker } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSession, type SandboxSpec } from '../airlock/spec';
 import { AsrtRuntime, toAsrtConfig, proxyDecisionOfViolation, sandboxCommandLine, type ProxyDecision, type SandboxCommand, type LaunchHooks } from '../airlock/runtime';
 import {
@@ -323,7 +323,17 @@ describe('AsrtRuntime: proxy decisions', () => {
 
 const TOKEN = 'airlock-report-token-0123456789abcdef';
 
+/** The relay the launcher starts (SX-1), recorded instead of listening. */
+const relayStub = {
+  opts: null as null | { target: string; marker: () => string | null; requireMarker: boolean },
+  close: vi.fn(async () => undefined),
+  start: vi.fn(async (opts: any) => { relayStub.opts = opts; return { host: '127.0.0.1', port: 47002, close: relayStub.close }; }),
+};
+
 function launchDeps(over: Partial<LaunchDeps> = {}) {
+  relayStub.opts = null;
+  relayStub.close.mockClear();
+  relayStub.start.mockClear();
   let hooks: LaunchHooks | undefined;
   let release: () => void = () => {};
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => { release = () => resolve({ code: 5, signal: null }); });
@@ -337,6 +347,7 @@ function launchDeps(over: Partial<LaunchDeps> = {}) {
     fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 })),
     runtime,
     reportToken: () => TOKEN,
+    startRelay: relayStub.start,
     env: { OPENAI_API_KEY: 'sk-real', AGENFK_SESSION_ID: 'sess-9' },
     home: '/home/u',
     cwd: '/work/repo',
@@ -459,9 +470,14 @@ describe('runAirlockLaunch: proxy decisions reach the server', () => {
     expect(h.runtime.launch).not.toHaveBeenCalled();
   });
 
-  it('no token: nothing is posted (the server would refuse it), the session runs, and the user is told', async () => {
+  // SX-1: with no token an ENFORCE launch is refused (see the relay tests below); observe still runs, unreported.
+  it('no token (observe): nothing is posted (the server would refuse it), the session runs, and the user is told', async () => {
     const post = vi.fn(async () => undefined);
-    const h = launchDeps({ postProxyDecisions: post, reportToken: () => null });
+    const h = launchDeps({
+      postProxyDecisions: post,
+      reportToken: () => null,
+      fetchPolicy: vi.fn(async () => ({ effective: { mode: 'observe', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 })),
+    });
     const run = runAirlockLaunch('pi', ['--model', 'openai/gpt-x'], { keyEnv: [] }, h.d);
     await vi.waitFor(() => expect(h.runtime.launch).toHaveBeenCalled());
     expect(h.hooks()).toBeUndefined();
@@ -542,5 +558,76 @@ describe.skipIf(process.platform === 'win32')('ensurePrivateDir (the real launch
     fs.mkdirSync(path.join(root, 'real'));
     fs.symlinkSync(path.join(root, 'real'), path.join(root, 'link'));
     expect(() => ensurePrivateDir(path.join(root, 'link'))).toThrow(/not a directory/);
+  });
+});
+
+describe('runAirlockLaunch: the relay to the server (SX-1, 8dd7c7c0)', () => {
+  it('enforce: the relay goes to the server, requires the marker, and its marker verifies with the report token', async () => {
+    const h = launchDeps();
+    const run = runAirlockLaunch('pi', ['--model', 'openai/gpt-x'], { keyEnv: [] }, h.d);
+    await vi.waitFor(() => expect(h.runtime.launch).toHaveBeenCalled());
+    const [spec] = h.runtime.launch.mock.calls[0] as unknown as [SandboxSpec];
+    h.exit();
+    await run;
+    expect(relayStub.opts).toMatchObject({ target: 'http://127.0.0.1:3123', requireMarker: true });
+    const m = relayStub.opts!.marker();
+    expect(verifyAirlockSessionMarker(TOKEN, m)).not.toBeNull();
+    expect(verifyAirlockSessionMarker(TOKEN, relayStub.opts!.marker())).toBe(verifyAirlockSessionMarker(TOKEN, m));
+    expect(m).not.toContain(TOKEN);
+    expect(spec.network.allow).toEqual(expect.arrayContaining(['127.0.0.1:47002', 'localhost:47002']));
+    expect(spec.network.allow.some((x) => x.endsWith(':3123'))).toBe(false);
+    expect(spec.env.AGENFK_API_URL).toBe('http://127.0.0.1:47002');
+  });
+
+  it('the relay is closed when the session ends', async () => {
+    const h = launchDeps();
+    const run = runAirlockLaunch('pi', ['--model', 'openai/gpt-x'], { keyEnv: [] }, h.d);
+    await vi.waitFor(() => expect(h.runtime.launch).toHaveBeenCalled());
+    expect(relayStub.close).not.toHaveBeenCalled();
+    h.exit();
+    await run;
+    expect(relayStub.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('a launch that fails after the relay started closes it', async () => {
+    const h = launchDeps();
+    h.runtime.launch.mockRejectedValueOnce(new Error('sandbox refused'));
+    await expect(runAirlockLaunch('pi', ['--model', 'openai/gpt-x'], { keyEnv: [] }, h.d)).rejects.toThrow(/sandbox refused/);
+    expect(relayStub.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('a token the server replaces: the next marker is keyed by the new one', async () => {
+    let current = TOKEN;
+    const h = launchDeps({ reportToken: () => current });
+    const run = runAirlockLaunch('pi', ['--model', 'openai/gpt-x'], { keyEnv: [] }, h.d);
+    await vi.waitFor(() => expect(h.runtime.launch).toHaveBeenCalled());
+    h.exit();
+    await run;
+    current = 'replaced-token-fedcba9876543210';
+    expect(verifyAirlockSessionMarker(current, relayStub.opts!.marker())).not.toBeNull();
+    expect(verifyAirlockSessionMarker(TOKEN, relayStub.opts!.marker())).toBeNull();
+  });
+
+  it('enforce with no report token: nothing is launched or relayed, and the error says how to fix it', async () => {
+    const h = launchDeps({ reportToken: () => null });
+    await expect(runAirlockLaunch('pi', ['--model', 'openai/gpt-x'], { keyEnv: [] }, h.d)).rejects.toThrow(/report-token.*agenfk restart/s);
+    expect(h.runtime.launch).not.toHaveBeenCalled();
+    expect(relayStub.start).not.toHaveBeenCalled();
+  });
+
+  it('observe with no report token: it launches, relayed unmarked, and says so', async () => {
+    const warn = vi.fn();
+    const h = launchDeps({
+      reportToken: () => null,
+      warn,
+      fetchPolicy: vi.fn(async () => ({ effective: { mode: 'observe', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 })),
+    });
+    const run = runAirlockLaunch('pi', ['--model', 'openai/gpt-x'], { keyEnv: [] }, h.d);
+    await vi.waitFor(() => expect(h.runtime.launch).toHaveBeenCalled());
+    h.exit();
+    await run;
+    expect(relayStub.opts).toMatchObject({ requireMarker: false });
+    expect(relayStub.opts!.marker()).toBeNull();
+    expect(warn.mock.calls.flat().join('\n')).toMatch(/not marked/);
   });
 });

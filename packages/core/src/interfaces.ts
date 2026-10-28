@@ -175,6 +175,12 @@ export interface StorageProvider extends AgEnFKPlugin {
   recordAirlockHostObservations(observations: AirlockHostObservation[]): Promise<void>;
   /** Every learned host, most recently seen first. */
   listAirlockLearnedHosts(): Promise<AirlockLearnedHost[]>;
+  /** SX-1: record cards an Airlock sandbox touched; one already recorded keeps its first `since`. */
+  markAirlockCovered(itemIds: string[], since: string): Promise<void>;
+  /** Which of `itemIds` are recorded as covered. */
+  airlockCoveredAmong(itemIds: string[]): Promise<string[]>;
+  /** When a card was first covered; null when it never was. */
+  airlockCoveredSince(itemId: string): Promise<string | null>;
 }
 
 export type AirlockScope = 'local' | 'hub';

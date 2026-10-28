@@ -21,6 +21,7 @@ import { normalizeAirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSpec } from '../airlock/spec';
 import { findAgenfkDirs } from '../airlock/launch';
 import { toAsrtConfig, sandboxCommandLine, sandboxStartFailure, sandboxNoop, ASRT_VERSION } from '../airlock/runtime';
+import { startServerRelay, type ServerRelay } from '../airlock/serverRelay';
 
 const DRIVER = path.resolve(__dirname, 'fixtures/airlock-conformance-driver.mjs');
 const AIRLOCK_SCRIPT = path.resolve(__dirname, '../../../../bin/agenfk-airlock.mjs');
@@ -39,6 +40,8 @@ let pre: any = { reachable: {}, addresses: {} };
 const results: Record<string, Result> = {};
 const servers: http.Server[] = [];
 const FAKE_KEY = `real-secret-${Math.random().toString(36).slice(2)}`;
+const RELAY_MARK = 'v1.conformance.' + 'd'.repeat(64);
+let relay: ServerRelay | null = null;
 
 /** Run the driver in its own process (async: the loopback servers live in this one). */
 function driver(request: unknown, env: NodeJS.ProcessEnv = process.env): Promise<any> {
@@ -253,6 +256,31 @@ beforeAll(async () => {
     for (const r of out) results[r.name] = r;
   }
 
+  // R (SX-1, 8dd7c7c0): the sandbox reaches the server only through the launcher's
+  // relay. Plain through the proxy, a CONNECT tunnel and SOCKS (the last two skip
+  // ASRT's request filter, measured) all arrive marked; the server's own port is
+  // not reachable at all.
+  const echoPort = await new Promise<number>((resolve) => {
+    const s = http.createServer((q, res) => { res.end(JSON.stringify({ marker: q.headers['x-agenfk-airlock-session'] ?? null })); });
+    servers.push(s);
+    s.listen(0, '127.0.0.1', () => resolve((s.address() as any).port));
+  });
+  relay = await startServerRelay({ target: `http://127.0.0.1:${echoPort}`, marker: () => RELAY_MARK, requireMarker: true });
+  const relayUrl = `http://127.0.0.1:${relay.port}`;
+  const rs = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), sessionFor({ serverPort: relay.port, serverUrl: relayUrl }));
+  const forged = ['-H', 'x-agenfk-airlock-session: forged'];
+  const curl = (name: string, args: string[]) => ({ name, line: sandboxCommandLine(rs, { file: 'curl', args: ['-sS', '--max-time', '10', ...forged, ...args], cwd: ws }) });
+  await runAll(rs, [
+    { name: 'relay-fetch', line: line(rs, ['fetch', `${relayUrl}/items`]) },
+    ...(has('curl') ? [
+      curl('relay-curl-plain', [`${relayUrl}/items`]),
+      curl('relay-curl-connect', ['-p', `${relayUrl}/items`]),
+      { name: 'relay-curl-socks', line: sandboxCommandLine(rs, { file: '/bin/sh', args: ['-c', `curl -sS --max-time 10 -H 'x-agenfk-airlock-session: forged' --socks5-hostname "$(printf %s "$ALL_PROXY" | sed 's#.*://##')" ${relayUrl}/items`], cwd: ws }) },
+    ] : []),
+    { name: 'relay-server-direct', line: line(rs, ['fetch', `http://127.0.0.1:${echoPort}/items`]) },
+    { name: 'relay-api-url', line: line(rs, ['env', 'AGENFK_API_URL']) },
+  ]);
+
   // C: github.com allowed, for git.
   const c = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['github.com'], deny: [] } }), sessionFor({}));
   await runAll(c, [{
@@ -261,7 +289,8 @@ beforeAll(async () => {
   }]);
 }, TIMEOUT);
 
-afterAll(() => {
+afterAll(async () => {
+  await relay?.close();
   for (const s of servers) s.close();
   if (root) fs.rmSync(root, { recursive: true, force: true });
 });
@@ -325,6 +354,18 @@ describe('Airlock sandbox conformance (pinned Sandbox Runtime)', () => {
       expect(parse(results['server-loopback'])).toMatchObject({ status: 200, body: 'agenfk-ok' });
       expect(parse(results['other-loopback']).body).not.toBe('other-service');
       expect(parse(results['other-loopback-socket']).connected).toBeUndefined();
+    });
+
+    it('the server is reached only through the relay, and every way there arrives marked (SX-1)', (ctx) => {
+      ctx.skip(!!skipAll, skipAll ?? '');
+      expect(parse(results['relay-api-url'])).toEqual({ value: `http://127.0.0.1:${relay!.port}` });
+      expect(parse(results['relay-fetch'])).toMatchObject({ status: 200, body: JSON.stringify({ marker: RELAY_MARK }) });
+      for (const name of ['relay-curl-plain', 'relay-curl-connect', 'relay-curl-socks']) {
+        if (!results[name]) continue;
+        expect(JSON.parse(results[name].stdout || '{}'), `${name}: ${results[name].stderr}`).toEqual({ marker: RELAY_MARK });
+      }
+      // the server's own port: not on the allow list
+      expect(parse(results['relay-server-direct']).status).not.toBe(200);
     });
 
     it('git ls-remote to an allowed host works', (ctx) => {
