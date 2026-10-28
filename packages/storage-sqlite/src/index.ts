@@ -1851,10 +1851,14 @@ export class SQLiteStorageProvider implements StorageProvider {
          ORDER BY linked_at DESC, rowid DESC LIMIT ${AIRLOCK_APPROVAL_LINK_MAX_ROWS})`,
     ).run(key, scope, key, scope);
     // And across every key: however many approvals an agent asks for, the oldest links go first.
-    this.database.prepare(
-      `DELETE FROM airlock_dataset_approval_rows WHERE rowid NOT IN (
-         SELECT rowid FROM airlock_dataset_approval_rows ORDER BY linked_at DESC, rowid DESC LIMIT ${AIRLOCK_APPROVAL_LINK_MAX_TOTAL})`,
-    ).run();
+    // Only the overflow is touched, oldest first by the linked_at index: not a re-sort per insert.
+    const { n } = this.database.prepare('SELECT COUNT(*) AS n FROM airlock_dataset_approval_rows').get() as { n: number };
+    if (n > AIRLOCK_APPROVAL_LINK_MAX_TOTAL) {
+      this.database.prepare(
+        `DELETE FROM airlock_dataset_approval_rows WHERE rowid IN (
+           SELECT rowid FROM airlock_dataset_approval_rows ORDER BY linked_at, rowid LIMIT ?)`,
+      ).run(n - AIRLOCK_APPROVAL_LINK_MAX_TOTAL);
+    }
   }
 
   /** The rows linked to an approval under this hub, oldest first. The links stay until dropped, after the labels are sent. */

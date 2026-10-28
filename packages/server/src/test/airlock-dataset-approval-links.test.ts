@@ -97,7 +97,10 @@ describe('approval labels across a restart (BUG 9ff092e9)', () => {
   });
 
   it('review: links stay bounded in all, however many approvals are asked for', async () => {
+    const t0 = performance.now();
     for (let i = 0; i < AIRLOCK_APPROVAL_LINK_MAX_TOTAL + 50; i++) await storage.airlockDatasetLinkApproval(`k-${i}#1`, hub!, `r-${i}`);
+    // incremental, not a re-sort of the table per insert (Windows CI timed out at 60s on that)
+    expect(performance.now() - t0).toBeLessThan(15_000);
     const n = (storage as any).database.prepare('SELECT COUNT(*) AS n FROM airlock_dataset_approval_rows').get().n;
     expect(n).toBe(AIRLOCK_APPROVAL_LINK_MAX_TOTAL);
     // the oldest went
