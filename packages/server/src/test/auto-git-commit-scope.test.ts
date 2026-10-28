@@ -16,12 +16,26 @@
  * the only thing here that carries provenance. Anything the author left
  * unstaged is reported back rather than silently dropped.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { autoGitCommit } from '../server.js';
+import { autoGitCommit, initStorage, closeStorage } from '../server.js';
+import { removeTestDb, testDbPath } from './helpers/testDb';
+
+// A real (empty) store, as the server always has: the close commit asks it whether
+// an Airlock sandbox covers the card (SX-3), and a store that cannot answer turns
+// the repository's hooks off - the pre-commit hook below would then never run.
+const TEST_DB = testDbPath('auto-git-commit-scope-test-db.sqlite');
+beforeAll(async () => {
+  process.env.AGENFK_DB_PATH = TEST_DB;
+  await removeTestDb(TEST_DB, closeStorage);
+  await initStorage();
+});
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+});
 
 /** A throwaway repo with one tracked file and one commit. */
 const repo = () => {

@@ -84,7 +84,7 @@ describePosix('the bundled helper, run where the app would run it', () => {
 
   it('runs a command in the sandbox with Node', async (ctx) => {
     const r = await run(process.execPath, {});
-    if (r.status === 125 && /could not start|cannot sandbox|does not support/i.test(r.stderr)) ctx.skip();
+    if (r.status === 125 && /could not start|cannot sandbox|does not support|cannot run here/i.test(r.stderr)) ctx.skip();
     expect(r.stdout, r.stderr).toContain('marker=command');
     expect(r.status).toBe(0);
   });
@@ -95,7 +95,7 @@ describePosix('the bundled helper, run where the app would run it', () => {
     if (!electron) try { electron = require('electron') as unknown as string; } catch { electron = null; }
     if (!electron || typeof electron !== 'string' || !fs.existsSync(electron)) return ctx.skip();
     const r = await run(electron, { ELECTRON_RUN_AS_NODE: '1' });
-    if (r.status === 125 && /could not start|cannot sandbox|does not support/i.test(r.stderr)) ctx.skip();
+    if (r.status === 125 && /could not start|cannot sandbox|does not support|cannot run here/i.test(r.stderr)) ctx.skip();
     expect(r.stdout, r.stderr).toContain('marker=command');
     expect(r.status).toBe(0);
   });
@@ -124,7 +124,7 @@ describePosix('the bundled helper, run where the app would run it', () => {
       const q = (x: string) => `'${x.replace(/'/g, `'\\''`)}'`;
       const probe = ['node', probeFile, helperFile, path.join(isolated, 'airlock', 'vendor', 'x'), sock].map(q).join(' ');
       const r = await run(launcher, launcher === process.execPath ? {} : { ELECTRON_RUN_AS_NODE: '1' }, probe);
-      if (r.status === 125 && /could not start|cannot sandbox|does not support/i.test(r.stderr)) return ctx.skip();
+      if (r.status === 125 && /could not start|cannot sandbox|does not support|cannot run here/i.test(r.stderr)) return ctx.skip();
       const line = r.stdout.split('\n').find((l) => l.startsWith('PROBE '));
       expect(line, r.stdout + r.stderr).toBeTruthy();
       const out = JSON.parse(line!.slice(6));
