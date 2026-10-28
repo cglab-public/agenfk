@@ -194,7 +194,7 @@ let repointSyncHandle: RepointSyncHandle | null = null;
 // Returns a Promise so internal awaits work; existing call sites that ignore
 // the return value remain correct because hubClient.recordEvent itself only
 // enqueues into the local outbox (the flusher delivers asynchronously).
-const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
+const recordHubEvent = async (input: RecordEventInput): Promise<boolean> => {
   // No isEnabled gate (CGLAB-11): while the hub is disconnected, events are
   // queued to the local outbox with a pending orgId and stamped at the first
   // boot with a config — dropping them here made pre-login history (incl.
@@ -235,7 +235,8 @@ const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
     externalUrl = externalUrl ?? (externalId === meta.externalId ? meta.externalUrl : null);
   }
 
-  hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId, externalUrl } as RecordEventInput);
+  // Whether the outbox took it: the Airlock dataset keeps a label's link until it did (BUG 003bd959).
+  return hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId, externalUrl } as RecordEventInput);
 };
 
 // projectId → git remote URL ("" when git says there is no remote, null when
@@ -3283,7 +3284,8 @@ try {
 registerAirlockRoutes(app, {
   storage: () => storage,
   hubJoined: () => hubClient.isEnabled,
-  recordHubEvent: (event) => recordHubEvent(event as RecordEventInput).catch(() => { /* never fails a request */ }),
+  // Never fails a request; answers whether the event was queued (false when it was not).
+  recordHubEvent: (event) => recordHubEvent(event as RecordEventInput).catch(() => false),
   emit: (event, payload) => io.emit(event, payload),
   activeWork: (sessionId) => readActiveWorkForSession(sessionId),
   projectRepoOf: airlockProjectRepo,
@@ -5943,6 +5945,13 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: 'model and harness are required (your actual model id + harness; do not omit or copy an example)' });
   }
 
+  // An Airlock session registers, or re-registers, only its own project's PRs (BUG 003bd959):
+  // a row already anchored in another project is not there for it.
+  if (req.airlockSession !== undefined) {
+    const prior = await storage.getPrByRepoNumber(repo, prNumber);
+    if (prior && !(await prInLaunchProject(req, prior.itemId))) return res.status(404).json({ error: `PR ${repo}#${prNumber} is not this project's` });
+  }
+
   // POST /prs is idempotent on (repo, prNumber). Newness is decided ATOMICALLY
   // by the upsert, not by a separate pre-read: insertPr does INSERT … ON CONFLICT
   // DO UPDATE without touching `id`, so the returned row keeps our freshly minted
@@ -5998,6 +6007,18 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
   res.status(201).json(pr);
 }));
 
+/**
+ * Is a PR's anchor card in the project an Airlock session was launched for (BUG 003bd959)?
+ * Always, for a request no sandbox made. The PR routes name a repository and a number, not a
+ * card, so the coverage middleware cannot tell: another project's PR is answered as absent.
+ */
+async function prInLaunchProject(req: any, anchorItemId: string | null | undefined): Promise<boolean> {
+  if (req.airlockSession === undefined) return true;
+  if (typeof req.airlockProject !== 'string' || !anchorItemId) return false;
+  const anchor: any = await storage.getItem(anchorItemId).catch(() => null);
+  return !!anchor && anchor.projectId === req.airlockProject;
+}
+
 app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   const repo = decodeURIComponent(req.params.repo);
   const prNumber = Number(req.params.number);
@@ -6015,7 +6036,7 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   }
 
   const existing = await storage.getPrByRepoNumber(repo, prNumber);
-  if (!existing) return res.status(404).json({ error: `PR ${repo}#${prNumber} not registered` });
+  if (!existing || !(await prInLaunchProject(req, existing.itemId))) return res.status(404).json({ error: `PR ${repo}#${prNumber} not registered` });
 
   const shadowCounts = await computeShadowSizing(existing.itemId);
   const shadow = { epic: shadowCounts.epic, story: shadowCounts.story, task: shadowCounts.task, bug: shadowCounts.bug };

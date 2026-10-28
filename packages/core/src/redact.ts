@@ -181,6 +181,73 @@ function homePattern(home: string): RegExp | null {
  * `password` turned `{"password":"..."}` into a key nothing recognised
  * (Codex review).
  */
+/** A credential-named key on its own line (YAML `key:` or env `[export ]KEY=`), and what follows on that line. */
+const SECRET_KEY_LINE = new RegExp(`^([ \\t]*)(?:-[ \\t]+|export[ \\t]+)?(["']?)${SECRET_KEY_NAME}\\2[ \\t]{0,8}[:=][ \\t]*(.*)$`, 'i');
+/** Anchors and tags a YAML value may start with (`&credential`, `!!str`, `!secret`). */
+const NODE_PROPERTIES = /^(?:[&!][^\s]*[ \t]+)*/;
+/** What is left after them when the value continues on the next lines: nothing, or a block scalar's header. */
+const BLOCK_START = /^(?:[|>][-+0-9]{0,3})?[ \t]*(?:#.*)?$/;
+const indentOf = (line: string): number => line.length - line.trimStart().length;
+const MAX_QUOTED_LINES = 200;
+/**
+ * Where a quoted value opened at v[0] closes in `v` (the index after its quote), or -1
+ * when it does not close there. An escaped `"`, or a doubled `'`, does not close it.
+ */
+function quoteEnd(v: string, q: string, from: number): number {
+  for (let i = from; i < v.length; i++) {
+    if (q === '"' && v[i] === '\\') { i++; continue; }
+    if (v[i] === q) {
+      if (q === "'" && v[i + 1] === "'") { i++; continue; }
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * A credential's value over several lines (epic re-review), redacted whole:
+ *  - a quote that does not close on the key's line: every line to its closing quote,
+ *    however they are indented (.env values are not), or the next MAX_QUOTED_LINES when
+ *    it never closes (a cut-off log line does not take the rest of the log);
+ *  - an empty value, or one that is only anchors/tags and a block scalar's header
+ *    (`password:`, `passphrase: &c |`, `token: !!str >-`): the lines after the key that
+ *    are indented deeper than it.
+ * Over-redaction is the accepted failure. One pass over the lines: linear.
+ */
+function multilineSecretValues(input: string): Range[] {
+  const out: Range[] = [];
+  const lines = input.split('\n');
+  const starts: number[] = [];
+  let pos = 0;
+  for (const l of lines) { starts.push(pos); pos += l.length + 1; }
+  for (let i = 0; i < lines.length; i++) {
+    const m = SECRET_KEY_LINE.exec(lines[i].replace(/\r$/, ''));
+    if (!m) continue;
+    const value = m[3].trim();
+    const q = value[0];
+    let last = i;
+    if ((q === '"' || q === "'") && quoteEnd(value, q, 1) < 0) {
+      // To its closing quote, however far; one that never closes (a cut-off log line)
+      // takes at most MAX_QUOTED_LINES with it (review: the cap is for that case only).
+      let closed = -1;
+      for (let j = i + 1; j < lines.length; j++) {
+        if (quoteEnd(lines[j], q, 0) >= 0) { closed = j; break; }
+      }
+      last = closed >= 0 ? closed : Math.min(lines.length - 1, i + MAX_QUOTED_LINES);
+    } else if (BLOCK_START.test(value.replace(NODE_PROPERTIES, ''))) {
+      const keyIndent = indentOf(lines[i]);
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j].trim() === '') continue;
+        if (indentOf(lines[j]) <= keyIndent) break;
+        last = j;
+      }
+    } else continue;
+    if (last > i) out.push({ start: starts[i + 1], end: starts[last] + lines[last].length, kind: 'assigned' });
+    i = last;
+  }
+  return out;
+}
+
 export function redactLog(input: string, opts: RedactOptions): Redacted {
   const ranges: Range[] = [];
 
@@ -193,6 +260,7 @@ export function redactLog(input: string, opts: RedactOptions): Redacted {
 
   // A loop, not a spread: a log can hold more blocks than a call takes arguments.
   for (const r of keyBlocks(input)) ranges.push(r);
+  for (const r of multilineSecretValues(input)) ranges.push(r);
 
   for (const d of DETECTORS) {
     d.re.lastIndex = 0;
@@ -228,4 +296,39 @@ export function redactLog(input: string, opts: RedactOptions): Redacted {
   if (home) text = text.replace(home, '~');
 
   return { text, count: merged.length };
+}
+
+/** A credential-named key in the usual syntaxes: `key:`, `key=`, `"key":`, `key =>`, `export KEY=`, aligned with any blanks. */
+const CREDENTIAL_KEY = new RegExp(`(?:^|[\\s,;{(\\[])(?:export[ \\t]+)?(["']?)${SECRET_KEY_NAME}\\1[ \\t]*(?:=>|[:=])`, 'im');
+/** A table header line (TOML, INI): `[name]`, `[[name]]`, its name quoted or dotted. */
+const TABLE_HEADER = /^[ \t]*\[\[?([^\]\n]{1,512})\]/gm;
+/** One component of a table name that names a credential. */
+const CREDENTIAL_NAME = new RegExp(`^${SECRET_KEY_NAME}$`, 'i');
+const credentialTable = (text: string): boolean => {
+  TABLE_HEADER.lastIndex = 0;
+  for (let m = TABLE_HEADER.exec(text); m; m = TABLE_HEADER.exec(text)) {
+    if (m[1].split('.').some((part) => CREDENTIAL_NAME.test(part.trim().replace(/^["']|["']$/g, '')))) return true;
+  }
+  return false;
+};
+
+/**
+ * Does the text hold a credential-named key (epic re-review, user decision 2026-10-28)?
+ * The Airlock dataset leaves such content out whole rather than redacting inside it:
+ * no text redactor follows every file syntax (TOML triple quotes, JSON containers,
+ * YAML tags and continuations, INI values...).
+ */
+export function hasCredentialKey(text: string): boolean {
+  if (CREDENTIAL_KEY.test(text) || credentialTable(text)) return true;
+  // And however the key is spelled (review): escapes decoded, every quote gone - a shell-quoted
+  // document, a quoted dotted key (db."password"), an escaped JSON key ("pass\u0077ord").
+  const plain = decodeEscapes(text).replace(/["'`]/g, '');
+  return CREDENTIAL_KEY.test(plain) || credentialTable(plain);
+}
+
+/** `\uXXXX`, `\u{X..}`, `\xNN` and `%NN` decoded, the rest as it is (one pass, linear). */
+function decodeEscapes(text: string): string {
+  const ch = (hex: string): string => { const n = parseInt(hex, 16); return n <= 0x10ffff ? String.fromCodePoint(n) : ''; };
+  return text.replace(/\\u\{([0-9a-fA-F]{1,6})\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})|%([0-9a-fA-F]{2})/g,
+    (_m, a: string | undefined, b: string | undefined, c: string | undefined, d: string | undefined) => ch((a ?? b ?? c ?? d)!));
 }

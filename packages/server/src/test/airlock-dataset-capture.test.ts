@@ -161,6 +161,54 @@ describe('a row', () => {
     for (const v of ['fresh-private-91234', 'opaque-cookie-91234', 'sess-plain-91234', 'at-plain-91234', 'sig-plain-91234', 'yq-plain-91234', 'dot-plain-91234']) expect(all).not.toContain(v);
   });
 
+  it('a YAML block-scalar credential in a write\'s content never reaches the hub (epic re-review)', async () => {
+    await evaluate('write', { path: 'creds.yaml', content: 'passphrase: |\n  opaque-block-91234\npassword: >-\n  folded-91234\n' });
+    await evaluate('write', { path: 'more.yaml', content: 'password:\n  plain-below-91234\ntoken: &a |\n  anchored-91234\n' });
+    await evaluate('write', { path: '.env', content: 'PASSWORD="env-first-91234\nenv-second-91234"\n' });
+    const all = JSON.stringify(rows());
+    for (const v of ['opaque-block-91234', 'folded-91234', 'plain-below-91234', 'anchored-91234', 'env-second-91234']) expect(all).not.toContain(v);
+  });
+
+  it('content holding any credential-named key is omitted whole, path and size kept (user decision 2026-10-28)', async () => {
+    const leaks: Array<[string, string]> = [
+      ['a.json', '{"credentials":{"value":"leak-json-91234"}}'],
+      ['b.json', '{"tokens":["leak-arr-91234"]}'],
+      ['c.yaml', 'password: !!str leak-tag-91234\n'],
+      ['d.yaml', 'password: first-part\n  leak-cont-91234\n'],
+      ['e.toml', 'password = """\nleak-toml-91234\n"""\n'],
+      ['f.ini', '[db]\npassword = first-part leak-ini-91234\n'],
+      ['g.toml', '[secrets]\nvalue = "leak-table-91234"\n'],
+    ];
+    for (const [p, content] of leaks) await evaluate('write', { path: p, content });
+    const all = JSON.stringify(rows());
+    for (const [, c] of leaks) expect(all).not.toContain(/leak-[a-z]+-91234/.exec(c)![0]);
+    const first = rows()[0];
+    expect(first.args.path).toBe('a.json');
+    expect(first.args.content).toEqual({ omitted: 'holds a credential-named key', bytes: Buffer.byteLength(leaks[0][1]) });
+  });
+
+  it('review pass 5: a one-line command embedding a credential document, a session id argument, aligned keys, quoted TOML tables', async () => {
+    await evaluate('bash', { command: `printf '%s' '{"tokens":["leak-cmd-91234"]}' > creds.json` });
+    await evaluate('http', { url: 'https://api.github.com/', headers: { 'X-Session-Id': 'leak-hdr-91234' }, session_id: 'leak-sid-91234' });
+    await evaluate('write', { path: 'a.json', content: '{"password"         : "leak-align-91234"}' });
+    await evaluate('write', { path: 'b.toml', content: '["secrets"]\nvalue = "leak-qtable-91234"\n' });
+    await evaluate('write', { path: 'c.toml', content: '[app."api-tokens"]\nvalue = "leak-dtable-91234"\n' });
+    // pass 6: a shell-quoted document, a quoted dotted key, an escaped JSON key
+    await evaluate('bash', { command: "printf '%s' 'passphrase: &c leak-shq-91234' > credentials.yaml" });
+    await evaluate('write', { path: 'd.toml', content: 'db."password" = "leak-qdot-91234"\n' });
+    await evaluate('write', { path: 'e.json', content: '{"pass\\u0077ord":"leak-esc-91234"}' });
+    const all = JSON.stringify(rows());
+    for (const v of ['leak-cmd-91234', 'leak-hdr-91234', 'leak-sid-91234', 'leak-align-91234', 'leak-qtable-91234', 'leak-dtable-91234', 'leak-shq-91234', 'leak-qdot-91234', 'leak-esc-91234']) expect(all, v).not.toContain(v);
+  });
+
+  it('a multi-line command holding a credential-named key (a heredoc) is omitted; ordinary content is kept', async () => {
+    await evaluate('bash', { command: 'cat > .env <<EOF\nPASSWORD="heredoc-91234\nmore"\nEOF' });
+    await evaluate('write', { path: 'notes.md', content: 'author: Ada\nnothing secret here\n' });
+    const all = JSON.stringify(rows());
+    expect(all).not.toContain('heredoc-91234');
+    expect(rows()[1].args.content).toBe('author: Ada\nnothing secret here\n');
+  });
+
   it('a value under a secret-looking name goes whole, even one no pattern would catch', async () => {
     await evaluate('http', { url: 'https://api.github.com/user', apiKey: 'letmein-plain', headers: { 'X-Session-Key': 'abc' }, auth: { password: 'pw1' } });
     const [r] = rows();
@@ -262,6 +310,32 @@ describe('labels', () => {
     await request(second).get('/airlock/approvals');
     await new Promise(r => setTimeout(r, 20));
     expect(labels()).toHaveLength(1);
+  });
+
+  it('review: a label the outbox did not take (recordHubEvent answers false, as the server\'s wrapper does) keeps its link', async () => {
+    let queued = false;
+    const routes = () => {
+      const a = express();
+      a.use(express.json({ limit: '5mb' }));
+      registerAirlockRoutes(a, {
+        storage: () => storage, hubJoined: () => true, emit: vi.fn(),
+        recordHubEvent: (e: any) => { if (e.type === 'airlock.dataset-label' && !queued) return false; sent.push(e); return true; },
+        activeWork: () => work, stateFile: () => path.join(tmp, 'airlock-state.json'), reportToken: () => REPORT,
+        datasetEnabled: () => on, datasetLinkScope: () => 'https://hub.example org-a',
+      });
+      return a;
+    };
+    const app1 = routes();
+    await request(app1).post('/airlock/evaluate').send({ client: 'pi', model: { provider: 'p', id: 'm' }, toolName: 'bash', args: { command: 'aws s3 rm s3://b/k' }, sessionId: 's1' });
+    const asked = rows().map(r => r.rowId);
+    await new Promise(r => setTimeout(r, 20));
+    const p = (await request(app1).get('/airlock/approvals')).body.pending[0];
+    await request(app1).post(`/airlock/approvals/${encodeURIComponent(p.key)}/grant`).set(BOARD).send({ generation: p.generation });
+    await new Promise(r => setTimeout(r, 20));
+    expect(labels()).toEqual([]);
+    queued = true;
+    await request(routes()).get('/airlock/approvals');
+    await vi.waitFor(() => expect(labels()).toEqual([{ rowId: asked[0], label: { kind: 'approval', decision: 'grant' } }]));
   });
 
   it('off: an answer sends no label', async () => {

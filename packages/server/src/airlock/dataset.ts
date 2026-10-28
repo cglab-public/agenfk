@@ -19,7 +19,7 @@
  * on a joined installation, so the hub labels those itself.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { hostsOfCapabilities, type Capability } from '@agenfk/core';
+import { hasCredentialKey, hostsOfCapabilities, type Capability } from '@agenfk/core';
 
 /** What the hub keeps of one row (DS-2 AIRLOCK_DATASET_LIMITS.maxRowBytes). */
 export const AIRLOCK_DATASET_MAX_ROW_BYTES = 64 * 1024;
@@ -37,8 +37,11 @@ const MAX_LIST = 50;
 /** Each step cuts every string to this, until the row fits. */
 const CUTS = [16 * 1024, 4 * 1024, 1024, 256];
 /** A key naming a credential, read without case or separators (X-Api-Key, accessToken, client_secret, Authorization, pass, passphrase). Over-redaction is the accepted failure. */
-const SECRET_KEY = /auth|token|secret|pass|pwd|apikey|credential|cookie|privatekey|accesskey|sessionkey|signature/;
+const SECRET_KEY = /auth|token|secret|pass|pwd|apikey|credential|cookie|privatekey|accesskey|session(?:key|id|token|secret)|signature/;
 const isSecretKey = (key: string): boolean => SECRET_KEY.test(key.toLowerCase().replace(/[^a-z0-9]/g, ''));
+/** Text left out of a row because it holds a credential-named key: its size only (a hash of a short secret could be guessed back). */
+const omitted = (v: string): { omitted: string; bytes: number } => ({ omitted: 'holds a credential-named key', bytes: Buffer.byteLength(v, 'utf8') });
+const OMITTED_TEXT = '[OMITTED: holds a credential-named key]';
 /** Keys whose values are shell commands (pi's bash `command`, OpenCode's, scripts). */
 const COMMAND_KEYS = new Set(['command', 'cmd', 'commands', 'script']);
 
@@ -47,6 +50,7 @@ export interface DatasetDeps {
   enabled: () => boolean;
   /** Changes when the hub configuration does: the sessions and approvals remembered under another are forgotten. */
   scope?: () => unknown;
+  /** Hands an event to the hub's outbox; answering false says the outbox did not take it. */
   send: (event: { type: 'airlock.dataset' | 'airlock.dataset-label'; payload: Record<string, unknown> }) => unknown;
   /** A shell command with its secrets removed, whole (no excerpt). */
   redactCommand: (text: string) => string;
@@ -132,6 +136,12 @@ function remember<V>(map: Map<string, V>, key: string, value: V, max: number): v
 export function airlockDataset(deps: DatasetDeps) {
   const sessions = new Map<string, Summary[]>();
   const byApprovalKey = new Map<string, string[]>();
+  /** A label, queued - or thrown, so its link stays: `send` answering false means the outbox did not take it. */
+  const sendLabel = async (payload: Record<string, unknown>): Promise<void> => {
+    if ((await deps.send({ type: 'airlock.dataset-label', payload })) === false) {
+      throw new Error('the hub outbox did not take an Airlock dataset label');
+    }
+  };
   let scope: unknown = deps.scope?.();
   /** A new hub configuration: nothing remembered under the last one goes to the next. */
   const rescope = (): void => {
@@ -149,7 +159,14 @@ export function airlockDataset(deps: DatasetDeps) {
    */
   const clean = (v: unknown, cut: { truncated: boolean }, key = '', depth = 0): unknown => {
     if (key && isSecretKey(key) && v !== null && v !== undefined) return '[REDACTED]';
-    if (typeof v === 'string') return COMMAND_KEYS.has(key.toLowerCase()) ? deps.redactCommand(v) : deps.redactText(v);
+    if (typeof v === 'string') {
+      const command = COMMAND_KEYS.has(key.toLowerCase());
+      // Content holding a credential-named key is left out whole, its size kept (user decision
+      // 2026-10-28): no redactor follows every file syntax. A command too - one line can write a
+      // credential document (printf '{"tokens":[...]}' > f) as well as a heredoc can.
+      if (hasCredentialKey(v)) return omitted(v);
+      return command ? deps.redactCommand(v) : deps.redactText(v);
+    }
     if (v === null || typeof v === 'number' || typeof v === 'boolean') return v;
     if (depth >= MAX_DEPTH) { cut.truncated = true; return '[…]'; }
     if (Array.isArray(v)) {
@@ -173,7 +190,7 @@ export function airlockDataset(deps: DatasetDeps) {
   };
 
   const capabilityOf = (c: Capability): { kind: string; value: string; access?: 'read' | 'write' } =>
-    c.kind === 'command' ? { kind: 'command', value: deps.redactCommand(c.command) }
+    c.kind === 'command' ? { kind: 'command', value: hasCredentialKey(c.command) ? OMITTED_TEXT : deps.redactCommand(c.command) }
       : c.kind === 'path' ? { kind: 'path', value: deps.redactText(c.path), access: c.access }
         : { kind: 'url', value: deps.redactText(c.url) };
 
@@ -305,9 +322,7 @@ export function airlockDataset(deps: DatasetDeps) {
       const rows = deps.approvalLinks ? await deps.approvalLinks.rows(approvalKey) : byApprovalKey.get(approvalKey) ?? [];
       byApprovalKey.delete(approvalKey);
       if (deps.enabled()) {
-        for (const rowId of rows) {
-          await deps.send({ type: 'airlock.dataset-label', payload: { rowId, label: { kind: 'approval', decision } } });
-        }
+        for (const rowId of rows) await sendLabel({ rowId, label: { kind: 'approval', decision } });
       }
       if (deps.approvalLinks) await deps.approvalLinks.drop(approvalKey);
     },
@@ -324,7 +339,7 @@ export function airlockDataset(deps: DatasetDeps) {
       for (const key of keys) {
         for (const p of pending.filter(x => x.key === key)) {
           if (p.decision !== 'grant' && p.decision !== 'deny') continue;
-          await deps.send({ type: 'airlock.dataset-label', payload: { rowId: p.rowId, label: { kind: 'approval', decision: p.decision } } });
+          await sendLabel({ rowId: p.rowId, label: { kind: 'approval', decision: p.decision } });
         }
         await deps.approvalLinks.drop(key);
       }

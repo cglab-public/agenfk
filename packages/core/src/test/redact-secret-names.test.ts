@@ -5,7 +5,7 @@
  * content reached the hub while the same keys as tool arguments were dropped).
  */
 import { describe, it, expect } from 'vitest';
-import { redactLog } from '../redact';
+import { redactLog, hasCredentialKey } from '../redact';
 
 const redact = (s: string) => redactLog(s, { home: '/nonexistent-home', env: {} }).text;
 
@@ -40,6 +40,49 @@ describe('credential-named values in text', () => {
       expect(out, line).not.toContain('opaque-91234');
       expect(out).toContain('keep-me');
     }
+  });
+
+  it('a YAML block scalar or a quoted value over several lines goes whole (epic re-review)', () => {
+    const cases = [
+      'passphrase: |\n  opaque-block-91234\n  second-line-91234\nname: keep-me\n',
+      'password: >-\n    opaque-block-91234\n    second-line-91234\nname: keep-me\n',
+      'db:\n  password: |2\n      opaque-block-91234\n      second-line-91234\n  name: keep-me\n',
+      'token: "opaque-block-91234\n  second-line-91234"\nname: keep-me\n',
+      "secret: 'opaque-block-91234\n  second-line-91234'\nname: keep-me\n",
+      // review pass 3: an empty value with the secret below it; an anchor or a tag before the header
+      'password:\n  opaque-block-91234\n  second-line-91234\nname: keep-me\n',
+      'passphrase: &credential |\n  opaque-block-91234\n  second-line-91234\nname: keep-me\n',
+      'passphrase: !!str >-\n  opaque-block-91234\n  second-line-91234\nname: keep-me\n',
+      // .env: a quoted value over lines, the continuation not indented
+      'PASSWORD="opaque-block-91234\nsecond-line-91234"\nname=keep-me\n',
+      'export API_TOKEN=\'opaque-block-91234\n  second-line-91234\'\nname=keep-me\n',
+    ];
+    for (const c of cases) {
+      const out = redact(c);
+      expect(out, c).not.toContain('opaque-block-91234');
+      expect(out, c).not.toContain('second-line-91234');
+      expect(out, c).toContain('keep-me');
+    }
+  });
+
+  it('a quote that never closes (a cut-off log line) does not take the whole rest of the text', () => {
+    const out = redact('token="cut-off-91234\n' + 'line\n'.repeat(300) + 'tail: keep-me\n');
+    expect(out).not.toContain('cut-off-91234');
+    expect(out).toContain('keep-me');
+  });
+
+  it('a quoted value that closes past the 200th line is still redacted to its quote (review)', () => {
+    const out = redact('PASSWORD="start\n' + 'x\n'.repeat(210) + 'late-tail-91234"\nname=keep-me\n');
+    expect(out).not.toContain('late-tail-91234');
+    expect(out).toContain('keep-me');
+  });
+
+  it('hasCredentialKey: a credential-named key in any of the usual syntaxes, not a word that merely contains one', () => {
+    for (const t of ['password: x', 'PASSWORD=x', 'export API_TOKEN=x', '{"credentials":{}}', 'secret => 1', "'auth': 1", '[secrets]\nvalue = 1', '[[tokens]]',
+      '{"password"         : "x"}', 'password\t\t\t\t\t\t\t\t\t= x', '["secrets"]', "[['tokens']]", '[app."api-tokens"]', '[ db . credentials ]',
+      // review pass 6: shell-quoted, quoted dotted, escaped spellings
+      "printf '%s' 'passphrase: &c x' > c.yaml", 'db."password" = "x"', '{"pass\\u0077ord":"x"}', 'pass\\x77ord=x', 'pass%77ord=x']) expect(hasCredentialKey(t), t).toBe(true);
+    for (const t of ['author: Ada', 'compass: north', 'sessions: 3', 'the password is in the vault', 'tokenizer settings']) expect(hasCredentialKey(t), t).toBe(false);
   });
 
   it('ordinary words that only contain a credential word are kept', () => {
