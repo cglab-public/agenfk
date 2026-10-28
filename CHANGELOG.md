@@ -2,7 +2,37 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [Unreleased]
+## [2.1.0-beta.4] — 2026-10-28
+
+**Airlock (new, beta)**
+
+- **Airlock: an optional egress and action shield for pi and OpenCode** (#294, #295, RFC-027). It is meant
+  for sessions on open-weight models. A policy decides which hosts, commands and paths a session may reach.
+  It runs in `observe` (log what enforce would have denied) or `enforce`, and sensitive actions go to a
+  person for approval. Read it with `agenfk airlock status` / `agenfk airlock check`, or the MCP tools
+  `airlock_status` / `airlock_check`. Edit it on the board: Settings → Airlock. On a hub-joined installation
+  the hub's policy (Admin → Airlock) is the source of truth and cannot be overruled locally. A standalone
+  installation keeps its own.
+- **`agenfk airlock pi` / `agenfk airlock opencode`** launch the client inside a whole-process sandbox
+  (`@anthropic-ai/sandbox-runtime`, pinned to 0.0.81). Network goes through an allowlisting proxy, and
+  credential stores and the AgEnFK state directory can't be read or written. A launch gate refuses to start
+  when the sandbox can't be confirmed. Windows is refused.
+- **Telemetry and alerts.** Proxy denials are reported to the server with their own token. Alerts are raised
+  for cloud-storage upload hosts, cloud metadata endpoints and IOC hosts. Each card gets an Airlock section,
+  and the decision list filters by client, source and alert.
+- **Learning mode.** It proposes an allowlist from observed traffic and from existing pi session logs
+  (`agenfk airlock learn --import-pi-sessions`). Nothing is applied automatically: a person accepts it on the
+  board, or a hub admin does when the installation is hub-joined.
+- **Hub admin.** Recent denials and alerts across the organization; which policy revision each installation
+  runs (installations that are behind or refused a policy are flagged); revision history.
+- **Hooks:** pi and OpenCode hooks no longer skip plugin tools, and OpenCode's gatekeeper now covers
+  `apply_patch`.
+- *Known limits in this beta:* commands the server runs for an agent (verify, the suite) are not sandboxed.
+  On a standalone installation, board-only Airlock writes can still be forged by a sandboxed agent; the fix
+  (refusing them at the sandbox proxy) is planned. On Linux (measured on Debian 12 in Docker) the sandbox
+  needs unprivileged user namespaces and its own `/proc` mount: inside a container, run with
+  `--security-opt seccomp=unconfined --security-opt systempaths=unconfined` (or `--privileged`). Under Docker's
+  default profile the launch fails closed, and the agent does not start. OpenCode's sandboxed launch is untested.
 
 **Breaking**
 
