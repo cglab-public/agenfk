@@ -93,6 +93,19 @@ function readReportToken(file: string): string | null {
 
 const realpath = (p: string): string => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 
+/**
+ * Where the sandbox runtime is installed (never writable from the sandbox): its
+ * package, or - in the desktop app's exec helper, which bundles it (ea94c023) -
+ * the helper's own directory, which holds its vendored helpers.
+ */
+function runtimePackageDir(): string {
+  try {
+    return AsrtRuntime.packageDir();
+  } catch {
+    return path.resolve(__dirname, '..');
+  }
+}
+
 /** The real launcher's dependencies: this machine, this server, ASRT. */
 export function defaultLaunchDeps(): LaunchDeps {
   const home = os.homedir();
@@ -107,7 +120,7 @@ export function defaultLaunchDeps(): LaunchDeps {
     readJson: (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } },
     exists: (file) => fs.existsSync(file),
     which: (file) => whichOnPath(file),
-    runtimePackageDir: realpath(AsrtRuntime.packageDir()),
+    runtimePackageDir: realpath(runtimePackageDir()),
     // The installed copy, and the package this CLI runs from (dist/commands -> package root).
     installDirs: [...new Set([path.join(home, '.agenfk-system'), realpath(path.resolve(__dirname, '..', '..'))])],
     log: (m) => console.error(chalk.gray(m)),

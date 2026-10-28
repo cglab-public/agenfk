@@ -34,6 +34,8 @@ export interface AirlockRunDeps {
   /** This server's own address, for exec to read the policy from (never rediscovered); null before it listens. */
   apiUrl?: () => string | null;
   nodePath?: string;
+  /** Set on the line before the launcher (the desktop app: ELECTRON_RUN_AS_NODE=1, its Node being Electron). */
+  lineEnv?: Record<string, string>;
   platform?: NodeJS.Platform;
 }
 
@@ -90,6 +92,7 @@ export async function airlockCommandFor(deps: AirlockRunDeps, itemId: string | n
   return {
     command: [
       ...(url ? [`AGENFK_API_URL=${q(url)}`] : []),
+      ...Object.entries(deps.lineEnv ?? {}).filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)).map(([k, v]) => `${k}=${q(v)}`),
       q(deps.nodePath ?? process.execPath), q(cli), 'airlock', 'exec', '--no-process-group', '--cwd', q(cwd), '--', q(command),
     ].join(' '),
     sandboxed: true,

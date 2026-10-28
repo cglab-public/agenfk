@@ -292,7 +292,8 @@ export class AsrtRuntime implements AirlockRuntime {
 
   constructor(deps: AsrtRuntimeDeps = {}) {
     // Node 22.12+ loads the ESM package through require (ASRT itself needs 22.12).
-    this.load = deps.load ?? (async () => require(ASRT_PACKAGE));
+    // A literal name, so a bundler sees it (the desktop app's exec helper bundles the runtime, ea94c023).
+    this.load = deps.load ?? (async () => require('@anthropic-ai/sandbox-runtime'));
     // windowsHide: the guard in windows-hide-guard.test.ts reads it here (GitHub #200).
     this.spawn = deps.spawn ?? ((command, args, options) => nodeSpawn(command, args, { ...options, windowsHide: true }));
     this.runProbe = deps.runProbe ?? ((command, args, options) => runSandboxProbe(command, args, options));

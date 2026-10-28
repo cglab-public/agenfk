@@ -146,6 +146,9 @@ const airlockRunDeps: AirlockRunDeps = {
   cliPath: () => process.env.AGENFK_AIRLOCK_EXEC_CLI || path.resolve(__dirname, '..', '..', 'cli', 'bin', 'agenfk.js'),
   // exec reads the policy from this server and no other (SX-3 review).
   apiUrl: () => serverUrlFor(BIND_HOST, boundPort),
+  // ea94c023: the desktop app runs its shipped helper with Electron as Node.
+  ...(process.env.AGENFK_AIRLOCK_EXEC_NODE ? { nodePath: process.env.AGENFK_AIRLOCK_EXEC_NODE } : {}),
+  ...(process.env.AGENFK_AIRLOCK_EXEC_RUN_AS_NODE === '1' ? { lineEnv: { ELECTRON_RUN_AS_NODE: '1' } } : {}),
 };
 
 /** git's environment for this card's own commits and worktrees: hooks off when an Airlock sandbox touched it (SX-3). */

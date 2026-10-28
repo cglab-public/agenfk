@@ -237,3 +237,11 @@ describe('SX-3 review pass 3', () => {
     await vi.waitFor(() => { let alive = true; try { process.kill(sleeper, 0); } catch { alive = false; } expect(alive).toBe(false); }, { timeout: 5000 });
   }, 20000);
 });
+
+describe('ea94c023: the desktop server runs exec with Electron as Node', () => {
+  it('the line sets the given variables before the launcher', async () => {
+    if (process.platform === 'win32') return;
+    const r = await airlockCommandFor(deps({ lineEnv: { ELECTRON_RUN_AS_NODE: '1' } }), 't1', 'npm test', '/w');
+    expect(r.command.startsWith("AGENFK_API_URL='http://127.0.0.1:47555' ELECTRON_RUN_AS_NODE='1' ")).toBe(true);
+  });
+});

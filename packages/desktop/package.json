@@ -3,19 +3,20 @@
   "version": "2.1.0-beta.4",
   "license": "Apache-2.0",
   "private": true,
-  "description": "AgEnFK Desktop — run agent orchestration as a native app",
+  "description": "AgEnFK Desktop \u2014 run agent orchestration as a native app",
   "main": "dist/main/index.js",
   "scripts": {
     "prebuild": "node ../../scripts/clean-dist.mjs",
     "build": "tsc && npm run bundle:preload",
     "dev": "npm run build && electron dist/main/index.js",
     "start": "electron dist/main/index.js",
-    "pack": "npm run build && npm run bundle:server && electron-builder --dir --config electron-builder.config.cjs",
-    "dist:mac": "npm run build && npm run bundle:server && electron-builder --mac --config electron-builder.config.cjs",
-    "dist:win": "npm run build && npm run bundle:server && electron-builder --win --config electron-builder.config.cjs",
-    "dist:linux": "npm run build && npm run bundle:server && electron-builder --linux --config electron-builder.config.cjs",
+    "pack": "npm run build && npm run bundle:server && npm run bundle:airlock && electron-builder --dir --config electron-builder.config.cjs",
+    "dist:mac": "npm run build && npm run bundle:server && npm run bundle:airlock && electron-builder --mac --config electron-builder.config.cjs",
+    "dist:win": "npm run build && npm run bundle:server && npm run bundle:airlock && electron-builder --win --config electron-builder.config.cjs",
+    "dist:linux": "npm run build && npm run bundle:server && npm run bundle:airlock && electron-builder --linux --config electron-builder.config.cjs",
     "bundle:server": "node scripts/bundle-server.mjs",
-    "bundle:preload": "node scripts/bundle-preload.mjs"
+    "bundle:preload": "node scripts/bundle-preload.mjs",
+    "bundle:airlock": "node scripts/bundle-airlock.mjs"
   },
   "dependencies": {
     "@agenfk/core": "2.1.0-beta.4",

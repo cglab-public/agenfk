@@ -139,7 +139,7 @@ function fail(title: string, detail: string): void {
 }
 
 async function startServer(): Promise<void> {
-  const { serverEntry, uiDir } = resolveDesktopPaths({
+  const { serverEntry, uiDir, airlockExec } = resolveDesktopPaths({
     dirname: __dirname,
     resourcesPath: process.resourcesPath,
     packaged: app.isPackaged,
@@ -153,7 +153,8 @@ async function startServer(): Promise<void> {
     // cwd is explicit because the server's own fallback derives the database
     // from it. Launched from Finder that would be "/" — see serverEnv.ts.
     cwd: path.dirname(serverEntry),
-    env: buildServerEnv(process.env, { uiDir, dbPath, freshPath }),
+    // ea94c023: the server runs Airlock's exec helper with this app's Electron as Node.
+    env: buildServerEnv(process.env, { uiDir, dbPath, freshPath, airlockExec: { cli: airlockExec, node: process.execPath } }),
     stdio: 'inherit',
   });
   console.log(`[DESKTOP] Starting AgEnFK server (db: ${dbPath})`);
