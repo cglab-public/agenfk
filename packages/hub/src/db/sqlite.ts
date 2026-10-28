@@ -740,6 +740,35 @@ const SCHEMA_SQLITE = `
     PRIMARY KEY (org_id, host, installation_id)
   );
 
+  -- The Airlock dataset (GH-294, DS-2): full tool-call rows and the labels joined to
+  -- them, for training the semantic scorer. Kept only while the org's switch
+  -- (airlock_dataset_settings, off by default) is on; never in the events table and
+  -- never forwarded to a parent hub. Bounded per org by rows, age and row size
+  -- (services/airlockDataset.ts), pruned at ingest. kind is 'row' or 'label';
+  -- row_id joins a label to its row.
+  CREATE TABLE IF NOT EXISTS airlock_dataset_settings (
+    org_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    updated_by_email TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS airlock_dataset (
+    org_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    row_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    imported INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (org_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_time ON airlock_dataset(org_id, occurred_at, event_id);
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_row ON airlock_dataset(org_id, row_id);
+
   -- The command's history. One row per revision, written by whoever moved it:
   -- the installation that claimed it first (source 'init', its installation id)
   -- or the admin who revised it (source 'admin', their user and email). A

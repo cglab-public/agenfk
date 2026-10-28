@@ -21,6 +21,14 @@ import {
   putAirlockPolicy,
 } from '../services/airlock.js';
 import { registerAirlockLearningRoutes } from './airlockLearning.js';
+import {
+  AirlockDatasetError,
+  airlockDatasetEnabled,
+  exportAirlockDataset,
+  getAirlockDatasetView,
+  setAirlockDatasetEnabled,
+  writeLines,
+} from '../services/airlockDataset.js';
 
 /**
  * Airlock (GH-294, T3): the org's policy, kept on the hub.
@@ -32,6 +40,11 @@ import { registerAirlockLearningRoutes } from './airlockLearning.js';
  *   GET /v1/admin/airlock/installations   each installation's applied revision (HUB-2)
  *   GET /v1/admin/airlock/history         the policy's revisions, from the config audit
  *   GET /v1/admin/airlock/decisions       the org's recent denials and alerts (HUB-1)
+ *   GET|PUT /v1/admin/airlock/dataset     the dataset switch (off by default) and what it holds (DS-2)
+ *   GET /v1/admin/airlock/dataset/export  the dataset as JSONL of Clef records
+ *
+ * The installation's read carries the dataset switch, so it sends rows only
+ * while an admin has it on; its ETag carries it too.
  *
  * What an installation applies, and what it denied, arrive through its event
  * stream (`airlock.policy-applied` / `airlock.policy-refused` /
@@ -67,11 +80,12 @@ export function airlockRouter(ctx: HubServerContext): Router {
   });
 
   router.get('/airlock/policy', perAddress, requireKey, perKey, asyncRoute(async (req: Request, res: Response) => {
-    const view = await getAirlockPolicy(ctx.db, req.hubApiKey!.orgId);
-    const etag = airlockEtagOf(view);
+    const orgId = req.hubApiKey!.orgId;
+    const [view, dataset] = await Promise.all([getAirlockPolicy(ctx.db, orgId), airlockDatasetEnabled(ctx.db, orgId)]);
+    const etag = airlockEtagOf(view, dataset);
     res.setHeader('ETag', etag);
     if (req.headers['if-none-match'] === etag) return res.status(304).end();
-    res.json({ policy: view.policy, revision: view.revision, iocRevision: view.iocRevision });
+    res.json({ policy: view.policy, revision: view.revision, iocRevision: view.iocRevision, dataset: { enabled: dataset } });
   }));
 
   return router;
@@ -154,6 +168,29 @@ export function airlockAdminRouter(ctx: HubServerContext): Router {
       limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
       cursor,
     }));
+  }));
+
+  router.get('/dataset', guard, asyncRoute(async (req: Request, res: Response) => {
+    res.json(await getAirlockDatasetView(ctx.db, req.session!.orgId));
+  }));
+
+  router.put('/dataset', guard, asyncRoute(async (req: Request, res: Response) => {
+    try {
+      res.json(await setAirlockDatasetEnabled(ctx.db, req.session!.orgId, req.body?.enabled, await emailOf(ctx, req)));
+    } catch (e) {
+      if (!(e instanceof AirlockDatasetError)) throw e;
+      res.status(400).json({ error: e.message });
+    }
+  }));
+
+  // Streamed a page at a time: the table can hold its cap of rows.
+  router.get('/dataset/export', guard, asyncRoute(async (req: Request, res: Response) => {
+    const day = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="airlock-dataset-${day}.jsonl"`);
+    res.setHeader('Cache-Control', 'no-store');
+    await writeLines(res, exportAirlockDataset(ctx.db, req.session!.orgId));
+    if (!res.destroyed) res.end();
   }));
 
   router.put('/ioc', guard, asyncRoute(async (req: Request, res: Response) => {

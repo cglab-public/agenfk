@@ -56,6 +56,8 @@ const STORED = {
 
 const NONE = { policy: null, revision: 0, iocRevision: 0, updatedAt: null, updatedByEmail: null };
 
+const DATASET_OFF = { enabled: false, rows: 0, labels: 0, oldest: null, newest: null, limits: { maxRows: 100000, maxAgeDays: 90, maxRowBytes: 65536 } };
+
 const NO_INSTALLATIONS = { currentRevision: 0, currentIocRevision: 0, installations: [] };
 const NO_HISTORY = { entries: [], next: null };
 
@@ -65,6 +67,7 @@ function hubAnswers(body: unknown, installations: unknown = NO_INSTALLATIONS, hi
   get.mockImplementation(async (url: string) => {
     if (url === '/v1/admin/airlock') return { data: body };
     if (url === '/v1/admin/projects') return { data: projects };
+    if (url === '/v1/admin/airlock/dataset') return { data: DATASET_OFF };
     if (url === '/v1/admin/airlock/installations') return { data: installations };
     if (url === '/v1/admin/airlock/history') return { data: history };
     if (url === '/v1/admin/airlock/decisions') return { data: decisions };
@@ -759,5 +762,54 @@ describe('Admin → Airlock: PO-2 review 3 (Codex gpt-6.1-sol 01a18308)', () => 
     fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
     expect(put.mock.calls[1][1].expectedRevision).toBe(6);
+  });
+});
+
+describe('Admin → Airlock: the dataset (DS-2)', () => {
+  const withDataset = (dataset: unknown) => {
+    hubAnswers(STORED);
+    const base = get.getMockImplementation()!;
+    get.mockImplementation(async (url: string, ...rest: unknown[]) => (url === '/v1/admin/airlock/dataset' ? { data: dataset } : base(url, ...rest)));
+  };
+
+  it('says it is off, what it would capture, and its bounds', async () => {
+    withDataset(DATASET_OFF);
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Airlock dataset' });
+    const toggle = (await within(card).findByLabelText('Capture tool calls for the dataset')) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(card).toHaveTextContent(/off/i);
+    expect(card).toHaveTextContent(/100,000 rows/);
+    expect(card).toHaveTextContent(/90 days/);
+  });
+
+  it('turns it on through its own route', async () => {
+    withDataset(DATASET_OFF);
+    put.mockResolvedValue({ data: { ...DATASET_OFF, enabled: true } });
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Airlock dataset' });
+    fireEvent.click((await within(card).findByLabelText('Capture tool calls for the dataset')));
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/v1/admin/airlock/dataset', { enabled: true }));
+  });
+
+  it('shows what it holds, and offers the JSONL download', async () => {
+    withDataset({ ...DATASET_OFF, enabled: true, rows: 1234, labels: 56, oldest: '2026-10-01T00:00:00.000Z', newest: '2026-10-28T00:00:00.000Z' });
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Airlock dataset' });
+    expect(((await within(card).findByLabelText('Capture tool calls for the dataset')) as HTMLInputElement).checked).toBe(true);
+    expect(card).toHaveTextContent(/1,234 rows/);
+    expect(card).toHaveTextContent(/56 labels/);
+    const link = within(card).getByRole('link', { name: /download jsonl/i });
+    expect(link).toHaveAttribute('href', '/v1/admin/airlock/dataset/export');
+    expect(link).toHaveAttribute('download');
+  });
+
+  it('offers no download while it holds nothing', async () => {
+    withDataset(DATASET_OFF);
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Airlock dataset' });
+    await within(card).findByLabelText('Capture tool calls for the dataset');
+    expect(card).toHaveTextContent(/0 rows/);
+    expect(within(card).queryByRole('link', { name: /download jsonl/i })).toBeNull();
   });
 });

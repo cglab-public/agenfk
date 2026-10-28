@@ -22,6 +22,10 @@ import { AirlockLearningCard } from './AdminAirlockLearning';
  * applying, those behind the current one highlighted and named as such, and
  * the policy's revision history from the config audit.
  *
+ * The dataset (DS-2): an org-wide switch, off by default, for capturing full
+ * tool-call rows (secrets removed by the installation) to train the scorer;
+ * what it holds; and its JSONL download (Clef records), admin only.
+ *
  * Last (HUB-1): the org's recent denials and alerts, newest first and a page
  * at a time, filterable by client, installation, source, alert and mode. One
  * made in observe mode is named as what enforce would have done; one that
@@ -230,6 +234,7 @@ export function AdminAirlock() {
       <PolicyCard view={view} />
       <ProjectOverridesCard view={view} />
       <IocCard key={`ioc-${view.iocRevision}`} view={view} />
+      <DatasetCard />
       <InstallationsCard />
       <HistoryCard />
       <DecisionsCard />
@@ -592,6 +597,66 @@ function IocCard({ view }: { view: AirlockView }) {
             </button>
           </div>
           {save.isError && <SaveError error={save.error} />}
+        </>
+      )}
+    </form>
+  );
+}
+
+interface AirlockDataset {
+  enabled: boolean;
+  rows: number;
+  labels: number;
+  oldest: string | null;
+  newest: string | null;
+  limits: { maxRows: number; maxAgeDays: number; maxRowBytes: number };
+}
+
+const count = (n: number) => n.toLocaleString('en-US');
+
+function DatasetCard() {
+  const qc = useQueryClient();
+  const q = useQuery<AirlockDataset>({
+    queryKey: ['admin-airlock-dataset'],
+    queryFn: async () => (await api.get('/v1/admin/airlock/dataset')).data as AirlockDataset,
+  });
+  const toggle = useMutation({
+    mutationFn: async (enabled: boolean) => (await api.put('/v1/admin/airlock/dataset', { enabled })).data as AirlockDataset,
+    onSuccess: (v) => qc.setQueryData(['admin-airlock-dataset'], v),
+  });
+  const d = q.data;
+  return (
+    <form aria-label="Airlock dataset" className={`${cardClass} max-w-form`} onSubmit={(e) => e.preventDefault()}>
+      <h3 className="text-body font-semibold text-ink">Dataset</h3>
+      {q.isError && !d ? <QueryError error={q.error} onRetry={() => q.refetch()} /> : !d ? (
+        <p role="status" className="mt-1 text-small text-ink-tertiary">Loading…</p>
+      ) : (
+        <>
+          <p className="mt-1 text-small text-ink-tertiary">
+            While on, every joined installation sends each tool call Airlock judges, in full (commands, paths, the content a
+            write sends, URLs, the card it was for), with secrets removed before it leaves the machine, and the approvals
+            people give. It is kept here to train Airlock&apos;s scorer, and only an admin can download it. Off by default;
+            turning it off stops new rows at once. Past sessions are only sent by{' '}
+            <span className="font-mono">agenfk airlock dataset import</span>. Kept: the newest {count(d.limits.maxRows)} rows,
+            none older than {d.limits.maxAgeDays} days.
+          </p>
+          <label className="mt-3 flex items-center gap-2 text-body text-ink">
+            <input
+              type="checkbox" checked={d.enabled} disabled={toggle.isPending}
+              onChange={(e) => toggle.mutate(e.target.checked)}
+            />
+            Capture tool calls for the dataset
+          </label>
+          <p className="mt-2 text-small text-ink-secondary">
+            {d.enabled ? 'On.' : 'Off.'} {count(d.rows)} rows, {count(d.labels)} labels
+            {d.oldest && d.newest ? `, from ${utc(d.oldest)} to ${utc(d.newest)}` : ''}.
+          </p>
+          {d.rows > 0 && (
+            <div className="mt-3">
+              <a className={buttonClass('secondary')} href="/v1/admin/airlock/dataset/export" download>Download JSONL</a>
+            </div>
+          )}
+          {toggle.isError && <SaveError error={toggle.error} />}
         </>
       )}
     </form>

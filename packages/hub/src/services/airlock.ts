@@ -91,7 +91,8 @@ export async function getAirlockPolicy(db: DB, orgId: string): Promise<AirlockPo
 }
 
 /** The installation's cache key: both revisions, so an IOC-only change busts it too. */
-export const airlockEtagOf = (v: AirlockPolicyView): string => `W/"${v.revision}:${v.iocRevision}"`;
+/** The installation's cache key: both revisions, and the dataset switch it reads with them (DS-2). */
+export const airlockEtagOf = (v: AirlockPolicyView, dataset = false): string => `W/"${v.revision}:${v.iocRevision}:${dataset ? 'd1' : 'd0'}"`;
 
 function hostListCapErrors(field: string, raw: unknown, max: number): string[] {
   if (!Array.isArray(raw)) return [];

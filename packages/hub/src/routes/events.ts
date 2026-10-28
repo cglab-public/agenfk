@@ -7,6 +7,7 @@ import { requireApiKey } from '../auth/apiKey.js';
 import { upsertInstallation } from '../services/installations.js';
 import { recordAirlockApplied, recordAirlockDecision, recordAirlockRefused, reportTimeOf } from '../services/airlock.js';
 import { recordAirlockLearningProposal } from '../services/airlockLearning.js';
+import { isAirlockDatasetEvent, recordAirlockDataset } from '../services/airlockDataset.js';
 import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
@@ -232,6 +233,8 @@ export function eventsRouter(ctx: HubServerContext): Router {
     const airlockDecisions: Array<{ e: HubEvent; userKey: string }> = [];
     // Airlock learning proposals stored in this batch (TEL-3), projected after it too.
     const airlockProposals: HubEvent[] = [];
+    // Airlock dataset rows and labels in this batch (DS-2), kept after it - or dropped.
+    const airlockDataset: Array<{ e: HubEvent; userKey: string }> = [];
     // Days of the events actually stored (not skipped, not refused), for the
     // backdated rollup repair after the transaction (#223).
     const ingestedDays = new Set<string>();
@@ -343,6 +346,10 @@ export function eventsRouter(ctx: HubServerContext): Router {
         // merged-away key must not be a hole in the rule.
         const userKey = resolveAliasKey(userKeyFor(e.actor, e.installationId), aliasMap);
         if (hiddenUserKeys.has(userKey)) { hiddenDropped++; rejections.push({ eventId: e.eventId, reason: 'hidden_user' }); continue; }
+        // The Airlock dataset (DS-2): kept in its own bounded table while the org's
+        // switch is on, after the transaction - never stored as an event, never
+        // forwarded to a parent hub. Accepted either way, so the outbox lets it go.
+        if (isAirlockDatasetEvent(e.type)) { airlockDataset.push({ e, userKey }); ingested++; continue; }
         // The installation row has to follow the identity too. The upsert below
         // COALESCEs the reported git_email over whatever is stored, so a machine
         // still configured with a merged-away address used to overwrite the
@@ -589,6 +596,13 @@ export function eventsRouter(ctx: HubServerContext): Router {
       } catch (err) {
         console.warn('[AIRLOCK] stored event %s but could not list its proposed hosts: %s', JSON.stringify(String(e.eventId).slice(0, 200)), (err as Error).message);
       }
+    }
+
+    // The Airlock dataset (DS-2), the same way: a failure is logged and costs only those rows.
+    try {
+      await recordAirlockDataset(ctx.db, orgId, airlockDataset);
+    } catch (err) {
+      console.warn('[AIRLOCK] could not keep %d dataset row(s): %s', airlockDataset.length, (err as Error).message);
     }
 
     // Roll up the past days this batch stored (#223). The timer only rolls up
