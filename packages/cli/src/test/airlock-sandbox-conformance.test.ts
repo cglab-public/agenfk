@@ -123,6 +123,14 @@ const say = (o) => console.log(JSON.stringify(o));
   } else if (action === 'gate') {
     const m = await import(require('url').pathToFileURL(a).href);
     say(await m.airlockSandboxCheck({ env: process.env, homeDir: b }));
+  } else if (action === 'ownserver') {
+    const http = require('http');
+    const s = http.createServer((q, r) => r.end('own'));
+    s.on('error', (e) => { say({ error: e.code }); process.exit(0); });
+    s.listen(0, '127.0.0.1', () => {
+      http.get('http://127.0.0.1:' + s.address().port + '/', (r) => { let b = ''; r.on('data', (d) => { b += d; }); r.on('end', () => { say({ body: b }); process.exit(0); }); })
+        .on('error', (e) => { say({ error: e.code || e.message }); process.exit(0); });
+    });
   } else if (action === 'raw') {
     process.stdin.setRawMode(true); say({ raw: true }); process.exit(0);
   }
@@ -281,6 +289,22 @@ beforeAll(async () => {
     { name: 'relay-api-url', line: line(rs, ['env', 'AGENFK_API_URL']) },
   ]);
 
+  // X (SX-2, 8dd7c7c0): the sandbox for a COMMAND the server runs (agenfk airlock
+  // exec): its own loopback works (test servers), the credentials, the report token
+  // and AgEnFK's files stay out of reach, and so does an unlisted host.
+  plant('.agenfk/airlock/report-token', 'dummy-report-token');
+  const x = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }), sessionFor({ purpose: 'command', serverPort: 0 }));
+  const xline = (args: string[]) => sandboxCommandLine(x, { file: node, args: [probe, ...args], cwd: ws });
+  await runAll(x, [
+    { name: 'cmd-own-loopback', line: xline(['ownserver']) },
+    { name: 'cmd-fetch-unlisted', line: xline(['fetch', GITHUB]) },
+    { name: 'cmd-read-aws', line: xline(['read', path.join(home, '.aws/credentials')]) },
+    { name: 'cmd-read-report-token', line: xline(['read', path.join(home, '.agenfk/airlock/report-token')]) },
+    { name: 'cmd-write-agenfk', line: xline(['write', path.join(home, '.agenfk/x.json')]) },
+    { name: 'cmd-write-workspace', line: xline(['write', path.join(ws, 'cmd-out.txt')]) },
+    { name: 'cmd-host-loopback', line: xline(['fetch', `http://127.0.0.1:${agenfkPort}/`]) },
+  ]);
+
   // C: github.com allowed, for git.
   const c = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['github.com'], deny: [] } }), sessionFor({}));
   await runAll(c, [{
@@ -366,6 +390,19 @@ describe('Airlock sandbox conformance (pinned Sandbox Runtime)', () => {
       }
       // the server's own port: not on the allow list
       expect(parse(results['relay-server-direct']).status).not.toBe(200);
+    });
+
+    it('a command the server runs: its own loopback works; credentials, the report token, AgEnFK files and unlisted hosts do not (SX-2)', (ctx) => {
+      ctx.skip(!!skipAll, skipAll ?? '');
+      expect(parse(results['cmd-own-loopback'])).toEqual({ body: 'own' });
+      const unlisted = parse(results['cmd-fetch-unlisted']);
+      expect(unlisted.status === 200 && !unlisted.proxyError, JSON.stringify(unlisted)).toBe(false);
+      expect(parse(results['cmd-read-aws']).error).toBeTruthy();
+      expect(parse(results['cmd-read-report-token']).error).toBeTruthy();
+      expect(parse(results['cmd-write-agenfk']).error).toBeTruthy();
+      expect(parse(results['cmd-write-workspace'])).toEqual({ wrote: true });
+      // the host's own loopback: unreachable on Linux (a network namespace); reachable on macOS, the documented limit
+      if (process.platform === 'linux') expect(parse(results['cmd-host-loopback']).body).not.toBe('agenfk-ok');
     });
 
     it('git ls-remote to an allowed host works', (ctx) => {

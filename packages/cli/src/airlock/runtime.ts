@@ -28,7 +28,16 @@ import type { SandboxSpec } from './spec';
 export const ASRT_VERSION = '0.0.81';
 const ASRT_PACKAGE = '@anthropic-ai/sandbox-runtime';
 
-export interface SandboxCommand { file: string; args: string[]; cwd: string }
+export interface SandboxCommand {
+  file: string;
+  args: string[];
+  cwd: string;
+  /**
+   * Run it in a process group of its own (POSIX), and signal the group: a shell's
+   * children are reached too, and whatever is left when it exits is ended (SX-2).
+   */
+  processGroup?: boolean;
+}
 export interface SandboxExit { code: number | null; signal: NodeJS.Signals | null }
 export interface LaunchedSandbox {
   pid: number | undefined;
@@ -105,6 +114,8 @@ export function toAsrtConfig(spec: SandboxSpec): AsrtConfig {
     },
     allowPty: spec.allowPty,
   };
+  // A command's sandbox (SX-2): its test servers bind loopback ports.
+  if (spec.allowLocalBinding) cfg.network.allowLocalBinding = true;
   if (spec.maskedEnv.length) {
     // Masking needs TLS termination, so the real key only leaves over a
     // verified TLS connection to the hosts named.
@@ -310,6 +321,7 @@ export class AsrtRuntime implements AirlockRuntime {
   }
 
   async launch(spec: SandboxSpec, command: SandboxCommand, hooks: LaunchHooks = {}): Promise<LaunchedSandbox> {
+    const group = !!command.processGroup && process.platform !== 'win32';
     const ready = await this.check();
     if (!ready.ok) throw new Error(ready.reason);
     const { SandboxManager } = await this.load();
@@ -349,16 +361,35 @@ export class AsrtRuntime implements AirlockRuntime {
       const wrapped = await SandboxManager.wrapWithSandboxArgv(
         sandboxCommandLine(spec, command), undefined, undefined, undefined, command.cwd,
       );
-      child = this.spawn(wrapped.argv[0], wrapped.argv.slice(1), { cwd: command.cwd, env: wrapped.env, stdio: 'inherit' });
+      child = this.spawn(wrapped.argv[0], wrapped.argv.slice(1), {
+        cwd: command.cwd, env: wrapped.env, stdio: 'inherit', ...(group ? { detached: true } : {}),
+      });
     } catch (e) {
       await this.dispose();
       throw e;
     }
+    const signalGroup = (signal: NodeJS.Signals): boolean => {
+      if (group && child.pid) {
+        try {
+          process.kill(-child.pid, signal);
+          return true;
+        } catch {
+          /* the group is gone: fall back to the child */
+        }
+      }
+      return child.kill(signal);
+    };
     const exited = new Promise<SandboxExit>((resolve, reject) => {
-      child.once('exit', (code, signal) => resolve({ code, signal }));
+      child.once('exit', (code, signal) => {
+        // What the command left running in its group ends with it.
+        if (group && child.pid) {
+          try { process.kill(-child.pid, 'SIGKILL'); } catch { /* none left */ }
+        }
+        resolve({ code, signal });
+      });
       child.once('error', reject);
     });
-    return { pid: child.pid, kill: (signal) => child.kill(signal), exited };
+    return { pid: child.pid, kill: signalGroup, exited };
   }
 
   async dispose(): Promise<void> {

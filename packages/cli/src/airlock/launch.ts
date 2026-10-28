@@ -259,7 +259,8 @@ export function findAgenfkDirs(
 }
 
 /** `.agenfk` directories in the workspace and above it (not the home one, handled apart). */
-function projectAgenfkDirs(d: LaunchDeps): string[] {
+/** Project `.agenfk` directories from `cwd` up (the home one aside): never writable from the sandbox. */
+export function projectAgenfkDirs(d: Pick<LaunchDeps, 'cwd' | 'home' | 'exists'>): string[] {
   const out: string[] = [];
   let dir = path.resolve(d.cwd);
   for (;;) {

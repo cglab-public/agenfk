@@ -8,6 +8,7 @@ import { execFileSync } from 'child_process';
 import { getApiUrl } from '@agenfk/telemetry';
 import { resolveDashboardUrl } from '../uiUrl.js';
 import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
+import { runAirlockExec, scopedCommandEnv, EXEC_CANNOT_SANDBOX, type ExecDeps } from '../airlock/exec.js';
 import { AsrtRuntime } from '../airlock/runtime.js';
 import { PROXY_REPORT_TIMEOUT_MS } from '../airlock/proxyReport.js';
 import { runLearnImport } from '../airlock/learnImport.js';
@@ -136,12 +137,45 @@ export function defaultLaunchDeps(): LaunchDeps {
 }
 
 type Launch = (client: 'pi' | 'opencode', args: string[], opts: LaunchOptions) => Promise<number>;
+type Exec = (command: string, opts: { cwd: string }) => Promise<number>;
+
+/**
+ * The real exec's dependencies (SX-2): the launcher's, as a command needs them,
+ * all bound to `apiUrl` - the server exec was pointed at, captured before its
+ * environment is scoped (which removes AGENFK_API_URL).
+ */
+export function defaultExecDeps(apiUrl: string, get: (url: string, opts: object) => Promise<{ data: unknown }> = axios.get): ExecDeps {
+  const l = defaultLaunchDeps();
+  let directServerPort: number | undefined;
+  try {
+    const u = new URL(apiUrl);
+    directServerPort = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
+  } catch {
+    directServerPort = undefined;
+  }
+  return {
+    fetchPolicy: async () => (await get(`${apiUrl}/airlock/policy`, { timeout: 5000 })).data as any,
+    runtime: l.runtime, home: l.home, tmpDir: l.tmpDir, installDirs: l.installDirs,
+    runtimePackageDir: l.runtimePackageDir, directServerPort, listDir: l.listDir, realpath: l.realpath,
+    isDirectory: l.isDirectory, exists: l.exists, platform: l.platform, ensurePrivateDir: l.ensurePrivateDir,
+    onSignal: l.onSignal, error: (m) => console.error(m),
+  };
+}
 
 export function registerAirlockCommands(
   program: Command,
-  overrides: { launch?: Launch; exit?: (code: number) => void } = {},
+  overrides: { launch?: Launch; exec?: Exec; exit?: (code: number) => void } = {},
 ): void {
   const launch: Launch = overrides.launch ?? ((client, args, opts) => runAirlockLaunch(client, args, opts, defaultLaunchDeps()));
+  const exec: Exec = overrides.exec ?? ((command, opts) => {
+    // Which server to ask, before the scope removes AGENFK_API_URL.
+    const apiUrl = getApiUrl();
+    const deps = defaultExecDeps(apiUrl);
+    // The sandbox's env comes from this process's: secrets out before ASRT reads it.
+    const scoped = scopedCommandEnv(process.env);
+    for (const name of Object.keys(process.env)) if (!(name in scoped)) delete process.env[name];
+    return runAirlockExec(command, opts, deps);
+  });
   const exit = overrides.exit ?? ((code: number) => process.exit(code));
   const airlock = program
     .command('airlock')
@@ -239,6 +273,27 @@ export function registerAirlockCommands(
         console.log(`Learned ${result.recorded} host${result.recorded === 1 ? '' : 's'}${notes ? ` (${notes})` : ''}.`);
         console.log(`Review the proposed allowlist on the board: ${airlockBoardUrl()}`);
       } catch (e) { fail(e); }
+    });
+
+  airlock
+    .command('exec')
+    .description('Run one command inside the Airlock sandbox built from the effective policy (the AgEnFK server uses it for verify and suite runs of cards a sandboxed session touched). Exits 125, without running it, when it cannot be sandboxed.')
+    .requiredOption('--cwd <dir>', 'the directory to run it in (writable inside the sandbox)')
+    .argument('[command...]', 'the command, after --, as ONE argument, run with /bin/sh -c')
+    .allowExcessArguments()
+    .action(async (words: string[], options: { cwd: string }) => {
+      // One argument, verbatim: joining several would lose their quoting (and could make shell operators of them).
+      if ((words ?? []).length !== 1 || !words[0].trim()) {
+        console.error(chalk.red('❌ agenfk airlock exec takes the command as one argument after --, e.g. agenfk airlock exec --cwd . -- \'npm test\'.'));
+        return exit(EXEC_CANNOT_SANDBOX);
+      }
+      const command = words[0];
+      try {
+        exit(await exec(command, { cwd: options.cwd }));
+      } catch (e) {
+        console.error(chalk.red(`❌ ${(e as Error)?.message ?? String(e)}`));
+        exit(EXEC_CANNOT_SANDBOX);
+      }
     });
 
   for (const client of ['pi', 'opencode'] as const) {

@@ -365,3 +365,31 @@ describe('AsrtRuntime', () => {
     await expect(new AsrtRuntime({ load, platform: 'darwin' }).check()).resolves.toMatchObject({ ok: true });
   });
 });
+
+describePosix('AsrtRuntime: a command in its own process group (SX-2 review)', () => {
+  it('a signal ends the command and everything it started; nothing outlives exec', async () => {
+    const os = await import('os');
+    const fsm = await import('fs');
+    const pathm = await import('path');
+    const dir = fsm.mkdtempSync(pathm.join(os.tmpdir(), 'pg-'));
+    const pidFile = pathm.join(dir, 'pid');
+    const manager = {
+      initialize: async () => undefined,
+      checkDependencies: () => ({ errors: [], warnings: [] }),
+      // no real sandbox here: the wrapper is the shell itself
+      wrapWithSandboxArgv: async (line: string) => ({ argv: ['/bin/sh', '-c', line], env: process.env }),
+      reset: async () => undefined,
+    };
+    const rt = new AsrtRuntime({ load: async () => ({ SandboxManager: manager }) as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: process.platform as any });
+    const launched = await rt.launch(
+      { ...spec, env: {} },
+      { file: '/bin/sh', args: ['-c', `sleep 600 & echo $! > ${pidFile}; wait`], cwd: dir, processGroup: true },
+    );
+    await vi.waitFor(() => expect(fsm.existsSync(pidFile) && fsm.readFileSync(pidFile, 'utf8').trim()).toBeTruthy(), { timeout: 5000 });
+    const sleeper = Number(fsm.readFileSync(pidFile, 'utf8').trim());
+    launched.kill('SIGTERM');
+    await launched.exited;
+    await vi.waitFor(() => { let alive = true; try { process.kill(sleeper, 0); } catch { alive = false; } expect(alive).toBe(false); }, { timeout: 5000 });
+    await rt.dispose();
+  });
+});

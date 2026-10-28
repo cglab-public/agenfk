@@ -33,6 +33,12 @@ export interface SandboxSession {
   serverUrl?: string;
   /** The AgEnFK server's own port: never reachable from the sandbox, which goes through the relay. */
   directServerPort?: number;
+  /**
+   * 'client' (default): pi or OpenCode, with its own state writable and the relay to the server.
+   * 'command' (SX-2): a command the server runs for a covered card - no client state, no server
+   * entry, and loopback its own (bind and connect directly), so test servers work.
+   */
+  purpose?: 'client' | 'command';
   /** Where AgEnFK is installed: never writable. */
   installDirs: string[];
   /** Project `.agenfk` directories found above the workspace: never writable. */
@@ -61,6 +67,8 @@ export interface SandboxSpec {
   allowPty: boolean;
   /** Entries left out because the sandbox cannot express them. */
   skipped: Array<{ entry: string; reason: string }>;
+  /** A command's sandbox (SX-2): it may bind loopback ports, so its test servers run. */
+  allowLocalBinding?: boolean;
 }
 
 type Entry = { kind: 'host' | 'cidr'; value: string; reason?: undefined } | { kind: 'bad'; reason: string; value?: undefined };
@@ -136,6 +144,9 @@ const LOOPBACK = ['127.0.0.0/8', '::1', '0.0.0.0', '::', 'localhost', '*.localho
 
 const DIRECT_SERVER = 'it would let the sandbox reach the AgEnFK server directly, past the Airlock relay';
 
+/** A command's loopback, sent direct rather than to the proxy (SX-2). */
+const LOCAL_NO_PROXY = 'localhost,127.0.0.1,::1';
+
 /** A shell env var name. */
 export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -200,8 +211,11 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     }
     if (addAllow(raw, 'inference host: ')) inference.push(classify(raw).value as string);
   }
-  addAllow(`127.0.0.1:${session.serverPort}`, 'the AgEnFK server: ', true);
-  addAllow(`localhost:${session.serverPort}`, 'the AgEnFK server: ', true);
+  // A command the server runs does not talk to the server (SX-2); a client does, through the relay.
+  if (session.purpose !== 'command') {
+    addAllow(`127.0.0.1:${session.serverPort}`, 'the AgEnFK server: ', true);
+    addAllow(`localhost:${session.serverPort}`, 'the AgEnFK server: ', true);
+  }
 
   const deny: string[] = [];
   const denyResolved: string[] = [];
@@ -227,7 +241,8 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     j(home, '.agenfk', 'airlock'),
   ];
 
-  const clientState = session.client === 'pi'
+  const command = session.purpose === 'command';
+  const clientState = command ? [] : session.client === 'pi'
     ? [j(home, '.pi', 'agent')]
     : [j(home, '.local', 'share', 'opencode'), j(home, '.local', 'state', 'opencode'), j(home, '.cache', 'opencode'), j(home, '.config', 'opencode')];
   const allowWrite = uniq([session.workspace, ...session.tempDirs, ...clientState]);
@@ -257,14 +272,15 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     filesystem: { denyRead, allowWrite, denyWrite },
     maskedEnv,
     env: {
-      [AIRLOCK_SANDBOX_MARKER]: session.client,
+      [AIRLOCK_SANDBOX_MARKER]: command ? 'command' : session.client,
       // pi and OpenCode's plugins run on Node, whose fetch() ignores the proxy
       // env without this (measured in the spike: it fails closed, inference too).
       NODE_USE_ENV_PROXY: '1',
       // The runtime sends loopback direct, which the sandbox refuses. Through
       // the proxy, loopback reaches the AgEnFK server on its one allowed port.
-      NO_PROXY: '',
-      no_proxy: '',
+      // A command's own loopback (its test servers) goes direct: allowLocalBinding below.
+      NO_PROXY: command ? LOCAL_NO_PROXY : '',
+      no_proxy: command ? LOCAL_NO_PROXY : '',
       // The gate's Linux evidence refuses a process still in this namespace.
       ...(session.hostNetns ? { AGENFK_AIRLOCK_HOST_NETNS: session.hostNetns } : {}),
       // Every agenfk client inside (CLI, hooks, the pi and OpenCode adapters) reads it first.
@@ -273,6 +289,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     // A TUI needs raw mode on its terminal: EPERM without it (measured, macOS).
     allowPty: true,
     skipped,
+    ...(command ? { allowLocalBinding: true } : {}),
   };
 }
 
