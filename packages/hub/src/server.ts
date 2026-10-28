@@ -11,6 +11,7 @@ import { adminRouter } from './routes/admin.js';
 import { orgRenameRouter } from './routes/orgRename.js';
 import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { repoSettingsAdminRouter, repoSettingsRouter } from './routes/repoSettings.js';
+import { airlockAdminRouter, airlockRouter, AIRLOCK_ADMIN_BODY_LIMIT } from './routes/airlock.js';
 import { receiptsRouter } from './routes/receipts.js';
 import { ciRouter, ciTokensAdminRouter } from './routes/ci.js';
 import { googleRouter } from './auth/google.js';
@@ -230,6 +231,9 @@ export async function createHubApp(
   app.set('trust proxy', config.trustProxy ?? DEFAULT_TRUST_PROXY);
   // Read by publicHubUrl for every URL the hub hands out.
   app.locals.hubPublicUrl = config.publicUrl;
+  // The Airlock admin routes take a policy, never a bulk upload: parsed under a
+  // tight limit of their own before the global parser (which then skips them).
+  app.use('/v1/admin/airlock', express.json({ limit: AIRLOCK_ADMIN_BODY_LIMIT }));
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -248,6 +252,8 @@ export async function createHubApp(
   // installation's own read/claim, likewise ahead of the broad /v1 routers.
   mountRouter(app, '/v1/admin/repos', repoSettingsAdminRouter(ctx));
   mountRouter(app, '/v1', repoSettingsRouter(ctx));
+  mountRouter(app, '/v1/admin/airlock', airlockAdminRouter(ctx));
+  mountRouter(app, '/v1', airlockRouter(ctx));
   mountRouter(app, '/v1', receiptsRouter(ctx));
   mountRouter(app, '/v1/ci', ciRouter(ctx));
   mountRouter(app, '/v1/admin/ci-tokens', ciTokensAdminRouter(ctx));

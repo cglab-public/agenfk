@@ -14,6 +14,34 @@ export function hubConfigPath(): string {
   return path.join(os.homedir(), '.agenfk', 'hub.json');
 }
 
+/**
+ * Whether hub.json is there, and usable. Only 'absent' means this machine left
+ * its hub (`agenfk hub logout` deletes the file): a file that cannot be read or
+ * parsed is a fault, and must not be taken for a logout - leaving the hub hands
+ * the Airlock policy to whoever runs on this machine (GH-294).
+ */
+export function hubConfigFileState(): 'absent' | 'present' | 'unreadable' {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(hubConfigPath(), 'utf8');
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'absent' : 'unreadable';
+  }
+  try {
+    const cfg = JSON.parse(raw);
+    return cfg && typeof cfg.url === 'string' && typeof cfg.token === 'string' && typeof cfg.orgId === 'string'
+      ? 'present' : 'unreadable';
+  } catch {
+    return 'unreadable';
+  }
+}
+
+/** Confirmed out of the hub: no hub.json and no AGENFK_HUB_* override configuring one. */
+export function hubConfirmedAbsent(): boolean {
+  const env = process.env.AGENFK_HUB_URL || process.env.AGENFK_HUB_TOKEN || process.env.AGENFK_HUB_ORG;
+  return !env && hubConfigFileState() === 'absent';
+}
+
 function readHubConfigFile(): HubConfig | null {
   try {
     const raw = fs.readFileSync(hubConfigPath(), 'utf8');
@@ -92,9 +120,12 @@ export class HubClient {
    * (hubOutboxRewriteOrgId). While unconfigured, the outbox is capped
    * (AGENFK_HUB_OUTBOX_CAP, default 10000, oldest pruned) so a
    * never-connected install can't grow the DB without bound.
+   *
+   * Returns whether the event reached the outbox, for a caller that sends a
+   * state once and must know to send it again (the Airlock report, HUB-2).
    */
-  recordEvent(input: RecordEventInput): void {
-    if (!this.storage) return;
+  recordEvent(input: RecordEventInput): boolean {
+    if (!this.storage) return false;
     try {
       const actor = resolveActor(input.cwd);
       const event: HubEvent = {
@@ -115,9 +146,11 @@ export class HubClient {
       };
       this.storage.hubOutboxAppend(event.eventId, event.occurredAt, JSON.stringify(event));
       if (!this.config) this.enforceOutboxCap();
+      return true;
     } catch (e) {
       // Never let hub event recording crash request handling.
       console.error('[HUB] recordEvent failed:', (e as Error).message);
+      return false;
     }
   }
 

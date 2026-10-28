@@ -23,7 +23,19 @@ import {
   AgentRun,
   RunEvent,
   AgentRunQuery,
+  AirlockScope,
+  StoredAirlockPolicy,
+  AirlockDecisionRecord,
+  AirlockDecisionQuery,
+  AirlockApprovalRequest,
+  AirlockApprovalRecord,
+  AirlockApprovalTransition,
+  AirlockApprovalCapability,
+  AirlockGrantScope,
+  AirlockStaleRevisionError,
+  normalizeAirlockPolicy,
 } from '@agenfk/core';
+import { mergeHostObservation, type AirlockHostObservation, type AirlockLearnedHost } from '@agenfk/core';
 
 // node:sqlite is a built-in module available from Node.js v22+.
 // Using require() to avoid ESM/CJS interop issues in the compiled output.
@@ -476,7 +488,56 @@ export class SQLiteStorageProvider implements StorageProvider {
       );
       CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_dedup ON run_events(run_id, seq);
+      -- Airlock (GH-294). The policy is a JSON blob per scope, like flows, so a
+      -- later field never needs a column; revision is the compare-and-swap key.
+      CREATE TABLE IF NOT EXISTS airlock_policy (
+        scope TEXT PRIMARY KEY CHECK(scope IN ('local', 'hub')),
+        revision INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        authority TEXT NOT NULL,
+        etag TEXT
+      );
+      CREATE TABLE IF NOT EXISTS airlock_decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        client TEXT NOT NULL,
+        model TEXT,
+        tool TEXT NOT NULL,
+        capability_kind TEXT,
+        target TEXT,
+        decision TEXT NOT NULL,
+        rule TEXT,
+        mode TEXT NOT NULL,
+        item_id TEXT,
+        session_id TEXT,
+        source TEXT NOT NULL DEFAULT 'tool',
+        alert TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_airlock_decisions_ts ON airlock_decisions(ts);
+      CREATE TABLE IF NOT EXISTS airlock_approvals (
+        key TEXT PRIMARY KEY,
+        rule TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        project_id TEXT,
+        item_id TEXT,
+        session_id TEXT,
+        requested_at TEXT NOT NULL,
+        granted_at TEXT,
+        granted_by TEXT,
+        authority TEXT,
+        expires_at TEXT,
+        consumed_at TEXT,
+        denied_at TEXT,
+        denied_by TEXT,
+        capabilities TEXT,
+        generation INTEGER NOT NULL DEFAULT 1
+      );
     `);
+    this.migrateAirlockApprovalsTable();
+    this.migrateAirlockDecisionsTable();
+    this.createAirlockLearningTable();
     this.migrateFlowsTable();
     this.migrateTerminalSessionsTable();
     this.backfillFlowRevisions();
@@ -664,6 +725,31 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (!columns.includes('auto_approve')) {
       this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0');
     }
+  }
+
+  /** GH-294 T5: a table created before denials gains their columns (CREATE TABLE IF NOT EXISTS never adds one). */
+  private migrateAirlockApprovalsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(airlock_approvals)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes('denied_at')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN denied_at TEXT');
+    if (!columns.includes('denied_by')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN denied_by TEXT');
+    if (!columns.includes('capabilities')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN capabilities TEXT');
+    if (!columns.includes('generation')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN generation INTEGER NOT NULL DEFAULT 1');
+  }
+
+  /**
+   * GH-294 TEL-1: the decision log gains `source` ('tool' | 'proxy'). Every row
+   * written before it was a tool-call decision (the proxy reported nothing), so
+   * 'tool' is what those rows were, not a guess.
+   */
+  private migrateAirlockDecisionsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(airlock_decisions)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes('source')) this.database.exec("ALTER TABLE airlock_decisions ADD COLUMN source TEXT NOT NULL DEFAULT 'tool'");
+    // TEL-2: the alert a decision is. Rows written before it were never classified: NULL, no alert.
+    if (!columns.includes('alert')) this.database.exec('ALTER TABLE airlock_decisions ADD COLUMN alert TEXT');
   }
 
   /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
@@ -1538,5 +1624,364 @@ export class SQLiteStorageProvider implements StorageProvider {
       'SELECT * FROM prs WHERE item_id = ? ORDER BY opened_at ASC'
     ).all(itemId) as any[];
     return rows.map((r) => this.rowToPr(r));
+  }
+
+  // ── Airlock (GH-294) ────────────────────────────────────────────────────────
+
+  /** Rows the decision log keeps; the oldest go first. */
+  static readonly AIRLOCK_DECISION_CAP = 5000;
+
+  async getAirlockPolicy(scope: AirlockScope): Promise<StoredAirlockPolicy | null> {
+    const row = this.database.prepare('SELECT * FROM airlock_policy WHERE scope = ?').get(scope) as any;
+    if (!row) return null;
+    let raw: unknown = null;
+    // A corrupt blob reads as the (off) default rather than taking the route down.
+    try { raw = JSON.parse(row.data); } catch { /* normalised to the default below */ }
+    return {
+      scope: row.scope,
+      revision: Number(row.revision),
+      policy: normalizeAirlockPolicy(raw),
+      updatedAt: row.updated_at,
+      updatedBy: row.updated_by,
+      authority: row.authority === 'hub' ? 'hub' : 'local',
+      etag: row.etag ?? null,
+    };
+  }
+
+  async putAirlockPolicy(row: StoredAirlockPolicy, expectedRevision: number): Promise<StoredAirlockPolicy> {
+    const db = this.database;
+    // One transaction: the read of the current revision and the write are a
+    // single compare-and-swap, so two writers on the same revision cannot both land.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const current = db.prepare('SELECT revision FROM airlock_policy WHERE scope = ?').get(row.scope) as { revision: number } | undefined;
+      const currentRevision = current ? Number(current.revision) : 0;
+      if (currentRevision !== expectedRevision) {
+        const err = new Error(`airlock policy (${row.scope}) is at revision ${currentRevision}, not ${expectedRevision}`) as AirlockStaleRevisionError;
+        err.code = 'AIRLOCK_STALE_REVISION';
+        err.currentRevision = currentRevision;
+        throw err;
+      }
+      db.prepare(
+        `INSERT INTO airlock_policy (scope, revision, data, updated_at, updated_by, authority, etag)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(scope) DO UPDATE SET
+           revision = excluded.revision, data = excluded.data, updated_at = excluded.updated_at,
+           updated_by = excluded.updated_by, authority = excluded.authority, etag = excluded.etag`
+      ).run(row.scope, row.revision, JSON.stringify(row.policy), row.updatedAt, row.updatedBy, row.authority, row.etag ?? null);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+    return (await this.getAirlockPolicy(row.scope))!;
+  }
+
+  async deleteAirlockPolicy(scope: AirlockScope): Promise<boolean> {
+    const result = this.database.prepare('DELETE FROM airlock_policy WHERE scope = ?').run(scope);
+    return Number(result.changes) > 0;
+  }
+
+  async releaseAirlockHubPolicy(expectedHubRevision: number, meta: { updatedAt: string; updatedBy: string }): Promise<StoredAirlockPolicy | null> {
+    const db = this.database;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const hub = db.prepare("SELECT revision, data FROM airlock_policy WHERE scope = 'hub'").get() as { revision: number; data: string } | undefined;
+      if (!hub || Number(hub.revision) !== expectedHubRevision) {
+        db.exec('ROLLBACK');
+        return null;
+      }
+      const local = db.prepare("SELECT revision FROM airlock_policy WHERE scope = 'local'").get() as { revision: number } | undefined;
+      db.prepare(
+        `INSERT INTO airlock_policy (scope, revision, data, updated_at, updated_by, authority, etag)
+         VALUES ('local', ?, ?, ?, ?, 'local', NULL)
+         ON CONFLICT(scope) DO UPDATE SET
+           revision = excluded.revision, data = excluded.data, updated_at = excluded.updated_at,
+           updated_by = excluded.updated_by, authority = excluded.authority, etag = excluded.etag`
+      ).run((local ? Number(local.revision) : 0) + 1, hub.data, meta.updatedAt, meta.updatedBy);
+      db.prepare("DELETE FROM airlock_policy WHERE scope = 'hub' AND revision = ?").run(expectedHubRevision);
+      db.exec('COMMIT');
+    } catch (err) {
+      try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw err;
+    }
+    return this.getAirlockPolicy('local');
+  }
+
+  async recordAirlockDecision(d: AirlockDecisionRecord): Promise<void> {
+    const db = this.database;
+    const result = db.prepare(
+      `INSERT INTO airlock_decisions (ts, client, model, tool, capability_kind, target, decision, rule, mode, item_id, session_id, source, alert)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(d.ts, d.client, d.model ?? null, d.tool, d.capabilityKind ?? null, d.target ?? null, d.decision, d.rule ?? null, d.mode, d.itemId ?? null, d.sessionId ?? null, d.source ?? 'tool', d.alert ?? null);
+    const lastId = Number(result.lastInsertRowid);
+    // ids only grow, so everything at or below (newest - cap) is the overflow.
+    db.prepare('DELETE FROM airlock_decisions WHERE id <= ?').run(lastId - SQLiteStorageProvider.AIRLOCK_DECISION_CAP);
+  }
+
+  async listAirlockDecisions(query: AirlockDecisionQuery = {}): Promise<AirlockDecisionRecord[]> {
+    const limit = Math.max(1, Math.min(Math.floor(query.limit ?? 200), SQLiteStorageProvider.AIRLOCK_DECISION_CAP));
+    const where: string[] = [];
+    const params: string[] = [];
+    if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
+    if (query.client !== undefined) { where.push('client = ?'); params.push(query.client); }
+    if (query.source !== undefined) { where.push('source = ?'); params.push(query.source); }
+    if (query.alert === 'any') where.push('alert IS NOT NULL');
+    else if (query.alert !== undefined) { where.push('alert = ?'); params.push(query.alert); }
+    const sql = `SELECT * FROM airlock_decisions${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC LIMIT ?`;
+    const rows = this.database.prepare(sql).all(...params, limit) as any[];
+    return rows.map((r) => ({
+      id: Number(r.id),
+      ts: r.ts,
+      client: r.client,
+      model: r.model ?? null,
+      tool: r.tool,
+      capabilityKind: r.capability_kind ?? null,
+      target: r.target ?? null,
+      decision: r.decision,
+      rule: r.rule ?? null,
+      mode: r.mode,
+      itemId: r.item_id ?? null,
+      sessionId: r.session_id ?? null,
+      source: r.source === 'proxy' ? 'proxy' : 'tool',
+      ...(r.alert ? { alert: r.alert } : {}),
+    }));
+  }
+
+  private rowToAirlockApproval(r: any): AirlockApprovalRecord {
+    let capabilities: AirlockApprovalCapability[] = [];
+    try { capabilities = r.capabilities ? JSON.parse(r.capabilities) : []; } catch { capabilities = []; }
+    return {
+      key: r.key,
+      rule: r.rule,
+      summary: r.summary,
+      capabilities,
+      projectId: r.project_id ?? null,
+      itemId: r.item_id ?? null,
+      sessionId: r.session_id ?? null,
+      requestedAt: r.requested_at,
+      grantedAt: r.granted_at ?? null,
+      grantedBy: r.granted_by ?? null,
+      authority: r.authority ?? null,
+      expiresAt: r.expires_at ?? null,
+      consumedAt: r.consumed_at ?? null,
+      deniedAt: r.denied_at ?? null,
+      deniedBy: r.denied_by ?? null,
+      generation: Number(r.generation ?? 1),
+    };
+  }
+
+  async upsertAirlockApproval(req: AirlockApprovalRequest, now: string = new Date().toISOString()): Promise<AirlockApprovalRecord> {
+    // A repeated request refreshes what it asks for and who asked - unless a
+    // grant is held and still usable: that grant belongs to the session and
+    // card that asked, and a request from elsewhere must not take it over. A
+    // grant already consumed or expired is spent, so the request opens again
+    // as pending, as a new generation, for a person to decide. A request now
+    // asked by another session or card is a new generation too, so an answer
+    // the board gave to the old asker cannot land on the new one. A denial is
+    // left as it is: it holds until someone grants the request. Every other
+    // transition (grant, deny, consume) also bumps the generation, so an
+    // answer is only ever valid for the version the person saw.
+    // (SET expressions and the WHERE read the row as it was before this update.)
+    const spent = `(airlock_approvals.consumed_at IS NOT NULL
+      OR (airlock_approvals.expires_at IS NOT NULL AND airlock_approvals.expires_at <= :now))`;
+    const usable = `(airlock_approvals.granted_at IS NOT NULL AND NOT ${spent})`;
+    this.database.prepare(
+      `INSERT INTO airlock_approvals (key, rule, summary, capabilities, project_id, item_id, session_id, requested_at, generation)
+       VALUES (:key, :rule, :summary, :caps, :project, :item, :session, :requested, 1)
+       ON CONFLICT(key) DO UPDATE SET
+         rule = excluded.rule, summary = excluded.summary, capabilities = excluded.capabilities,
+         project_id = excluded.project_id, item_id = excluded.item_id, session_id = excluded.session_id,
+         requested_at = excluded.requested_at,
+         generation = CASE WHEN ${spent}
+             OR airlock_approvals.session_id IS NOT excluded.session_id
+             OR airlock_approvals.item_id IS NOT excluded.item_id
+           THEN airlock_approvals.generation + 1 ELSE airlock_approvals.generation END,
+         granted_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.granted_at END,
+         granted_by = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.granted_by END,
+         authority = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.authority END,
+         expires_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.expires_at END,
+         consumed_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.consumed_at END
+       WHERE NOT ${usable}`
+    ).run({
+      key: req.key, rule: req.rule, summary: req.summary, caps: JSON.stringify(req.capabilities ?? []),
+      project: req.projectId ?? null, item: req.itemId ?? null,
+      session: req.sessionId ?? null, requested: req.requestedAt, now,
+    });
+    return (await this.getAirlockApproval(req.key))!;
+  }
+
+  async getAirlockApproval(key: string): Promise<AirlockApprovalRecord | null> {
+    const row = this.database.prepare('SELECT * FROM airlock_approvals WHERE key = ?').get(key) as any;
+    return row ? this.rowToAirlockApproval(row) : null;
+  }
+
+  async listAirlockApprovals(query: { pending?: boolean } = {}): Promise<AirlockApprovalRecord[]> {
+    const sql = query.pending
+      ? 'SELECT * FROM airlock_approvals WHERE granted_at IS NULL AND denied_at IS NULL ORDER BY requested_at DESC'
+      : 'SELECT * FROM airlock_approvals ORDER BY requested_at DESC';
+    return (this.database.prepare(sql).all() as any[]).map((r) => this.rowToAirlockApproval(r));
+  }
+
+  /** The row after a conditional answer: changed, already so (unchanged), or refused. */
+  private async answered(key: string, changed: boolean, alreadySo: (row: AirlockApprovalRecord) => boolean): Promise<AirlockApprovalTransition | null> {
+    const row = await this.getAirlockApproval(key);
+    if (!row) return null;
+    return { ...row, transition: changed ? 'changed' : alreadySo(row) ? 'unchanged' : 'refused' };
+  }
+
+  async grantAirlockApproval(
+    key: string,
+    grant: { grantedBy: string; authority: string; expiresAt?: string | null; generation?: number },
+  ): Promise<AirlockApprovalTransition | null> {
+    // Only a request nobody has granted (pending, or denied) of the generation
+    // the person answered: a replay never renews a grant or revives a used one.
+    const gen = grant.generation ?? null;
+    const result = this.database.prepare(
+      `UPDATE airlock_approvals SET granted_at = :at, granted_by = :by, authority = :authority, expires_at = :expires,
+         consumed_at = NULL, denied_at = NULL, denied_by = NULL, generation = generation + 1
+       WHERE key = :key AND granted_at IS NULL AND consumed_at IS NULL AND (:gen IS NULL OR generation = :gen)`
+    ).run({ at: new Date().toISOString(), by: grant.grantedBy, authority: grant.authority, expires: grant.expiresAt ?? null, key, gen });
+    return this.answered(key, Number(result.changes ?? 0) > 0,
+      (r) => !!r.grantedAt && !r.consumedAt && (gen === null || r.generation === gen));
+  }
+
+  async denyAirlockApproval(key: string, denial: { deniedBy: string; generation?: number }, now: string = new Date().toISOString()): Promise<AirlockApprovalTransition | null> {
+    // A request not yet used: pending, or granted and not spent. The grant goes with it.
+    const gen = denial.generation ?? null;
+    const result = this.database.prepare(
+      `UPDATE airlock_approvals SET denied_at = :now, denied_by = :by,
+         granted_at = NULL, granted_by = NULL, authority = NULL, expires_at = NULL, consumed_at = NULL,
+         generation = generation + 1
+       WHERE key = :key AND denied_at IS NULL AND consumed_at IS NULL AND (:gen IS NULL OR generation = :gen)`
+    ).run({ now, by: denial.deniedBy, key, gen });
+    return this.answered(key, Number(result.changes ?? 0) > 0,
+      (r) => !!r.deniedAt && (gen === null || r.generation === gen));
+  }
+
+  async consumeAirlockApproval(key: string, now: string = new Date().toISOString()): Promise<boolean> {
+    // One statement, so two callers racing for the same grant cannot both consume it.
+    const result = this.database.prepare(
+      `UPDATE airlock_approvals SET consumed_at = ?, generation = generation + 1
+       WHERE key = ? AND granted_at IS NOT NULL AND consumed_at IS NULL
+         AND (expires_at IS NULL OR expires_at > ?)`
+    ).run(now, key, now);
+    return Number(result.changes ?? 0) > 0;
+  }
+
+  async consumeAirlockApprovals(keys: string[], scope: AirlockGrantScope, now: string = new Date().toISOString()): Promise<boolean> {
+    // One transaction: every grant the call needs is consumed, or none is.
+    const db = this.database;
+    const consume = db.prepare(
+      `UPDATE airlock_approvals SET consumed_at = :now, generation = generation + 1
+       WHERE key = :key AND granted_at IS NOT NULL AND consumed_at IS NULL AND denied_at IS NULL
+         AND (expires_at IS NULL OR expires_at > :now)
+         AND session_id IS :session AND item_id IS :item`
+    );
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const key of new Set(keys)) {
+        const r = consume.run({ now, key, session: scope.sessionId ?? null, item: scope.itemId ?? null });
+        if (Number(r.changes ?? 0) === 0) { db.exec('ROLLBACK'); return false; }
+      }
+      db.exec('COMMIT');
+      return true;
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  // ── Airlock learning (GH-294, TEL-3) ───────────────────────────────────────
+  // One row per observed host, apart from the capped decision log so a
+  // proposal is not limited to the last few thousand verdicts. Hits are kept
+  // by source because the proxy's word and the agent's are not worth the same.
+  //
+  // Two budgets, each forgetting the row RECEIVED longest ago (received_at,
+  // the server's clock - never a date a caller reported): rows with proxy
+  // evidence, and agent-only rows. Agent-reported traffic (tool calls, an
+  // import), which the agent can invent, can therefore never evict a row the
+  // sandbox proxy vouched for.
+
+  /** Agent-only hosts kept (no proxy evidence). */
+  static readonly AIRLOCK_LEARNED_HOST_CAP = 5000;
+  /** Hosts with proxy evidence kept, apart from the agent-only ones. */
+  static readonly AIRLOCK_LEARNED_PROXY_HOST_CAP = 5000;
+
+  private createAirlockLearningTable(): void {
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS airlock_learned_hosts (
+        host TEXT PRIMARY KEY,
+        tool_hits INTEGER NOT NULL DEFAULT 0,
+        proxy_hits INTEGER NOT NULL DEFAULT 0,
+        import_hits INTEGER NOT NULL DEFAULT 0,
+        first_seen TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        received_at TEXT NOT NULL DEFAULT '',
+        clients TEXT NOT NULL DEFAULT '[]',
+        cards TEXT NOT NULL DEFAULT '[]'
+      );
+    `);
+    const columns = (this.database.prepare('PRAGMA table_info(airlock_learned_hosts)').all() as { name: string }[]).map((c) => c.name);
+    if (!columns.includes('received_at')) this.database.exec("ALTER TABLE airlock_learned_hosts ADD COLUMN received_at TEXT NOT NULL DEFAULT ''");
+    this.database.exec('DROP INDEX IF EXISTS idx_airlock_learned_hosts_last_seen');
+    this.database.exec('CREATE INDEX IF NOT EXISTS idx_airlock_learned_hosts_received ON airlock_learned_hosts(received_at)');
+  }
+
+  private rowToAirlockLearnedHost(r: any): AirlockLearnedHost {
+    const list = (text: unknown): string[] => {
+      try {
+        const v = JSON.parse(String(text));
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+      } catch { return []; }
+    };
+    return {
+      host: r.host,
+      hits: { tool: Number(r.tool_hits), proxy: Number(r.proxy_hits), import: Number(r.import_hits) },
+      firstSeen: r.first_seen,
+      lastSeen: r.last_seen,
+      receivedAt: r.received_at || r.last_seen,
+      clients: list(r.clients),
+      cards: list(r.cards),
+    };
+  }
+
+  async recordAirlockHostObservations(observations: AirlockHostObservation[]): Promise<void> {
+    if (!observations.length) return;
+    const db = this.database;
+    const read = db.prepare('SELECT * FROM airlock_learned_hosts WHERE host = ?');
+    const write = db.prepare(
+      `INSERT INTO airlock_learned_hosts (host, tool_hits, proxy_hits, import_hits, first_seen, last_seen, received_at, clients, cards)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(host) DO UPDATE SET
+         tool_hits = excluded.tool_hits, proxy_hits = excluded.proxy_hits, import_hits = excluded.import_hits,
+         first_seen = excluded.first_seen, last_seen = excluded.last_seen, received_at = excluded.received_at,
+         clients = excluded.clients, cards = excluded.cards`
+    );
+    // One transaction: each row is read and rewritten with nothing in between.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const o of observations) {
+        const current = read.get(o.host) as any;
+        const row = mergeHostObservation(current ? this.rowToAirlockLearnedHost(current) : null, o);
+        write.run(row.host, row.hits.tool, row.hits.proxy, row.hits.import, row.firstSeen, row.lastSeen, row.receivedAt, JSON.stringify(row.clients), JSON.stringify(row.cards));
+      }
+      // Each budget on its own: an agent-only row never pushes out a proxy row.
+      const prune = (where: string, cap: number) => db.prepare(
+        `DELETE FROM airlock_learned_hosts WHERE host IN (
+           SELECT host FROM airlock_learned_hosts WHERE ${where} ORDER BY received_at DESC, host LIMIT -1 OFFSET ?)`
+      ).run(cap);
+      prune('proxy_hits = 0', SQLiteStorageProvider.AIRLOCK_LEARNED_HOST_CAP);
+      prune('proxy_hits > 0', SQLiteStorageProvider.AIRLOCK_LEARNED_PROXY_HOST_CAP);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  async listAirlockLearnedHosts(): Promise<AirlockLearnedHost[]> {
+    const rows = this.database.prepare('SELECT * FROM airlock_learned_hosts ORDER BY received_at DESC, host').all() as any[];
+    return rows.map((r) => this.rowToAirlockLearnedHost(r));
   }
 }

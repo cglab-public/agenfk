@@ -31,17 +31,32 @@ function isInsideAgenFKProjectDir(dirPath) {
     return false;
 }
 
+/** The command a tool is about to run, whatever the tool is called ('' when none). */
+function toolCommand(args) {
+    for (const v of [args.command, args.cmd]) if (typeof v === 'string' && v.trim()) return v;
+    return '';
+}
+
+/** The file a tool is about to touch, whatever the tool is called ('' when none). */
+function toolPath(args) {
+    for (const v of [args.filePath, args.file_path, args.path]) if (typeof v === 'string' && v.trim()) return v;
+    return '';
+}
+
 export default async function agenfkMcpEnforcer(context) {
     return {
-        'tool.execute.before': async (input) => {
-            const tool = (input.tool || '').toLowerCase();
-            const args = input.args || {};
+        // OpenCode passes the tool's arguments on the SECOND parameter
+        // (`output.args`, @opencode-ai/plugin); `input.args` is kept for older
+        // callers. Reading only `input.args` made this plugin a no-op.
+        'tool.execute.before': async (input, output) => {
+            const args = output?.args || input?.args || {};
             const cwd = context?.directory || process.cwd();
 
-            // ── bash tool checks ────────────────────────────────────────────────
-            if (tool === 'bash' || tool === 'execute') {
-                const command = args.command || '';
-
+            // ── command checks ──────────────────────────────────────────────────
+            // A tool is judged by what it carries, not by its name: plugin tools
+            // (bash_bg, a custom shell…) run commands too.
+            const command = toolCommand(args);
+            if (command) {
                 // 1. Block direct database access
                 if (/\.agenfk[/\\](db\.sqlite|db\.json)/.test(command)) {
                     throw new Error(
@@ -63,17 +78,16 @@ export default async function agenfkMcpEnforcer(context) {
                 }
             }
 
-            // ── read tool checks ────────────────────────────────────────────────
-            if (tool === 'read') {
-                const filePath = args.filePath || args.file_path || '';
-
-                if (/\.agenfk[/\\](db\.sqlite|db\.json)/.test(filePath)) {
-                    throw new Error(
-                        'AgenFK MCP ENFORCER: Direct reads of AgenFK database files are forbidden.\n' +
-                        'Do NOT read .agenfk/db.sqlite or .agenfk/db.json.' +
-                        INSTEAD
-                    );
-                }
+            // ── path checks: any tool that names a file, read or otherwise ─────
+            // Checked even when the tool also carries a command: a harmless
+            // command must not carry a database path through with it.
+            const filePath = toolPath(args);
+            if (/\.agenfk[/\\](db\.sqlite|db\.json)/.test(filePath)) {
+                throw new Error(
+                    'AgenFK MCP ENFORCER: Direct reads of AgenFK database files are forbidden.\n' +
+                    'Do NOT read .agenfk/db.sqlite or .agenfk/db.json.' +
+                    INSTEAD
+                );
             }
         }
     };

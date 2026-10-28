@@ -20,6 +20,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint, NO_VERIFY_COMMAND, VERIFY_COMMAND_FLAG } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
+import { hubConfirmedAbsent } from "./hub/hubClient.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { publishPendingReceipts } from "./hub/receiptPublisher.js";
@@ -60,6 +61,10 @@ import * as net from "net";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
+import { registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
+import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/reportToken.js';
+import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs } from './hub/airlockSync.js';
+import { readActiveWorkForSession } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
 import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
@@ -118,6 +123,10 @@ app.use(cors({
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "x-agenfk-internal", "x-agenfk-ui"]
 }));
+// The airlock routes take small bodies (GH-294): parsed here, ahead of the
+// 50mb parser below, which then leaves an already-parsed body alone. Too large
+// is a 413 from the error handler.
+app.use('/airlock', bodyParser.json({ limit: AIRLOCK_BODY_LIMIT }));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
@@ -1607,6 +1616,13 @@ const initStorage = async () => {
   // f8d0a752: the server-wide suite-run limit, read from the settings it lives in.
   await loadSuiteRunSetting();
   await pruneRecordsOnStart();
+  // GH-294: left the hub while the server was down (`agenfk hub logout`): the
+  // hub's Airlock policy becomes the local one before anything reads it.
+  if (!hubClient.isEnabled && hubConfirmedAbsent()) await releaseHubAirlockOnLeave();
+  // GH-294: adapters fall back to this file when the server is unreachable, so
+  // it is rebuilt from the stored policy at every start (a failed write or a
+  // hand edit does not outlive a restart).
+  await reconcileAirlockStateFile(storage, hubClient.isEnabled);
 
   // Apply pending migration (written by install/upgrade when a db.json was detected)
   const migrationPath = path.join(os.homedir(), '.agenfk', 'migration.json');
@@ -1713,6 +1729,9 @@ if (hubDisabledForTests) {
     etagCache: flowSyncEtagCache,
     emit: (event, payload) => io.emit(event, payload),
     resolveRepo: resolveProjectRepo,
+    activeHubConfig: () => hubClient.hubConfig,
+    // HUB-2: which Airlock revision this installation applies, through the outbox as fleet upgrades report.
+    reportAirlock: (r) => hubClient.recordEvent({ type: r.type, payload: r.payload }),
   });
   console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
 
@@ -3185,6 +3204,56 @@ app.delete("/terminal-sessions/:id", asyncHandler(async (req: any, res: any) => 
   io.emit('items_updated');
   res.status(204).end();
 }));
+
+/**
+ * Leaving the hub (GH-294, T3): the hub's Airlock row is copied to local and
+ * dropped, so the org's protection stays in force and becomes editable here.
+ * Never throws: a failure is logged, and the hub row - still in force - stays.
+ */
+async function releaseHubAirlockOnLeave(): Promise<void> {
+  try {
+    const out = await releaseHubAirlockPolicy({ storage });
+    if (out.released) {
+      console.log('[AIRLOCK] Left the hub: its Airlock policy is now this installation\'s local policy.');
+      io.emit('airlock_policy_changed', { source: 'local' });
+    }
+  } catch (e) {
+    console.error('[AIRLOCK] Could not keep the hub policy on leaving the hub:', (e as Error).message);
+  }
+}
+
+// GH-294 TEL-1: the sandbox proxy's reports carry their own token
+// (~/.agenfk/airlock/report-token), checked and made here when missing or
+// unsafe. Unreadable inside the sandbox, unlike verify-token. The route reads
+// the file per request, so a token that cannot be made means reports are refused.
+try {
+  ensureAirlockReportToken();
+} catch (e) {
+  console.warn(`[SERVER_START] Warning: could not check or create ~/.agenfk/airlock/report-token (${(e as Error).message}); Airlock proxy decisions will not be accepted.`);
+}
+
+// Airlock (GH-294): the policy, its authority and the one evaluator. Not under
+// /settings: PUT /settings is unauthenticated and has no notion of the hub
+// owning a value (AFK_ARCHITECTURE.md). A hub-joined installation cannot write
+// it locally; a standalone one always can (no passkeys, 2026-10-27).
+registerAirlockRoutes(app, {
+  storage: () => storage,
+  hubJoined: () => hubClient.isEnabled,
+  recordHubEvent: (event) => recordHubEvent(event as RecordEventInput).catch(() => { /* never fails a request */ }),
+  emit: (event, payload) => io.emit(event, payload),
+  activeWork: (sessionId) => readActiveWorkForSession(sessionId),
+  reportToken: airlockReportTokenReader(),
+  refreshFromHub: async () => {
+    if (!hubClient.isEnabled || !hubClient.hubConfig) return;
+    await runAirlockSync({
+      storage,
+      hubConfig: hubClient.hubConfig,
+      fetchImpl: globalThis.fetch as any,
+      emit: (event, payload) => io.emit(event, payload),
+      activeHubConfig: () => hubClient.hubConfig,
+    });
+  },
+});
 
 app.get("/settings", asyncHandler(async (_req: any, res: any) => {
   // Always 200 with the defaults. A fresh install has nothing stored, and a
@@ -11480,6 +11549,11 @@ app.post('/internal/hub/reload', asyncHandler(async (req: any, res: any) => {
   }
   const changed = hubClient.reloadConfig();
   if (changed) startHubSubsystems();
+  // GH-294: answers to Airlock syncs started under the old config are not
+  // adopted. Leaving the hub (hub.json confirmed gone, not merely unreadable)
+  // keeps the org's Airlock policy, now as the local one.
+  if (changed) invalidateAirlockSyncs();
+  if (changed && !hubClient.isEnabled && hubConfirmedAbsent()) await releaseHubAirlockOnLeave();
   // A rejoin or repoint may change which org's JIRA this installation sees.
   clearHubJiraStatusCache();
   res.json({
@@ -13135,6 +13209,9 @@ export const API_PATH_PREFIXES = [
   // `/hub/refusals` feeds the board's refusal indicator (#223). The board has
   // no page under /hub, so nothing of the SPA is shadowed by claiming it.
   '/hub',
+  // `/airlock` is the Airlock policy, decisions, approvals and learning (GH-294).
+  // The board has no page under /airlock, so nothing of the SPA is shadowed.
+  '/airlock',
 ];
 
 /**

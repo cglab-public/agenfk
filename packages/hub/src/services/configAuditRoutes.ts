@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction, Express, RequestHandler } from 'e
 import type { DB } from '../db.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { recordAudit, type AuditSource } from './configAudit.js';
+import { airlockAuditSnapshot } from './airlock.js';
 
 /**
  * Which hub routes change configuration, and how each is audited (STORY
@@ -140,6 +141,9 @@ const repoSettingsSnap: Snapshot = async (db, orgId, _p, req) => {
   }
 };
 
+/** The org's Airlock policy (GH-294): the view the admin reads, so the row says from what policy to what. */
+const airlockSnap: Snapshot = async (db, orgId) => airlockAuditSnapshot(db, orgId);
+
 /** The repo a repository-settings request names (the caller's own spelling). */
 const repoTarget = (_p: Params, req: Request) =>
   (typeof req.body?.repo === 'string' && req.body.repo.trim() ? req.body.repo.trim() : 'repository');
@@ -217,6 +221,10 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   { method: 'PUT', path: '/v1/admin/repos/mode', area: 'repositories', action: 'repo.mode', target: repoTarget, snapshot: repoSettingsSnap },
   { method: 'PUT', path: '/v1/admin/repos/producers', area: 'repositories', action: 'repo.producer', target: repoTarget, snapshot: repoSettingsSnap },
   { method: 'PUT', path: '/v1/admin/repos/producer-mode', area: 'repositories', action: 'repo.producer-mode', target: repoTarget, snapshot: repoSettingsSnap },
+  // Airlock (GH-294): the org's policy every joined installation adopts, and its IOC host list.
+  { method: 'PUT', path: '/v1/admin/airlock', area: 'airlock', action: 'airlock.update', target: () => "the org's Airlock policy", snapshot: airlockSnap },
+  { method: 'PUT', path: '/v1/admin/airlock/ioc', area: 'airlock', action: 'airlock.ioc', target: () => "the org's Airlock IOC host list", snapshot: airlockSnap },
+  { method: 'POST', path: '/v1/admin/airlock/learning/accept', area: 'airlock', action: 'airlock.learning-accept', target: () => "the org's Airlock policy (proposed hosts allowed)", snapshot: airlockSnap },
   // JIRA (the org's app) and the org itself
   { method: 'PUT', path: '/v1/admin/jira', area: 'jira', action: 'jira.update', target: () => "the org's JIRA app", snapshot: jiraSnap },
   { method: 'POST', path: '/v1/admin/jira/disconnect-all', area: 'jira', action: 'jira.disconnect-all', target: () => 'every JIRA connection', noBody: true },

@@ -26,6 +26,7 @@ import { registryFlowToLocal } from './registryFlowFile.js';
 import { ghPrCreateArgs } from './prArgs.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
+import { registerAirlockCommands } from './commands/airlock.js';
 import { registerCiCommands } from './commands/ci.js';
 import { toonEncode } from './toon.js';
 import { releaseHint } from './releaseHint.js';
@@ -651,6 +652,7 @@ program
 ;
 
 registerHubCommands(program);
+registerAirlockCommands(program);
 registerCiCommands(program);
 
 // Fire-and-forget telemetry for every command invocation (command name only — no args).

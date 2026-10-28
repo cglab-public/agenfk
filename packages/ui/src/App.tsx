@@ -5,6 +5,7 @@ import { SocketProvider } from './SocketContext'
 import { isDesktop } from './desktop'
 import { ActiveProjectProvider } from './ActiveProject'
 import { SplashScreen } from './components/SplashScreen'
+import { AirlockAlertBanner } from './components/AirlockAlertBanner'
 
 function App() {
   /*
@@ -71,6 +72,8 @@ function App() {
     {splash && <SplashScreen onDone={() => setSplash(false)} />}
     <ActiveProjectProvider>
       <SocketProvider>
+        {/* GH-294 TEL-2: Airlock alerts pushed on the socket, in either shell. */}
+        <AirlockAlertBanner />
         {isDesktop() ? (
           <AppShell>{board}</AppShell>
         ) : (

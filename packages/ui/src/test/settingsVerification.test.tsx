@@ -33,6 +33,9 @@ vi.mock('../api', () => ({
     ] })),
     updateProject: vi.fn(async () => ({})),
     listProjects: vi.fn(async () => [{ id: 'p1', name: 'Alpha' }, { id: 'p2', name: 'Beta' }]),
+    getAirlockPolicy: vi.fn(async () => ({ effective: { schemaVersion: 1, mode: 'off', models: [], appliesWhenModelUnknown: true, hosts: { allow: [], deny: [] }, iocHosts: { revision: '', hosts: [], updatedAt: null }, rules: { uploadToUnlistedHost: 'deny', credentialReadWithNetwork: 'deny', namespaceEscape: 'deny', cloudMutation: 'needs-human-approval' } }, source: 'local', revision: 0, hubManaged: false, local: null, hub: null })),
+    getAirlockApprovals: vi.fn(async () => ({ pending: [], recent: [] })),
+    getAirlockDecisions: vi.fn(async () => ({ decisions: [] })),
   },
 }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -47,6 +50,15 @@ const openVerification = async () => {
   fireEvent.click(await screen.findByRole('button', { name: /Verification/ }));
   return screen.findByRole('combobox', { name: /Suite runs at once/ });
 };
+
+describe('Settings: Airlock (GH-294)', () => {
+  it('opens on the section it is asked for, as `agenfk airlock edit` links it', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={qc}><SettingsPanel initialSection="airlock" /></QueryClientProvider>);
+    expect((await screen.findByRole('button', { name: /Airlock/ })).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Airlock');
+  });
+});
 
 describe('Settings: Verification', () => {
   it('offers Automatic, saying what it is on this machine, and 1 to the CPU count', async () => {

@@ -38,6 +38,7 @@ import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
 import { FlowEditorModal, renderStepIcon } from './FlowEditorModal';
 import { BoardSettingsDialog } from './BoardSettingsDialog';
+import { settingsSectionFromSearch } from '../airlockForm';
 import { OrgFlowPicker } from './OrgFlowPicker';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
@@ -583,7 +584,17 @@ export const KanbanBoard: React.FC = () => {
   const [isReadmeOpen, setIsReadmeOpen] = useState(false);
   const [isFlowEditorOpen, setIsFlowEditorOpen] = useState(false);
   // 7b640e64: the desktop shell has its own Settings; a browser reaches them from here.
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // GH-294: `agenfk airlock edit` links `?settings=airlock`; the dialog opens on
+  // that section once, and the parameter leaves the URL so a reload does not reopen it.
+  const [settingsSection] = useState(() => settingsSectionFromSearch(window.location.search));
+  const [isSettingsOpen, setIsSettingsOpen] = useState(() => settingsSection !== null);
+  useEffect(() => {
+    if (settingsSection === null) return;
+    const params = new URLSearchParams(window.location.search);
+    params.delete('settings');
+    const rest = params.toString();
+    window.history.replaceState(null, '', window.location.pathname + (rest ? `?${rest}` : '') + window.location.hash);
+  }, [settingsSection]);
   const [isOrgFlowPickerOpen, setIsOrgFlowPickerOpen] = useState(false);
 
   const { data: versionData } = useQuery({
@@ -2554,7 +2565,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
       <WhatsNewModal isOpen={isWhatsNewOpen} onClose={() => setIsWhatsNewOpen(false)} />
       <ReadmeModal isOpen={isReadmeOpen} onClose={() => setIsReadmeOpen(false)} />
 
-      {isSettingsOpen && <BoardSettingsDialog projectId={selectedProjectId} onClose={() => setIsSettingsOpen(false)} />}
+      {isSettingsOpen && <BoardSettingsDialog projectId={selectedProjectId} initialSection={settingsSection} onClose={() => setIsSettingsOpen(false)} />}
       {isFlowEditorOpen && selectedProjectId && (
         <FlowEditorModal
           isOpen={isFlowEditorOpen}

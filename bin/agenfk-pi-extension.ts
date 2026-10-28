@@ -68,7 +68,9 @@ interface PiEvent {
   [k: string]: unknown;
 }
 interface PiUi { notify?: (message: string, type?: 'info' | 'warning' | 'error') => void }
-interface PiContext { getModel?: () => PiModel | undefined; ui?: PiUi }
+// pi 1.4's ExtensionContext carries the live model as `model` (with `cwd`);
+// getModel() exists only on an internal runner type and is kept as a fallback.
+interface PiContext { model?: PiModel; getModel?: () => PiModel | undefined; ui?: PiUi; cwd?: string }
 interface PiMessage { customType: string; content: string; display?: boolean }
 interface PiSendOptions { deliverAs?: 'steer' | 'followUp' | 'nextTurn'; triggerTurn?: boolean }
 interface PiApi {
@@ -92,6 +94,206 @@ export interface PiExtensionDeps {
   readTranscriptModel: () => string | null;
   // The model pi attributes to the command being run (PI_PROVIDER/PI_MODEL).
   readEnvModel: () => string | null;
+  /**
+   * Airlock's verdict on a tool call, from the shared ~/.agenfk/bin/agenfk-airlock.mjs
+   * (GH-294). null when it could not run (no runtime, no script, no answer).
+   * Optional so a caller that never wires Airlock is unaffected.
+   */
+  airlockVerdict?: (request: AirlockRequest) => AirlockResult | null;
+  /** The policy copy the server writes to ~/.agenfk/airlock-state.json, or null. */
+  readAirlockState?: () => AirlockState | null;
+  /**
+   * Is this pi inside the Airlock sandbox (agenfk airlock pi)? Wired, it turns
+   * on the launch gate; optional so a caller that never wires it is unaffected.
+   */
+  isSandboxed?: () => boolean | AirlockSandboxStatus;
+}
+
+// ── Airlock (GH-294) ─────────────────────────────────────────────────────────
+
+export interface AirlockSessionModel { provider: string | null; id: string | null }
+export interface AirlockRequest {
+  client: 'pi';
+  model: AirlockSessionModel | null;
+  toolName: string;
+  args: Record<string, unknown>;
+  sessionId?: string;
+  cwd?: string;
+}
+interface AirlockVerdict { decision: string; rule?: string; reason?: string; approvalKey?: string }
+export type AirlockResult =
+  | { status: 'ok'; verdict: AirlockVerdict; mode: string; applies: boolean; revision?: number; source?: string }
+  | { status: 'unreachable'; reason?: string };
+export interface AirlockState {
+  mode?: string;
+  revision?: number;
+  source?: string;
+  models?: Array<{ client?: string; provider?: string; model?: string }>;
+  appliesWhenModelUnknown?: boolean;
+}
+/** What this process last heard from the server. The agent's shell cannot write it. */
+interface AirlockLastKnown { mode: string; applies: boolean; revision?: number; source?: string; at: number; modelKey: string }
+
+/** An `off` answer is trusted for this long before the server is asked again. */
+export const AIRLOCK_OFF_TTL_MS = 30_000;
+/** How long a server answer may stand in for the server when it is unreachable. */
+export const AIRLOCK_LAST_KNOWN_TTL_MS = 30_000;
+
+/**
+ * True when the state file holds a policy the answer did not see: a higher
+ * revision, or another source (hub and local revisions are counted apart).
+ */
+function airlockStateIsNewer(state: AirlockState | null, known: { revision?: number; source?: string }): boolean {
+  if (!state || typeof state.revision !== 'number') return false;
+  if ((state.source ?? 'local') !== (known.source ?? 'local')) return true;
+  return state.revision > (typeof known.revision === 'number' ? known.revision : -1);
+}
+
+/**
+ * True when a tool call carries something Airlock judges: a command, a local
+ * path or a URL, under the argument keys core's capabilitiesOf reads. The tool's
+ * name plays no part.
+ */
+export function hasAirlockCapabilities(input: Record<string, unknown> | undefined | null): boolean {
+  if (!input || typeof input !== 'object') return false;
+  const text = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+  const local = (v: unknown) => text(v) && !(v as string).startsWith('xd://') && (v as string) !== 'local://';
+  for (const k of ['command', 'cmd', 'commands']) {
+    const v = input[k];
+    if ((Array.isArray(v) ? v : [v]).some(text)) return true;
+  }
+  const paths = [input.path, input.file_path, input.filePath, input.notebook_path, ...(Array.isArray(input.paths) ? input.paths : [])];
+  if (paths.some(local)) return true;
+  return [input.url, input.uri, input.href].some(text);
+}
+
+/** `provider/model` as pi joins it, split at the first slash (core's modelFromPi). */
+function splitJoinedModel(joined: string): AirlockSessionModel {
+  const j = joined.trim();
+  const slash = j.indexOf('/');
+  return slash > 0 ? { provider: j.slice(0, slash), id: j.slice(slash + 1) || null } : { provider: null, id: j || null };
+}
+
+function airlockGlob(pattern: string | undefined, value: string | null): boolean {
+  if (pattern === undefined || pattern === null || pattern === '*') return true;
+  const re = new RegExp(`^${String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`, 'i');
+  return re.test(value ?? '');
+}
+
+/**
+ * The rule for a tool call the server could not judge. It mirrors
+ * decideWhenUnreachable in bin/agenfk-airlock.mjs, because pi reaches that
+ * script by spawning it, and the cases here are exactly the ones where the
+ * spawn gave nothing back. Block only when the last-known mode (this process's
+ * last answer for this model, else the state file) is enforce AND the session
+ * is covered; allow otherwise.
+ */
+export function airlockWhenUnreachable(
+  lastKnown: { mode: string; applies: boolean; revision?: number; source?: string; at?: number } | null,
+  state: AirlockState | null,
+  model: AirlockSessionModel | null,
+  now: number = Date.now(),
+): { block: boolean; reason?: string } {
+  const blocked = {
+    block: true,
+    reason: '[agenfk airlock] the AgEnFK server could not be reached to check this tool call, and the Airlock policy ' +
+      'enforces for this session, so it is refused. Start the server (agenfk up) and retry.',
+  };
+  if (lastKnown) {
+    if (lastKnown.mode === 'enforce' && lastKnown.applies) {
+      // Expiry removes only permissiveness: a blocking answer holds, however
+      // old, until a strictly newer revision from the same source replaces it.
+      // A missing, unreadable, older or other-source state file never does.
+      const sameSource = !!state && (state.source ?? 'local') === (lastKnown.source ?? 'local');
+      const replaced = sameSource && typeof state?.revision === 'number' &&
+        state.revision > (typeof lastKnown.revision === 'number' ? lastKnown.revision : -1);
+      if (!replaced) return blocked;
+    } else if (typeof lastKnown.at === 'number' && now - lastKnown.at < AIRLOCK_LAST_KNOWN_TTL_MS &&
+      !airlockStateIsNewer(state, lastKnown)) {
+      // A permissive answer stands only while fresh and nothing newer was written.
+      return { block: false };
+    }
+  }
+  if (!state || state.mode !== 'enforce') return { block: false };
+  return airlockStateCovers(state, model) ? blocked : { block: false };
+}
+
+/** Does the policy in the state file cover a pi session on this model? Mirrors core's modelSelected. */
+function airlockStateCovers(state: AirlockState, model: AirlockSessionModel | null): boolean {
+  if (!model?.id) return state.appliesWhenModelUnknown !== false;
+  const models = Array.isArray(state.models) ? state.models : [];
+  return models.length === 0 || models.some((s) =>
+    !!s && typeof s === 'object' &&
+    (s.client === undefined || s.client === '*' || s.client === 'pi') &&
+    airlockGlob(s.provider, model.provider) && airlockGlob(s.model, model.id));
+}
+
+// ── Airlock launch gate (layer 2) ────────────────────────────────────────────
+
+const AIRLOCK_PROXY_VARS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'];
+
+export interface AirlockConfinement { confined: boolean; reason?: string }
+export interface AirlockSandboxStatus { sandboxed: boolean; reason?: string }
+
+/**
+ * Is this process inside the Airlock sandbox? The marker and the proxy env
+ * `agenfk airlock pi` sets, ~/.agenfk unwritable, AND a direct connection
+ * refused by the sandbox (`prove`, see proveConfinement in
+ * bin/agenfk-airlock.mjs). Env vars and a chmod alone are not enough. Mirrors
+ * airlockSandboxCheck there.
+ */
+export function airlockSandboxed(
+  env: Record<string, string | undefined> = process.env,
+  homeDir: string = os.homedir(),
+  access: (p: string, mode: number) => void = fs.accessSync,
+  prove: () => AirlockConfinement | null = processConfinement,
+): AirlockSandboxStatus {
+  const set = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+  if (!set(env.AGENFK_AIRLOCK_SANDBOX)) return { sandboxed: false };
+  if (!AIRLOCK_PROXY_VARS.some((k) => set(env[k]))) return { sandboxed: false };
+  try {
+    access(path.join(homeDir, '.agenfk'), fs.constants.W_OK);
+    return { sandboxed: false, reason: '~/.agenfk is writable, which it never is inside the sandbox' };
+  } catch (e) {
+    const code = (e as { code?: string })?.code ?? '';
+    if (!['EPERM', 'EACCES', 'EROFS'].includes(code)) return { sandboxed: false, reason: `~/.agenfk could not be checked (${code || 'error'})` };
+  }
+  const proof = prove();
+  return proof?.confined ? { sandboxed: true } : { sandboxed: false, reason: proof?.reason ?? 'the confinement probe gave no answer' };
+}
+
+/**
+ * The confinement proof, run once per process through the shared script
+ * (pi's hooks are synchronous, the probe is a socket). A probe that could not
+ * run at all is not remembered, so a later call tries again.
+ */
+let confinementResult: AirlockConfinement | null = null;
+function processConfinement(): AirlockConfinement | null {
+  if (confinementResult) return confinementResult;
+  const r = runHookScript('agenfk-airlock.mjs', [], { probe: 'confinement' });
+  if (r && typeof r.confined === 'boolean') confinementResult = { confined: r.confined, reason: typeof r.reason === 'string' ? r.reason : undefined };
+  return confinementResult;
+}
+
+export const airlockLaunchGateReason = (reason?: string): string =>
+  '[agenfk airlock] this pi session is covered by the Airlock policy in enforce mode but is not running ' +
+  `inside the Airlock sandbox, so every tool call is refused.${reason ? ` The sandbox could not be confirmed: ${reason}.` : ''} ` +
+  'Exit and relaunch it with: agenfk airlock pi';
+
+
+/** The block a verdict asks for, or null to let the call through. */
+export function airlockBlock(verdict: AirlockVerdict): { block: true; reason: string } | null {
+  if (verdict.decision === 'deny') {
+    return { block: true, reason: `[agenfk airlock] ${verdict.rule}: ${verdict.reason}` };
+  }
+  if (verdict.decision === 'needs-human-approval') {
+    return {
+      block: true,
+      reason: `[agenfk airlock] ${verdict.rule}: ${verdict.reason}. A person must approve request ${verdict.approvalKey} ` +
+        'on the AgEnFK board (agenfk ui); once it is approved, retry the same call.',
+    };
+  }
+  return null;
 }
 
 const HOOK_DIR = path.join(os.homedir(), '.agenfk', 'bin');
@@ -183,6 +385,46 @@ export function gateTargetPath(input: Record<string, unknown> | undefined | null
     if (candidate.includes('://')) continue; // a device, not a file
     return candidate;
   }
+  return undefined;
+}
+
+// A patch names its files in header lines ('*** Update File: src/a.ts').
+const PATCH_HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm;
+
+const PATCH_BEGIN = /^\*\*\* Begin Patch\s*$/m;
+
+/** Every distinct file a patch touches, or [] when the text names none. */
+export function patchTargets(text: string): string[] {
+  return [...new Set([...text.matchAll(PATCH_HEADER)].map((m) => m[1].trim()).filter(Boolean))];
+}
+
+/**
+ * The patch a tool carries, whatever the tool is called (apply_patch puts it in
+ * patchText, patch or input). Only a real patch envelope counts, so text that
+ * merely mentions a header is not mistaken for a write.
+ */
+export function toolPatch(input: Record<string, unknown> | undefined | null): string | undefined {
+  if (!input) return undefined;
+  for (const v of [input.patchText, input.patch, input.input]) {
+    if (typeof v === 'string' && PATCH_BEGIN.test(v) && patchTargets(v).length) return v;
+  }
+  return undefined;
+}
+
+/** The input key holding the command a tool is about to run, whatever the tool is called. */
+export function toolCommandKey(input: Record<string, unknown> | undefined | null): 'command' | 'cmd' | undefined {
+  if (!input) return undefined;
+  for (const key of ['command', 'cmd'] as const) {
+    const v = input[key];
+    if (typeof v === 'string' && v.trim()) return key;
+  }
+  return undefined;
+}
+
+/** The file a non-writing tool is about to read, whatever the tool is called. */
+export function toolReadPath(input: Record<string, unknown> | undefined | null): string | undefined {
+  if (!input) return undefined;
+  for (const v of [input.path, input.file_path, input.filePath]) if (typeof v === 'string' && v.trim()) return v;
   return undefined;
 }
 
@@ -298,11 +540,14 @@ export function readPiDefaultModel(
 
 /**
  * Resolve the model from the most reliable source, best first:
- *   0. env()               — PI_PROVIDER/PI_MODEL, which pi re-resolves per command
- *   1. ctx.getModel()      — the live model, when pi exposes it (rare in live pi)
- *   2. lastSelected        — cached from a model_select event
- *   3. readTranscript()    — pi's session jsonl: the model that actually answered
- *   4. readDefault()       — settings.json defaultModel, the stale/ambiguous last resort
+ *   0. ctx.model           — the live model pi hands every extension handler
+ *                            (ExtensionContext.model, pi 1.4)
+ *   1. env()               — PI_PROVIDER/PI_MODEL; set in the bash tool's child
+ *                            shell, so usually absent in the extension's process
+ *   2. ctx.getModel()      — older/internal context shapes
+ *   3. lastSelected        — cached from a model_select event
+ *   4. readTranscript()    — pi's session jsonl: the model that actually answered
+ *   5. readDefault()       — settings.json defaultModel, the stale/ambiguous last resort
  *
  * Returns `provider/model` when the source knows a provider, else the bare id. The
  * hub strips router/provider prefixes when matching a model id
@@ -317,6 +562,11 @@ export function resolveModelSource(sources: {
   env?: () => string | null;
 }): string | null {
   const { ctx, lastSelected, readDefault } = sources;
+  try {
+    const live = ctx?.model;
+    const fromLive = live ? joinModel(live.provider, live.id) : null;
+    if (fromLive) return fromLive;
+  } catch { /* fall through */ }
   try {
     const fromEnv = sources.env ? sources.env() : null;
     if (fromEnv) return fromEnv;
@@ -601,6 +851,18 @@ export function defaultDeps(): PiExtensionDeps {
     readDefaultModel,
     readTranscriptModel,
     readEnvModel: () => envModel(process.env),
+    // Enforcing only when the policy says so: a missing runtime or script comes
+    // back null, and the caller applies the unreachable rule to it.
+    airlockVerdict: (request) => runHookScript('agenfk-airlock.mjs', [], request),
+    readAirlockState: () => {
+      try {
+        const s = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.agenfk', 'airlock-state.json'), 'utf8'));
+        return s && typeof s === 'object' && !Array.isArray(s) ? s : null;
+      } catch {
+        return null;
+      }
+    },
+    isSandboxed: () => airlockSandboxed(),
   };
 }
 
@@ -620,9 +882,105 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
       env: deps.readEnvModel,
     });
 
+  let lastSelectedProvider: string | null = null;
   pi.on('model_select', (event) => {
-    try { const id = event?.model?.id; if (id) lastSelectedModel = String(id); } catch { /* ignore */ }
+    try {
+      const id = event?.model?.id;
+      if (id) {
+        lastSelectedModel = String(id);
+        const provider = event?.model?.provider;
+        lastSelectedProvider = typeof provider === 'string' && provider.trim() ? provider.trim() : null;
+      }
+    } catch { /* ignore */ }
   });
+
+  // Airlock wants the model as provider + id. Same sources, same order as
+  // modelFor; a source that knows no provider is sent as a bare id rather than
+  // split on a slash that belongs to the id (`@cf/zai-org/glm-5.2`).
+  const liveModel = (live: PiModel | undefined): AirlockSessionModel | null => {
+    const id = typeof live?.id === 'string' ? live.id.trim() : '';
+    if (!id) return null;
+    return { provider: typeof live?.provider === 'string' && live.provider.trim() ? live.provider.trim() : null, id };
+  };
+  const airlockModelFor = (ctx: PiContext | undefined): AirlockSessionModel | null => {
+    try { const m = liveModel(ctx?.model); if (m) return m; } catch { /* next */ }
+    try { const e = deps.readEnvModel(); if (e) return splitJoinedModel(e); } catch { /* next */ }
+    try { const m = liveModel(ctx?.getModel?.()); if (m) return m; } catch { /* next */ }
+    if (lastSelectedModel) return { provider: lastSelectedProvider, id: lastSelectedModel };
+    try { const t = deps.readTranscriptModel(); if (t) return splitJoinedModel(t); } catch { /* next */ }
+    try { const d = deps.readDefaultModel(); if (d) return { provider: null, id: d.trim() }; } catch { /* next */ }
+    return null;
+  };
+
+  let airlockLastKnown: AirlockLastKnown | null = null;
+  /** Airlock's word on one tool call: a block, or null to let it through. Never throws. */
+  const airlockCheck = (event: PiEvent, ctx: PiContext | undefined): { block: true; reason: string } | null => {
+    const ask = deps.airlockVerdict;
+    const input = event?.input;
+    if (!ask || !hasAirlockCapabilities(input)) return null;
+    const readState = (): AirlockState | null => {
+      try { return deps.readAirlockState ? deps.readAirlockState() : null; } catch { return null; }
+    };
+    // A fresh `off` needs no spawn (mode is policy-wide, whatever the model),
+    // unless the server has since written a newer policy to the state file.
+    if (airlockLastKnown?.mode === 'off' && Date.now() - airlockLastKnown.at < AIRLOCK_OFF_TTL_MS &&
+      !airlockStateIsNewer(readState(), airlockLastKnown)) return null;
+    const model = airlockModelFor(ctx);
+    const modelKey = model ? `${model.provider ?? ''}/${model.id ?? ''}` : '';
+    let result: AirlockResult | null = null;
+    try {
+      const sessionId = (process.env.AGENFK_SESSION_ID ?? '').trim();
+      result = ask({
+        client: 'pi',
+        model,
+        toolName: String(event?.toolName ?? ''),
+        args: input as Record<string, unknown>,
+        ...(sessionId ? { sessionId } : {}),
+        ...(typeof ctx?.cwd === 'string' && ctx.cwd ? { cwd: ctx.cwd } : {}),
+      });
+    } catch { result = null; }
+    if (result && result.status === 'ok' && result.verdict && typeof result.verdict.decision === 'string') {
+      airlockLastKnown = {
+        mode: String(result.mode), applies: result.applies === true,
+        revision: result.revision, source: result.source, at: Date.now(), modelKey,
+      };
+      return airlockBlock(result.verdict);
+    }
+    // Unreachable, or the script never answered. The last answer counts only
+    // for the model it was given for, while fresh, and while the state file
+    // holds nothing newer; otherwise the state file decides.
+    const known = airlockLastKnown && airlockLastKnown.modelKey === modelKey ? airlockLastKnown : null;
+    const fallback = airlockWhenUnreachable(known, readState(), model);
+    return fallback.block ? { block: true, reason: fallback.reason as string } : null;
+  };
+
+  /**
+   * The launch gate: in enforce mode, a covered session outside the sandbox
+   * has every tool call refused, whatever it carries. Per call, with the model
+   * of that call, so a switch to a covered model is caught on the next one.
+   * "Enforce and covered" is this process's last answer for that model, unless
+   * the state file holds a newer policy, else the state file.
+   */
+  const airlockGate = (ctx: PiContext | undefined): { block: true; reason: string } | null => {
+    const sandboxed = deps.isSandboxed;
+    if (!sandboxed) return null;
+    let state: AirlockState | null = null;
+    try { state = deps.readAirlockState ? deps.readAirlockState() : null; } catch { state = null; }
+    const model = airlockModelFor(ctx);
+    const modelKey = model ? `${model.provider ?? ''}/${model.id ?? ''}` : '';
+    const known = airlockLastKnown && airlockLastKnown.modelKey === modelKey ? airlockLastKnown : null;
+    const enforcing = known && !airlockStateIsNewer(state, known)
+      ? known.mode === 'enforce' && known.applies
+      : !!state && state.mode === 'enforce' && airlockStateCovers(state, model);
+    if (!enforcing) return null;
+    // Probed only when the gate applies: the proof is a socket, once per process.
+    let status: AirlockSandboxStatus;
+    try {
+      const s = sandboxed();
+      status = typeof s === 'boolean' ? { sandboxed: s } : s;
+    } catch { status = { sandboxed: false }; }
+    return status.sandboxed ? null : { block: true, reason: airlockLaunchGateReason(status.reason) };
+  };
 
   // #4 — load confirmation. On session_start, prove the extension loaded and that
   // pi's event bus dispatches to it (the open question on every pi upgrade). The
@@ -641,29 +999,56 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
   pi.on('tool_call', (event, ctx) => {
     try {
       const name = event?.toolName;
-      if (GATED_WRITE_TOOLS.has(String(name))) {
-        const filePath = gateTargetPath(event?.input as Record<string, unknown> | undefined);
-        const v = deps.gatekeeperVerdict(filePath);
-        if (v && v.decision === 'block') return { block: true, reason: v.reason };
-      } else if (name === 'bash') {
-        const command = event?.input?.command ?? event?.input?.cmd;
-        // Force the real model onto agenfk PR-registration commands BEFORE they run
-        // so the pr.opened/pr.updated event can't carry a guessed model. Mutate
-        // event.input in place (pi's supported way to modify tool arguments).
-        const model = modelFor(ctx);
-        if (event?.input && typeof command === 'string') {
-          const rewritten = injectDeterministicModel(command, model);
-          if (rewritten !== command) {
-            if ('command' in event.input) event.input.command = rewritten;
-            else if ('cmd' in event.input) event.input.cmd = rewritten;
-          }
+      // Apart from the write tools, a tool is judged by what it carries, not its
+      // name: plugin tools such as pi-patty-bg-tasks' bash_bg run commands too
+      // (BUG dac2720a).
+      const input = event?.input;
+      const commandKey = toolCommandKey(input);
+      const readPath = toolReadPath(input);
+      const patch = toolPatch(input);
+      if (patch !== undefined) {
+        // A patch is gated by every file it touches, whatever the tool is called
+        // (BUG 59d3ad7c): it names them in its text, not in a path argument.
+        // An embedded session applies the patch in its own ctx.cwd, which need
+        // not be this process's directory (where the hook would resolve it).
+        const sessionDir = typeof ctx?.cwd === 'string' && ctx.cwd ? ctx.cwd : undefined;
+        for (const target of patchTargets(patch)) {
+          const filePath = sessionDir ? path.resolve(sessionDir, target) : target;
+          const v = deps.gatekeeperVerdict(filePath);
+          if (v && v.decision === 'block') return { block: true, reason: v.reason };
         }
-        const v = deps.enforcerVerdict(command);
-        if (v && v.decision === 'block') return { block: true, reason: v.reason };
-      } else if (name === 'read') {
-        const v = deps.readVerdict(event?.input?.path ?? event?.input?.file_path);
-        if (v && v.decision === 'block') return { block: true, reason: v.reason };
       }
+      if (GATED_WRITE_TOOLS.has(String(name))) {
+        if (patch === undefined) {
+          const v = deps.gatekeeperVerdict(gateTargetPath(input as Record<string, unknown> | undefined));
+          if (v && v.decision === 'block') return { block: true, reason: v.reason };
+        }
+      } else {
+        // A patch does not exempt a tool from the command and path checks.
+        // A command and a path are checked independently: a tool carrying both
+        // must not get its path through on the strength of a harmless command.
+        if (input && commandKey) {
+          const command = input[commandKey] as string;
+          // Force the real model onto agenfk PR-registration commands BEFORE they run
+          // so the pr.opened/pr.updated event can't carry a guessed model. Mutate
+          // the key that holds the command (pi's supported way to modify tool
+          // arguments), never a blank sibling the tool does not run.
+          const rewritten = injectDeterministicModel(command, modelFor(ctx));
+          if (rewritten !== command) input[commandKey] = rewritten;
+          const v = deps.enforcerVerdict(command);
+          if (v && v.decision === 'block') return { block: true, reason: v.reason };
+        }
+        if (readPath !== undefined) {
+          const v = deps.readVerdict(readPath);
+          if (v && v.decision === 'block') return { block: true, reason: v.reason };
+        }
+      }
+      // Airlock last: the workflow checks above have had their say, so a
+      // refused edit is reported as the workflow's, not the policy's.
+      const airlock = airlockCheck(event, ctx);
+      if (airlock) return airlock;
+      const gate = airlockGate(ctx);
+      if (gate) return gate;
     } catch { /* never break the host */ }
     return undefined;
   });

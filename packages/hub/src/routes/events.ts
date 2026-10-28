@@ -5,6 +5,8 @@ import { recomputeBackdatedDays, utcDayOf } from '../rollup.js';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { upsertInstallation } from '../services/installations.js';
+import { recordAirlockApplied, recordAirlockDecision, recordAirlockRefused, reportTimeOf } from '../services/airlock.js';
+import { recordAirlockLearningProposal } from '../services/airlockLearning.js';
 import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
@@ -40,7 +42,7 @@ import { asyncRoute } from '../util/asyncRoute.js';
  * Backward compatible: the legacy counters are unchanged and this field is
  * purely additive; old spokes ignore it.
  */
-export type EventRejectionReason = 'invalid' | 'org_mismatch' | 'foreign_installation' | 'hidden_user';
+export type EventRejectionReason = 'invalid' | 'org_mismatch' | 'foreign_installation' | 'hidden_user' | 'future_dated';
 export interface EventRejection {
   /** Best-effort: null when the event had no usable eventId (often why it is invalid). */
   eventId: string | null;
@@ -226,6 +228,10 @@ export function eventsRouter(ctx: HubServerContext): Router {
     // forwardEvents is a no-op and nothing is queued.
     const forwardable: Array<Record<string, unknown>> = [];
     const rejections: EventRejection[] = [];
+    // Airlock decisions stored in this batch, projected after the transaction.
+    const airlockDecisions: Array<{ e: HubEvent; userKey: string }> = [];
+    // Airlock learning proposals stored in this batch (TEL-3), projected after it too.
+    const airlockProposals: HubEvent[] = [];
     // Days of the events actually stored (not skipped, not refused), for the
     // backdated rollup repair after the transaction (#223).
     const ingestedDays = new Set<string>();
@@ -326,6 +332,12 @@ export function eventsRouter(ctx: HubServerContext): Router {
         if (e.orgId !== orgId) { rejected++; rejections.push({ eventId: e.eventId, reason: 'org_mismatch' }); continue; }
         if (keyInstallation && e.installationId !== keyInstallation) { rejected++; rejections.push({ eventId: e.eventId, reason: 'foreign_installation' }); continue; }
         if (foreignInstalls.has(e.installationId)) { rejected++; rejections.push({ eventId: e.eventId, reason: 'foreign_installation' }); continue; }
+        // An Airlock report is ordered by its own time (HUB-2): one dated further ahead of
+        // this hub's clock than the allowed skew would freeze every later report out.
+        if ((e.type === 'airlock.policy-applied' || e.type === 'airlock.policy-refused') && !reportTimeOf(e.occurredAt)) {
+          const reason = Number.isFinite(Date.parse(e.occurredAt)) ? 'future_dated' : 'invalid';
+          rejected++; rejections.push({ eventId: e.eventId, reason }); continue;
+        }
         if (e.type === 'tokens.logged') { skipped++; continue; }
         // Resolve BEFORE the hidden check: hiding applies to the person, so a
         // merged-away key must not be a hole in the rule.
@@ -454,6 +466,22 @@ export function eventsRouter(ctx: HubServerContext): Router {
           }
         }
 
+        // Airlock (GH-294, HUB-2): which hub policy revision this installation
+        // applies, and a hub policy it refused. Like the fleet reports below, only
+        // a key bound to the machine may speak for it: an org-wide key could
+        // otherwise mark every installation up to date.
+        if (keyInstallation && e.type === 'airlock.policy-applied') {
+          await recordAirlockApplied(ctx.db, orgId, e.installationId, e.payload, e.occurredAt);
+        } else if (keyInstallation && e.type === 'airlock.policy-refused') {
+          await recordAirlockRefused(ctx.db, orgId, e.installationId, e.payload, e.occurredAt);
+        }
+        // A denial or an alert (HUB-1) is also kept for the admin's recent-denials
+        // list, once the events are committed (below). Any key the event was
+        // accepted from: it is a report like the event itself, not state
+        // another installation's standing depends on.
+        if (e.type === 'airlock.decision') airlockDecisions.push({ e, userKey });
+        if (e.type === 'airlock.learning-proposal') airlockProposals.push(e);
+
         // Fleet upgrade events transition the matching directive_target.
         // Identified by directiveId in the payload + the event's installation_id.
         if (e.type === 'fleet:upgrade:started'
@@ -540,6 +568,29 @@ export function eventsRouter(ctx: HubServerContext): Router {
         + `${keyInstallation ? ` (installation ${keyInstallation})` : ' (org-wide key)'}.`,
       );
     }
+    // The recent-denials list (HUB-1), after the transaction and outside it, one
+    // row at a time: a row that cannot be written - whatever the reason - is
+    // skipped and logged, and never fails or rolls back the events themselves.
+    // A savepoint would keep it atomic with its event, but pg-mem, which the
+    // suite runs Postgres on, cannot parse one.
+    for (const { e, userKey } of airlockDecisions) {
+      try {
+        await recordAirlockDecision(ctx.db, orgId, e, userKey, e.payload);
+      } catch (err) {
+        // The id is the sender's: JSON-escaped and cut, and an argument, never the format string.
+        console.warn('[AIRLOCK] stored event %s but could not list it as a denial: %s', JSON.stringify(String(e.eventId).slice(0, 200)), (err as Error).message);
+      }
+    }
+    // Learning proposals (TEL-3) for Admin -> Airlock, the same way: after the
+    // transaction, one event at a time, a failure skipped and logged.
+    for (const e of airlockProposals) {
+      try {
+        await recordAirlockLearningProposal(ctx.db, orgId, e, e.payload);
+      } catch (err) {
+        console.warn('[AIRLOCK] stored event %s but could not list its proposed hosts: %s', JSON.stringify(String(e.eventId).slice(0, 200)), (err as Error).message);
+      }
+    }
+
     // Roll up the past days this batch stored (#223). The timer only rolls up
     // from the latest rolled-up day forward, so an event dated before it — an
     // outbox catching up after days offline, or a deadletter requeue resending

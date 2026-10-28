@@ -112,11 +112,16 @@ describe('reconcileProjectFlow + per-project polling', () => {
     expect(b?.hubVersion).toBe(2);
   });
 
-  it('empty project list → no fetches', async () => {
-    const fetchImpl = vi.fn();
+  it('empty project list → no flow fetches, and the one org-scoped Airlock fetch', async () => {
+    const urls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      urls.push(url);
+      return { status: 304, ok: false, headers: { get: () => null }, json: async () => ({}) } as any;
+    });
     const etagCache = new Map<string, string>();
     await runFlowSyncTick({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, fetchImpl, emit, etagCache });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(urls.filter(u => u.includes('/v1/flows/active'))).toHaveLength(0);
+    expect(urls.filter(u => u.includes('/v1/airlock/policy'))).toHaveLength(1);
   });
 
   it('per-project failure does not break other projects', async () => {
@@ -125,7 +130,7 @@ describe('reconcileProjectFlow + per-project polling', () => {
 
     let calls = 0;
     const fetchImpl = vi.fn(async (url: string) => {
-      calls++;
+      if (url.includes('/v1/flows/active')) calls++; // per-project flow fetches; Airlock is one org-scoped fetch
       if (url.includes('projectId=p1')) throw new Error('boom');
       return {
         status: 200, ok: true,

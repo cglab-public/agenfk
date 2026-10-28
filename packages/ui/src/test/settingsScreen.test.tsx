@@ -256,7 +256,12 @@ describe('what it offers', () => {
     const sections = panel.querySelectorAll('[data-testid="settings-section"]');
     expect(sections.length).toBeGreaterThan(0);
     sections.forEach(section => {
-      expect(section.querySelectorAll('[data-testid="setting-row"]').length).toBeGreaterThan(0);
+      // A section is its rows, or one composite panel (Airlock) that says something even while it loads.
+      const rows = section.querySelectorAll('[data-testid="setting-row"]').length;
+      // Content, not a heading: a line of text, a control or a status.
+      const panels = [...section.querySelectorAll('[data-testid="setting-panel"]')]
+        .filter(p => p.querySelector('p, button, select, input, textarea, [role="status"]'));
+      expect(rows + panels.length).toBeGreaterThan(0);
     });
   });
 });
@@ -298,7 +303,7 @@ describe('the shape of it', () => {
     // appearing or vanishing is a decision somebody has to come here and make.
     // General is absent on purpose: it held only the tmux toggle.
     expect(within(rail).getAllByRole('button').map(b => b.textContent))
-      .toEqual(['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Agents']);
+      .toEqual(['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents']);
   });
 
   it('lists only sections that have something in them', async () => {
@@ -913,7 +918,7 @@ describe('the section menu carries an icon', () => {
     renderShell();
     await openSettingsRaw();
     const rail = await screen.findByRole('navigation', { name: /settings sections/i });
-    const labels = ['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Agents'];
+    const labels = ['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents'];
     expect(within(rail).getAllByRole('button').map(b => b.textContent)).toEqual(labels);
     // The name is what an icon actually breaks, so it is looked up by name
     // rather than read off the svg's aria-hidden.

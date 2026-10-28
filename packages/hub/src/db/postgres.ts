@@ -586,6 +586,68 @@ const SCHEMA_PG = `
   );
   CREATE INDEX IF NOT EXISTS idx_repo_settings_org ON repo_settings(org_id);
 
+  -- Airlock (GH-294). Mirrors the SQLite DDL; see the comment there.
+  CREATE TABLE IF NOT EXISTS airlock_policies (
+    org_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    policy_json TEXT NOT NULL,
+    ioc_revision INTEGER NOT NULL DEFAULT 0,
+    ioc_hosts_json TEXT NOT NULL DEFAULT '[]',
+    ioc_updated_at TEXT,
+    updated_at TEXT NOT NULL,
+    updated_by_email TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS airlock_installations (
+    org_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    applied_revision INTEGER,
+    applied_ioc_revision INTEGER,
+    applied_at TEXT,
+    reported_at TEXT,
+    refused_revision INTEGER,
+    refused_ioc_revision INTEGER,
+    refused_error TEXT,
+    refused_at TEXT,
+    PRIMARY KEY (org_id, installation_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS airlock_decisions (
+    org_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    client TEXT,
+    model TEXT,
+    tool TEXT,
+    capability_kind TEXT,
+    target TEXT,
+    decision TEXT NOT NULL,
+    rule TEXT,
+    mode TEXT,
+    source TEXT NOT NULL,
+    alert TEXT,
+    item_id TEXT,
+    revision INTEGER,
+    policy_source TEXT,
+    PRIMARY KEY (org_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_decisions_org_time ON airlock_decisions(org_id, occurred_at, event_id);
+
+  CREATE TABLE IF NOT EXISTS airlock_learning_reports (
+    org_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    hits INTEGER NOT NULL,
+    proxy_hits INTEGER NOT NULL DEFAULT 0,
+    clients_json TEXT NOT NULL DEFAULT '[]',
+    first_seen TEXT,
+    last_seen TEXT,
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, host, installation_id)
+  );
+
   CREATE TABLE IF NOT EXISTS repo_command_revisions (
     org_id TEXT NOT NULL,
     remote_url TEXT NOT NULL,

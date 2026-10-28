@@ -651,6 +651,95 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_repo_settings_org ON repo_settings(org_id);
 
+  -- Airlock (GH-294). The org's Airlock policy: one row per org, which every
+  -- joined installation adopts and no installation can overrule. revision
+  -- moves on a policy save; ioc_revision moves when only the IOC host list
+  -- changes, so an installation's cached ETag (both numbers) busts on either.
+  -- policy_json holds the normalised policy WITHOUT its IOC list, which lives
+  -- in ioc_hosts_json: a policy save and an IOC save each write only their own
+  -- columns, each compare-and-swapped on its own revision, so neither can
+  -- overwrite the other. Timestamps are ISO TEXT written by the app, identical
+  -- in both dialects.
+  CREATE TABLE IF NOT EXISTS airlock_policies (
+    org_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    policy_json TEXT NOT NULL,
+    ioc_revision INTEGER NOT NULL DEFAULT 0,
+    ioc_hosts_json TEXT NOT NULL DEFAULT '[]',
+    ioc_updated_at TEXT,
+    updated_at TEXT NOT NULL,
+    updated_by_email TEXT
+  );
+
+  -- Which Airlock policy each installation applies (GH-294, HUB-2), as it last
+  -- reported through its event stream: the revision and IOC revision applied
+  -- and when it first applied them (applied_at) and last said so
+  -- (reported_at), and the last hub policy (revision and IOC revision) it
+  -- refused as invalid. Keyed by org
+  -- too, so a row is only ever read within its org. Timestamps are the
+  -- reports' own ISO occurredAt, so an older report landing late is refused.
+  CREATE TABLE IF NOT EXISTS airlock_installations (
+    org_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    applied_revision INTEGER,
+    applied_ioc_revision INTEGER,
+    applied_at TEXT,
+    reported_at TEXT,
+    refused_revision INTEGER,
+    refused_ioc_revision INTEGER,
+    refused_error TEXT,
+    refused_at TEXT,
+    PRIMARY KEY (org_id, installation_id)
+  );
+
+  -- The org's recent Airlock denials and alerts (GH-294, HUB-1): the
+  -- airlock.decision events that denied (or, in observe mode, would have) or
+  -- that raised an alert, out of the events table, which keeps every decision
+  -- including the far more numerous allows. Columns are the payload's fields,
+  -- cut to size at ingest, so the admin's filters read columns rather than
+  -- JSON. Kept as long as the events are (no hub event is purged); keyed by
+  -- org, and ordered by (occurred_at, event_id) for the newest-first cursor.
+  CREATE TABLE IF NOT EXISTS airlock_decisions (
+    org_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    client TEXT,
+    model TEXT,
+    tool TEXT,
+    capability_kind TEXT,
+    target TEXT,
+    decision TEXT NOT NULL,
+    rule TEXT,
+    mode TEXT,
+    source TEXT NOT NULL,
+    alert TEXT,
+    item_id TEXT,
+    revision INTEGER,
+    policy_source TEXT,
+    PRIMARY KEY (org_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_decisions_org_time ON airlock_decisions(org_id, occurred_at, event_id);
+
+  -- Airlock learning proposals (GH-294, TEL-3): the latest report of each
+  -- host each installation forwarded (airlock.learning-proposal), host names
+  -- and counts only. The admin's list groups them by host, so the same host
+  -- proposed by many installations is one row. reported_at is the event's
+  -- own ISO occurredAt, so an older report landing late changes nothing.
+  CREATE TABLE IF NOT EXISTS airlock_learning_reports (
+    org_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    hits INTEGER NOT NULL,
+    proxy_hits INTEGER NOT NULL DEFAULT 0,
+    clients_json TEXT NOT NULL DEFAULT '[]',
+    first_seen TEXT,
+    last_seen TEXT,
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, host, installation_id)
+  );
+
   -- The command's history. One row per revision, written by whoever moved it:
   -- the installation that claimed it first (source 'init', its installation id)
   -- or the admin who revised it (source 'admin', their user and email). A
