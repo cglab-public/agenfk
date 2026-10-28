@@ -648,6 +648,42 @@ const SCHEMA_PG = `
     PRIMARY KEY (org_id, host, installation_id)
   );
 
+  -- Airlock dataset (DS-2). Mirrors the SQLite DDL; see the comment there.
+  CREATE TABLE IF NOT EXISTS airlock_dataset_settings (
+    org_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    updated_by_email TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS airlock_dataset (
+    org_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    row_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    imported INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (org_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_time ON airlock_dataset(org_id, occurred_at, event_id);
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_row ON airlock_dataset(org_id, row_id);
+  -- One row per row id (an import sent again, or twice at once, comes under new event ids).
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_airlock_dataset_row ON airlock_dataset(org_id, row_id) WHERE kind = 'row';
+  -- The hosts each kept row reached (its payload's hosts, at most 50), so a learning
+  -- accept labels the rows that reached a host exactly, by index, not by scanning.
+  CREATE TABLE IF NOT EXISTS airlock_dataset_hosts (
+    org_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    row_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, host, row_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_hosts_time ON airlock_dataset_hosts(org_id, host, occurred_at);
+
   CREATE TABLE IF NOT EXISTS repo_command_revisions (
     org_id TEXT NOT NULL,
     remote_url TEXT NOT NULL,

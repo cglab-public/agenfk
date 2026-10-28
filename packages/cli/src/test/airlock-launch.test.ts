@@ -34,8 +34,11 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
   const warnings: string[] = [];
   const { runtime } = fakeRuntime();
   return {
-    fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 })),
+    fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] })),
     runtime,
+    // enforce launches need it to mark the sandbox's requests to the server (SX-1)
+    reportToken: () => 'airlock-report-token-0123456789abcdef',
+    startRelay: vi.fn(async () => ({ host: '127.0.0.1', port: 47001, close: vi.fn(async () => undefined) })),
     env: { OPENAI_API_KEY: 'sk-real' },
     home: HOME,
     cwd: CWD,
@@ -68,8 +71,10 @@ describePosix('runAirlockLaunch: pi', () => {
     const code = await runAirlockLaunch('pi', ['--model', 'openai/gpt-5', '-p', 'hi'], { keyEnv: [] }, d);
     expect(code).toBe(0);
     const spec = specOf(d);
-    expect(spec.network.allow).toEqual(expect.arrayContaining(['api.github.com', 'api.openai.com', '127.0.0.1:3123', 'localhost:3123']));
-    expect(spec.env).toMatchObject({ AGENFK_AIRLOCK_SANDBOX: 'pi', NODE_USE_ENV_PROXY: '1' });
+    // SX-1: the sandbox reaches the server only through the launcher's relay
+    expect(spec.network.allow).toEqual(expect.arrayContaining(['api.github.com', 'api.openai.com', '127.0.0.1:47001', 'localhost:47001']));
+    expect(spec.network.allow.some((h) => h.endsWith(':3123'))).toBe(false);
+    expect(spec.env).toMatchObject({ AGENFK_AIRLOCK_SANDBOX: 'pi', NODE_USE_ENV_PROXY: '1', AGENFK_API_URL: 'http://127.0.0.1:47001' });
     expect(spec.maskedEnv).toEqual([{ name: 'OPENAI_API_KEY', injectHosts: ['api.openai.com'] }]);
     expect(spec.filesystem.allowWrite).toEqual(expect.arrayContaining([CWD, '/tmp/t', '/home/u/.pi/agent']));
     expect(spec.filesystem.denyWrite).toEqual(expect.arrayContaining([
@@ -115,10 +120,45 @@ describePosix('runAirlockLaunch: pi', () => {
     expect(d.warnings.join('\n')).toMatch(/auth\.json/);
   });
 
+  it('what git reads its config from in the workspace is unwritable when .git is a directory (BUG 4639c6a4)', async () => {
+    const d = deps();
+    d.isDirectory = (p: string) => p === path.join(path.resolve(CWD), '.git');
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).filesystem.denyWrite).toEqual(expect.arrayContaining(['commondir', 'config.worktree', 'modules', 'worktrees'].map((n) => path.join(path.resolve(CWD), '.git', n))));
+  });
+
+  it('a workspace whose .git is a file (a linked worktree) adds none of them', async () => {
+    const d = deps();
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).filesystem.denyWrite.filter((p: string) => p.startsWith(path.join(path.resolve(CWD), '.git')))).toEqual([]);
+  });
+
   it('marks the project .agenfk directories above the workspace unwritable', async () => {
     const d = deps({}, { '/work/.agenfk': {} });
     await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
     expect(specOf(d).filesystem.denyWrite).toContain('/work/.agenfk');
+  });
+});
+
+describe('runAirlockLaunch: a server older than this launcher (BUG 1a7dd9d2)', () => {
+  const olderServer = (mode: string) => vi.fn(async () => ({ effective: { mode, hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3 }));
+
+  it('enforce: a server that does not say it sandboxes a covered card\'s commands is refused, nothing launched', async () => {
+    const d = deps({ fetchPolicy: olderServer('enforce') });
+    await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/older than this agenfk.*agenfk restart/s);
+    expect((d.runtime as any).launch).not.toHaveBeenCalled();
+  });
+
+  it('observe: it launches, with a warning saying the server\'s commands are not sandboxed', async () => {
+    const d = deps({ fetchPolicy: olderServer('observe') });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(d.warnings.join('\n')).toMatch(/older than this agenfk/);
+  });
+
+  it('a server that says so launches as before', async () => {
+    const d = deps();
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(d.warnings.join('\n')).not.toMatch(/older than this agenfk/);
   });
 });
 
@@ -127,7 +167,7 @@ describe('runAirlockLaunch: hub and policy', () => {
     const d = deps({
       fetchPolicy: vi.fn(async () => ({
         effective: { mode: 'enforce', hosts: { allow: ['hub-only.example.com'], deny: [] } },
-        source: 'hub', revision: 9, hubManaged: true,
+        source: 'hub', revision: 9, hubManaged: true, capabilities: ['sandboxed-commands'],
         local: { policy: { mode: 'enforce', hosts: { allow: ['local-wide.example.com'], deny: [] } } },
       })),
     });
@@ -294,7 +334,7 @@ describePosix('nested .agenfk directories (review fix 3)', () => {
 
 describe('a denied inference host (review fixes 1 and 2)', () => {
   it('refuses the launch with a clear error', async () => {
-    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: ['*.openai.com'] } }, source: 'hub', revision: 2 })) });
+    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: ['*.openai.com'] } }, source: 'hub', revision: 2, capabilities: ['sandboxed-commands'] })) });
     await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/inference host.*denied/s);
     expect(d.runtime.launch).not.toHaveBeenCalled();
   });
@@ -354,5 +394,78 @@ describe('Linux: the launcher tells the gate its own network namespace (second p
     const mac = deps({ platform: 'darwin', hostNetns: null });
     await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, mac);
     expect(specOf(mac).env.AGENFK_AIRLOCK_HOST_NETNS).toBeUndefined();
+  });
+});
+
+describe('PO-1: the launcher asks for its workspace\'s project', () => {
+  it('the policy fetch names the project the workspace belongs to', async () => {
+    const d = deps({ projectId: () => 'p-api' } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect((d.fetchPolicy as any).mock.calls[0][0]).toBe('p-api');
+  });
+
+  it('outside any project it asks for the org policy', async () => {
+    const d = deps({ projectId: () => null } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect((d.fetchPolicy as any).mock.calls[0][0] ?? null).toBeNull();
+  });
+});
+
+describe('PO-1 review: the launch marker is signed for the workspace\'s project', () => {
+  it('the relay\'s marker carries the project the policy was fetched for', async () => {
+    const { verifyAirlockSessionMarker, airlockMarkerProject } = await import('@agenfk/core');
+    const d = deps({ projectId: () => 'p-api' } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    const marker = (d.startRelay as any).mock.calls[0][0].marker();
+    expect(airlockMarkerProject(verifyAirlockSessionMarker('airlock-report-token-0123456789abcdef', marker)!)).toBe('p-api');
+  });
+});
+
+describe('story review: the launcher records its project\'s root before its sandbox starts', () => {
+  it('names the workspace\'s project and root before it asks for the policy', async () => {
+    const order: string[] = [];
+    const ensureProjectRoot = vi.fn(async () => { order.push('root'); });
+    const d = deps({ projectId: () => 'p-api', projectRoot: () => '/work/api', ensureProjectRoot,
+      fetchPolicy: vi.fn(async () => { order.push('policy'); return { effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] }; }) } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(ensureProjectRoot).toHaveBeenCalledWith('p-api', '/work/api');
+    expect(order).toEqual(['root', 'policy']);
+  });
+
+  it('outside a project there is nothing to record', async () => {
+    const ensureProjectRoot = vi.fn(async () => undefined);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, deps({ projectId: () => null, projectRoot: () => null, ensureProjectRoot } as any));
+    expect(ensureProjectRoot).not.toHaveBeenCalled();
+  });
+
+  it('a root it could not record is said, and the launch goes on (the server refuses what it cannot tell)', async () => {
+    const d = deps({ projectId: () => 'p-api', projectRoot: () => '/work/api', ensureProjectRoot: vi.fn(async () => { throw new Error('boom'); }) } as any);
+    expect(await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).toBe(0);
+    expect(d.warnings.join('\n')).toMatch(/could not record.*boom/i);
+  });
+});
+
+describe('ensureProjectRootVia', () => {
+  it('sets the root only when the project has none, with the verify token', async () => {
+    const { ensureProjectRootVia } = await import('../commands/airlock');
+    const get = vi.fn(async () => ({ data: { id: 'p', projectRoot: null } }));
+    const put = vi.fn(async () => ({ data: {} }));
+    await ensureProjectRootVia('http://127.0.0.1:3000', () => 'tok', get as any, put as any)('p', '/work/api');
+    expect(get).toHaveBeenCalledWith('http://127.0.0.1:3000/projects/p', expect.anything());
+    expect(put).toHaveBeenCalledWith('http://127.0.0.1:3000/projects/p/project-root', { projectRoot: '/work/api' }, expect.objectContaining({ headers: { 'x-agenfk-internal': 'tok' } }));
+    put.mockClear();
+    get.mockResolvedValue({ data: { id: 'p', projectRoot: '/elsewhere' } } as never);
+    await ensureProjectRootVia('http://127.0.0.1:3000', () => 'tok', get as any, put as any)('p', '/work/api');
+    expect(put).not.toHaveBeenCalled();
+  });
+});
+
+describe('story review 2: the root the launcher records is the main checkout\'s', () => {
+  it('a project found in a linked worktree is recorded at the same place in the main checkout', async () => {
+    const { mainCheckoutRoot } = await import('../commands/airlock');
+    expect(mainCheckoutRoot('/wt/feat/packages/svc', { top: '/wt/feat', main: '/repo' })).toBe(path.join('/repo', 'packages', 'svc'));
+    expect(mainCheckoutRoot('/repo/packages/svc', null)).toBe('/repo/packages/svc');
+    // a project root above the worktree is not in it: left as it is
+    expect(mainCheckoutRoot('/wt', { top: '/wt/feat', main: '/repo' })).toBe('/wt');
   });
 });

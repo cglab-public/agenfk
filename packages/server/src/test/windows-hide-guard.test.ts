@@ -44,8 +44,8 @@ const DEV_TOOLING = new Set([
 ]);
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'test', 'tests', '__tests__', 'coverage', '.git']);
-/** Icons plus the generated server-bundle: the server source, already scanned, bundled with its deps. */
-const SKIP_PATHS = new Set(['packages/desktop/build']);
+/** Icons plus the generated server-bundle, and electron-builder's output (git-ignored, on a machine that packaged the app): copies of source already scanned. */
+const SKIP_PATHS = new Set(['packages/desktop/build', 'packages/desktop/release']);
 const SOURCE_EXT = /\.(ts|tsx|js|mjs|cjs)$/;
 const NOT_SOURCE = /\.d\.[cm]?ts$|\.(test|spec)\.[cm]?[jt]sx?$/;
 

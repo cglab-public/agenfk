@@ -6,11 +6,14 @@ import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { getApiUrl } from '@agenfk/telemetry';
+import { resolveProjectIdentity, linkedWorktreeOf } from '@agenfk/core';
 import { resolveDashboardUrl } from '../uiUrl.js';
 import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
+import { runAirlockExec, scopedCommandEnv, EXEC_CANNOT_SANDBOX, type ExecDeps } from '../airlock/exec.js';
 import { AsrtRuntime } from '../airlock/runtime.js';
 import { PROXY_REPORT_TIMEOUT_MS } from '../airlock/proxyReport.js';
-import { runLearnImport } from '../airlock/learnImport.js';
+import { runLearnImport, defaultPiSessionsDir } from '../airlock/learnImport.js';
+import { runDatasetImport, defaultOpenCodeDb, DatasetImportError } from '../airlock/datasetImport.js';
 
 /**
  * `agenfk airlock` (GH-294): read the Airlock policy and ask what it would
@@ -25,7 +28,7 @@ export function airlockBoardUrl(base: string = resolveDashboardUrl('')): string 
 }
 
 const fail = (e: any): void => {
-  const message = e?.response?.data?.error || e?.message || String(e);
+  const message = e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e);
   console.error(chalk.red(`❌ ${message}`));
   process.exit(1);
 };
@@ -92,11 +95,73 @@ function readReportToken(file: string): string | null {
 
 const realpath = (p: string): string => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 
+/**
+ * Where the sandbox runtime is installed (never writable from the sandbox): its
+ * package, or - in the desktop app's exec helper, which bundles it (ea94c023) -
+ * the helper's own directory, which holds its vendored helpers.
+ */
+function runtimePackageDir(): string {
+  try {
+    return AsrtRuntime.packageDir();
+  } catch {
+    return path.resolve(__dirname, '..');
+  }
+}
+
+/**
+ * The project root to record for a launch from `root`: in a linked worktree, the
+ * same place in the main checkout (a monorepo's subpath kept). A worktree is one
+ * card's tree, never the project's root, and the server refuses one.
+ */
+export function mainCheckoutRoot(root: string, wt: { top: string; main: string } | null): string {
+  if (!wt) return root;
+  const rel = path.relative(wt.top, root);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return root;
+  return path.join(wt.main, rel);
+}
+
+/**
+ * The launcher's ensureProjectRoot: the project's root, set with the verify token
+ * (as agenfk update-project does) only when the server has none. The launcher is
+ * outside the sandbox, which cannot read that token.
+ */
+export function ensureProjectRootVia(
+  apiUrl: string,
+  token: () => string | null,
+  get: (url: string, opts: object) => Promise<{ data: any }> = axios.get,
+  put: (url: string, body: unknown, opts: object) => Promise<unknown> = axios.put,
+): (projectId: string, root: string) => Promise<void> {
+  return async (projectId, root) => {
+    const id = encodeURIComponent(projectId);
+    const { data } = await get(`${apiUrl}/projects/${id}`, { timeout: 5000 });
+    if (typeof data?.projectRoot === 'string' && data.projectRoot) return;
+    const t = token();
+    if (!t) throw new Error('~/.agenfk/verify-token is missing');
+    await put(`${apiUrl}/projects/${id}/project-root`, { projectRoot: root }, { timeout: 5000, headers: { 'x-agenfk-internal': t } });
+  };
+}
+
+/** GET /airlock/policy, for a project when one is named (PO-1). */
+const policyUrl = (apiUrl: string, projectId?: string | null): string =>
+  `${apiUrl}/airlock/policy${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`;
+
 /** The real launcher's dependencies: this machine, this server, ASRT. */
 export function defaultLaunchDeps(): LaunchDeps {
   const home = os.homedir();
   return {
-    fetchPolicy: async () => (await axios.get(`${getApiUrl()}/airlock/policy`, { timeout: 5000 })).data,
+    fetchPolicy: async (projectId) => (await axios.get(policyUrl(getApiUrl(), projectId), { timeout: 5000 })).data,
+    projectId: () => { try { return resolveProjectIdentity(process.cwd())?.projectId ?? null; } catch { return null; } },
+    projectRoot: () => {
+      try {
+        const root = resolveProjectIdentity(process.cwd())?.root;
+        return root ? mainCheckoutRoot(root, linkedWorktreeOf(process.cwd())) : null;
+      } catch {
+        return null;
+      }
+    },
+    ensureProjectRoot: ensureProjectRootVia(getApiUrl(), () => {
+      try { return fs.readFileSync(path.join(home, '.agenfk', 'verify-token'), 'utf8').trim(); } catch { return null; }
+    }),
     runtime: new AsrtRuntime(),
     env: process.env,
     home,
@@ -106,7 +171,7 @@ export function defaultLaunchDeps(): LaunchDeps {
     readJson: (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } },
     exists: (file) => fs.existsSync(file),
     which: (file) => whichOnPath(file),
-    runtimePackageDir: realpath(AsrtRuntime.packageDir()),
+    runtimePackageDir: realpath(runtimePackageDir()),
     // The installed copy, and the package this CLI runs from (dist/commands -> package root).
     installDirs: [...new Set([path.join(home, '.agenfk-system'), realpath(path.resolve(__dirname, '..', '..'))])],
     log: (m) => console.error(chalk.gray(m)),
@@ -136,12 +201,45 @@ export function defaultLaunchDeps(): LaunchDeps {
 }
 
 type Launch = (client: 'pi' | 'opencode', args: string[], opts: LaunchOptions) => Promise<number>;
+type Exec = (command: string, opts: { cwd: string; processGroup: boolean; projectId?: string }) => Promise<number>;
+
+/**
+ * The real exec's dependencies (SX-2): the launcher's, as a command needs them,
+ * all bound to `apiUrl` - the server exec was pointed at, captured before its
+ * environment is scoped (which removes AGENFK_API_URL).
+ */
+export function defaultExecDeps(apiUrl: string, get: (url: string, opts: object) => Promise<{ data: unknown }> = axios.get): ExecDeps {
+  const l = defaultLaunchDeps();
+  let directServerPort: number | undefined;
+  try {
+    const u = new URL(apiUrl);
+    directServerPort = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
+  } catch {
+    directServerPort = undefined;
+  }
+  return {
+    fetchPolicy: async (projectId) => (await get(policyUrl(apiUrl, projectId), { timeout: 5000 })).data as any,
+    runtime: l.runtime, home: l.home, tmpDir: l.tmpDir, installDirs: l.installDirs,
+    runtimePackageDir: l.runtimePackageDir, directServerPort, listDir: l.listDir, realpath: l.realpath,
+    isDirectory: l.isDirectory, exists: l.exists, platform: l.platform, ensurePrivateDir: l.ensurePrivateDir,
+    onSignal: l.onSignal, error: (m) => console.error(m),
+  };
+}
 
 export function registerAirlockCommands(
   program: Command,
-  overrides: { launch?: Launch; exit?: (code: number) => void } = {},
+  overrides: { launch?: Launch; exec?: Exec; exit?: (code: number) => void } = {},
 ): void {
   const launch: Launch = overrides.launch ?? ((client, args, opts) => runAirlockLaunch(client, args, opts, defaultLaunchDeps()));
+  const exec: Exec = overrides.exec ?? ((command, opts) => {
+    // Which server to ask, before the scope removes AGENFK_API_URL.
+    const apiUrl = getApiUrl();
+    const deps = defaultExecDeps(apiUrl);
+    // The sandbox's env comes from this process's: secrets out before ASRT reads it.
+    const scoped = scopedCommandEnv(process.env);
+    for (const name of Object.keys(process.env)) if (!(name in scoped)) delete process.env[name];
+    return runAirlockExec(command, opts, deps);
+  });
   const exit = overrides.exit ?? ((code: number) => process.exit(code));
   const airlock = program
     .command('airlock')
@@ -239,6 +337,59 @@ export function registerAirlockCommands(
         console.log(`Learned ${result.recorded} host${result.recorded === 1 ? '' : 's'}${notes ? ` (${notes})` : ''}.`);
         console.log(`Review the proposed allowlist on the board: ${airlockBoardUrl()}`);
       } catch (e) { fail(e); }
+    });
+
+  airlock
+    .command('dataset')
+    .description('The Airlock dataset (DS-3): your organization\'s hub keeps full tool calls, secrets removed, to train Airlock\'s scorer, while an org admin has it switched on.')
+    .command('import')
+    .description('Send past pi and OpenCode sessions to the hub\'s Airlock dataset: every tool call, judged under the current policy and joined to its card, secrets removed here first. Only while this installation is joined to a hub whose dataset switch is on. Importing again adds nothing.')
+    .option('--pi-dir <dir>', 'Where pi\'s session logs are (default ~/.pi/agent/sessions)')
+    .option('--opencode-db <path>', 'OpenCode\'s database, read-only (default ~/.local/share/opencode/opencode.db)')
+    .option('--no-pi', 'Skip pi\'s sessions')
+    .option('--no-opencode', 'Skip OpenCode\'s sessions')
+    .option('--json', 'Print the result as JSON')
+    .action(async (options) => {
+      try {
+        const api = getApiUrl();
+        const result = await runDatasetImport({
+          piDir: options.pi === false ? null : (options.piDir ?? defaultPiSessionsDir()),
+          openCodeDb: options.opencode === false ? null : (options.opencodeDb ?? defaultOpenCodeDb()),
+        }, {
+          status: async () => (await axios.get(`${api}/airlock/dataset`, { timeout: 10_000 })).data,
+          post: async (body) => (await axios.post(`${api}/airlock/dataset/import`, body, { timeout: 60_000 })).data,
+          log: (m) => { if (!options.json) console.log(chalk.gray(m)); },
+        });
+        if (options.json) { console.log(JSON.stringify(result, null, 2)); return; }
+        const notes = [result.skipped && `${result.skipped} skipped`, result.tooLarge && `${result.tooLarge} too large to send`].filter(Boolean).join(', ');
+        console.log(`Sent ${result.sent} tool call${result.sent === 1 ? '' : 's'} from ${result.sessions} session${result.sessions === 1 ? '' : 's'} to the hub's Airlock dataset${notes ? ` (${notes})` : ''}.`);
+      } catch (e) {
+        if (options.json && e instanceof DatasetImportError) console.log(JSON.stringify({ error: e.message, progress: e.progress }, null, 2));
+        fail(e);
+      }
+    });
+
+  airlock
+    .command('exec')
+    .description('Run one command inside the Airlock sandbox built from the effective policy (the AgEnFK server uses it for verify and suite runs of cards a sandboxed session touched). Exits 125, without running it, when it cannot be sandboxed.')
+    .requiredOption('--cwd <dir>', 'the directory to run it in (writable inside the sandbox)')
+    .option('--project-id <id>', 'the AgEnFK project the command is for: its per-project Airlock overrides apply (the AgEnFK server passes the card\'s)')
+    .option('--no-process-group', 'keep the command in exec\'s own process group (for a caller that kills that group whole, as the AgEnFK server does)')
+    .argument('[command...]', 'the command, after --, as ONE argument, run with /bin/sh -c')
+    .allowExcessArguments()
+    .action(async (words: string[], options: { cwd: string; processGroup: boolean; projectId?: string }) => {
+      // One argument, verbatim: joining several would lose their quoting (and could make shell operators of them).
+      if ((words ?? []).length !== 1 || !words[0].trim()) {
+        console.error(chalk.red('❌ agenfk airlock exec takes the command as one argument after --, e.g. agenfk airlock exec --cwd . -- \'npm test\'.'));
+        return exit(EXEC_CANNOT_SANDBOX);
+      }
+      const command = words[0];
+      try {
+        exit(await exec(command, { cwd: options.cwd, processGroup: options.processGroup !== false, projectId: options.projectId }));
+      } catch (e) {
+        console.error(chalk.red(`❌ ${(e as Error)?.message ?? String(e)}`));
+        exit(EXEC_CANNOT_SANDBOX);
+      }
     });
 
   for (const client of ['pi', 'opencode'] as const) {

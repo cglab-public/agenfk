@@ -20,7 +20,8 @@ import { spawn, spawnSync } from 'child_process';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSpec } from '../airlock/spec';
 import { findAgenfkDirs } from '../airlock/launch';
-import { toAsrtConfig, sandboxCommandLine, ASRT_VERSION } from '../airlock/runtime';
+import { toAsrtConfig, sandboxCommandLine, sandboxStartFailure, sandboxNoop, ASRT_VERSION } from '../airlock/runtime';
+import { startServerRelay, type ServerRelay } from '../airlock/serverRelay';
 
 const DRIVER = path.resolve(__dirname, 'fixtures/airlock-conformance-driver.mjs');
 const AIRLOCK_SCRIPT = path.resolve(__dirname, '../../../../bin/agenfk-airlock.mjs');
@@ -39,6 +40,9 @@ let pre: any = { reachable: {}, addresses: {} };
 const results: Record<string, Result> = {};
 const servers: http.Server[] = [];
 const FAKE_KEY = `real-secret-${Math.random().toString(36).slice(2)}`;
+const RELAY_MARK = 'v1.conformance.' + 'd'.repeat(64);
+let relay: ServerRelay | null = null;
+const echoSeen: string[] = [];
 
 /** Run the driver in its own process (async: the loopback servers live in this one). */
 function driver(request: unknown, env: NodeJS.ProcessEnv = process.env): Promise<any> {
@@ -120,6 +124,14 @@ const say = (o) => console.log(JSON.stringify(o));
   } else if (action === 'gate') {
     const m = await import(require('url').pathToFileURL(a).href);
     say(await m.airlockSandboxCheck({ env: process.env, homeDir: b }));
+  } else if (action === 'ownserver') {
+    const http = require('http');
+    const s = http.createServer((q, r) => r.end('own'));
+    s.on('error', (e) => { say({ error: e.code }); process.exit(0); });
+    s.listen(0, '127.0.0.1', () => {
+      http.get('http://127.0.0.1:' + s.address().port + '/', (r) => { let b = ''; r.on('data', (d) => { b += d; }); r.on('end', () => { say({ body: b }); process.exit(0); }); })
+        .on('error', (e) => { say({ error: e.code || e.message }); process.exit(0); });
+    });
   } else if (action === 'raw') {
     process.stdin.setRawMode(true); say({ raw: true }); process.exit(0);
   }
@@ -157,6 +169,14 @@ beforeAll(async () => {
   plant('.config/ok.txt', 'readable');
   for (const rel of ['.aws/sso/cache/token.json', '.git-credentials', '.pypirc', '.kube/config', '.config/gcloud/credentials.db', '.azure/msal_token_cache.json']) plant(rel);
   fs.writeFileSync(path.join(root, 'probe.cjs'), PROBE);
+  // The workspace is a git repository with a submodule's git dir and another card's worktree
+  // entry (BUG 4639c6a4): what git reads its config from must not be the sandbox's to write.
+  spawnSync('git', ['init', '-q', ws]);
+  fs.mkdirSync(path.join(ws, '.git', 'modules', 's'), { recursive: true });
+  fs.writeFileSync(path.join(ws, '.git', 'modules', 's', 'config'), '[core]\n');
+  fs.mkdirSync(path.join(ws, '.git', 'worktrees', 'w'), { recursive: true });
+  fs.writeFileSync(path.join(ws, '.git', 'worktrees', 'w', 'commondir'), '../..\n');
+  fs.mkdirSync(path.join(ws, '.git', 'objects', 'aa'), { recursive: true });
 
   check = await driver({ mode: 'check' });
   if (!check.supported || check.errors.length) {
@@ -177,7 +197,7 @@ beforeAll(async () => {
   const nested = findAgenfkDirs(ws, { listDir, realpath, isDirectory });
   const sessionFor = (over: object) => ({
     client: 'pi' as const, home, workspace: ws, tempDirs: [tmp], inferenceHosts: [] as string[],
-    serverPort: agenfkPort, installDirs: [install], projectAgenfkDirs: nested.dirs, ...over,
+    serverPort: agenfkPort, installDirs: [install], projectAgenfkDirs: nested.dirs, gitDir: path.join(ws, '.git'), ...over,
   });
   const line = (spec: SandboxSpec, args: string[]) => sandboxCommandLine(spec, { file: node, args: [probe, ...args], cwd: ws });
   const runAll = async (spec: SandboxSpec, commands: Array<{ name: string; line: string; pty?: boolean }>) => {
@@ -191,6 +211,15 @@ beforeAll(async () => {
   const a = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: {
     allow: ['api.github.com', ...(ip ? [ip] : [])], deny: ip ? [`${ip.split('.').slice(0, 2).join('.')}.0.0/16`] : [],
   } }), sessionFor({}));
+  // The runtime's binaries can all be present and the sandbox still unable to
+  // start (no user namespaces, no /proc mount: Docker's default profile). The
+  // launcher's own dry run decides, so these checks skip, with its reason,
+  // where it would refuse (025f3000).
+  await runAll(a, [{ name: 'start-probe', line: sandboxCommandLine(a, { ...sandboxNoop(), cwd: ws }) }]);
+  if (results['start-probe'].code !== 0) {
+    skipAll = sandboxStartFailure(results['start-probe'].stderr);
+    return;
+  }
   await runAll(a, [
     { name: 'fetch-allowed', line: line(a, ['fetch', ZEN]) },
     { name: 'fetch-unlisted', line: line(a, ['fetch', GITHUB]) },
@@ -217,6 +246,11 @@ beforeAll(async () => {
     { name: 'write-install', line: line(a, ['write', path.join(install, 'x.js')]) },
     { name: 'write-linked-agenfk', line: line(a, ['write', path.join(ws, 'linked', '.agenfk', 'db.sqlite')]) },
     { name: 'write-workspace', line: line(a, ['write', path.join(ws, 'out.txt')]) },
+    { name: 'git-write-commondir', line: line(a, ['write', path.join(ws, '.git', 'commondir')]) },
+    { name: 'git-write-config-worktree', line: line(a, ['write', path.join(ws, '.git', 'config.worktree')]) },
+    { name: 'git-write-module-config', line: line(a, ['write', path.join(ws, '.git', 'modules', 's', 'config')]) },
+    { name: 'git-write-worktree-commondir', line: line(a, ['write', path.join(ws, '.git', 'worktrees', 'w', 'commondir')]) },
+    { name: 'git-write-objects', line: line(a, ['write', path.join(ws, '.git', 'objects', 'aa', 'probe')]) },
     { name: 'write-pi-state', line: line(a, ['write', path.join(home, '.pi/agent/sessions/s.jsonl')]) },
     { name: 'marker', line: line(a, ['env', 'AGENFK_AIRLOCK_SANDBOX']) },
     { name: 'gate-probe', line: line(a, ['gate', AIRLOCK_SCRIPT, home]) },
@@ -244,6 +278,54 @@ beforeAll(async () => {
     for (const r of out) results[r.name] = r;
   }
 
+  // R (SX-1, 8dd7c7c0): the sandbox reaches the server only through the launcher's
+  // relay. Plain through the proxy, a CONNECT tunnel and SOCKS (the last two skip
+  // ASRT's request filter, measured) all arrive marked; the server's own port is
+  // not reachable at all.
+  const echoPort = await new Promise<number>((resolve) => {
+    const s = http.createServer((q, res) => { echoSeen.push(q.url ?? ''); res.end(JSON.stringify({ marker: q.headers['x-agenfk-airlock-session'] ?? null })); });
+    servers.push(s);
+    s.listen(0, '127.0.0.1', () => resolve((s.address() as any).port));
+  });
+  relay = await startServerRelay({ target: `http://127.0.0.1:${echoPort}`, marker: () => RELAY_MARK, requireMarker: true });
+  const relayUrl = `http://127.0.0.1:${relay.port}`;
+  const rs = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), sessionFor({ serverPort: relay.port, serverUrl: relayUrl }));
+  const forged = ['-H', 'x-agenfk-airlock-session: forged'];
+  const curl = (name: string, args: string[]) => ({ name, line: sandboxCommandLine(rs, { file: 'curl', args: ['-sS', '--max-time', '10', ...forged, ...args], cwd: ws }) });
+  await runAll(rs, [
+    { name: 'relay-fetch', line: line(rs, ['fetch', `${relayUrl}/items`]) },
+    ...(has('curl') ? [
+      curl('relay-curl-plain', [`${relayUrl}/items`]),
+      curl('relay-curl-connect', ['-p', `${relayUrl}/items`]),
+      { name: 'relay-curl-socks', line: sandboxCommandLine(rs, { file: '/bin/sh', args: ['-c', `curl -sS --max-time 10 -H 'x-agenfk-airlock-session: forged' --socks5-hostname "$(printf %s "$ALL_PROXY" | sed 's#.*://##')" ${relayUrl}/items`], cwd: ws }) },
+    ] : []),
+    { name: 'relay-server-direct', line: line(rs, ['fetch', `http://127.0.0.1:${echoPort}/items`]) },
+    // SX-4: the board's header, however it travels, is refused before the server sees it
+    ...(has('curl') ? [
+      { name: 'board-plain', line: sandboxCommandLine(rs, { file: 'curl', args: ['-sS', '--max-time', '10', '-o', '/dev/null', '-w', '%{http_code}', '-X', 'PUT', '-H', 'x-agenfk-ui: 1', `${relayUrl}/airlock/policy`], cwd: ws }) },
+      { name: 'board-connect', line: sandboxCommandLine(rs, { file: 'curl', args: ['-sS', '--max-time', '10', '-p', '-o', '/dev/null', '-w', '%{http_code}', '-X', 'PUT', '-H', 'x-agenfk-ui: 1', `${relayUrl}/airlock/policy`], cwd: ws }) },
+      { name: 'board-socks', line: sandboxCommandLine(rs, { file: '/bin/sh', args: ['-c', `curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X PUT -H 'x-agenfk-ui: 1' --socks5-hostname "$(printf %s "$ALL_PROXY" | sed 's#.*://##')" ${relayUrl}/airlock/policy`], cwd: ws }) },
+    ] : []),
+    { name: 'relay-api-url', line: line(rs, ['env', 'AGENFK_API_URL']) },
+  ]);
+
+  // X (SX-2, 8dd7c7c0): the sandbox for a COMMAND the server runs (agenfk airlock
+  // exec): its own loopback works (test servers), the credentials, the report token
+  // and AgEnFK's files stay out of reach, and so does an unlisted host.
+  plant('.agenfk/airlock/report-token', 'dummy-report-token');
+  const x = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }), sessionFor({ purpose: 'command', serverPort: 0 }));
+  const xline = (args: string[]) => sandboxCommandLine(x, { file: node, args: [probe, ...args], cwd: ws });
+  await runAll(x, [
+    { name: 'cmd-own-loopback', line: xline(['ownserver']) },
+    { name: 'cmd-fetch-unlisted', line: xline(['fetch', GITHUB]) },
+    { name: 'cmd-read-aws', line: xline(['read', path.join(home, '.aws/credentials')]) },
+    { name: 'cmd-read-report-token', line: xline(['read', path.join(home, '.agenfk/airlock/report-token')]) },
+    { name: 'cmd-write-agenfk', line: xline(['write', path.join(home, '.agenfk/x.json')]) },
+    { name: 'cmd-write-workspace', line: xline(['write', path.join(ws, 'cmd-out.txt')]) },
+    { name: 'cmd-git-write-commondir', line: xline(['write', path.join(ws, '.git', 'commondir')]) },
+    { name: 'cmd-host-loopback', line: xline(['fetch', `http://127.0.0.1:${agenfkPort}/`]) },
+  ]);
+
   // C: github.com allowed, for git.
   const c = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['github.com'], deny: [] } }), sessionFor({}));
   await runAll(c, [{
@@ -252,7 +334,8 @@ beforeAll(async () => {
   }]);
 }, TIMEOUT);
 
-afterAll(() => {
+afterAll(async () => {
+  await relay?.close();
   for (const s of servers) s.close();
   if (root) fs.rmSync(root, { recursive: true, force: true });
 });
@@ -268,7 +351,7 @@ describe('Airlock sandbox conformance (pinned Sandbox Runtime)', () => {
   describe('network', () => {
     it('in-process fetch to an allowed host succeeds (NODE_USE_ENV_PROXY=1)', (ctx) => {
       ctx.skip(!!skipAll, skipAll ?? '');
-      ctx.skip(!pre.reachable[ZEN], 'api.github.com is not reachable from this machine even outside the sandbox');
+      ctx.skip(!pre.answersOk?.[ZEN], 'api.github.com does not answer 200 to this machine even outside the sandbox (unreachable, or rate-limited)');
       expect(parse(results['fetch-allowed'])).toMatchObject({ status: 200 });
     });
 
@@ -318,6 +401,39 @@ describe('Airlock sandbox conformance (pinned Sandbox Runtime)', () => {
       expect(parse(results['other-loopback-socket']).connected).toBeUndefined();
     });
 
+    it('the server is reached only through the relay, and every way there arrives marked (SX-1)', (ctx) => {
+      ctx.skip(!!skipAll, skipAll ?? '');
+      expect(parse(results['relay-api-url'])).toEqual({ value: `http://127.0.0.1:${relay!.port}` });
+      expect(parse(results['relay-fetch'])).toMatchObject({ status: 200, body: JSON.stringify({ marker: RELAY_MARK }) });
+      for (const name of ['relay-curl-plain', 'relay-curl-connect', 'relay-curl-socks']) {
+        if (!results[name]) continue;
+        expect(JSON.parse(results[name].stdout || '{}'), `${name}: ${results[name].stderr}`).toEqual({ marker: RELAY_MARK });
+      }
+      // the server's own port: not on the allow list
+      expect(parse(results['relay-server-direct']).status).not.toBe(200);
+    });
+
+    it('a board-only write from the sandbox is refused however it travels: plain, CONNECT, SOCKS (SX-4)', (ctx) => {
+      ctx.skip(!!skipAll || !results['board-plain'], skipAll ?? 'curl is not installed');
+      for (const name of ['board-plain', 'board-connect', 'board-socks']) {
+        expect(results[name].stdout.trim(), `${name}: ${results[name].stderr}`).toBe('403');
+      }
+      expect(echoSeen.filter((u) => u.includes('/airlock/policy'))).toEqual([]);
+    });
+
+    it('a command the server runs: its own loopback works; credentials, the report token, AgEnFK files and unlisted hosts do not (SX-2)', (ctx) => {
+      ctx.skip(!!skipAll, skipAll ?? '');
+      expect(parse(results['cmd-own-loopback'])).toEqual({ body: 'own' });
+      const unlisted = parse(results['cmd-fetch-unlisted']);
+      expect(unlisted.status === 200 && !unlisted.proxyError, JSON.stringify(unlisted)).toBe(false);
+      expect(parse(results['cmd-read-aws']).error).toBeTruthy();
+      expect(parse(results['cmd-read-report-token']).error).toBeTruthy();
+      expect(parse(results['cmd-write-agenfk']).error).toBeTruthy();
+      expect(parse(results['cmd-write-workspace'])).toEqual({ wrote: true });
+      // the host's own loopback: unreachable on Linux (a network namespace); reachable on macOS, the documented limit
+      if (process.platform === 'linux') expect(parse(results['cmd-host-loopback']).body).not.toBe('agenfk-ok');
+    });
+
     it('git ls-remote to an allowed host works', (ctx) => {
       ctx.skip(!!skipAll, skipAll ?? '');
       ctx.skip(!has('git'), 'git is not installed');
@@ -350,6 +466,16 @@ describe('Airlock sandbox conformance (pinned Sandbox Runtime)', () => {
       expect(parse(results['write-workspace'])).toMatchObject({ wrote: true });
       expect(parse(results['write-pi-state'])).toMatchObject({ wrote: true });
     });
+
+    it('what git reads its config from cannot be written; its objects can, so commits still work (BUG 4639c6a4)', (ctx) => {
+      ctx.skip(!!skipAll, skipAll ?? '');
+      for (const name of ['git-write-commondir', 'git-write-config-worktree', 'git-write-module-config', 'git-write-worktree-commondir', 'cmd-git-write-commondir']) {
+        expect(parse(results[name]), name).toMatchObject({ error: expect.stringMatching(/EPERM|EACCES|EROFS/) });
+      }
+      expect(fs.readFileSync(path.join(ws, '.git', 'modules', 's', 'config'), 'utf8')).toBe('[core]\n');
+      expect(fs.readFileSync(path.join(ws, '.git', 'worktrees', 'w', 'commondir'), 'utf8')).toBe('../..\n');
+      expect(parse(results['git-write-objects'])).toMatchObject({ wrote: true });
+    });
   });
 
   describe('the session', () => {
@@ -377,7 +503,7 @@ describe('Airlock sandbox conformance (pinned Sandbox Runtime)', () => {
 
     it('with TLS termination on (masking), an allowed host still verifies', (ctx) => {
       ctx.skip(!!skipAll, skipAll ?? '');
-      ctx.skip(!pre.reachable[ZEN], 'api.github.com is not reachable from this machine even outside the sandbox');
+      ctx.skip(!pre.answersOk?.[ZEN], 'api.github.com does not answer 200 to this machine even outside the sandbox (unreachable, or rate-limited)');
       expect(parse(results['fetch-tls-terminated'])).toMatchObject({ status: 200 });
     });
 

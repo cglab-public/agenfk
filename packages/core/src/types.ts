@@ -385,6 +385,7 @@ export interface RunEvent {
 export interface AgentRunQuery {
   itemId?: string;
   projectId?: string;
+  sessionId?: string;
   status?: RunStatus;
   limit?: number;
 }

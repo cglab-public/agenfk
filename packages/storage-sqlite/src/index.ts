@@ -84,6 +84,12 @@ export function checkSnapshotFile(file: string): string {
   }
 }
 
+/** Rows a dataset approval link keeps per key, and how long a link waits for its answer (BUG 9ff092e9). */
+const AIRLOCK_APPROVAL_LINK_MAX_ROWS = 20;
+const AIRLOCK_APPROVAL_LINK_MAX_AGE_MS = 30 * 86_400_000;
+/** And at most this many links in all, whatever the keys (review). */
+export const AIRLOCK_APPROVAL_LINK_MAX_TOTAL = 10_000;
+
 export class SQLiteStorageProvider implements StorageProvider {
   name = 'sqlite-storage';
   version = '1.0.0';
@@ -516,6 +522,15 @@ export class SQLiteStorageProvider implements StorageProvider {
         alert TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_airlock_decisions_ts ON airlock_decisions(ts);
+      CREATE TABLE IF NOT EXISTS airlock_dataset_approval_rows (
+        approval_key TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        row_id TEXT NOT NULL,
+        linked_at TEXT NOT NULL,
+        decision TEXT,
+        PRIMARY KEY (approval_key, scope, row_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_airlock_dataset_approval_rows_at ON airlock_dataset_approval_rows(linked_at);
       CREATE TABLE IF NOT EXISTS airlock_approvals (
         key TEXT PRIMARY KEY,
         rule TEXT NOT NULL,
@@ -538,6 +553,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     this.migrateAirlockApprovalsTable();
     this.migrateAirlockDecisionsTable();
     this.createAirlockLearningTable();
+    this.createAirlockCoverageTable();
     this.migrateFlowsTable();
     this.migrateTerminalSessionsTable();
     this.backfillFlowRevisions();
@@ -1260,6 +1276,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     const params: any[] = [];
     if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
     if (query.projectId !== undefined) { where.push('project_id = ?'); params.push(query.projectId); }
+    if (query.sessionId !== undefined) { where.push('session_id = ?'); params.push(query.sessionId); }
     if (query.status !== undefined) { where.push('status = ?'); params.push(query.status); }
     let sql = 'SELECT * FROM agent_runs';
     if (where.length) sql += ' WHERE ' + where.join(' AND ');
@@ -1816,6 +1833,70 @@ export class SQLiteStorageProvider implements StorageProvider {
     return row ? this.rowToAirlockApproval(row) : null;
   }
 
+  /**
+   * BUG 9ff092e9: an Airlock dataset row that asked for an approval, kept until a
+   * person answers it, so the label joins it after a restart. Under the hub (scope)
+   * it was sent to. Bounded: the newest rows per key, and links older than the
+   * longest an approval waits are dropped as new ones are made.
+   */
+  async airlockDatasetLinkApproval(
+    key: string, scope: string, rowId: string, at: string = new Date().toISOString(), maxTotal: number = AIRLOCK_APPROVAL_LINK_MAX_TOTAL,
+  ): Promise<void> {
+    const cutoff = new Date(Date.parse(at) - AIRLOCK_APPROVAL_LINK_MAX_AGE_MS).toISOString();
+    // One transaction: one write to disk per link, not one per statement (Windows CI took 137s).
+    this.database.exec('BEGIN');
+    try {
+      this.database.prepare('DELETE FROM airlock_dataset_approval_rows WHERE linked_at < ?').run(cutoff);
+      this.database.prepare(
+        'INSERT OR IGNORE INTO airlock_dataset_approval_rows (approval_key, scope, row_id, linked_at) VALUES (?, ?, ?, ?)',
+      ).run(key, scope, rowId, at);
+      this.database.prepare(
+        `DELETE FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ? AND row_id NOT IN (
+           SELECT row_id FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ?
+           ORDER BY linked_at DESC, rowid DESC LIMIT ${AIRLOCK_APPROVAL_LINK_MAX_ROWS})`,
+      ).run(key, scope, key, scope);
+      // And across every key: however many approvals an agent asks for, the oldest links go first.
+      // Only the overflow is touched, oldest first by the linked_at index: not a re-sort per insert.
+      const { n } = this.database.prepare('SELECT COUNT(*) AS n FROM airlock_dataset_approval_rows').get() as { n: number };
+      if (n > maxTotal) {
+        this.database.prepare(
+          `DELETE FROM airlock_dataset_approval_rows WHERE rowid IN (
+             SELECT rowid FROM airlock_dataset_approval_rows ORDER BY linked_at, rowid LIMIT ?)`,
+        ).run(n - maxTotal);
+      }
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  /** The rows linked to an approval under this hub, oldest first. The links stay until dropped, after the labels are sent. */
+  async airlockDatasetApprovalRows(key: string, scope: string): Promise<string[]> {
+    const rows = this.database.prepare(
+      'SELECT row_id FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ? ORDER BY linked_at, rowid',
+    ).all(key, scope) as Array<{ row_id: string }>;
+    return rows.map(r => r.row_id);
+  }
+
+  /** A person answered: the decision kept on the links until their labels are sent, so a crash replays them. */
+  async airlockDatasetMarkApprovalAnswered(key: string, scope: string, decision: string): Promise<void> {
+    this.database.prepare('UPDATE airlock_dataset_approval_rows SET decision = ? WHERE approval_key = ? AND scope = ?').run(decision, key, scope);
+  }
+
+  /** Answered approvals whose labels were not all sent (a crash, a failed send), under this hub. */
+  async airlockDatasetAnsweredApprovalLinks(scope: string): Promise<Array<{ key: string; rowId: string; decision: string }>> {
+    const rows = this.database.prepare(
+      'SELECT approval_key, row_id, decision FROM airlock_dataset_approval_rows WHERE scope = ? AND decision IS NOT NULL ORDER BY linked_at, rowid',
+    ).all(scope) as Array<{ approval_key: string; row_id: string; decision: string }>;
+    return rows.map(r => ({ key: r.approval_key, rowId: r.row_id, decision: r.decision }));
+  }
+
+  /** The approval's links gone: an answer labels its rows once (BUG 9ff092e9). */
+  async airlockDatasetDropApprovalLinks(key: string, scope: string): Promise<void> {
+    this.database.prepare('DELETE FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ?').run(key, scope);
+  }
+
   async listAirlockApprovals(query: { pending?: boolean } = {}): Promise<AirlockApprovalRecord[]> {
     const sql = query.pending
       ? 'SELECT * FROM airlock_approvals WHERE granted_at IS NULL AND denied_at IS NULL ORDER BY requested_at DESC'
@@ -1983,5 +2064,50 @@ export class SQLiteStorageProvider implements StorageProvider {
   async listAirlockLearnedHosts(): Promise<AirlockLearnedHost[]> {
     const rows = this.database.prepare('SELECT * FROM airlock_learned_hosts ORDER BY received_at DESC, host').all() as any[];
     return rows.map((r) => this.rowToAirlockLearnedHost(r));
+  }
+
+  /** SX-1: the cards an Airlock sandbox touched. A table of its own, so no item write can clear one. */
+  private createAirlockCoverageTable(): void {
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS airlock_covered_items (
+        item_id TEXT PRIMARY KEY,
+        since TEXT NOT NULL
+      );
+    `);
+  }
+
+  /** Ids per IN (...) query: well under SQLite's bound-parameter limit. */
+  static readonly AIRLOCK_COVERAGE_BATCH = 500;
+
+  async markAirlockCovered(itemIds: string[], since: string): Promise<void> {
+    const ids = [...new Set(itemIds.filter((id) => typeof id === 'string' && id))];
+    if (!ids.length) return;
+    const insert = this.database.prepare('INSERT OR IGNORE INTO airlock_covered_items (item_id, since) VALUES (?, ?)');
+    this.database.exec('BEGIN');
+    try {
+      for (const id of ids) insert.run(id, since);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  async airlockCoveredAmong(itemIds: string[]): Promise<string[]> {
+    const ids = [...new Set(itemIds)];
+    const found: string[] = [];
+    for (let i = 0; i < ids.length; i += SQLiteStorageProvider.AIRLOCK_COVERAGE_BATCH) {
+      const batch = ids.slice(i, i + SQLiteStorageProvider.AIRLOCK_COVERAGE_BATCH);
+      const rows = this.database
+        .prepare(`SELECT item_id FROM airlock_covered_items WHERE item_id IN (${batch.map(() => '?').join(',')})`)
+        .all(...batch) as { item_id: string }[];
+      found.push(...rows.map((r) => r.item_id));
+    }
+    return found;
+  }
+
+  async airlockCoveredSince(itemId: string): Promise<string | null> {
+    const row = this.database.prepare('SELECT since FROM airlock_covered_items WHERE item_id = ?').get(itemId) as { since: string } | undefined;
+    return row?.since ?? null;
   }
 }

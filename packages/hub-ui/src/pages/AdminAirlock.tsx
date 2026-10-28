@@ -13,9 +13,18 @@ import { AirlockLearningCard } from './AdminAirlockLearning';
  * The policy and the IOC host list are saved separately: the list changes more
  * often, and saving it does not make a new policy revision.
  *
+ * Per-project overrides (PO-2) have their own card and are saved as part of the
+ * policy, its next revision: the stored policy goes back with them, `{}` when
+ * the last is removed (a save that leaves `projects` out keeps them, so the
+ * policy card cannot wipe them). The org's known repositories are offered as keys.
+ *
  * Below them (HUB-2): each installation with the revision it last reported
  * applying, those behind the current one highlighted and named as such, and
  * the policy's revision history from the config audit.
+ *
+ * The dataset (DS-2): an org-wide switch, off by default, for capturing full
+ * tool-call rows (secrets removed by the installation) to train the scorer;
+ * what it holds; and its JSONL download (Clef records), admin only.
  *
  * Last (HUB-1): the org's recent denials and alerts, newest first and a page
  * at a time, filterable by client, installation, source, alert and mode. One
@@ -25,7 +34,7 @@ import { AirlockLearningCard } from './AdminAirlockLearning';
 
 type Mode = 'off' | 'observe' | 'enforce';
 type RuleAction = 'deny' | 'needs-human-approval' | 'off';
-type RuleKey = 'uploadToUnlistedHost' | 'credentialReadWithNetwork' | 'namespaceEscape' | 'cloudMutation';
+type RuleKey = 'uploadToUnlistedHost' | 'credentialReadWithNetwork' | 'namespaceEscape' | 'cloudMutation' | 'publishThroughAllowedHost';
 interface ModelSelector { client?: string; provider?: string; model?: string }
 
 interface AirlockPolicy {
@@ -36,6 +45,13 @@ interface AirlockPolicy {
   hosts: { allow: string[]; deny: string[] };
   iocHosts: { revision: string; hosts: string[]; updatedAt: string | null };
   rules: Record<RuleKey, RuleAction>;
+  projects?: Record<string, ProjectOverride>;
+}
+
+/** Adds to the policy's host lists; each rule it sets wins over the org's. */
+interface ProjectOverride {
+  hosts?: { allow: string[]; deny: string[] };
+  rules?: Partial<Record<RuleKey, RuleAction>>;
 }
 
 export interface AirlockView {
@@ -109,6 +125,7 @@ const RULES: { key: RuleKey; label: string }[] = [
   { key: 'credentialReadWithNetwork', label: 'Read a credential and use the network in one command' },
   { key: 'namespaceEscape', label: 'Enter another namespace (unshare, nsenter)' },
   { key: 'cloudMutation', label: 'Change cloud resources (aws, gcloud, az, kubectl, terraform, pulumi)' },
+  { key: 'publishThroughAllowedHost', label: 'Publish through an allowed host (gists, issue bodies from files, npm, Hugging Face, PyPI, image pushes)' },
 ];
 
 const ACTIONS: { value: RuleAction; label: string }[] = [
@@ -122,6 +139,7 @@ const DEFAULT_RULES: Record<RuleKey, RuleAction> = {
   credentialReadWithNetwork: 'deny',
   namespaceEscape: 'deny',
   cloudMutation: 'needs-human-approval',
+  publishThroughAllowedHost: 'needs-human-approval',
 };
 
 /** One entry per line; blank lines and surrounding spaces dropped. */
@@ -212,9 +230,11 @@ export function AdminAirlock() {
   const view = airlock.data;
   return (
     <div className="space-y-4">
-      {/* Keyed by revision: a save reloads the form from what the hub stored. */}
-      <PolicyCard key={`policy-${view.revision}`} view={view} />
+      {/* Not keyed by revision: a card keeps unsaved edits when the other one saves (useRevisionDraft). */}
+      <PolicyCard view={view} />
+      <ProjectOverridesCard view={view} />
       <IocCard key={`ioc-${view.iocRevision}`} view={view} />
+      <DatasetCard />
       <InstallationsCard />
       <HistoryCard />
       <DecisionsCard />
@@ -223,19 +243,83 @@ export function AdminAirlock() {
   );
 }
 
+/**
+ * A card's draft against the revision it was made from. A newer revision (the
+ * other card's save, another admin) is adopted whenever the draft has no unsaved
+ * edits - checked on every render, so edits put back as they were adopt it too;
+ * otherwise the card says so and offers to discard them or keep them and save over
+ * the new revision. An older revision never replaces the draft's: a card's own save
+ * adopts what the hub returned (and puts it in the query cache) before any reload.
+ */
+function useRevisionDraft<T>(view: AirlockView, init: (v: AirlockView) => T) {
+  const [base, setBase] = useState(view);
+  const [draft, setDraft] = useState<T>(() => init(view));
+  const dirty = JSON.stringify(draft) !== JSON.stringify(init(base));
+  if (view.revision > base.revision && !dirty) {
+    setBase(view);
+    setDraft(init(view));
+  }
+  const adopt = (v: AirlockView) => { setBase(v); setDraft(init(v)); };
+  return {
+    base, draft, setDraft, adopt,
+    stale: dirty && view.revision > base.revision,
+    keep: () => setBase(view),
+  };
+}
+
+/**
+ * A save's answer goes into the cache before anything reloads it - unless a newer
+ * revision got there first (another admin's, while the answer was on its way). The
+ * card adopts what it saved either way; with no unsaved edits it then moves on to
+ * that newer revision itself.
+ */
+const onSaved = (qc: ReturnType<typeof useQueryClient>, adopt: (v: AirlockView) => void) => (v: AirlockView) => {
+  const cached = qc.getQueryData<AirlockView>(['admin-airlock']);
+  if (!cached || cached.revision < v.revision) qc.setQueryData(['admin-airlock'], v);
+  adopt(v);
+  invalidateAll(qc);
+};
+
+function ChangedElsewhere({ view, base, onDiscard, onKeep }: { view: AirlockView; base: AirlockView; onDiscard: () => void; onKeep: () => void }) {
+  return (
+    <Callout tone="warn" className="mt-3">
+      {`The policy changed elsewhere (it is now at revision ${view.revision}); your unsaved edits are against revision ${base.revision}, so saving them as they are will be refused.`}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button type="button" className={buttonClass('secondary')} onClick={onDiscard}>{`Discard my edits and load revision ${view.revision}`}</button>
+        <button type="button" className={buttonClass('secondary')} onClick={onKeep}>{`Keep my edits and save them over revision ${view.revision}`}</button>
+      </div>
+    </Callout>
+  );
+}
+
+interface PolicyDraft {
+  mode: Mode;
+  models: string;
+  unknown: boolean;
+  allow: string;
+  deny: string;
+  rules: Record<RuleKey, RuleAction>;
+}
+
+const policyDraftOf = (v: AirlockView): PolicyDraft => ({
+  mode: v.policy?.mode ?? 'off',
+  models: (v.policy?.models ?? []).map(selectorLine).join('\n'),
+  unknown: v.policy?.appliesWhenModelUnknown ?? true,
+  allow: (v.policy?.hosts.allow ?? []).join('\n'),
+  deny: (v.policy?.hosts.deny ?? []).join('\n'),
+  rules: { ...DEFAULT_RULES, ...(v.policy?.rules ?? {}) },
+});
+
 function PolicyCard({ view }: { view: AirlockView }) {
   const qc = useQueryClient();
-  const p = view.policy;
-  const [mode, setMode] = useState<Mode>(p?.mode ?? 'off');
-  const [models, setModels] = useState((p?.models ?? []).map(selectorLine).join('\n'));
-  const [unknown, setUnknown] = useState(p?.appliesWhenModelUnknown ?? true);
-  const [allow, setAllow] = useState((p?.hosts.allow ?? []).join('\n'));
-  const [deny, setDeny] = useState((p?.hosts.deny ?? []).join('\n'));
-  const [rules, setRules] = useState<Record<RuleKey, RuleAction>>({ ...DEFAULT_RULES, ...(p?.rules ?? {}) });
+  const d = useRevisionDraft(view, policyDraftOf);
+  const { mode, models, unknown, allow, deny, rules } = d.draft;
+  const p = d.base.policy;
 
   const save = useMutation({
+    // The overrides are the other card's: left out, the hub keeps them as stored.
     mutationFn: async () => (await api.put('/v1/admin/airlock', {
-      expectedRevision: view.revision,
+      expectedRevision: d.base.revision,
       policy: {
         schemaVersion: 1,
         mode,
@@ -245,17 +329,24 @@ function PolicyCard({ view }: { view: AirlockView }) {
         rules,
       },
     })).data as AirlockView,
-    onSuccess: () => invalidateAll(qc),
+    onSuccess: onSaved(qc, d.adopt),
   });
-  const edit = <T,>(set: (v: T) => void) => (v: T) => { save.reset(); set(v); };
+  const field = <K extends keyof PolicyDraft>(k: K) => (v: PolicyDraft[K]) => { save.reset(); d.setDraft(x => ({ ...x, [k]: v })); };
+  const setMode = field('mode');
+  const setModels = field('models');
+  const setUnknown = field('unknown');
+  const setAllow = field('allow');
+  const setDeny = field('deny');
+  const setRules = field('rules');
 
   return (
     <form className={`${cardClass} max-w-form`} onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
       <h3 className="text-body font-semibold text-ink">Airlock policy</h3>
+      {d.stale && <ChangedElsewhere view={view} base={d.base} onDiscard={() => d.adopt(view)} onKeep={d.keep} />}
       {p ? (
         <p className="mt-1 text-small text-ink-tertiary">
-          Revision {view.revision}{view.updatedByEmail ? `, saved by ${view.updatedByEmail}` : ''}
-          {view.updatedAt ? ` on ${utc(view.updatedAt)}` : ''}. Every installation joined to this hub adopts it and cannot
+          Revision {d.base.revision}{d.base.updatedByEmail ? `, saved by ${d.base.updatedByEmail}` : ''}
+          {d.base.updatedAt ? ` on ${utc(d.base.updatedAt)}` : ''}. Every installation joined to this hub adopts it and cannot
           change it locally.
         </p>
       ) : (
@@ -267,7 +358,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
 
       <label className="block mt-3">
         <span className="eyebrow text-ink-tertiary">Mode</span>
-        <select aria-label="Mode" className={`${controlClass} mt-1.5`} value={mode} onChange={(e) => edit(setMode)(e.target.value as Mode)}>
+        <select aria-label="Mode" className={`${controlClass} mt-1.5`} value={mode} onChange={(e) => setMode(e.target.value as Mode)}>
           {MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
         </select>
       </label>
@@ -277,7 +368,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
         <span className="eyebrow text-ink-tertiary">Models</span>
         <textarea
           aria-label="Models" rows={3} className={`${controlClass} mt-1.5 font-mono`}
-          value={models} onChange={(e) => edit(setModels)(e.target.value)}
+          value={models} onChange={(e) => setModels(e.target.value)}
           placeholder="pi cloudflare-workers-ai"
         />
       </label>
@@ -286,17 +377,17 @@ function PolicyCard({ view }: { view: AirlockView }) {
         every session.
       </p>
       <label className="mt-2 flex items-center gap-2 text-body text-ink">
-        <input type="checkbox" checked={unknown} onChange={(e) => edit(setUnknown)(e.target.checked)} />
+        <input type="checkbox" checked={unknown} onChange={(e) => setUnknown(e.target.checked)} />
         Apply when a session's model cannot be told
       </label>
 
       <label className="block mt-3">
         <span className="eyebrow text-ink-tertiary">Allowed hosts</span>
-        <textarea aria-label="Allowed hosts" rows={4} className={`${controlClass} mt-1.5 font-mono`} value={allow} onChange={(e) => edit(setAllow)(e.target.value)} />
+        <textarea aria-label="Allowed hosts" rows={4} className={`${controlClass} mt-1.5 font-mono`} value={allow} onChange={(e) => setAllow(e.target.value)} />
       </label>
       <label className="block mt-3">
         <span className="eyebrow text-ink-tertiary">Denied hosts</span>
-        <textarea aria-label="Denied hosts" rows={3} className={`${controlClass} mt-1.5 font-mono`} value={deny} onChange={(e) => edit(setDeny)(e.target.value)} />
+        <textarea aria-label="Denied hosts" rows={3} className={`${controlClass} mt-1.5 font-mono`} value={deny} onChange={(e) => setDeny(e.target.value)} />
       </label>
       <p className="mt-1 text-small text-ink-tertiary">
         One host per line: a name, *.wildcard or a CIDR range. Cloud metadata endpoints are always denied and cannot be
@@ -310,7 +401,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
             <span>{r.label}</span>
             <select
               aria-label={r.label} className={`${controlClass} max-w-[16rem]`} value={rules[r.key]}
-              onChange={(e) => edit(setRules)({ ...rules, [r.key]: e.target.value as RuleAction })}
+              onChange={(e) => setRules({ ...rules, [r.key]: e.target.value as RuleAction })}
             >
               {ACTIONS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
             </select>
@@ -324,6 +415,153 @@ function PolicyCard({ view }: { view: AirlockView }) {
         </button>
       </div>
       {save.isError && <SaveError error={save.error} />}
+    </form>
+  );
+}
+
+interface OverrideDraft { key: string; allow: string; deny: string; rules: Partial<Record<RuleKey, RuleAction>> }
+
+const overrideDraftsOf = (projects: Record<string, ProjectOverride> | undefined): OverrideDraft[] =>
+  Object.entries(projects ?? {}).map(([key, o]) => ({
+    key, allow: (o.hosts?.allow ?? []).join('\n'), deny: (o.hosts?.deny ?? []).join('\n'), rules: { ...o.rules },
+  }));
+
+/** The drafts as the policy holds them: hosts only when there are some, only the rules set. */
+export function projectsOf(drafts: OverrideDraft[]): Record<string, ProjectOverride> {
+  const out: Record<string, ProjectOverride> = {};
+  for (const d of drafts) {
+    const allow = linesOf(d.allow);
+    const deny = linesOf(d.deny);
+    const rules = { ...d.rules };
+    out[d.key.trim()] = {
+      ...(allow.length || deny.length ? { hosts: { allow, deny } } : {}),
+      ...(Object.keys(rules).length ? { rules } : {}),
+    };
+  }
+  return out;
+}
+
+/** The repositories this org's installations reported (their git remotes), for the key's suggestions. */
+const useKnownRepos = () => useQuery<{ remoteUrl: string }[]>({
+  queryKey: ['admin-projects'],
+  queryFn: async () => (await api.get('/v1/admin/projects')).data as { remoteUrl: string }[],
+});
+
+/** Why the drafts cannot be saved as they are (two naming one key would collapse into one), or null. */
+export function duplicateKeyProblem(keys: string[]): string | null {
+  const first = new Map<string, number>();
+  for (const [i, raw] of keys.entries()) {
+    const k = raw.trim();
+    const j = first.get(k);
+    if (j !== undefined) return `Overrides ${j + 1} and ${i + 1} both name ${k}: merge them into one.`;
+    first.set(k, i);
+  }
+  return null;
+}
+
+const overrideDraftsOfView = (v: AirlockView) => overrideDraftsOf(v.policy?.projects);
+
+function ProjectOverridesCard({ view }: { view: AirlockView }) {
+  const qc = useQueryClient();
+  const repos = useKnownRepos();
+  const d = useRevisionDraft(view, overrideDraftsOfView);
+  const drafts = d.draft;
+  const [problem, setProblem] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: async () => {
+      const { iocHosts: _ioc, ...stored } = d.base.policy!;
+      return (await api.put('/v1/admin/airlock', {
+        expectedRevision: d.base.revision,
+        policy: { ...stored, projects: projectsOf(drafts) },
+      })).data as AirlockView;
+    },
+    onSuccess: onSaved(qc, d.adopt),
+  });
+  const submit = () => {
+    const dup = duplicateKeyProblem(drafts.map(x => x.key));
+    setProblem(dup);
+    if (!dup) save.mutate();
+  };
+  const change = (next: OverrideDraft[]) => { save.reset(); setProblem(null); d.setDraft(next); };
+  const edit = (i: number, patch: Partial<OverrideDraft>) => change(drafts.map((d, j) => (j === i ? { ...d, ...patch } : d)));
+  const setRule = (i: number, k: RuleKey, v: string) => {
+    const rules = { ...drafts[i].rules };
+    if (v === '') delete rules[k]; else rules[k] = v as RuleAction;
+    edit(i, { rules });
+  };
+
+  return (
+    <form aria-label="Per-project overrides" className={`${cardClass} max-w-form`} onSubmit={(e) => { e.preventDefault(); submit(); }}>
+      <h3 className="text-body font-semibold text-ink">Per-project overrides</h3>
+      {d.stale && <ChangedElsewhere view={view} base={d.base} onDiscard={() => d.adopt(view)} onKeep={d.keep} />}
+      {!view.policy ? (
+        <p className="mt-1 text-small text-ink-tertiary">Overrides are part of the policy: save one first.</p>
+      ) : (
+        <>
+          <p className="mt-1 text-small text-ink-tertiary">
+            For one repository (host/owner/repo, a git remote, or owner/repo on GitHub) or one project of a standalone
+            installation (project:&lt;id&gt;). Its hosts are added to the policy&apos;s lists, and a host the policy denies stays
+            denied; each rule it sets replaces the org&apos;s, to loosen or tighten it. Saving makes a new policy revision.
+          </p>
+          <p className="mt-1 text-small text-ink-tertiary">
+            A repository is matched without its case, port or <span className="font-mono">.git</span> ending, so ssh and https
+            remotes of one repository name the same one; two keys that come to the same repository are merged. Each
+            installation reads a project&apos;s repository from its checkout once and keeps it, so a session cannot change which
+            override it gets; after a project&apos;s origin changes, run{' '}
+            <span className="font-mono">agenfk update-project &lt;id&gt; --project-root &lt;path&gt;</span> there to read it again.
+          </p>
+          <datalist id="airlock-known-repos">
+            {(repos.data ?? []).map(r => <option key={r.remoteUrl} value={r.remoteUrl} />)}
+          </datalist>
+          {drafts.map((d, i) => {
+            const n = i + 1;
+            return (
+              <fieldset key={i} className="mt-3 rounded-md border border-border-soft p-3">
+                <legend className="sr-only">{`Override ${n}`}</legend>
+                <div className="flex items-center gap-2">
+                  <input
+                    aria-label={`Repository or project, override ${n}`} list="airlock-known-repos"
+                    placeholder="github.com/owner/repo or project:<id>"
+                    className={`${controlClass} font-mono`} value={d.key} onChange={(e) => edit(i, { key: e.target.value })}
+                  />
+                  <button type="button" className={buttonClass('secondary')} onClick={() => change(drafts.filter((_, j) => j !== i))}>
+                    <span className="sr-only">{`Remove override ${n}`}</span>
+                    <span aria-hidden="true">Remove</span>
+                  </button>
+                </div>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <textarea aria-label={`Allowed hosts, override ${n}`} placeholder="added allowed hosts" rows={2} className={`${controlClass} font-mono`} value={d.allow} onChange={(e) => edit(i, { allow: e.target.value })} />
+                  <textarea aria-label={`Denied hosts, override ${n}`} placeholder="added denied hosts" rows={2} className={`${controlClass} font-mono`} value={d.deny} onChange={(e) => edit(i, { deny: e.target.value })} />
+                </div>
+                <div className="mt-2 space-y-1.5">
+                  {RULES.map(r => (
+                    <label key={r.key} className="flex items-center justify-between gap-3 text-small text-ink">
+                      <span>{r.label}</span>
+                      <select
+                        aria-label={`${r.label}, override ${n}`} className={`${controlClass} max-w-[16rem]`}
+                        value={d.rules[r.key] ?? ''} onChange={(e) => setRule(i, r.key, e.target.value)}
+                      >
+                        <option value="">The org&apos;s rule</option>
+                        {ACTIONS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            );
+          })}
+          <div className="mt-3 flex gap-2">
+            <button type="button" className={buttonClass('secondary')} onClick={() => change([...drafts, { key: '', allow: '', deny: '', rules: {} }])}>
+              Add a project override
+            </button>
+            <button type="submit" className={buttonClass('primary')} disabled={save.isPending}>
+              {save.isPending ? 'Saving…' : 'Save overrides'}
+            </button>
+          </div>
+          {problem && <Callout tone="danger" live="assertive" className="mt-3">{problem}</Callout>}
+          {save.isError && <SaveError error={save.error} />}
+        </>
+      )}
     </form>
   );
 }
@@ -359,6 +597,67 @@ function IocCard({ view }: { view: AirlockView }) {
             </button>
           </div>
           {save.isError && <SaveError error={save.error} />}
+        </>
+      )}
+    </form>
+  );
+}
+
+interface AirlockDataset {
+  enabled: boolean;
+  rows: number;
+  labels: number;
+  oldest: string | null;
+  newest: string | null;
+  limits: { maxRows: number; maxAgeDays: number; maxRowBytes: number };
+}
+
+const count = (n: number) => n.toLocaleString('en-US');
+
+function DatasetCard() {
+  const qc = useQueryClient();
+  const q = useQuery<AirlockDataset>({
+    queryKey: ['admin-airlock-dataset'],
+    queryFn: async () => (await api.get('/v1/admin/airlock/dataset')).data as AirlockDataset,
+  });
+  const toggle = useMutation({
+    mutationFn: async (enabled: boolean) => (await api.put('/v1/admin/airlock/dataset', { enabled })).data as AirlockDataset,
+    onSuccess: (v) => qc.setQueryData(['admin-airlock-dataset'], v),
+  });
+  const d = q.data;
+  return (
+    <form aria-label="Airlock dataset" className={`${cardClass} max-w-form`} onSubmit={(e) => e.preventDefault()}>
+      <h3 className="text-body font-semibold text-ink">Dataset</h3>
+      {q.isError && !d ? <QueryError error={q.error} onRetry={() => q.refetch()} /> : !d ? (
+        <p role="status" className="mt-1 text-small text-ink-tertiary">Loading…</p>
+      ) : (
+        <>
+          <p className="mt-1 text-small text-ink-tertiary">
+            While on, every joined installation sends each tool call Airlock judges, in full (commands, paths, the content a
+            write sends, URLs, the card it was for), with secrets removed before it leaves the machine, and the approvals
+            people give. It is kept here to train Airlock&apos;s scorer, and only an admin can download it. Off by default;
+            once it is off the hub keeps no new rows at once, and installations stop sending them at their next policy
+            sync (within minutes). Past sessions are only sent by{' '}
+            <span className="font-mono">agenfk airlock dataset import</span>. Kept: the newest {count(d.limits.maxRows)} rows,
+            none older than {d.limits.maxAgeDays} days.
+          </p>
+          <label className="mt-3 flex items-center gap-2 text-body text-ink">
+            <input
+              type="checkbox" checked={d.enabled} disabled={toggle.isPending}
+              onChange={(e) => toggle.mutate(e.target.checked)}
+            />
+            Capture tool calls for the dataset
+          </label>
+          <p className="mt-2 text-small text-ink-secondary">
+            {d.enabled ? 'On.' : 'Off.'} {count(d.rows)} rows, {count(d.labels)} labels
+            {d.oldest && d.newest ? `, from ${utc(d.oldest)} to ${utc(d.newest)}` : ''}.
+          </p>
+          {d.rows > 0 && (
+            <div className="mt-3">
+              <a className={buttonClass('secondary')} href="/v1/admin/airlock/dataset/export" download>Download JSONL</a>
+            </div>
+          )}
+          {toggle.isError && <SaveError error={toggle.error} />}
         </>
       )}
     </form>

@@ -252,9 +252,51 @@ describe('buildSandboxSpec: any loopback deny takes localhost out (third pass)',
     expect(() => buildSandboxSpec(policy({ hosts: { allow: [], deny: ['127.0.0.2/32'] } }), session({ inferenceHosts: ['localhost:8081'] }))).toThrow(/inference host/);
   });
 
-  it('a deny outside loopback leaves localhost names alone', () => {
+  // SX-1 changed this one: `llm.localhost` with no port reaches every loopback port,
+  // the AgEnFK server's included, so it is left out now (see the relay tests below);
+  // a deny outside loopback still leaves localhost names on a port of their own alone.
+  it('a deny outside loopback leaves localhost names on their own port alone', () => {
     const raw = { ...policy(), hosts: { allow: ['llm.localhost'], deny: ['10.0.0.0/8', '128.0.0.1', '::2'] } };
     const allow = buildSandboxSpec(raw, session({ inferenceHosts: ['localhost:8081'] })).network.allow;
-    expect(allow).toEqual(expect.arrayContaining(['llm.localhost', 'localhost:3123', 'localhost:8081']));
+    expect(allow).toEqual(expect.arrayContaining(['localhost:3123', 'localhost:8081']));
+    expect(allow).not.toContain('llm.localhost');
+  });
+});
+
+/**
+ * SX-1 review (Codex gpt-6.1-sol 01a18235): the sandbox reaches the AgEnFK server
+ * only through the launcher's relay. A policy entry that allows loopback on every
+ * port, or on the server's own port, would let it reach the server directly and
+ * unmarked, so the spec leaves such entries out and says why; an inference host
+ * there means the session could not run, so nothing is launched.
+ */
+describe('buildSandboxSpec: the server is never reachable directly', () => {
+  const direct = 3000;
+  it('loopback allowed on every port is left out, and reported', () => {
+    for (const entry of ['localhost', '127.0.0.1', '127.1.2.3', '::1', '[::1]', '0.0.0.0', 'LOCALHOST', 'localhost.']) {
+      const spec = buildSandboxSpec(policy({ hosts: { allow: [entry, 'api.github.com'] } }), session({ directServerPort: direct }));
+      expect(spec.network.allow, entry).not.toContain(entry.toLowerCase());
+      expect(spec.network.allow.some((a) => !/:\d+$/.test(a) && /^(localhost|127\.|::1|\[::1\]|0\.0\.0\.0)/.test(a)), entry).toBe(false);
+      expect(spec.skipped.map((s) => s.reason).join('\n'), entry).toMatch(/AgEnFK server directly/);
+    }
+  });
+
+  it('an inference host on loopback without a port, or on the server\'s port, is refused', () => {
+    expect(() => buildSandboxSpec(policy(), session({ directServerPort: direct, inferenceHosts: ['localhost'] }))).toThrow(/AgEnFK server/);
+    expect(() => buildSandboxSpec(policy(), session({ directServerPort: direct, inferenceHosts: [`127.0.0.1:${direct}`] }))).toThrow(/AgEnFK server/);
+    expect(buildSandboxSpec(policy(), session({ directServerPort: direct, inferenceHosts: ['127.0.0.1:11434'] })).network.allow).toContain('127.0.0.1:11434');
+  });
+
+  it('every spelling of loopback counts: IPv4-mapped and expanded IPv6, short and numeric IPv4 (review pass 2)', () => {
+    for (const host of ['[::ffff:7f00:1]', '[::ffff:127.0.0.1]', '[0:0:0:0:0:0:0:1]', '127.1', '[0:0::0]']) {
+      expect(() => buildSandboxSpec(policy(), session({ directServerPort: direct, inferenceHosts: [`${host}:${direct}`] })), host).toThrow(/AgEnFK server/);
+      const spec = buildSandboxSpec(policy({ hosts: { allow: [host.replace(/^\[|\]$/g, ''), 'api.github.com'] } }), session({ directServerPort: direct }));
+      expect(spec.network.allow.filter((a) => a !== '127.0.0.1:3123' && a !== 'localhost:3123' && a !== 'api.github.com' && a !== 'api.openai.com'), host).toEqual([]);
+    }
+  });
+
+  it('the relay\'s own port stays allowed', () => {
+    const spec = buildSandboxSpec(policy(), session({ directServerPort: direct, serverPort: 47003 }));
+    expect(spec.network.allow).toEqual(expect.arrayContaining(['127.0.0.1:47003', 'localhost:47003']));
   });
 });

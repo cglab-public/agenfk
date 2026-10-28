@@ -2,6 +2,58 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [Unreleased]
+
+**Airlock**
+
+- **Commands the server runs for a sandboxed agent are sandboxed too, while the policy enforces** (#294).
+  Verify, the suite, the baseline capture and worktree setup of a card an Airlock session touched run through
+  `agenfk airlock exec`, in a sandbox built from the same policy, with git hooks off. In `observe` mode they
+  run as before. The desktop app bundles what that needs. This
+  closes the beta.4 limit "commands the server runs for an agent are not sandboxed".
+- **Board-only writes are refused at the launcher's relay** (#294). A sandboxed agent can no longer forge
+  approvals, policy writes or learning accepts on a standalone installation (the beta.4 limit).
+- **Publishing through an allowed host is its own rule** (`publishThroughAllowedHost`): gists, issue bodies
+  read from files, package and model uploads, image pushes need a person's approval by default, even to a host
+  the allow list names.
+- **Per-project overrides** (#294). An override is keyed by repository (`host/owner/repo`, any git remote
+  form, or `owner/repo` on GitHub) or, on a standalone installation, `project:<id>`. Its allowed and denied
+  hosts are added to the policy's, and a host the policy denies stays denied. Each rule it sets replaces the
+  policy's, so it can loosen or tighten. Mode, model selectors, the IOC list and the cloud metadata denies stay
+  the policy's. Edit them on Hub Admin → Airlock (they are part of the policy and its revisions) or on a
+  standalone board's Settings → Airlock; a hub-joined board shows the hub's read-only.
+- A sandboxed session is held to the project it was launched for: the server refuses its requests that reach
+  another project's cards or projects, or change a project's root or delete a project.
+- **Airlock dataset** (#294), for training the semantic scorer. A hub admin switches it on in Hub Admin →
+  Airlock → Dataset; it is **off by default**, and a standalone installation captures nothing. While it is on,
+  each judged tool call goes to the hub as a full row: the call (commands, paths, written content, URLs), the
+  verdict, the card's title, description and step, and the session's last few calls. Secrets are removed on
+  the installation before the row leaves it. A person's approve or deny, and a learning accept, is kept as a
+  label on its row. Past pi and OpenCode sessions go up only when someone runs
+  `agenfk airlock dataset import`, never because the switch was turned on. The hub keeps at most 100,000 rows
+  per org for 90 days (64 KB a row, 20 labels of 4 KB each), and only an admin can download it, as JSONL, from
+  the hub. There is no local export.
+
+*Known limits:*
+
+- A repository is matched without case, port or `.git` ending, so ssh and https remotes of one repository
+  share a key. Two different repositories that differ only in port or a `.git` suffix share one too.
+- Each installation reads a project's repository from its checkout once and keeps it
+  (`~/.agenfk/airlock/repo-pins.json`), because a sandboxed agent can replace the checkout's `.git`. The
+  first read is trusted. After a project's origin changes, run `agenfk update-project <id> --project-root
+  <path>` to read it again. `agenfk airlock pi|opencode` records a project's root when the server has none
+  (`agenfk init` sets none). Where a repository override applies and the repository cannot be told, the
+  policy is refused (`AIRLOCK_PROJECT_UNKNOWN`) rather than applied without it.
+- A session launched by an older `agenfk` is refused (`AIRLOCK_LAUNCH_OUTDATED`): exit it and launch it again.
+- On macOS a sandboxed command can reach local services (macOS has no network namespace).
+- An installation learns that the dataset switch went off at its next policy sync (every few minutes). Until
+  then it may still send rows, which the hub drops. Rows it had queued are not sent after that sync.
+- The server still runs git on the host in the tree of a card a sandboxed session touched (git status, the close
+  commit, worktrees). The sandbox cannot write that repository's config, hooks, `commondir`, worktree config, or its
+  submodules' and other worktrees' git directories. It can still make git read config it wrote through a config
+  `include` target inside the workspace, a nested repository or submodule `.git` file, or (on Linux) a repository
+  created after launch. Running the server's git inside the sandbox for those cards is planned.
+
 ## [2.1.0-beta.4] — 2026-10-28
 
 **Airlock (new, beta)**

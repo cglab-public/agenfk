@@ -27,12 +27,30 @@ export interface SandboxSession {
   tempDirs: string[];
   /** The session's inference endpoint host(s): allowed, and where a masked key is injected. */
   inferenceHosts: string[];
-  /** The local AgEnFK server's port, allowed on loopback. */
+  /** The port the sandbox reaches the AgEnFK server on (the launcher's relay, SX-1), allowed on loopback. */
   serverPort: number;
+  /** Where the sandbox's agenfk clients find the server (AGENFK_API_URL): the relay. */
+  serverUrl?: string;
+  /** The AgEnFK server's own port: never reachable from the sandbox, which goes through the relay. */
+  directServerPort?: number;
+  /**
+   * 'client' (default): pi or OpenCode, with its own state writable and the relay to the server.
+   * 'command' (SX-2): a command the server runs for a covered card - no client state, no server
+   * entry, and loopback its own (bind and connect directly), so test servers work.
+   */
+  purpose?: 'client' | 'command';
   /** Where AgEnFK is installed: never writable. */
   installDirs: string[];
   /** Project `.agenfk` directories found above the workspace: never writable. */
   projectAgenfkDirs?: string[];
+  /**
+   * The workspace's own `.git`, when it is a directory (BUG 4639c6a4). The runtime
+   * already keeps its config and hooks unwritable; what else git takes config from -
+   * a commondir that points elsewhere, a worktree's config, the git dirs of submodules
+   * and of other worktrees - is kept unwritable here, so nothing the server's git runs
+   * on the host can be planted. Objects, refs and the index stay writable: commits work.
+   */
+  gitDir?: string | null;
   /** Env vars holding the model key: masked inside, injected by the proxy to the inference hosts. */
   maskedEnv?: string[];
   /** The sandbox runtime package itself: never writable. */
@@ -57,6 +75,8 @@ export interface SandboxSpec {
   allowPty: boolean;
   /** Entries left out because the sandbox cannot express them. */
   skipped: Array<{ entry: string; reason: string }>;
+  /** A command's sandbox (SX-2): it may bind loopback ports, so its test servers run. */
+  allowLocalBinding?: boolean;
 }
 
 type Entry = { kind: 'host' | 'cidr'; value: string; reason?: undefined } | { kind: 'bad'; reason: string; value?: undefined };
@@ -107,6 +127,34 @@ function hostPart(entry: string): string {
   return m ? m[1] : entry;
 }
 
+/**
+ * Would allowing `entry` let the sandbox reach the AgEnFK server directly, past
+ * the relay (SX-1)? Loopback on every port does, and so does loopback on the
+ * server's own port.
+ */
+function reachesServerDirectly(entry: string, directPort: number | undefined): boolean {
+  const m = /^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/.exec(entry);
+  if (!m) return false;
+  // As the resolver reads it: the URL parser turns 127.1 and 2130706433 into
+  // 127.0.0.1; matchHost reads mapped and expanded IPv6.
+  let host = m[1];
+  try {
+    host = new URL(`http://${host}/`).hostname;
+  } catch {
+    return false;
+  }
+  if (!matchHost(host.replace(/^\[|\]$/g, ''), LOOPBACK)) return false;
+  return m[2] === undefined || (directPort !== undefined && Number(m[2]) === directPort);
+}
+
+/** Every way to name this machine: loopback, the unspecified addresses, localhost names. */
+const LOOPBACK = ['127.0.0.0/8', '::1', '0.0.0.0', '::', 'localhost', '*.localhost'];
+
+const DIRECT_SERVER = 'it would let the sandbox reach the AgEnFK server directly, past the Airlock relay';
+
+/** A command's loopback, sent direct rather than to the proxy (SX-2). */
+const LOCAL_NO_PROXY = 'localhost,127.0.0.1,::1';
+
 /** A shell env var name. */
 export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -140,10 +188,14 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   };
 
   const allow: string[] = [];
-  const addAllow = (raw: string, what = ''): boolean => {
+  const addAllow = (raw: string, what = '', relayEntry = false): boolean => {
     const e = classify(raw);
     if (e.kind !== 'host') {
       skipped.push({ entry: raw, reason: `${what}${e.reason ?? 'the sandbox cannot allow an address range'}` });
+      return false;
+    }
+    if (!relayEntry && reachesServerDirectly(e.value, session.directServerPort)) {
+      skipped.push({ entry: raw, reason: `${what}${DIRECT_SERVER}` });
       return false;
     }
     const by = deniedBy(e.value);
@@ -157,14 +209,21 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   policy.hosts.allow.forEach((h) => addAllow(h));
   const inference: string[] = [];
   for (const raw of session.inferenceHosts) {
+    const c = classify(raw);
+    if (c.kind === 'host' && reachesServerDirectly(c.value, session.directServerPort)) {
+      throw new Error(`The session's inference host ${raw} is not allowed: ${DIRECT_SERVER}. Give the endpoint its own port. Nothing was launched.`);
+    }
     const by = classify(raw).kind === 'host' ? deniedBy(classify(raw).value as string) : null;
     if (by) {
       throw new Error(`The session's inference host ${raw} is denied by the Airlock policy (${by}), so the session could not reach its model. Nothing was launched.`);
     }
     if (addAllow(raw, 'inference host: ')) inference.push(classify(raw).value as string);
   }
-  addAllow(`127.0.0.1:${session.serverPort}`, 'the AgEnFK server: ');
-  addAllow(`localhost:${session.serverPort}`, 'the AgEnFK server: ');
+  // A command the server runs does not talk to the server (SX-2); a client does, through the relay.
+  if (session.purpose !== 'command') {
+    addAllow(`127.0.0.1:${session.serverPort}`, 'the AgEnFK server: ', true);
+    addAllow(`localhost:${session.serverPort}`, 'the AgEnFK server: ', true);
+  }
 
   const deny: string[] = [];
   const denyResolved: string[] = [];
@@ -188,9 +247,12 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     // stays readable: the agent's own workflow (agenfk verify, review record)
     // needs it.
     j(home, '.agenfk', 'airlock'),
+    // A command the server runs needs no agenfk token (SX-3 review): it could only use it against the server.
+    ...(session.purpose === 'command' ? [j(home, '.agenfk', 'verify-token')] : []),
   ];
 
-  const clientState = session.client === 'pi'
+  const command = session.purpose === 'command';
+  const clientState = command ? [] : session.client === 'pi'
     ? [j(home, '.pi', 'agent')]
     : [j(home, '.local', 'share', 'opencode'), j(home, '.local', 'state', 'opencode'), j(home, '.cache', 'opencode'), j(home, '.config', 'opencode')];
   const allowWrite = uniq([session.workspace, ...session.tempDirs, ...clientState]);
@@ -203,6 +265,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     j(home, '.config', 'opencode', 'plugin'),
     j(session.workspace, '.agenfk'),
     ...(session.projectAgenfkDirs ?? []),
+    ...(session.gitDir ? ['commondir', 'config.worktree', 'modules', 'worktrees'].map((n) => j(session.gitDir!, n)) : []),
     // Every .agenfk below the workspace (macOS globs; Linux applies literal paths only).
     j(session.workspace, '**', '.agenfk'),
     ...(session.runtimePackageDir ? [session.runtimePackageDir] : []),
@@ -220,20 +283,24 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     filesystem: { denyRead, allowWrite, denyWrite },
     maskedEnv,
     env: {
-      [AIRLOCK_SANDBOX_MARKER]: session.client,
+      [AIRLOCK_SANDBOX_MARKER]: command ? 'command' : session.client,
       // pi and OpenCode's plugins run on Node, whose fetch() ignores the proxy
       // env without this (measured in the spike: it fails closed, inference too).
       NODE_USE_ENV_PROXY: '1',
       // The runtime sends loopback direct, which the sandbox refuses. Through
       // the proxy, loopback reaches the AgEnFK server on its one allowed port.
-      NO_PROXY: '',
-      no_proxy: '',
+      // A command's own loopback (its test servers) goes direct: allowLocalBinding below.
+      NO_PROXY: command ? LOCAL_NO_PROXY : '',
+      no_proxy: command ? LOCAL_NO_PROXY : '',
       // The gate's Linux evidence refuses a process still in this namespace.
       ...(session.hostNetns ? { AGENFK_AIRLOCK_HOST_NETNS: session.hostNetns } : {}),
+      // Every agenfk client inside (CLI, hooks, the pi and OpenCode adapters) reads it first.
+      ...(session.serverUrl ? { AGENFK_API_URL: session.serverUrl } : {}),
     },
     // A TUI needs raw mode on its terminal: EPERM without it (measured, macOS).
     allowPty: true,
     skipped,
+    ...(command ? { allowLocalBinding: true } : {}),
   };
 }
 

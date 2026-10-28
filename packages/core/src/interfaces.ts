@@ -151,6 +151,12 @@ export interface StorageProvider extends AgEnFKPlugin {
   upsertAirlockApproval(request: AirlockApprovalRequest, now?: string): Promise<AirlockApprovalRecord>;
   getAirlockApproval(key: string): Promise<AirlockApprovalRecord | null>;
   listAirlockApprovals(query?: { pending?: boolean }): Promise<AirlockApprovalRecord[]>;
+  /** The Airlock dataset's approval links (BUG 9ff092e9): a row that asked, under the hub it went to. */
+  airlockDatasetLinkApproval?(key: string, scope: string, rowId: string, at?: string, maxTotal?: number): Promise<void>;
+  airlockDatasetApprovalRows?(key: string, scope: string): Promise<string[]>;
+  airlockDatasetDropApprovalLinks?(key: string, scope: string): Promise<void>;
+  airlockDatasetMarkApprovalAnswered?(key: string, scope: string, decision: string): Promise<void>;
+  airlockDatasetAnsweredApprovalLinks?(scope: string): Promise<Array<{ key: string; rowId: string; decision: string }>>;
   /**
    * Grant a pending (or denied) request. With `generation`, only that
    * generation: a stale or replayed answer is refused and changes nothing. A
@@ -175,6 +181,12 @@ export interface StorageProvider extends AgEnFKPlugin {
   recordAirlockHostObservations(observations: AirlockHostObservation[]): Promise<void>;
   /** Every learned host, most recently seen first. */
   listAirlockLearnedHosts(): Promise<AirlockLearnedHost[]>;
+  /** SX-1: record cards an Airlock sandbox touched; one already recorded keeps its first `since`. */
+  markAirlockCovered(itemIds: string[], since: string): Promise<void>;
+  /** Which of `itemIds` are recorded as covered. */
+  airlockCoveredAmong(itemIds: string[]): Promise<string[]>;
+  /** When a card was first covered; null when it never was. */
+  airlockCoveredSince(itemId: string): Promise<string | null>;
 }
 
 export type AirlockScope = 'local' | 'hub';
@@ -326,7 +338,10 @@ export type HubEventType =
   // A human-approval request: requested, granted or denied on the board, or a grant used.
   | 'airlock.approval'
   // Learning mode (TEL-3): a person's proposed allowlist, host names and counts, for an org admin to accept.
-  | 'airlock.learning-proposal';
+  | 'airlock.learning-proposal'
+  /** DS-1: a full tool-call row, and a label joined to one, for the Airlock dataset (sent only while the hub's switch is on). */
+  | 'airlock.dataset'
+  | 'airlock.dataset-label';
 
 export interface HubActor {
   osUser: string;

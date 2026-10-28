@@ -31,6 +31,8 @@ export interface AirlockRules {
   namespaceEscape: RuleAction;
   /** mutating verbs of aws / gcloud / az / kubectl / terraform / pulumi */
   cloudMutation: RuleAction;
+  /** gists, issue bodies from files, package registries, model hubs: data sent through a host the allow list may name */
+  publishThroughAllowedHost: RuleAction;
 }
 
 export interface AirlockPolicy {
@@ -42,6 +44,17 @@ export interface AirlockPolicy {
   hosts: { allow: HostPattern[]; deny: HostPattern[] };
   iocHosts: { revision: string; hosts: HostPattern[]; updatedAt: string | null };
   rules: AirlockRules;
+  /**
+   * Per-project overrides, keyed by repository (host/owner/repo) or project:<local id>.
+   * Absent when there are none. effectivePolicyFor applies them; the result carries none.
+   */
+  projects?: Record<string, AirlockProjectOverride>;
+}
+
+/** Adds to the org's host lists (a deny always outranks an allow); each rule set wins over the org's. */
+export interface AirlockProjectOverride {
+  hosts?: { allow: HostPattern[]; deny: HostPattern[] };
+  rules?: Partial<AirlockRules>;
 }
 
 /** Cloud metadata endpoints. Always denied; no policy can allow-list them. */
@@ -57,6 +70,7 @@ export const DEFAULT_AIRLOCK_RULES: Readonly<AirlockRules> = Object.freeze({
   credentialReadWithNetwork: 'deny',
   namespaceEscape: 'deny',
   cloudMutation: 'needs-human-approval',
+  publishThroughAllowedHost: 'needs-human-approval',
 });
 
 /** Off until someone turns it on. Frozen: copy it (normalizeAirlockPolicy) before changing. */
@@ -80,6 +94,7 @@ export type AirlockRuleId =
   | 'upload-to-unlisted-host'
   | 'credential-read-with-network'
   | 'namespace-escape'
+  | 'publish-through-allowed-host'
   | 'cloud-mutation';
 
 export type Capability =

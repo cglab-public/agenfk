@@ -120,7 +120,14 @@ export interface AirlockPolicyDto {
   appliesWhenModelUnknown: boolean;
   hosts: { allow: string[]; deny: string[] };
   iocHosts: { revision: string; hosts: string[]; updatedAt: string | null };
-  rules: { uploadToUnlistedHost: AirlockRuleActionDto; credentialReadWithNetwork: AirlockRuleActionDto; namespaceEscape: AirlockRuleActionDto; cloudMutation: AirlockRuleActionDto };
+  rules: { uploadToUnlistedHost: AirlockRuleActionDto; credentialReadWithNetwork: AirlockRuleActionDto; namespaceEscape: AirlockRuleActionDto; cloudMutation: AirlockRuleActionDto; publishThroughAllowedHost: AirlockRuleActionDto };
+  /** Per-project overrides (PO-1), keyed by repository or project:<id>; absent when there are none. */
+  projects?: Record<string, AirlockProjectOverrideDto>;
+}
+/** Adds to the policy's host lists; each rule it sets wins over the policy's. */
+export interface AirlockProjectOverrideDto {
+  hosts?: { allow: string[]; deny: string[] };
+  rules?: Partial<AirlockPolicyDto['rules']>;
 }
 /** GET /airlock/policy. `hubManaged`: the hub owns the policy and a local write is refused. */
 export interface AirlockPolicyViewDto {

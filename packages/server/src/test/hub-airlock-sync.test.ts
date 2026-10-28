@@ -25,7 +25,7 @@ import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { removeTestDb } from './helpers/testDb';
 import { runFlowSyncTick } from '../hub/flowSync';
-import { syncAirlockPolicy, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockAuthorityOf } from '../hub/airlockSync';
+import { syncAirlockPolicy, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockAuthorityOf, airlockDatasetEnabled, airlockDatasetDecidedOff } from '../hub/airlockSync';
 import { resolveAirlockPolicy } from '../airlock/routes';
 
 const HUB_URL = 'http://hub.example.test';
@@ -147,8 +147,13 @@ describe('hub airlockSync', () => {
       expect(state.source).toBe('hub');
     });
 
-    it("offers the stored row's ETag to the same authority, and a 304 writes nothing", async () => {
-      await seedHubRow(3);
+    // DS-1: the ETag is offered only once this process has read the answer it came from,
+    // since the dataset switch (held in memory) arrives with that answer; a cold start
+    // reads it whole.
+    it("offers the same authority's ETag once this process has read that answer, and a 304 writes nothing", async () => {
+      invalidateAirlockSyncs();
+      await sync(makeFetch(ok(hubPolicy({ mode: 'observe' }), 3)).fetchImpl);
+      fs.rmSync(stateFile, { force: true });
       const { fetchImpl, calls } = makeFetch({ status: 304 });
       const out = await sync(fetchImpl);
       expect(out.outcome).toBe('not-modified');
@@ -157,6 +162,14 @@ describe('hub airlockSync', () => {
       expect(row?.revision).toBe(3);
       expect(row?.policy.mode).toBe('observe');
       expect(fs.existsSync(stateFile)).toBe(false);
+    });
+
+    it('a cold start reads the stored row\'s authority whole: no ETag is offered', async () => {
+      invalidateAirlockSyncs();
+      await seedHubRow(3);
+      const { fetchImpl, calls } = makeFetch(ok(hubPolicy(), 3));
+      await sync(fetchImpl);
+      expect(calls[0].headers['If-None-Match']).toBeUndefined();
     });
 
     it.each<[string, Answer | 'throw']>([
@@ -201,6 +214,24 @@ describe('hub airlockSync', () => {
       const row = await storage.getAirlockPolicy('hub');
       expect(row?.revision).toBe(3);
       expect(row?.policy.mode).toBe('enforce');
+    });
+
+    // c9bdbe61: a hub on an earlier release does not know rules added since. Its
+    // policy is complete for that hub; the rule it never decided on gets its default.
+    it('adopts a policy from a hub that predates the publish rule, with that rule at its default', async () => {
+      const { fetchImpl } = makeFetch(ok(hubPolicy(), 5));
+      const out = await sync(fetchImpl);
+      expect(out.outcome).toBe('adopted');
+      const row = await storage.getAirlockPolicy('hub');
+      expect(row?.policy.rules.publishThroughAllowedHost).toBe('needs-human-approval');
+      expect(row?.policy.rules.cloudMutation).toBe('needs-human-approval');
+    });
+
+    it("keeps the hub's publish rule when it sends one", async () => {
+      const rules = { ...hubPolicy().rules as object, publishThroughAllowedHost: 'deny' };
+      const { fetchImpl } = makeFetch(ok(hubPolicy({ rules }), 5));
+      expect((await sync(fetchImpl)).outcome).toBe('adopted');
+      expect((await storage.getAirlockPolicy('hub'))?.policy.rules.publishThroughAllowedHost).toBe('deny');
     });
 
     it('adopts an IOC-only change at the same revision', async () => {
@@ -478,6 +509,137 @@ describe('hub airlockSync', () => {
       const out = await releaseHubAirlockPolicy({ storage, stateFile });
       expect(out.released).toBe(false);
       expect(await storage.getAirlockPolicy('local')).toBeNull();
+    });
+  });
+
+  // DS-1: the hub's dataset switch arrives with the policy; nothing is captured until it says on.
+  describe('the dataset switch', () => {
+    beforeEach(() => invalidateAirlockSyncs());
+
+    it('is off until the hub says on, and follows it', async () => {
+      expect(airlockDatasetEnabled()).toBe(false);
+      await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"1:1:d1"' }).fetchImpl);
+      expect(airlockDatasetEnabled()).toBe(true);
+      await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: false } }, etag: 'W/"1:1:d0"' }).fetchImpl);
+      expect(airlockDatasetEnabled()).toBe(false);
+    });
+
+    it('a hub with no policy can still have it on; an answer without it (an older hub) is off', async () => {
+      await sync(makeFetch({ status: 200, body: { policy: null, revision: 0, iocRevision: 0, dataset: { enabled: true } } }).fetchImpl);
+      expect(airlockDatasetEnabled()).toBe(true);
+      await sync(makeFetch(ok(hubPolicy(), 1)).fetchImpl);
+      expect(airlockDatasetEnabled()).toBe(false);
+    });
+
+    it('anything but enabled: true is off', async () => {
+      for (const dataset of [{}, { enabled: 'true' }, { enabled: 1 }, true, null]) {
+        await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } } }).fetchImpl);
+        expect(airlockDatasetEnabled()).toBe(true);
+        await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset } }).fetchImpl);
+        expect(airlockDatasetEnabled(), JSON.stringify(dataset)).toBe(false);
+      }
+    });
+
+    it('a 304 leaves it as it was; leaving the hub turns it off', async () => {
+      await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"1:1:d1"' }).fetchImpl);
+      await sync(makeFetch({ status: 304 }).fetchImpl);
+      expect(airlockDatasetEnabled()).toBe(true);
+      invalidateAirlockSyncs();
+      expect(airlockDatasetEnabled()).toBe(false);
+    });
+
+    // story review F1 (Codex gpt-6.1-sol 01a18385): capture stays on only while the hub keeps saying so
+    it('a hub that is down, answers an error, or sends what cannot be read turns it off; the next answer decides again', async () => {
+      const on = { status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"1:1:d1"' };
+      for (const failing of ['throw', { status: 502 }, { status: 200, body: 'not json' }, { status: 200, body: { policy: { mode: 'enforce' }, revision: 1, dataset: { enabled: true } } }] as const) {
+        await sync(makeFetch(on as any).fetchImpl);
+        expect(airlockDatasetEnabled()).toBe(true);
+        expect(airlockDatasetDecidedOff()).toBe(false);
+        await sync(makeFetch(failing as any).fetchImpl);
+        expect(airlockDatasetEnabled(), JSON.stringify(failing)).toBe(false);
+        expect(airlockDatasetDecidedOff()).toBe(true);
+      }
+      await sync(makeFetch(on as any).fetchImpl);
+      expect(airlockDatasetEnabled()).toBe(true);
+    });
+
+    it('an answer with an older policy revision still turns it off: the policy is kept, the switch is the hub\'s word now', async () => {
+      await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 10, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"10:1:d1"' }).fetchImpl);
+      expect(airlockDatasetEnabled()).toBe(true);
+      // a hub restored from a backup: revision 9, switched off
+      const out = await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 9, iocRevision: 1, dataset: { enabled: false } }, etag: 'W/"9:1:d0"' }).fetchImpl);
+      expect(out.outcome).toBe('stale');
+      expect(airlockDatasetEnabled()).toBe(false);
+      expect((await storage.getAirlockPolicy('hub'))?.revision).toBe(10);
+    });
+
+    it('a process that has not heard from the hub yet is off, but not decided off', async () => {
+      vi.resetModules();
+      const fresh = await import('../hub/airlockSync');
+      expect(fresh.airlockDatasetEnabled()).toBe(false);
+      expect(fresh.airlockDatasetDecidedOff()).toBe(false);
+    });
+
+    it('of two overlapping syncs, the one that started later decides, whichever answers last', async () => {
+      const d = makeDeferredFetch();
+      const older = sync(d.fetchImpl);
+      await d.started(1);
+      const newer = sync(d.fetchImpl);
+      await d.started(2);
+      d.pending[1]({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: false } } });
+      await newer;
+      d.pending[0]({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } } });
+      await older;
+      expect(airlockDatasetEnabled()).toBe(false);
+    });
+
+    it('a later sync that is answered 304 still decides over an earlier one answered after it', async () => {
+      await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: false } }, etag: 'W/"1:1:d0"' }).fetchImpl);
+      const d = makeDeferredFetch();
+      const older = sync(d.fetchImpl);
+      await d.started(1);
+      const newer = sync(d.fetchImpl);
+      await d.started(2);
+      d.pending[1]({ status: 304 });
+      await newer;
+      d.pending[0]({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"1:1:d1"' });
+      await older;
+      expect(airlockDatasetEnabled()).toBe(false);
+    });
+
+    it('a 304 keeps the switch of the answer it revalidated, not whatever an overlapping answer set', async () => {
+      await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: false } }, etag: 'W/"1:1:d0"' }).fetchImpl);
+      const d = makeDeferredFetch();
+      const older = sync(d.fetchImpl);
+      await d.started(1);
+      const newer = sync(d.fetchImpl);
+      await d.started(2);
+      // the older one answers first, "on" (an admin flipped it), and is adopted
+      d.pending[0]({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"1:1:d1"' });
+      await older;
+      // the admin flipped it back; the newer request revalidated the "off" answer it sent
+      d.pending[1]({ status: 304 });
+      await newer;
+      expect(airlockDatasetEnabled()).toBe(false);
+    });
+
+    it('a fresh process does not revalidate: it reads the switch whole (a stored ETag says nothing about it)', async () => {
+      await sync(makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"1:1:d1"' }).fetchImpl);
+      invalidateAirlockSyncs();
+      const f = makeFetch({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } }, etag: 'W/"1:1:d1"' });
+      await sync(f.fetchImpl);
+      expect(f.calls[0].headers['If-None-Match']).toBeUndefined();
+      expect(airlockDatasetEnabled()).toBe(true);
+    });
+
+    it('an answer from a sync its configuration outlived does not turn it on', async () => {
+      const d = makeDeferredFetch();
+      const pending = sync(d.fetchImpl);
+      await d.started(1);
+      invalidateAirlockSyncs();
+      d.pending[0]({ status: 200, body: { policy: hubPolicy(), revision: 1, iocRevision: 1, dataset: { enabled: true } } });
+      await pending;
+      expect(airlockDatasetEnabled()).toBe(false);
     });
   });
 });

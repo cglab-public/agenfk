@@ -61,7 +61,16 @@ describe('normalizeAirlockPolicy', () => {
       credentialReadWithNetwork: 'deny',
       namespaceEscape: 'deny',
       cloudMutation: 'needs-human-approval',
+      publishThroughAllowedHost: 'needs-human-approval',
     });
+  });
+
+  it('a policy stored before the publish rule existed gets its default, and its setting is kept (c9bdbe61)', () => {
+    const { publishThroughAllowedHost: _absent, ...older } = DEFAULT_AIRLOCK_POLICY.rules;
+    expect(normalizeAirlockPolicy({ mode: 'enforce', rules: older }).rules.publishThroughAllowedHost).toBe('needs-human-approval');
+    expect(normalizeAirlockPolicy({ mode: 'enforce', rules: { publishThroughAllowedHost: 'deny' } }).rules.publishThroughAllowedHost).toBe('deny');
+    expect(airlockPolicyErrors({ ...DEFAULT_AIRLOCK_POLICY, rules: { ...DEFAULT_AIRLOCK_POLICY.rules, publishThroughAllowedHost: 'maybe' } }))
+      .toContain('rules.publishThroughAllowedHost must be one of deny, needs-human-approval, off');
   });
 
   it('a normalised policy has no errors', () => {

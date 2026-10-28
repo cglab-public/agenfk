@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { oneInFlight, readRemoteUrl, remoteCacheLifetimeMs } from '../projectRemote';
+import { oneInFlight, readRemoteUrl, readAirlockRemoteUrl, remoteCacheLifetimeMs } from '../projectRemote';
 import { removeTempDir } from './helpers/tempDir';
 
 describe('readRemoteUrl()', () => {
@@ -67,6 +67,78 @@ describe('readRemoteUrl()', () => {
       execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
       execFileSync('git', ['remote', 'add', 'origin', 'https://example.com/o/r.git'], { cwd: dir, windowsHide: true });
       expect(await readRemoteUrl(dir)).toEqual({ url: 'https://example.com/o/r.git', cacheable: true });
+    } finally {
+      removeTempDir(dir);
+    }
+  });
+
+  // PO-1 review 2: Airlock fails closed on an answer that is not git's own.
+  it('git saying there is no origin, or no repository, is an answer; anything else is a failed lookup, not remembered', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-remote-'));
+    try {
+      expect(await readRemoteUrl(dir)).toEqual({ url: '', cacheable: true });
+      execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
+      expect(await readRemoteUrl(dir)).toEqual({ url: '', cacheable: true });
+      expect(await readRemoteUrl(path.join(dir, 'gone'))).toEqual({ url: '', cacheable: false });
+      // git runs and fails (a broken config): not an answer about the remote
+      fs.writeFileSync(path.join(dir, '.git', 'config'), '[core\n  this is not config\n');
+      expect(await readRemoteUrl(dir)).toEqual({ url: '', cacheable: false });
+      expect(await readRemoteUrl('/repo', { run: async () => ({ out: '', timedOut: false, failed: true }) })).toEqual({ url: '', cacheable: false });
+    } finally {
+      removeTempDir(dir);
+    }
+  });
+
+  // PO-1 review 4: Airlock reads the origin as .git/config records it, which a sandbox cannot write.
+  it('for Airlock: the origin from .git/config, without url rewrites or worktree config a sandbox could write', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-remote-'));
+    try {
+      expect(await readAirlockRemoteUrl(dir)).toEqual({ url: '', cacheable: true });
+      execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
+      expect(await readAirlockRemoteUrl(dir)).toEqual({ url: '', cacheable: true });
+      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/api.git'], { cwd: dir, windowsHide: true });
+      execFileSync('git', ['config', 'extensions.worktreeConfig', 'true'], { cwd: dir, windowsHide: true });
+      execFileSync('git', ['config', '--worktree', 'url.https://github.com/acme/loose.git.insteadOf', 'https://github.com/acme/api.git'], { cwd: dir, windowsHide: true });
+      // what git remote get-url says, rewritten
+      expect((await readRemoteUrl(dir)).url).toBe('https://github.com/acme/loose.git');
+      expect(await readAirlockRemoteUrl(dir)).toEqual({ url: 'https://github.com/acme/api.git', cacheable: true });
+      fs.writeFileSync(path.join(dir, '.git', 'config'), '[core\n  this is not config\n');
+      expect(await readAirlockRemoteUrl(dir)).toEqual({ url: '', cacheable: false });
+    } finally {
+      removeTempDir(dir);
+    }
+  });
+
+  it('for Airlock: only <root>/.git/config, read as a file: no commondir, and a .git that is not a directory fails', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-remote-'));
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-remote-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
+      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/api.git'], { cwd: dir, windowsHide: true });
+      execFileSync('git', ['init', '-q', '--bare'], { cwd: other, windowsHide: true });
+      execFileSync('git', ['config', 'remote.origin.url', 'https://github.com/acme/loose.git'], { cwd: other, windowsHide: true });
+      fs.writeFileSync(path.join(dir, '.git', 'commondir'), other + '\n');
+      expect(await readAirlockRemoteUrl(dir)).toEqual({ url: 'https://github.com/acme/api.git', cacheable: true });
+      fs.renameSync(path.join(dir, '.git'), path.join(dir, '.git2'));
+      fs.writeFileSync(path.join(dir, '.git'), `gitdir: ${other}\n`);
+      expect(await readAirlockRemoteUrl(dir)).toEqual({ url: '', cacheable: false });
+      fs.rmSync(path.join(dir, '.git'));
+      fs.symlinkSync(other, path.join(dir, '.git'));
+      expect(await readAirlockRemoteUrl(dir)).toEqual({ url: '', cacheable: false });
+    } finally {
+      removeTempDir(dir);
+      removeTempDir(other);
+    }
+  });
+
+  it('for Airlock: a project rooted below its checkout reads the checkout\'s .git, as git would', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-remote-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
+      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/mono.git'], { cwd: dir, windowsHide: true });
+      const sub = path.join(dir, 'packages', 'service');
+      fs.mkdirSync(sub, { recursive: true });
+      expect(await readAirlockRemoteUrl(sub)).toEqual({ url: 'https://github.com/acme/mono.git', cacheable: true });
     } finally {
       removeTempDir(dir);
     }

@@ -2,7 +2,8 @@
  * Airlock server authority (GH-294, T2): where the policy lives, who may change
  * it, and the one place a tool call is judged.
  *
- *   GET  /airlock/policy     the effective policy and where it came from
+ *   GET  /airlock/policy     the effective policy and where it came from;
+ *                            ?projectId= that project's (its overrides applied)
  *   PUT  /airlock/policy     a local write: refused while the hub owns the policy
  *   POST /airlock/evaluate   judge one tool call (adapters, CLI, MCP); loopback only
  *   POST /airlock/proxy-decisions   what the sandbox proxy allowed and denied (TEL-1); loopback only
@@ -10,6 +11,8 @@
  *   GET  /airlock/approvals  human-approval requests: pending, and the recent ones (T5)
  *   POST /airlock/approvals/:key/grant|deny   a person's answer, on the board (T5)
  *   /airlock/learning[/import|/accept|/forward]   learning mode's proposed allowlist (TEL-3, learn.ts)
+ *   GET  /airlock/dataset    whether past sessions can be imported: joined, and the hub's switch on (DS-3)
+ *   POST /airlock/dataset/import   past sessions' tool calls, as dataset rows; loopback, never from a sandbox
  *
  * APPROVALS (T5): a needs-human-approval verdict records a pending request under
  * its approval key (bound to the rule, the project and every capability). A
@@ -52,11 +55,14 @@ import {
   DEFAULT_AIRLOCK_POLICY,
   airlockAlertOf,
   airlockPolicyErrors,
+  airlockRepoKey,
+  effectivePolicyFor,
   capabilitiesOf,
   evaluateAirlock,
   modelFromPi,
   normalizeAirlockPolicy,
   writePrivateFileSync,
+  type AgentRun,
   type AirlockApprovalCapability,
   type AirlockApprovalRecord,
   type AirlockClient,
@@ -73,11 +79,14 @@ import {
   type StoredAirlockPolicy,
 } from '@agenfk/core';
 import { redactLog } from '../hub/redact.js';
+import { airlockDataset, AIRLOCK_DATASET_IMPORT_MAX_CALLS } from './dataset.js';
 import { AIRLOCK_REPORT_HEADER } from './reportToken.js';
 import { registerAirlockLearning } from './learn.js';
 
 export const HUB_OWNS_AIRLOCK_POLICY = 'HUB_OWNS_AIRLOCK_POLICY';
 export const AIRLOCK_REVISION_CONFLICT = 'AIRLOCK_REVISION_CONFLICT';
+/** 503: a project's repository could not be read, so its overrides cannot be told (the adapter, unanswered, blocks in enforce). */
+export const AIRLOCK_PROJECT_UNKNOWN = 'AIRLOCK_PROJECT_UNKNOWN';
 
 const CLIENTS: readonly AirlockClient[] = ['pi', 'opencode'];
 /** A logged target is for a person to read, not a copy of the command. */
@@ -127,6 +136,24 @@ export interface AirlockRouteDeps {
   refreshFromHub?: () => Promise<void>;
   /** The clock grants are judged by (epoch ms). Defaults to Date.now. */
   now?: () => number;
+  /**
+   * The hub's dataset switch (DS-1, hub/airlockSync.ts). On, and joined to a hub:
+   * each judged call and proxy decision is sent as a full row (airlock/dataset.ts).
+   * Absent or off: nothing is built or sent.
+   */
+  datasetEnabled?: () => boolean;
+  /** Changes when the hub configuration does (hub/airlockSync.ts): the dataset forgets what it remembered. */
+  datasetScope?: () => unknown;
+  /**
+   * The hub the dataset's rows go to, as a lasting name (its authority), or null when
+   * there is none: a row's approval link is kept in the store under it (BUG 9ff092e9).
+   */
+  datasetLinkScope?: () => string | null;
+  /**
+   * A project's repository (its git origin, any form), for its per-project
+   * override (PO-1); null when it has none. Absent: only project:<id> overrides apply.
+   */
+  projectRepoOf?: (projectId: string) => Promise<string | null>;
 }
 
 export type AirlockApprovalStatus = 'pending' | 'granted' | 'consumed' | 'expired' | 'denied';
@@ -361,6 +388,43 @@ export function redactTarget(text: string): string {
   return redacted.length > MAX_TARGET_CHARS ? `${redacted.slice(0, MAX_TARGET_CHARS)}…` : redacted;
 }
 
+/**
+ * Text that is not a shell command (a file's content, a path, a URL), with its
+ * secrets removed and its layout kept: the stages of redactText that do not
+ * reparse it as shell words, then redactLog (DS-1).
+ */
+export function redactPlainText(text: string): string {
+  return redactStages(text);
+}
+
+/** `NAME=value` as one shell word (quotes already gone), NAME naming a secret. */
+const SECRET_NAMED_WORD = /^([A-Za-z_][A-Za-z0-9_]{0,100})=([\s\S]+)$/;
+/** Every name SECRET_ASSIGNMENT and redactLog treat as a secret, and more: the word rule hides the whole value. */
+const SECRET_NAME = /(TOKEN|SECRET|PASS|PWD|API_?KEY|KEY|CREDENTIAL|AUTH|SESSION|SIG)/i;
+
+/**
+ * A shell command with its secrets removed, whole - no excerpt (DS-1). Read as shell
+ * words, so a value is hidden however it was quoted or escaped (-u alice:'pw'), and a
+ * word that assigns a secret-named variable loses its whole value (PASSWORD='a b c');
+ * then the stages redactText applies. Its quoting and spacing come back normalised.
+ */
+export function redactCommandWhole(text: string): string {
+  const words = redactWords(shellWords(text)).map((w) => {
+    const m = SECRET_NAMED_WORD.exec(w);
+    return m && SECRET_NAME.test(m[1]) ? `${m[1]}=${R}` : w;
+  });
+  return redactStages(words.join(' '));
+}
+
+/** redactText's stages after the shell words: URL userinfo and query values, Authorization, key=value secrets, redactLog. */
+function redactStages(text: string): string {
+  let s = text.replace(URL_USERINFO, `$1${R}@`);
+  s = s.replace(URL_QUERY, (_m, base: string, query: string) => `${base}?${query.replace(/=[^&]*/g, `=${R}`)}`);
+  s = s.replace(AUTHORIZATION_VALUE, `$1: ${R}`);
+  s = s.replace(SECRET_ASSIGNMENT, `$1=${R}`);
+  return redactLog(s, { home: os.homedir(), env: process.env }).text;
+}
+
 /** The redaction redactTarget applies, without its input bound or its excerpt cap. */
 function redactText(text: string): string {
   return redactTextTracked(text).text;
@@ -486,6 +550,14 @@ async function verdictWithGrants(
   return { verdict: judge([]), used: [] };
 }
 
+/**
+ * What a launcher may rely on this server for (BUG 1a7dd9d2): `sandboxed-commands` - the
+ * commands it runs for a card a sandboxed session touched (verify, the suite, worktree
+ * setup) run in the sandbox while the policy enforces (SX-3). A launcher refuses an
+ * enforcing launch against a server that does not say so: an older one would run them on the host.
+ */
+export const AIRLOCK_SERVER_CAPABILITIES = Object.freeze(['sandboxed-commands']);
+
 export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
   const stateFile = deps.stateFile ?? defaultAirlockStateFile;
   const now = deps.now ?? Date.now;
@@ -496,6 +568,55 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
     writeStateFile: (view) => tryWriteAirlockStateFile(view as AirlockPolicyView, stateFile()),
     redact: redactTarget,
   });
+
+  // DS-1: full rows for the hub's dataset, only while its switch is on and this installation is joined.
+  const datasetOn = (): boolean => !!deps.datasetEnabled?.() && deps.hubJoined();
+  const dataset = airlockDataset({
+    enabled: datasetOn,
+    scope: () => deps.datasetScope?.(),
+    send: (event) => deps.recordHubEvent(event as { type: HubEventType; payload: Record<string, unknown> }),
+    redactCommand: redactCommandWhole,
+    redactText: redactPlainText,
+    ...(deps.datasetLinkScope ? {
+      approvalLinks: {
+        add: async (approvalKey: string, rowId: string) => {
+          const scope = deps.datasetLinkScope!();
+          const st = deps.storage();
+          if (scope && st.airlockDatasetLinkApproval) await st.airlockDatasetLinkApproval(approvalKey, scope, rowId);
+        },
+        rows: async (approvalKey: string) => {
+          const scope = deps.datasetLinkScope!();
+          const st = deps.storage();
+          return scope && st.airlockDatasetApprovalRows ? st.airlockDatasetApprovalRows(approvalKey, scope) : [];
+        },
+        drop: async (approvalKey: string) => {
+          const scope = deps.datasetLinkScope!();
+          const st = deps.storage();
+          if (scope && st.airlockDatasetDropApprovalLinks) await st.airlockDatasetDropApprovalLinks(approvalKey, scope);
+        },
+        mark: async (approvalKey: string, decision: 'grant' | 'deny') => {
+          const scope = deps.datasetLinkScope!();
+          const st = deps.storage();
+          if (scope && st.airlockDatasetMarkApprovalAnswered) await st.airlockDatasetMarkApprovalAnswered(approvalKey, scope, decision);
+        },
+        answered: async () => {
+          const scope = deps.datasetLinkScope!();
+          const st = deps.storage();
+          return scope && st.airlockDatasetAnsweredApprovalLinks ? st.airlockDatasetAnsweredApprovalLinks(scope) : [];
+        },
+      },
+    } : {}),
+  });
+  /** The card a row was for: its title, description and step (null when it cannot be read). */
+  const cardOf = async (itemId: string | null | undefined) => {
+    if (!itemId) return null;
+    try {
+      const it: any = await deps.storage().getItem(itemId);
+      return it ? { itemId, title: it.title ?? null, description: it.description ?? null, step: it.status ?? null } : { itemId, title: null, description: null, step: null };
+    } catch {
+      return { itemId, title: null, description: null, step: null };
+    }
+  };
 
   /**
    * One decision into the log, to the hub and to the board. The session id
@@ -546,6 +667,33 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
     return true;
   };
 
+  /**
+   * A project's effective policy (PO-1). Its repository (pinned, repoPins.ts) is
+   * needed only when the policy has repository overrides; a lookup that fails or times out
+   * throws AIRLOCK_PROJECT_UNKNOWN rather than reading as "no repository", which
+   * would drop the overrides that tighten.
+   */
+  const projectPolicy = async (policy: AirlockPolicy, projectId: string, opts: { pin?: boolean } = {}): Promise<{ effective: AirlockPolicy; repo: string | null }> => {
+    const needsRepo = Object.keys(policy.projects ?? {}).some(k => !k.startsWith('project:'));
+    let repo: string | null = null;
+    // `pin`: the launcher's and exec's fetch, made before a sandbox runs, looks the
+    // repository up (and so pins it) even when no override needs it yet.
+    if ((needsRepo || opts.pin) && deps.projectRepoOf) {
+      try {
+        repo = airlockRepoKey(await deps.projectRepoOf(projectId));
+      } catch (e) {
+        if (!needsRepo) return { effective: effectivePolicyFor(policy, { repo: null, projectId }), repo: null };
+        throw Object.assign(new Error(`The repository of project ${projectId} could not be read (${(e as Error)?.message ?? e}), so its Airlock overrides cannot be told; retry shortly.`), { code: AIRLOCK_PROJECT_UNKNOWN });
+      }
+    }
+    return { effective: effectivePolicyFor(policy, { repo, projectId }), repo };
+  };
+  const projectUnknown = (e: unknown, res: any): boolean => {
+    if ((e as any)?.code !== AIRLOCK_PROJECT_UNKNOWN) return false;
+    res.status(503).json({ error: AIRLOCK_PROJECT_UNKNOWN, message: (e as Error).message });
+    return true;
+  };
+
   app.get('/airlock/policy', async (req: any, res: any, next: any) => {
     try {
       // `?refresh=1` (or true) pulls the hub's policy now instead of at the next
@@ -555,8 +703,13 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       if ((refresh === '1' || refresh === 'true') && deps.hubJoined() && deps.refreshFromHub) {
         try { await deps.refreshFromHub(); } catch (e) { console.error('[AIRLOCK] refresh from hub failed:', (e as Error).message); }
       }
-      res.json(await resolveAirlockPolicy(deps.storage(), deps.hubJoined()));
-    } catch (e) { next(e); }
+      const view = { ...(await resolveAirlockPolicy(deps.storage(), deps.hubJoined())), capabilities: AIRLOCK_SERVER_CAPABILITIES };
+      const p = req.query?.projectId;
+      const projectId = typeof p === 'string' && p ? p : null;
+      if (!projectId) return res.json(view);
+      const { effective, repo } = await projectPolicy(view.effective, projectId, { pin: true });
+      res.json({ ...view, effective, project: { id: projectId, repo } });
+    } catch (e) { if (!projectUnknown(e, res)) next(e); }
   });
 
   app.put('/airlock/policy', async (req: any, res: any, next: any) => {
@@ -646,16 +799,23 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       const dryRun = body.dryRun === true;
       const view = await resolveAirlockPolicy(storage, deps.hubJoined());
       const work = deps.activeWork(sessionId);
+      // A sandboxed call is judged under the project its launch was signed for
+      // (the coverage middleware read it from the marker), never a note the
+      // agent could choose; any other call, under its active card's project.
+      const projectId: string | null = req.airlockSession !== undefined ? (req.airlockProject ?? null) : (work?.projectId ?? null);
+      const effective = projectId ? (await projectPolicy(view.effective, projectId)).effective : view.effective;
       const at = now();
-      const judge = (grants: string[]) => evaluateAirlock(view.effective, {
+      const judge = (grants: string[]) => evaluateAirlock(effective, {
         client: body.client, model, toolName, capabilities,
-        card: { itemId: work?.itemId, projectId: work?.projectId, grants },
+        card: { itemId: work?.itemId, projectId: projectId ?? undefined, grants },
       });
       const targetOf = (v: { target?: string }) => (v.target && capabilities.find(c => capabilityText(c).includes(v.target!))) || capabilities[0];
 
       const nowIso = new Date(at).toISOString();
       const scope: AirlockGrantScope = { sessionId: sessionId ?? null, itemId: work?.itemId ?? null };
       const granted = await verdictWithGrants(storage, judge, scope, at, dryRun);
+      /** The approval request's generation, when this call opened or re-asked one (DS-1 labels join it). */
+      let approvalGeneration: number | null = null;
       let verdict = granted.verdict;
       for (const key of granted.used) {
         deps.recordHubEvent({ type: 'airlock.approval', payload: { action: 'consumed', key, itemId: work?.itemId ?? null } });
@@ -684,16 +844,17 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
             rule: approval.rule,
             summary,
             capabilities: bound,
-            projectId: work?.projectId ?? null,
+            projectId,
             itemId: work?.itemId ?? null,
             sessionId: sessionId ?? null,
             requestedAt: nowIso,
           }, nowIso);
+          approvalGeneration = row.generation ?? null;
           // The hub hears of a request when it (re)opens, not on every retry.
           if (approvalStatusOf(row, at) === 'pending' && (!prior || approvalStatusOf(prior, at) !== 'pending')) {
             deps.recordHubEvent({
               type: 'airlock.approval',
-              payload: { action: 'requested', key: approval.approvalKey, rule: approval.rule, summary, capabilities: excerpts, itemId: work?.itemId ?? null, projectId: work?.projectId ?? null },
+              payload: { action: 'requested', key: approval.approvalKey, rule: approval.rule, summary, capabilities: excerpts, itemId: work?.itemId ?? null, projectId },
             });
           }
           deps.emit('airlock_approvals_changed', { key: approval.approvalKey });
@@ -721,9 +882,17 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
         await logDecision(record, view, target ? capabilityText(target) : undefined);
       }
       if (!dryRun) await learning.observeTool(capabilities, body.client, work?.itemId ?? null);
+      if (!dryRun && datasetOn()) {
+        dataset.tool({
+          client: body.client, model: modelLabel(model), sessionId: sessionId ?? null, tool: toolName, args: body.args, capabilities,
+          verdict: { decision: verdict.decision, rule: 'rule' in verdict ? verdict.rule : null, ...(verdict.decision === 'allow' ? { why: verdict.why } : {}) },
+          mode: effective.mode, revision: view.revision, card: await cardOf(work?.itemId),
+          ...(verdict.decision === 'needs-human-approval' && approvalGeneration !== null ? { approvalKey: `${verdict.approvalKey}#${approvalGeneration}` } : {}),
+        });
+      }
 
       res.json({ verdict: publicVerdict(verdict), mode: view.effective.mode, applies, revision: view.revision, source: view.source });
-    } catch (e) { next(e); }
+    } catch (e) { if (!projectUnknown(e, res)) next(e); }
   });
 
   app.post('/airlock/proxy-decisions', async (req: any, res: any, next: any) => {
@@ -801,11 +970,98 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
           sessionId: sessionId ?? null,
           source: 'proxy',
         }, view, port === null ? d.host : `${d.host}:${port}`);
+        if (datasetOn()) {
+          dataset.proxy({
+            client: body.client as string, model: modelLabel(model), sessionId: sessionId ?? null, host: d.host, port,
+            decision: d.decision, rule: d.rule, mode: view.effective.mode, revision: view.revision, card: await cardOf(work?.itemId),
+          });
+        }
         recorded++;
       }
       await learning.observeProxy(list.filter(valid).map((d: any) => d.host), body.client, work?.itemId ?? null);
       res.json({ recorded, skipped, dropped, invalid });
     } catch (e) { next(e); }
+  });
+
+  app.get('/airlock/dataset', (_req: any, res: any) => {
+    res.json({ joined: deps.hubJoined(), enabled: datasetOn() });
+  });
+
+  // DS-3: a person's import of past sessions (agenfk airlock dataset import). Never from a
+  // sandbox: an agent must not be able to plant rows in what the scorer learns from.
+  app.post('/airlock/dataset/import', async (req: any, res: any, next: any) => {
+    try {
+      if (!isLoopback(req.socket?.remoteAddress)) return res.status(403).json({ error: 'Imports are only accepted from this machine' });
+      if (req.airlockSession !== undefined) {
+        return res.status(403).json({ error: 'AIRLOCK_DATASET_FROM_SANDBOX', message: 'An Airlock session cannot import into the dataset: run agenfk airlock dataset import outside the sandbox.' });
+      }
+      if (!datasetOn()) {
+        return res.status(409).json({
+          error: 'AIRLOCK_DATASET_OFF',
+          message: deps.hubJoined()
+            ? "Your organization's hub has the Airlock dataset switched off, so nothing is imported. An org admin switches it on (Admin -> Airlock -> Dataset)."
+            : 'This installation is not joined to a hub, so there is no Airlock dataset to import into.',
+        });
+      }
+      const body = req.body ?? {};
+      if (!CLIENTS.includes(body.client) || typeof body.sessionId !== 'string' || !body.sessionId || body.sessionId.length > MAX_AIRLOCK_FIELD
+        || !Array.isArray(body.calls) || (body.model !== undefined && body.model !== null && typeof body.model !== 'string')) {
+        return res.status(400).json({ error: `client (${CLIENTS.join(', ')}), sessionId and calls (an array) are required` });
+      }
+      if (body.calls.length > AIRLOCK_DATASET_IMPORT_MAX_CALLS) {
+        return res.status(413).json({ error: `at most ${AIRLOCK_DATASET_IMPORT_MAX_CALLS} calls a request` });
+      }
+      const view = await resolveAirlockPolicy(deps.storage(), deps.hubJoined());
+      // Each call joins the run of its session that was under way at its time: the latest
+      // started at or before it, unless that one had already ended. A session that moved
+      // from one card to another does not put its earlier calls on the later card (story
+      // review F4); a call before any run, or after the last ended, is on no card.
+      const runs = (await deps.storage().listAgentRuns({ sessionId: body.sessionId, limit: 1000 }).catch(() => [] as AgentRun[]))
+        .filter(r => Number.isFinite(Date.parse(r.startedAt)))
+        .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+      const runAt = (at: number): AgentRun | null => {
+        const started = runs.filter(r => Date.parse(r.startedAt) <= at);
+        const r = started[started.length - 1];
+        return r && !(r.endedAt && Date.parse(r.endedAt) < at) ? r : null;
+      };
+      const policies = new Map<string | null, Promise<AirlockPolicy>>();
+      const policyFor = (projectId: string | null): Promise<AirlockPolicy> => {
+        if (!policies.has(projectId)) {
+          policies.set(projectId, projectId ? projectPolicy(view.effective, projectId).then(p => p.effective) : Promise.resolve(view.effective));
+        }
+        return policies.get(projectId)!;
+      };
+      const cards = new Map<string | undefined, ReturnType<typeof cardOf>>();
+      const cardFor = (itemId: string | undefined): ReturnType<typeof cardOf> => {
+        if (!cards.has(itemId)) cards.set(itemId, cardOf(itemId));
+        return cards.get(itemId)!;
+      };
+      const model = sessionModelOf(body.model ?? null);
+      let sent = 0;
+      let skipped = 0;
+      for (const c of body.calls) {
+        const ok = c && typeof c === 'object' && typeof c.callId === 'string' && c.callId && c.callId.length <= MAX_AIRLOCK_FIELD
+          && typeof c.tool === 'string' && c.tool.length <= MAX_AIRLOCK_FIELD && c.args && typeof c.args === 'object' && !Array.isArray(c.args)
+          && typeof c.at === 'string' && Number.isFinite(Date.parse(c.at));
+        if (!ok) { skipped++; continue; }
+        const capabilities = capabilitiesOf(c.args);
+        if (capabilities.length > MAX_AIRLOCK_CAPABILITIES) { skipped++; continue; }
+        const run = runAt(Date.parse(c.at));
+        const projectId = run?.projectId ?? null;
+        const effective = await policyFor(projectId);
+        const card = await cardFor(run?.itemId);
+        // What Airlock would say of it now: the current policy, no grants.
+        const verdict = evaluateAirlock(effective, { client: body.client, model: model ?? { provider: null, id: null }, toolName: c.tool, capabilities, card: { itemId: run?.itemId, projectId: projectId ?? undefined, grants: [] } });
+        const rowId = dataset.imported({
+          client: body.client, model: model ? modelLabel(model) : null, sessionId: body.sessionId, callId: c.callId, tool: c.tool, args: c.args,
+          at: new Date(c.at).toISOString(), capabilities,
+          verdict: { decision: verdict.decision, rule: 'rule' in verdict ? verdict.rule : null, ...(verdict.decision === 'allow' ? { why: verdict.why } : {}) },
+          mode: effective.mode, revision: view.revision, card,
+        });
+        if (rowId) sent++; else skipped++;
+      }
+      res.json({ sent, skipped });
+    } catch (e) { if (!projectUnknown(e, res)) next(e); }
   });
 
   app.get('/airlock/decisions', async (req: any, res: any, next: any) => {
@@ -840,6 +1096,8 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
 
   app.get('/airlock/approvals', async (_req: any, res: any, next: any) => {
     try {
+      // The board polls this: labels of answers a stopped server or a failed send left behind go now.
+      dataset.replayAnswered().catch((e) => console.warn('[AIRLOCK] could not send the labels of earlier answers: %s', (e as Error)?.message ?? e));
       const at = now();
       const rows = (await deps.storage().listAirlockApprovals()).map(r => ({ ...r, status: approvalStatusOf(r, at) }));
       res.json({
@@ -897,6 +1155,10 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
           payload: { action: action === 'grant' ? 'granted' : 'denied', key, rule: approval.rule, generation: approval.generation, itemId: approval.itemId ?? null, projectId: approval.projectId ?? null, expiresAt: approval.expiresAt },
         });
         deps.emit('airlock_approvals_changed', { key });
+        // DS-1: the person's answer, as a label on the dataset rows of the request they
+        // answered: the generation they named (the answer itself moves the row's on).
+        dataset.answered(`${key}#${generation}`, action)
+          .catch((e) => console.warn('[AIRLOCK] could not label the dataset rows of an answered approval: %s', (e as Error)?.message ?? e));
       }
       res.json({ approval: { ...approval, status } });
     } catch (e) { next(e); }

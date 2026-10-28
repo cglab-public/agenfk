@@ -1,6 +1,7 @@
 export * from './types';
 export { matchHost, isValidHostPattern } from './hosts';
-export { normalizeAirlockPolicy, airlockPolicyErrors } from './policy';
+export { normalizeAirlockPolicy, airlockPolicyErrors, effectivePolicyFor } from './policy';
+export { airlockRepoKey } from './repoKey';
 export { capabilitiesOf, modelFromPi, modelFromOpenCode } from './capabilities';
 export { analyseCommand, type CommandAnalysis, type UploadFact } from './shell';
 export { evaluateAirlock, approvalKeyOf } from './evaluate';
@@ -15,3 +16,4 @@ export {
   type AirlockLearnSource, type AirlockHostObservation, type AirlockLearnedHost, type AirlockLearningExclusion,
   type AirlockLearningEvidence, type AirlockProposedHost, type AirlockProposal, type AirlockImportTally,
 } from './learn';
+export { AIRLOCK_SESSION_HEADER, mintAirlockSessionMarker, verifyAirlockSessionMarker, airlockLaunchNonce, airlockMarkerProject } from './sessionMarker';

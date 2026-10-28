@@ -24,6 +24,8 @@ import { decodeCursor, encodeCursor, listAudit } from './configAudit.js';
 
 export const MAX_HOSTS_PER_LIST = 1000;
 export const MAX_IOC_HOSTS = 10_000;
+/** Per-project overrides (PO-1) one policy may carry; each host list has MAX_HOSTS_PER_LIST. */
+export const MAX_PROJECT_OVERRIDES = 500;
 export const MAX_MODELS = 100;
 /** The longest a DNS name can be; a CIDR or wildcard pattern is shorter still. */
 export const MAX_HOST_CHARS = 253;
@@ -89,7 +91,8 @@ export async function getAirlockPolicy(db: DB, orgId: string): Promise<AirlockPo
 }
 
 /** The installation's cache key: both revisions, so an IOC-only change busts it too. */
-export const airlockEtagOf = (v: AirlockPolicyView): string => `W/"${v.revision}:${v.iocRevision}"`;
+/** The installation's cache key: both revisions, and the dataset switch it reads with them (DS-2). */
+export const airlockEtagOf = (v: AirlockPolicyView, dataset = false): string => `W/"${v.revision}:${v.iocRevision}:${dataset ? 'd1' : 'd0'}"`;
 
 function hostListCapErrors(field: string, raw: unknown, max: number): string[] {
   if (!Array.isArray(raw)) return [];
@@ -116,6 +119,16 @@ function policyCapErrors(body: unknown): string[] {
   if (b.hosts && typeof b.hosts === 'object') {
     errors.push(...hostListCapErrors('hosts.allow', b.hosts.allow, MAX_HOSTS_PER_LIST));
     errors.push(...hostListCapErrors('hosts.deny', b.hosts.deny, MAX_HOSTS_PER_LIST));
+  }
+  if (b.projects && typeof b.projects === 'object' && !Array.isArray(b.projects)) {
+    const entries = Object.entries(b.projects as Record<string, any>);
+    if (entries.length > MAX_PROJECT_OVERRIDES) errors.push(`projects: at most ${MAX_PROJECT_OVERRIDES} overrides (got ${entries.length})`);
+    else for (const [key, o] of entries) {
+      if (!o || typeof o !== 'object' || !o.hosts || typeof o.hosts !== 'object') continue;
+      const field = `projects[${JSON.stringify(key)}].hosts`;
+      errors.push(...hostListCapErrors(`${field}.allow`, o.hosts.allow, MAX_HOSTS_PER_LIST));
+      errors.push(...hostListCapErrors(`${field}.deny`, o.hosts.deny, MAX_HOSTS_PER_LIST));
+    }
   }
   return errors;
 }
@@ -148,7 +161,16 @@ export async function putAirlockPolicy(
       `The policy changed since it was read: it is at revision ${readRevision}, not ${expectedRevision}. Reload and apply the change again.`,
     );
   }
-  const { iocHosts: _ioc, ...policy } = normalizeAirlockPolicy(body);
+  // Per-project overrides (PO-1): a body without `projects` keeps the stored
+  // ones, so an editor that does not show them cannot wipe them; `{}` clears.
+  const raw = body as Record<string, unknown>;
+  const stored = current ? parse(current.policy_json) as Record<string, unknown> | null : null;
+  const projects = raw.projects === undefined ? stored?.projects : raw.projects;
+  const { iocHosts: _ioc, ...policy } = normalizeAirlockPolicy({ ...raw, projects });
+  // Again on what is stored: keys naming one repository merge in normalising,
+  // and their lists with them (PO-1 review).
+  const merged = policyCapErrors(policy);
+  if (merged.length) throw new AirlockPolicyError('invalid_policy', 'Invalid Airlock policy', merged);
   const json = JSON.stringify(policy);
   const now = new Date().toISOString();
   const result = current

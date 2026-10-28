@@ -344,6 +344,49 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub airlock policy (%s)', (backe
     ]));
   });
 
+  describe('PO-1: per-project overrides', () => {
+    const PROJECTS = { 'git@github.com:Acme/api.git': { hosts: { allow: ['pypi.org'], deny: [] }, rules: { cloudMutation: 'deny' } } };
+
+    it('are stored under their repository and delivered to installations with the policy', async () => {
+      expect((await adminPut({ policy: { ...POLICY, projects: PROJECTS } })).status).toBe(200);
+      const res = await install(keyA);
+      expect(res.body.policy.projects).toEqual({ 'github.com/acme/api': { hosts: { allow: ['pypi.org'], deny: [] }, rules: { cloudMutation: 'deny' } } });
+    });
+
+    it('a save that does not carry them keeps them; one that carries them replaces them', async () => {
+      await adminPut({ policy: { ...POLICY, projects: PROJECTS } });
+      await adminPut({ policy: { ...POLICY, mode: 'observe' }, expectedRevision: 1 });
+      let v = await getPolicy(db, 'org-a');
+      expect(v.policy?.mode).toBe('observe');
+      expect(Object.keys(v.policy?.projects ?? {})).toEqual(['github.com/acme/api']);
+      await adminPut({ policy: { ...POLICY, projects: {} }, expectedRevision: 2 });
+      v = await getPolicy(db, 'org-a');
+      expect(v.policy?.projects).toBeUndefined();
+    });
+
+    it('the overrides, and each override\'s host lists, are capped', async () => {
+      const many = Object.fromEntries(Array.from({ length: 501 }, (_, i) => [`acme/r${i}`, { rules: { cloudMutation: 'deny' } }]));
+      expect(JSON.stringify((await adminPut({ policy: { ...POLICY, projects: many } })).body)).toMatch(/at most 500 overrides/);
+      const big = { 'acme/api': { hosts: { allow: Array.from({ length: 1001 }, (_, i) => `h${i}.example`) } } };
+      const res = await adminPut({ policy: { ...POLICY, projects: big } });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toMatch(/hosts\.allow/);
+    });
+
+    it('two keys naming one repository cannot unite past the cap', async () => {
+      const hosts = (tag: string) => Array.from({ length: 600 }, (_, i) => `${tag}${i}.example`);
+      const res = await adminPut({ policy: { ...POLICY, projects: { 'acme/api': { hosts: { allow: hosts('a') } }, 'git@github.com:acme/api.git': { hosts: { allow: hosts('b') } } } } });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toMatch(/at most 1000/);
+    });
+
+    it('a bad override is refused, saying where', async () => {
+      const res = await adminPut({ policy: { ...POLICY, projects: { 'not a repo': { rules: { cloudMutation: 'deny' } } } } });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toMatch(/projects\[\\"not a repo\\"\]/);
+    });
+  });
+
   it('an org rename carries the policy along', () => {
     expect(ORG_ID_CHILD_TABLES).toContain('airlock_policies');
   });

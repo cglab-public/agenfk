@@ -140,7 +140,16 @@ describe('airlock decision log', () => {
   it('decision log capped, oldest dropped', async () => {
     const cap = SQLiteStorageProvider.AIRLOCK_DECISION_CAP;
     expect(cap).toBe(5000);
-    for (let i = 0; i < cap + 3; i++) await storage.recordAirlockDecision(decision(i));
+    // One commit for the 5003 writes: one disk sync each took the Windows runner past 60s.
+    const db: any = (storage as any).database;
+    db.exec('BEGIN');
+    try {
+      for (let i = 0; i < cap + 3; i++) await storage.recordAirlockDecision(decision(i));
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
     const count = ((storage as any).database.prepare('SELECT COUNT(*) AS n FROM airlock_decisions').get() as { n: number }).n;
     expect(count).toBe(cap);
     const all = await storage.listAirlockDecisions({ limit: cap + 10 });

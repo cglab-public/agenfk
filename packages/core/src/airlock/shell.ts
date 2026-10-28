@@ -29,6 +29,8 @@ export interface CommandAnalysis {
   namespaceEscape: string | null;
   /** e.g. `aws s3 rm`; null when no mutating cloud verb */
   cloudMutation: string | null;
+  /** e.g. `gh gist create`, `npm publish`: data sent to a service, whatever host it is on; null when none */
+  publish: string | null;
 }
 
 type Tok = { t: 'w'; v: string } | { t: 'op'; v: string } | { t: 'redir'; v: string };
@@ -583,6 +585,208 @@ function cloudMutation(name: string, args: string[]): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// publishing (c9bdbe61): the proxy filters by host, so data published through a
+// host the allow list names leaves unchecked; these commands are actions of their own
+// ---------------------------------------------------------------------------
+
+const GH_VALUES = set(`-R --repo -t --title -b --body -F --body-file --field -f --raw-field -l --label
+  -a --assignee -m --milestone -B --base -H --head --header -X --method --input -p --project -T --template
+  -q --jq -r --reviewer -n --notes --notes-file -d --desc --target --hostname`);
+const GH_BODY_FILE = set('-F --body-file');
+const GH_NOTES_FILE = set('-F --notes-file');
+const GH_API_WRITES = set('--input');
+const NPM_VALUES = set(`--registry --userconfig --globalconfig --prefix --cache --tag --access --otp
+  -w --workspace --filter -C --dir --cwd --loglevel --scope --auth-type --provenance-file --node-options
+  --script-shell --include --omit`);
+const DOCKER_VALUES = set(`-c --context -H --host --config -l --log-level --tlscacert --tlscert --tlskey
+  --connection --url --identity --root --runroot --storage-driver --cgroup-manager --events-backend --tmpdir --module`);
+const UV_POETRY_VALUES = set(`--directory --project --cache-dir --config-file --python -p --color -C -P
+  --group --only-group --no-group --extra --env-file --with-requirements --with-editable --index --default-index
+  --index-url --extra-index-url --find-links -f --package --exclude-newer --refresh-package --upgrade-package`);
+const HF_UPLOADS = set('upload upload-large-folder');
+/** Tools whose first word publishes: `twine upload`, `cargo publish`... */
+const PUBLISH_VERB: Readonly<Record<string, string>> = { twine: 'upload', cargo: 'publish', gem: 'push' };
+const firstWord = (args: string[]): string | undefined => args.find((a) => !a.startsWith('-'));
+/** npm's `--color` takes a value only when one of these follows: `--color publish` is the bare flag. */
+const COLOR_VALUES = set('always never true false');
+const withoutColor = (args: string[]): string[] =>
+  args.filter((a, i) => !(COLOR_VALUES.has(a) && args[i - 1] === '--color'));
+/** npm runs any unambiguous prefix of a command: `npm pub` is `npm publish`. */
+const npmPublishes = (verb: string | undefined): boolean => !!verb && verb.length >= 2 && 'publish'.startsWith(verb);
+
+function ghPublish(args: string[]): string | null {
+  const p = parseArgs(args, GH_VALUES);
+  const [group, spelled] = p.positionals;
+  // `new` is gh's own alias of create (gist, issue, pr, release)
+  const verb = spelled === 'new' ? 'create' : spelled;
+  const has = (names: ReadonlySet<string>) => p.opts.some((o) => names.has(o.name));
+  switch (group) {
+    case 'gist':
+      return verb === 'create' || verb === 'edit' ? `gh gist ${verb}` : null;
+    case 'issue':
+    case 'pr':
+      // a body read from a file carries the file; a typed body is the agent's own words
+      return ['create', 'comment', 'edit'].includes(verb) && has(GH_BODY_FILE) ? `gh ${group} ${verb}` : null;
+    case 'release':
+      if (verb === 'upload') return 'gh release upload';
+      // notes read from a file carry the file
+      if ((verb === 'create' || verb === 'edit') && has(GH_NOTES_FILE)) return `gh release ${verb}`;
+      // `gh release create <tag> [files...]` attaches its assets
+      return verb === 'create' && p.positionals.length > 3 ? 'gh release create' : null;
+    case 'api':
+      // `-F key=@file` and --input read a file into the request
+      return has(GH_API_WRITES) || p.opts.some((o) => (o.name === '-F' || o.name === '--field') && /=@/.test(o.value ?? ''))
+        ? 'gh api'
+        : null;
+    default:
+      return null;
+  }
+}
+
+function publishOf(name: string, args: string[]): string | null {
+  switch (name) {
+    case 'gh':
+      return ghPublish(args);
+    case 'npm':
+    case 'pnpm':
+    case 'bun': {
+      const [verb] = parseArgs(withoutColor(args), NPM_VALUES).positionals;
+      return verb === 'publish' || (name === 'npm' && npmPublishes(verb)) ? `${name} publish` : null;
+    }
+    case 'docker':
+    case 'podman': {
+      const [verb, sub] = parseArgs(args, DOCKER_VALUES).positionals;
+      return (verb === 'image' ? sub : verb) === 'push' ? `${name} push` : null;
+    }
+    case 'uv':
+    case 'poetry':
+      return parseArgs(args, UV_POETRY_VALUES).positionals[0] === 'publish' ? `${name} publish` : null;
+    case 'yarn': {
+      const [verb, sub] = parseArgs(withoutColor(args), NPM_VALUES).positionals;
+      if (verb === 'publish') return 'yarn publish';
+      return verb === 'npm' && sub === 'publish' ? 'yarn npm publish' : null;
+    }
+    case 'huggingface-cli':
+    case 'hf': {
+      const verb = firstWord(args);
+      return verb && HF_UPLOADS.has(verb) ? `${name} ${verb}` : null;
+    }
+    default: {
+      // `python -m twine upload`
+      if (/^python[\d.]*$/.test(name)) {
+        const m = args.indexOf('-m');
+        return m >= 0 && args[m + 1] === 'twine' ? publishOf('twine', args.slice(m + 2)) : null;
+      }
+      const verb = Object.hasOwn(PUBLISH_VERB, name) ? PUBLISH_VERB[name] : undefined;
+      // `cargo +stable publish`: a leading toolchain is not the command
+      const words = name === 'cargo' && args[0]?.startsWith('+') ? args.slice(1) : args;
+      return verb && firstWord(words) === verb ? `${name} ${verb}` : null;
+    }
+  }
+}
+
+// Package runners run the command they are given: `npx npm publish`, `pnpm dlx twine upload`.
+// --color stays out: npm's is a flag (withoutColor drops a value it was given)
+const RUNNER_VALUES = new Set([...NPM_VALUES, ...UV_POETRY_VALUES, ...set('-p --package -c --call --from --with')].filter((o) => o !== '--color'));
+/** Runners' flags (they take no value): an unknown option is anything else. */
+const RUNNER_FLAGS = set(`--yes --no --no-install --ignore-existing --prefer-offline --offline --quiet --verbose --silent
+  --recursive --parallel --stream --shell-mode --workspace-root --include-workspace-root --no-sync --frozen --locked
+  --isolated --no-project --all-packages --all-extras --all-groups --no-dev --no-default-groups --no-cache --refresh
+  --upgrade --exact --inexact --no-editable --active --no-env-file --script --module --no-config --native-tls
+  --top-level --no-bail --report-summary`);
+/** pnpm's `-c` is a flag: run the rest as a shell command line. */
+const PNPM_RUNNER_VALUES = new Set([...RUNNER_VALUES].filter((o) => o !== '-c' && o !== '--call'));
+const RUNNER_SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
+  npm: set('exec x'),
+  pnpm: set('dlx exec'),
+  yarn: set('dlx exec'),
+  bun: set('x'),
+  uv: set('run tool'),
+  poetry: set('run'),
+};
+
+/** A word as the shell would need it to read back as one word. */
+const shellWord = (w: string): string => (/^[\w@%+=:,./~-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
+
+/**
+ * The options before the first operand, and the operands from it on: options end
+ * at the first word that is not one, or at `--`. Values come as `--o v`, `--o=v`,
+ * `-o v` or `-ov` for the options in `valueOpts`.
+ */
+function splitOptions(args: string[], valueOpts: ReadonlySet<string>): { opts: Opt[]; operands: string[] } {
+  const opts: Opt[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') return { opts, operands: args.slice(i + 1) };
+    if (!a.startsWith('-') || a === '-') return { opts, operands: args.slice(i) };
+    const eq = a.indexOf('=');
+    const short = a.slice(0, 2);
+    if (a.startsWith('--') && eq > 0) opts.push({ name: a.slice(0, eq), value: a.slice(eq + 1), at: i });
+    else if (valueOpts.has(a)) {
+      opts.push({ name: a, value: args[i + 1] ?? '', at: i + 1 });
+      i++;
+    } else if (!a.startsWith('--') && a.length > 2 && valueOpts.has(short)) opts.push({ name: short, value: a.slice(2), at: i });
+    else opts.push({ name: a, value: null, at: -1 });
+  }
+  return { opts, operands: [] };
+}
+
+/** The executable a runner infers from a package spec: `npm@latest` runs `npm`, `@s/tool@1` runs `tool`. */
+const packageBin = (spec: string): string => /^(?:@[^/@]+\/)?([^@/]+)@[^/]*$/.exec(spec)?.[1] ?? spec;
+
+/**
+ * The commands a package runner runs, as text to read on their own; [] when it is
+ * not one. When the last option before the command is one this parser does not
+ * know (`uv run --some-flag value cmd`), it may have taken a value that now looks
+ * like the command, so the word after it is read as the command too.
+ */
+function runnerCommands(name: string, args: string[]): string[] {
+  const run = runnerCommand(name, args);
+  if (run === null) return [];
+  if (typeof run === 'string') return [run];
+  const line = (words: string[]) => [packageBin(words[0]), ...words.slice(1)].map(shellWord).join(' ');
+  return run.unknownLast && run.words.length > 1 ? [line(run.words), line(run.words.slice(1))] : [line(run.words)];
+}
+
+/** What a runner runs: a command string, or the operand words; null when it is not one. */
+function runnerCommand(name: string, args: string[]): string | { words: string[]; unknownLast: boolean } | null {
+  let rest: string[];
+  let shellMode = false;
+  if (name === 'npx' || name === 'bunx' || name === 'uvx') rest = args;
+  else {
+    const subs = Object.hasOwn(RUNNER_SUBCOMMANDS, name) ? RUNNER_SUBCOMMANDS[name] : undefined;
+    if (!subs) return null;
+    const first = splitOptions(withoutColor(args), name === 'pnpm' ? PNPM_RUNNER_VALUES : RUNNER_VALUES);
+    const { operands } = first;
+    if (!operands.length || !subs.has(operands[0])) return null;
+    shellMode = name === 'pnpm' && first.opts.some((o) => o.name === '-c' || o.name === '--shell-mode');
+    rest = operands.slice(1);
+    // `uv tool run`
+    if (name === 'uv' && operands[0] === 'tool') {
+      if (rest[0] !== 'run') return null;
+      rest = rest.slice(1);
+    }
+    // `yarn exec` runs its first operand as a shell script, the rest as its arguments
+    if (name === 'yarn' && operands[0] === 'exec') {
+      return rest.length ? [rest[0], ...rest.slice(1).map(shellWord)].join(' ') : null;
+    }
+  }
+  const pnpm = name === 'pnpm';
+  const { opts, operands: words } = splitOptions(rest, pnpm ? PNPM_RUNNER_VALUES : RUNNER_VALUES);
+  // `pnpm exec -c npm publish` runs the rest as a shell command line
+  if (pnpm && (shellMode || opts.some((o) => o.name === '-c' || o.name === '--shell-mode'))) return words.length ? words.join(' ') : null;
+  // `npx -c 'cmd'` runs a command string
+  const call = opts.find((o) => o.name === '-c' || o.name === '--call');
+  if (call?.value) return call.value;
+  if (!words.length) return null;
+  // a long option this parser does not know, right before the operands
+  const last = opts[opts.length - 1];
+  const unknownLast = !!last && last.value === null && last.name.startsWith('--') && !RUNNER_FLAGS.has(last.name)
+    && rest[rest.length - words.length - 1] === last.name;
+  return { words, unknownLast };
+}
+
+// ---------------------------------------------------------------------------
 // interpreter one-liners (bounded: literal destinations only)
 // ---------------------------------------------------------------------------
 
@@ -683,6 +887,7 @@ function empty(): CommandAnalysis {
     credentialPaths: [],
     namespaceEscape: null,
     cloudMutation: null,
+    publish: null,
   };
 }
 
@@ -699,6 +904,7 @@ function merge(into: CommandAnalysis, from: CommandAnalysis): void {
   into.network ||= from.network;
   into.namespaceEscape ??= from.namespaceEscape;
   into.cloudMutation ??= from.cloudMutation;
+  into.publish ??= from.publish;
 }
 
 /** Hosts in `host:port` and `user@host:` words, whatever command carries them. */
@@ -728,6 +934,12 @@ function analyse(src: string, depth: number): CommandAnalysis {
       addAll(result.commands, [name]);
       if (NAMESPACE_ESCAPE.has(name)) result.namespaceEscape ??= name;
       result.cloudMutation ??= cloudMutation(name, args);
+      nested.push(...runnerCommands(name, args));
+      const publish = publishOf(name, args);
+      if (publish) {
+        result.publish ??= publish;
+        result.network = true;
+      }
       const net = netTool(name, args, s);
       if (net) {
         addAll(result.hosts, net.contacted);

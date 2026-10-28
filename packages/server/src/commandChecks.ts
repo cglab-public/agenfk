@@ -10,7 +10,7 @@
  *   approved that exact argv on the board with a passkey; any change asks again.
  * - The environment is the server's, minus agenfk's own variables.
  */
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import * as crypto from 'crypto';
 import type { ResolvedCheck } from '@agenfk/core';
 
@@ -94,8 +94,63 @@ const withOutput = (line: string, output: string) => {
   return room > 0 ? `${line}\n${output.length > room ? `…${output.slice(-(room - 1))}` : output}` : line;
 };
 
+type ArgvResult = { exitCode: number | null; output: string; notFound?: boolean; timedOut?: boolean };
+
+/**
+ * SX-3 review: `argv` in a process group of its own (POSIX). A timeout kills the
+ * whole group - what the command started too - and the output pipes are let go
+ * shortly after, so a descendant holding them cannot keep the check waiting.
+ */
+function runArgvGrouped(argv: readonly string[], cwd: string, timeoutMs: number): Promise<ArgvResult> {
+  return new Promise(resolve => {
+    let output = '';
+    let timedOut = false;
+    let settled = false;
+    const child = spawn(argv[0], argv.slice(1), { cwd, env: commandEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const collect = (d: Buffer) => { output += d.toString(); if (output.length > 16 * 1024 * 1024) output = output.slice(-TAIL * 4); };
+    child.stdout?.on('data', collect);
+    child.stderr?.on('data', collect);
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const done = (r: ArgvResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (grace) clearTimeout(grace);
+      resolve(r);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+      grace = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        done({ exitCode: null, output: tail(output), timedOut: true });
+      }, 2000);
+    }, timeoutMs);
+    child.on('error', (err: any) => done(err?.code === 'ENOENT' ? { exitCode: null, output: tail(output), notFound: true } : { exitCode: null, output: tail(`${output}${err?.message ?? err}`) }));
+    const finish = (code: number | null) => done({ exitCode: timedOut ? null : code, output: tail(output), ...(timedOut ? { timedOut: true } : {}) });
+    // On EXIT, not close: a child it left behind can hold the pipes open, and
+    // 'close' would wait for it. What it left in its group ends now, the output
+    // drains for a moment, and the check reports the command's own exit.
+    child.on('exit', (code) => {
+      // It ended in time: the deadline no longer applies to the drain.
+      clearTimeout(timer);
+      try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* none left */ }
+      if (!grace) {
+        grace = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(code);
+        }, 500);
+      }
+    });
+    child.on('close', (code) => finish(code));
+  });
+}
+
 /** Run one argv in `cwd`: its exit code (null when killed) and the tail of its output. */
-export function runArgv(argv: readonly string[], cwd: string, timeoutMs: number): Promise<{ exitCode: number | null; output: string; notFound?: boolean; timedOut?: boolean }> {
+export function runArgv(argv: readonly string[], cwd: string, timeoutMs: number, opts: { processGroup?: boolean } = {}): Promise<ArgvResult> {
+  if (opts.processGroup && process.platform !== 'win32') return runArgvGrouped(argv, cwd, timeoutMs);
   return new Promise(resolve => {
     execFile(argv[0], argv.slice(1), { cwd, env: commandEnv(), timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err: any, stdout, stderr) => {
       const output = tail(`${stdout ?? ''}${stderr ?? ''}`);
@@ -117,7 +172,11 @@ export function awaitsPersonApproval(c: ResolvedCheck, approvals: readonly Comma
 /** Run the step's command checks and judge each, keyed by the resolved check id. */
 export async function judgeCommandChecks(
   checks: readonly ResolvedCheck[],
-  ctx: { root: string | null; origin?: string; approvals: readonly CommandApproval[]; timeoutMs: number; share?: CommandShare },
+  ctx: {
+    root: string | null; origin?: string; approvals: readonly CommandApproval[]; timeoutMs: number; share?: CommandShare;
+    /** SX-3: how this card's command runs - through the Airlock sandbox, or refused - when an Airlock sandbox touched it. */
+    airlock?: (argv: string[], cwd: string) => Promise<{ argv: string[]; refused?: string; processGroup?: boolean }>;
+  },
 ): Promise<Record<string, CommandVerdict>> {
   const out: Record<string, CommandVerdict> = {};
   for (const c of checks) {
@@ -139,7 +198,9 @@ export async function judgeCommandChecks(
     const meta = { ran: true, ...(approved ? { approval: { by: approved.by, at: approved.at, authority: approved.authority } } : {}) };
     const root = ctx.root;
     const run = async (): Promise<CommandVerdict> => {
-      const r = await runArgv(argv, root, ctx.timeoutMs);
+      const wrapped = ctx.airlock ? await ctx.airlock(argv, root) : { argv };
+      if (wrapped.refused) return { outcome: 'fail', detail: `${shown}: not run - [agenfk airlock] ${wrapped.refused}`, meta };
+      const r = await runArgv(wrapped.argv, root, ctx.timeoutMs, { processGroup: 'processGroup' in wrapped && !!wrapped.processGroup });
       return r.exitCode === 0
         ? { outcome: 'pass', detail: withOutput(`${shown} exited 0`, r.output), meta }
         : { outcome: 'fail', detail: r.notFound ? `${shown}: program not found (${argv[0]})` : withOutput(`${shown} ${r.timedOut ? 'timed out' : `exited ${r.exitCode ?? 'without a code (killed)'}`}`, r.output), meta };

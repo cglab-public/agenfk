@@ -20,6 +20,7 @@
  * contained: whatever it does, or throws, the verdict is the same.
  */
 import path from 'path';
+import fs from 'fs';
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import type { SandboxSpec } from './spec';
 
@@ -27,7 +28,16 @@ import type { SandboxSpec } from './spec';
 export const ASRT_VERSION = '0.0.81';
 const ASRT_PACKAGE = '@anthropic-ai/sandbox-runtime';
 
-export interface SandboxCommand { file: string; args: string[]; cwd: string }
+export interface SandboxCommand {
+  file: string;
+  args: string[];
+  cwd: string;
+  /**
+   * Run it in a process group of its own (POSIX), and signal the group: a shell's
+   * children are reached too, and whatever is left when it exits is ended (SX-2).
+   */
+  processGroup?: boolean;
+}
 export interface SandboxExit { code: number | null; signal: NodeJS.Signals | null }
 export interface LaunchedSandbox {
   pid: number | undefined;
@@ -104,6 +114,8 @@ export function toAsrtConfig(spec: SandboxSpec): AsrtConfig {
     },
     allowPty: spec.allowPty,
   };
+  // A command's sandbox (SX-2): its test servers bind loopback ports.
+  if (spec.allowLocalBinding) cfg.network.allowLocalBinding = true;
   if (spec.maskedEnv.length) {
     // Masking needs TLS termination, so the real key only leaves over a
     // verified TLS connection to the hosts named.
@@ -162,9 +174,110 @@ export function sandboxCommandLine(spec: SandboxSpec, command: SandboxCommand): 
   return ['exec', 'env', ...env, quote(command.file), ...command.args.map(quote)].join(' ');
 }
 
+/** How long the empty sandbox gets to start and exit before the launch is refused. */
+const START_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Why the sandbox could not start, from what it printed (bubblewrap's or
+ * sandbox-exec's first line), and what lets it start (025f3000). Docker's
+ * default profile refuses both a user namespace and a fresh /proc, and seccomp
+ * alone only gets as far as the /proc refusal, so a container is told both.
+ * ASRT's weaker mode (no fresh /proc) is never offered: the agent could read
+ * the host's /proc.
+ */
+export function sandboxStartFailure(stderr: string, error?: Error | null): string {
+  const first = stderr.split('\n').map((l) => l.trim()).find((l) => l.length > 0);
+  const said = (error?.message ?? first?.slice(0, 300) ?? '').replace(/\.$/, '');
+  let reason = `The Airlock sandbox could not start here, so nothing was launched${said ? ` (the sandbox said: ${said})` : ''}.`;
+  if (/user namespace|create new namespace/i.test(said)) {
+    reason += ' It needs unprivileged user namespaces. On a host, allow them for bwrap (Ubuntu 23.10 and later restrict them with AppArmor).'
+      + ' In a container, run it with --security-opt seccomp=unconfined --security-opt systempaths=unconfined (or --privileged).';
+  } else if (/mount proc/i.test(said)) {
+    reason += ' It mounts its own /proc, which a container refuses by default: run the container with --security-opt systempaths=unconfined (or --privileged).';
+  }
+  return reason;
+}
+
+/**
+ * The no-op the empty sandbox runs, by absolute path: `true` looked up on PATH
+ * could be a workspace's own program, refusing a sandbox that works or printing
+ * the environment into the refusal. `sh -c :` is a builtin where neither exists.
+ */
+export function sandboxNoop(exists: (p: string) => boolean = fs.existsSync): { file: string; args: string[] } {
+  const file = ['/usr/bin/true', '/bin/true'].find(exists);
+  return file ? { file, args: [] } : { file: '/bin/sh', args: ['-c', ':'] };
+}
+
+export interface ProbeResult { status: number | null; stderr: string; error?: Error }
+
+const PROBE_SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+/**
+ * Run the empty sandbox and wait for it to exit, killed at `timeoutMs`.
+ * Asynchronous on purpose: ASRT's proxy runs on this process's event loop, and
+ * a synchronous wait would stall anything the sandbox's start sends through it.
+ */
+export function runSandboxProbe(
+  file: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number },
+  spawn: (file: string, args: string[], options: SpawnOptions) => ChildProcess = (f, a, o) => nodeSpawn(f, a, { ...o, windowsHide: true }),
+): Promise<ProbeResult> {
+  return new Promise((resolve) => {
+    let stderr = '';
+    let error: Error | undefined;
+    let settled = false;
+    let child: ChildProcess;
+    try {
+      // Its own process group, so a timeout kills what the wrapper started too.
+      child = spawn(file, args, { cwd: options.cwd, env: options.env, stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+    } catch (e) {
+      resolve({ status: null, stderr, error: e as Error });
+      return;
+    }
+    const killGroup = () => { try { process.kill(-(child.pid as number), 'SIGKILL'); } catch { child.kill('SIGKILL'); } };
+    // Outside the terminal's process group, a Ctrl-C or a closed terminal no
+    // longer reaches it: while it runs, those end it too. A signal someone else
+    // in this process listens for is theirs to act on; with no one else, it is
+    // raised again for its default action (ending this process).
+    const onExit = () => killGroup();
+    const onSignal = (sig: NodeJS.Signals) => {
+      killGroup();
+      release();
+      if (process.listenerCount(sig) === 0) process.kill(process.pid, sig);
+    };
+    const release = () => {
+      process.off('exit', onExit);
+      for (const sig of PROBE_SIGNALS) process.off(sig, onSignal);
+    };
+    process.once('exit', onExit);
+    for (const sig of PROBE_SIGNALS) process.once(sig, onSignal);
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(grace);
+      release();
+      resolve({ status: error ? null : code, stderr, ...(error ? { error } : {}) });
+    };
+    let grace: NodeJS.Timeout | undefined;
+    const timer = setTimeout(() => {
+      error = new Error(`the empty sandbox did not exit within ${options.timeoutMs / 1000}s`);
+      killGroup();
+      // A process outside the group may still hold stderr open: stop waiting for it.
+      grace = setTimeout(() => { child.stderr?.destroy(); finish(null); }, 1000);
+    }, options.timeoutMs);
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (d: string) => { if (stderr.length < 4096) stderr += d; });
+    child.once('error', (e) => { error ??= e; });
+    // 'close' comes after the process exited and its stderr ended.
+    child.once('close', (code) => finish(code));
+  });
+}
+
 interface AsrtRuntimeDeps {
   load?: () => Promise<{ SandboxManager: AsrtManager }>;
   spawn?: (file: string, args: string[], options: SpawnOptions) => ChildProcess;
+  /** Runs the empty sandbox before the client starts. */
+  runProbe?: (file: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }) => Promise<ProbeResult>;
   platform?: NodeJS.Platform;
 }
 
@@ -172,15 +285,18 @@ export class AsrtRuntime implements AirlockRuntime {
   readonly id = `asrt@${ASRT_VERSION}`;
   private readonly load: () => Promise<{ SandboxManager: AsrtManager }>;
   private readonly spawn: NonNullable<AsrtRuntimeDeps['spawn']>;
+  private readonly runProbe: NonNullable<AsrtRuntimeDeps['runProbe']>;
   private readonly platform: NodeJS.Platform;
   private manager: AsrtManager | null = null;
   private unsubscribe: (() => void) | null = null;
 
   constructor(deps: AsrtRuntimeDeps = {}) {
     // Node 22.12+ loads the ESM package through require (ASRT itself needs 22.12).
-    this.load = deps.load ?? (async () => require(ASRT_PACKAGE));
+    // A literal name, so a bundler sees it (the desktop app's exec helper bundles the runtime, ea94c023).
+    this.load = deps.load ?? (async () => require('@anthropic-ai/sandbox-runtime'));
     // windowsHide: the guard in windows-hide-guard.test.ts reads it here (GitHub #200).
     this.spawn = deps.spawn ?? ((command, args, options) => nodeSpawn(command, args, { ...options, windowsHide: true }));
+    this.runProbe = deps.runProbe ?? ((command, args, options) => runSandboxProbe(command, args, options));
     this.platform = deps.platform ?? process.platform;
   }
 
@@ -206,6 +322,7 @@ export class AsrtRuntime implements AirlockRuntime {
   }
 
   async launch(spec: SandboxSpec, command: SandboxCommand, hooks: LaunchHooks = {}): Promise<LaunchedSandbox> {
+    const group = !!command.processGroup && process.platform !== 'win32';
     const ready = await this.check();
     if (!ready.ok) throw new Error(ready.reason);
     const { SandboxManager } = await this.load();
@@ -233,19 +350,47 @@ export class AsrtRuntime implements AirlockRuntime {
         }
       }
       await SandboxManager.initialize(toAsrtConfig(spec));
+      // ASRT's dependency check passes wherever the binaries exist, but the
+      // kernel or a container can still refuse the sandbox. Start it once
+      // empty, with this spec, so a refusal is ours to explain and the client
+      // never starts (025f3000).
+      const empty = await SandboxManager.wrapWithSandboxArgv(
+        sandboxCommandLine(spec, { ...sandboxNoop(), cwd: command.cwd }), undefined, undefined, undefined, command.cwd,
+      );
+      const probe = await this.runProbe(empty.argv[0], empty.argv.slice(1), { cwd: command.cwd, env: empty.env, timeoutMs: START_PROBE_TIMEOUT_MS });
+      if (probe.error || probe.status !== 0) throw new Error(sandboxStartFailure(probe.stderr, probe.error));
       const wrapped = await SandboxManager.wrapWithSandboxArgv(
         sandboxCommandLine(spec, command), undefined, undefined, undefined, command.cwd,
       );
-      child = this.spawn(wrapped.argv[0], wrapped.argv.slice(1), { cwd: command.cwd, env: wrapped.env, stdio: 'inherit' });
+      child = this.spawn(wrapped.argv[0], wrapped.argv.slice(1), {
+        cwd: command.cwd, env: wrapped.env, stdio: 'inherit', ...(group ? { detached: true } : {}),
+      });
     } catch (e) {
       await this.dispose();
       throw e;
     }
+    const signalGroup = (signal: NodeJS.Signals): boolean => {
+      if (group && child.pid) {
+        try {
+          process.kill(-child.pid, signal);
+          return true;
+        } catch {
+          /* the group is gone: fall back to the child */
+        }
+      }
+      return child.kill(signal);
+    };
     const exited = new Promise<SandboxExit>((resolve, reject) => {
-      child.once('exit', (code, signal) => resolve({ code, signal }));
+      child.once('exit', (code, signal) => {
+        // What the command left running in its group ends with it.
+        if (group && child.pid) {
+          try { process.kill(-child.pid, 'SIGKILL'); } catch { /* none left */ }
+        }
+        resolve({ code, signal });
+      });
       child.once('error', reject);
     });
-    return { pid: child.pid, kill: (signal) => child.kill(signal), exited };
+    return { pid: child.pid, kill: signalGroup, exited };
   }
 
   async dispose(): Promise<void> {

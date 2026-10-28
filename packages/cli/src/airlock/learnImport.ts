@@ -35,7 +35,7 @@ export const importScreen = (env: NodeJS.ProcessEnv = process.env): AirlockHostS
   (spelling) => redactLog(spelling, { home: null, env }).count > 0;
 
 /** Every *.jsonl file under `dir`, links not followed. A missing directory has none. */
-function sessionFiles(dir: string): string[] {
+export function sessionFiles(dir: string): string[] {
   const out: string[] = [];
   const walk = (d: string): void => {
     let entries: fs.Dirent[];
@@ -54,7 +54,7 @@ function sessionFiles(dir: string): string[] {
  * The lines of a file, streamed. A line past `maxBytes` is dropped as it
  * streams (never buffered whole) and reported through `onLong`.
  */
-async function* linesOf(file: string, maxBytes: number, onLong: () => void): AsyncGenerator<string> {
+export async function* linesOf(file: string, maxBytes: number, onLong: () => void): AsyncGenerator<string> {
   let parts: Buffer[] = [];
   let size = 0;
   let long = false;

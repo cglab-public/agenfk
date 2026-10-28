@@ -71,6 +71,9 @@ const EVENT_TYPE_META: Record<string, { label: string; group: EventTypeGroup }> 
   'airlock.policy-refused': { label: 'Airlock policy refused', group: 'Security' },
   'airlock.approval': { label: 'Airlock approval', group: 'Security' },
   'airlock.learning-proposal': { label: 'Airlock allowlist proposal', group: 'Security' },
+  // Kept in the dataset table, never as events (DS-2): listed for completeness.
+  'airlock.dataset': { label: 'Airlock dataset row', group: 'Security' },
+  'airlock.dataset-label': { label: 'Airlock dataset label', group: 'Security' },
   'fleet:upgrade:started': { label: 'Upgrade started', group: 'Fleet' },
   'fleet:upgrade:succeeded': { label: 'Upgrade succeeded', group: 'Fleet' },
   'fleet:upgrade:failed': { label: 'Upgrade failed', group: 'Fleet' },

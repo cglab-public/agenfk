@@ -24,6 +24,7 @@ import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { federationRouter, federationInviteRouter } from './routes/federation.js';
 import { startRollupTimer } from './rollup.js';
+import { startAirlockDatasetPruneTimer } from './services/airlockDataset.js';
 import { startFederationSync } from './services/federation/federationSync.js';
 import { migrateOsUserKeys } from './services/migrateOsUserKeys.js';
 import { migrateChildPeopleNames } from './services/migrateChildPeopleNames.js';
@@ -319,6 +320,7 @@ export async function createHubApp(
     .catch((e) => console.error('[MIGRATION] alias backfill failed:', (e as Error).message));
 
   const rollupTimer = startRollupTimer(db);
+  const datasetPruneTimer = startAirlockDatasetPruneTimer(db);
   // Child-side federation (CGLAB-181). Starting it unconditionally is safe and
   // deliberate: with no parent binding every tick is a no-op, so a standalone
   // hub pays one cheap query a minute and needs no configuration to opt out.
@@ -331,7 +333,7 @@ export async function createHubApp(
     transport: config.federationTransport as any,
     intervalMs: config.federationIntervalMs,
   });
-  ctx.stopWorkers = () => { clearInterval(rollupTimer); stopFederation(); };
+  ctx.stopWorkers = () => { clearInterval(rollupTimer); clearInterval(datasetPruneTimer); stopFederation(); };
 
   // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in
   // the released tarball that lives next to the hub package. We probe a few

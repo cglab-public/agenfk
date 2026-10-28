@@ -61,15 +61,19 @@ import * as net from "net";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
-import { registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
+import { resolveAirlockPolicy, registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
 import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/reportToken.js';
-import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs } from './hub/airlockSync.js';
+import { airlockCoverageMiddleware, coverWritesIn } from './airlock/coverage.js';
+import { airlockCollectionScope } from './airlock/scope.js';
+import { airlockRepoPins } from './airlock/repoPins.js';
+import { airlockCommandFor, airlockArgvFor, airlockHooksOff, noHooksGitEnv, serverUrlFor, type AirlockRunDeps } from './airlock/execWrap.js';
+import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockDatasetEnabled, currentAirlockGeneration, airlockAuthorityOf } from './hub/airlockSync.js';
 import { readActiveWorkForSession } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
 import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
 import { killProcessTree } from './killTree.js';
-import { oneInFlight, readRemoteUrl, remoteCacheLifetimeMs } from './projectRemote.js';
+import { oneInFlight, readRemoteUrl, readAirlockRemoteUrl, remoteCacheLifetimeMs } from './projectRemote.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -129,6 +133,32 @@ app.use(cors({
 app.use('/airlock', bodyParser.json({ limit: AIRLOCK_BODY_LIMIT }));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
+// SX-1 (8dd7c7c0): requests an Airlock sandbox sends carry its launcher's marker;
+// it never reaches a route, and every card such a request names is recorded as
+// covered, so the commands this server runs for that card's tree run sandboxed.
+app.use(airlockCoverageMiddleware({ storage: () => storage, reportToken: airlockReportTokenReader() }));
+// A sandboxed session's listings are its own project's (BUG afc07064).
+app.use(airlockCollectionScope());
+
+// SX-3 (8dd7c7c0): a covered card's commands (verify, suite, captures, worktree
+// setup) run through `agenfk airlock exec`, in the sandbox, while the policy enforces.
+const airlockRunDeps: AirlockRunDeps = {
+  storage: () => storage,
+  effectiveMode: async () => (await resolveAirlockPolicy(storage, hubClient.isEnabled)).effective.mode,
+  // The CLI beside this server (an installed copy is a repo-shaped tree). The
+  // variable is for tests and development checkouts only.
+  cliPath: () => process.env.AGENFK_AIRLOCK_EXEC_CLI || path.resolve(__dirname, '..', '..', 'cli', 'bin', 'agenfk.js'),
+  // exec reads the policy from this server and no other (SX-3 review).
+  apiUrl: () => serverUrlFor(BIND_HOST, boundPort),
+  // ea94c023: the desktop app runs its shipped helper with Electron as Node.
+  ...(process.env.AGENFK_AIRLOCK_EXEC_NODE ? { nodePath: process.env.AGENFK_AIRLOCK_EXEC_NODE } : {}),
+  ...(process.env.AGENFK_AIRLOCK_EXEC_RUN_AS_NODE === '1' ? { lineEnv: { ELECTRON_RUN_AS_NODE: '1' } } : {}),
+};
+
+/** git's environment for this card's own commits and worktrees: hooks off when an Airlock sandbox touched it (SX-3). */
+async function gitEnvForCard(itemId: string | null | undefined): Promise<NodeJS.ProcessEnv | undefined> {
+  return (await airlockHooksOff(airlockRunDeps, itemId)) ? noHooksGitEnv(process.env) : undefined;
+}
 
 // Initialised dynamically in initStorage() based on dbPath file extension.
 let storage: StorageProvider;
@@ -164,7 +194,7 @@ let repointSyncHandle: RepointSyncHandle | null = null;
 // Returns a Promise so internal awaits work; existing call sites that ignore
 // the return value remain correct because hubClient.recordEvent itself only
 // enqueues into the local outbox (the flusher delivers asynchronously).
-const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
+const recordHubEvent = async (input: RecordEventInput): Promise<boolean> => {
   // No isEnabled gate (CGLAB-11): while the hub is disconnected, events are
   // queued to the local outbox with a pending orgId and stamped at the first
   // boot with a config — dropping them here made pre-login history (incl.
@@ -205,7 +235,8 @@ const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
     externalUrl = externalUrl ?? (externalId === meta.externalId ? meta.externalUrl : null);
   }
 
-  hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId, externalUrl } as RecordEventInput);
+  // Whether the outbox took it: the Airlock dataset keeps a label's link until it did (BUG 003bd959).
+  return hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId, externalUrl } as RecordEventInput);
 };
 
 // projectId → git remote URL ("" when git says there is no remote, null when
@@ -292,6 +323,16 @@ async function resolveProjectRepo(projectId: string): Promise<string | null> {
   const cached = projectRemoteCache.get(projectId);
   return cached && cached.length > 0 ? cached : null;
 }
+
+// The repository for Airlock's per-project overrides (PO-1): pinned per
+// project root under ~/.agenfk/airlock, where no sandbox can write (repoPins.ts),
+// and read again only after a person sets the root (forgetAirlockRepo).
+const airlockRepos = airlockRepoPins({
+  file: path.join(os.homedir(), '.agenfk', 'airlock', 'repo-pins.json'),
+  rootOf: async (projectId) => ((await storage.getProject(projectId)) as any)?.projectRoot ?? null,
+  read: (root) => readAirlockRemoteUrl(root),
+});
+const airlockProjectRepo = (projectId: string): Promise<string | null> => airlockRepos.repoOf(projectId);
 
 // ── Validation log persistence ───────────────────────────────────────────────
 // Full command output from validate_progress is written to
@@ -1557,10 +1598,12 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
    * it. That module owns "commit the INDEX" and the reason strings;
    * reimplementing either here is how the two would drift.
    */
+  // SX-3 review: the repository's commit hooks are its code; off for a card an Airlock sandbox touched.
+  const commitEnv = await gitEnvForCard(item.id);
   const result = commitStagedForCard(
     item as any,
     root,
-    { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }) },
+    { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...(commitEnv ? { env: commitEnv } : {}) }) },
     { message },
   );
   if (result.committed) {
@@ -1608,7 +1651,8 @@ const initStorage = async () => {
   // handle on every OS, and on Windows a database nobody could delete.
   await closeStorage();
   // ec325925: every record write keeps only the captures something still reads.
-  storage = withRecordRetention(new SQLiteStorageProvider());
+  // SX-1: cards written while a request from an Airlock sandbox is handled are covered (airlock/coverage.ts).
+  storage = coverWritesIn(withRecordRetention(new SQLiteStorageProvider()));
 
   console.log(`[SERVER_START] Using Database: ${dbPath} (SQLite)`);
   restoreStagedSnapshot(dbPath);
@@ -3098,6 +3142,7 @@ app.post("/projects/:id/tasks-from-branch", asyncHandler(async (req: any, res: a
       root: defaultWorktreeRoot(),
       branchName: branch,
       setupCommand: project.setupCommand,
+      gitEnv: await gitEnvForCard(created.id),
     });
     const withWorktree = await storage.updateItem(created.id, {
       worktreePath: result.path,
@@ -3239,9 +3284,15 @@ try {
 registerAirlockRoutes(app, {
   storage: () => storage,
   hubJoined: () => hubClient.isEnabled,
-  recordHubEvent: (event) => recordHubEvent(event as RecordEventInput).catch(() => { /* never fails a request */ }),
+  // Never fails a request; answers whether the event was queued (false when it was not).
+  recordHubEvent: (event) => recordHubEvent(event as RecordEventInput).catch(() => false),
   emit: (event, payload) => io.emit(event, payload),
   activeWork: (sessionId) => readActiveWorkForSession(sessionId),
+  projectRepoOf: airlockProjectRepo,
+  datasetEnabled: () => hubClient.isEnabled && airlockDatasetEnabled(),
+  datasetScope: () => currentAirlockGeneration(),
+  // Lasting, unlike the generation: an approval's dataset rows are kept linked under it across a restart (BUG 9ff092e9).
+  datasetLinkScope: () => (hubClient.isEnabled && hubClient.hubConfig ? airlockAuthorityOf(hubClient.hubConfig) : null),
   reportToken: airlockReportTokenReader(),
   refreshFromHub: async () => {
     if (!hubClient.isEnabled || !hubClient.hubConfig) return;
@@ -5296,7 +5347,10 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       opts?.onOutput?.(`[agenfk] ${lazy.changed.length} file(s) changed since this step began: running the tests they affect over the entry results\n`);
     } else opts?.onOutput?.(`[agenfk] only test files changed since this step began: running ${lazy.ran.length} of them over the entry results\n`);
   }
-  record.exitCode = await runForExitCode(lazy ? lazy.command : command, root, verifyMaxMs(), opts?.onOutput);
+  // SX-3: in the Airlock sandbox when an Airlock sandbox touched this card's tree and the policy enforces.
+  const airlockRun = await airlockCommandFor(airlockRunDeps, item.id, lazy ? lazy.command : command, root);
+  if (airlockRun.sandboxed) opts?.onOutput?.('[agenfk] An Airlock sandbox touched this card, so this run is in the Airlock sandbox (agenfk airlock exec).\n');
+  record.exitCode = await runForExitCode(airlockRun.command, root, verifyMaxMs(), opts?.onOutput);
   // de5e5a03: one read for the fence AND everything the record says the run saw - a later read may see a later tree.
   const after = treeContentRead(root, owned);
   const stateAfter = after?.state ?? null;
@@ -5619,10 +5673,16 @@ app.put("/projects/:id/project-root", limitExpensive, asyncHandler(async (req: a
   if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
     return res.status(400).json({ error: `Not a directory: ${candidate}` });
   }
+  // One card's tree, never the project's: and Airlock pins the repository it reads from the root.
+  if (await checkoutKind(candidate) === 'linked') {
+    return res.status(400).json({ error: `Refusing ${candidate}: it is a linked git worktree, one card's tree and never the project's root. Use the main checkout.` });
+  }
   try {
     const updated = await storage.updateProject(req.params.id, { projectRoot: candidate } as any);
     if (!updated) return res.status(404).json({ error: "Project not found" });
     forgetProjectRemote(req.params.id);
+    // A person set it (a sandbox may not): Airlock reads its origin again.
+    airlockRepos.forget(req.params.id);
     io.emit('items_updated');
     res.json(updated);
   } catch {
@@ -5885,6 +5945,13 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: 'model and harness are required (your actual model id + harness; do not omit or copy an example)' });
   }
 
+  // An Airlock session registers, or re-registers, only its own project's PRs (BUG 003bd959):
+  // a row already anchored in another project is not there for it.
+  if (req.airlockSession !== undefined) {
+    const prior = await storage.getPrByRepoNumber(repo, prNumber);
+    if (prior && !(await prInLaunchProject(req, prior.itemId))) return res.status(404).json({ error: `PR ${repo}#${prNumber} is not this project's` });
+  }
+
   // POST /prs is idempotent on (repo, prNumber). Newness is decided ATOMICALLY
   // by the upsert, not by a separate pre-read: insertPr does INSERT … ON CONFLICT
   // DO UPDATE without touching `id`, so the returned row keeps our freshly minted
@@ -5940,6 +6007,18 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
   res.status(201).json(pr);
 }));
 
+/**
+ * Is a PR's anchor card in the project an Airlock session was launched for (BUG 003bd959)?
+ * Always, for a request no sandbox made. The PR routes name a repository and a number, not a
+ * card, so the coverage middleware cannot tell: another project's PR is answered as absent.
+ */
+async function prInLaunchProject(req: any, anchorItemId: string | null | undefined): Promise<boolean> {
+  if (req.airlockSession === undefined) return true;
+  if (typeof req.airlockProject !== 'string' || !anchorItemId) return false;
+  const anchor: any = await storage.getItem(anchorItemId).catch(() => null);
+  return !!anchor && anchor.projectId === req.airlockProject;
+}
+
 app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   const repo = decodeURIComponent(req.params.repo);
   const prNumber = Number(req.params.number);
@@ -5957,7 +6036,7 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   }
 
   const existing = await storage.getPrByRepoNumber(repo, prNumber);
-  if (!existing) return res.status(404).json({ error: `PR ${repo}#${prNumber} not registered` });
+  if (!existing || !(await prInLaunchProject(req, existing.itemId))) return res.status(404).json({ error: `PR ${repo}#${prNumber} not registered` });
 
   const shadowCounts = await computeShadowSizing(existing.itemId);
   const shadow = { epic: shadowCounts.epic, story: shadowCounts.story, task: shadowCounts.task, bug: shadowCounts.bug };
@@ -6378,7 +6457,7 @@ app.post("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, re
   let result;
   try {
     const proj: any = await storage.getProject(item.projectId);
-    result = createWorktree({ repoRoot, root, branchName, setupCommand: proj?.setupCommand });
+    result = createWorktree({ repoRoot, root, branchName, setupCommand: proj?.setupCommand, gitEnv: await gitEnvForCard(item.id) });
   } catch (e: any) {
     return res.status(400).json({ error: e.message });
   }
@@ -9739,6 +9818,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const commandResults = commandChecks.length
     ? await judgeCommandChecks(commandChecks, {
       root, origin: (flow as any).origin, approvals: Array.isArray(project?.commandApprovals) ? project.commandApprovals : [], timeoutMs: verifyMaxMs(),
+      // SX-3 review: a covered card's flow command runs in the Airlock sandbox too.
+      airlock: (argv, cwd) => airlockArgvFor(airlockRunDeps, item.id, argv, cwd),
       // 3ffc9651: a pass is shared by this project's cards at the same state of this tree.
       ...(root ? { share: { scope: `${item.projectId}\0${root}`, itemId: item.id, state: () => commandStateOf(root, project) } } : {}),
     })
@@ -10734,12 +10815,19 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // occurrence with no recovery short of a restart. capture.end() is idempotent
   // and owns the close.
   let settledCapture: CapturedOutput | null = null;
+  // SX-3: in the Airlock sandbox when an Airlock sandbox touched this card's tree and the policy enforces.
+  const airlockRun = await airlockCommandFor(airlockRunDeps, itemId, resolvedCommand, runRoot ?? process.cwd());
+  if (airlockRun.sandboxed) capture.note('[agenfk] An Airlock sandbox touched this card, so this command runs in the Airlock sandbox (agenfk airlock exec).\n');
   const { captured, code, timedOut, signal, spawnError } = await (async () => {
    try {
     return await new Promise<{
       captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
     }>((resolve) => {
-    const child = spawn(resolvedCommand, { shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' }, windowsHide: true });
+    // A sandboxed run is a process group of its own, so a timeout's group kill takes all of it (SX-3 review).
+    const child = spawn(airlockRun.command, {
+      shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' }, windowsHide: true,
+      ...(airlockRun.sandboxed && process.platform !== 'win32' ? { detached: true } : {}),
+    });
     let killed = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -11100,7 +11188,13 @@ app.get("/items/validate-runs/:runId", asyncHandler(async (req: any, res: any) =
     return res.status(403).json({ error: "Forbidden: validate-runs endpoint requires internal token." });
   }
   const run = validateRuns.get(req.params.runId);
-  if (!run) return res.status(404).json({ error: 'RUN_NOT_FOUND', message: 'Unknown or expired validation run. If the server restarted, check the item\'s comments — the outcome is persisted there.' });
+  const notFound = () => res.status(404).json({ error: 'RUN_NOT_FOUND', message: 'Unknown or expired validation run. If the server restarted, check the item\'s comments — the outcome is persisted there.' });
+  if (!run) return notFound();
+  // An Airlock session sees its own project's runs only, and is not told another's exists (BUG afc07064).
+  if (req.airlockSession !== undefined) {
+    const item: any = await storage.getItem(run.itemId).catch(() => null);
+    if (!item || typeof req.airlockProject !== 'string' || item.projectId !== req.airlockProject) return notFound();
+  }
   return res.json(run);
 }));
 
@@ -11223,7 +11317,15 @@ function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: st
     if (!decision.ready) void noteOnItem(item.id, decision.notice);
     return;
   }
-  const child = spawn(decision.command, {
+  // SX-3: a covered card's setup script runs in the Airlock sandbox (it is the repository's own code).
+  void airlockCommandFor(airlockRunDeps, item.id, decision.command, worktreePath).then(
+    (run) => runWorktreeSetup(item, decision, worktreePath, run.command),
+    (e) => void noteOnItem(item.id, applySetupResult(decision, { ok: false, output: String(e?.message ?? e), timedOut: false }).notice),
+  );
+}
+
+function runWorktreeSetup(item: any, decision: SetupDecision, worktreePath: string, commandLine: string): void {
+  const child = spawn(commandLine, {
     shell: true,
     cwd: worktreePath,
     detached: process.platform !== 'win32',
@@ -11273,6 +11375,7 @@ async function ensureWorktreeForItem(item: any, allowSetup = false): Promise<voi
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
       branchName,
+      gitEnv: await gitEnvForCard(item.id),
       /*
        * If origin already has this branch, start there rather than at local
        * HEAD. Raised by review against the PR import: a card whose branch
@@ -11433,9 +11536,13 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
        * aimed at it. Ask git, which knows.
        */
       const kind = resolvedRoot ? await checkoutKind(resolvedRoot) : 'unknown';
-      if (resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
+      if (req.airlockSession !== undefined) {
+        // Its repository picks the project's Airlock overrides (PO-1): never from a sandbox.
+        console.warn(`[PROJECT_ROOT] Not recording ${resolvedRoot ?? cwd} as a project root (item ${item.id}): the request came from an Airlock sandbox`);
+      } else if (resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
         await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
         forgetProjectRemote(item.projectId);
+        airlockRepos.forget(item.projectId);
       } else {
         const why = resolvedRoot === null
           ? 'no .agenfk marker above it (a worktree has none) - it is not a project root'
@@ -12859,6 +12966,7 @@ app.post("/projects/:id/tasks-from-pr", limitExpensive, asyncHandler(async (req:
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
       branchName: plan.branchName,
+      gitEnv: await gitEnvForCard(created.id),
       // FROM THE FETCHED REF. Without this the branch is cut from local HEAD:
       // a directory named after the PR, containing none of its commits, which
       // an agent then works in and pushes. Found in review, reproduced against
