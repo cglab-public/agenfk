@@ -20,7 +20,7 @@ import { spawn, spawnSync } from 'child_process';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSpec } from '../airlock/spec';
 import { findAgenfkDirs } from '../airlock/launch';
-import { toAsrtConfig, sandboxCommandLine, ASRT_VERSION } from '../airlock/runtime';
+import { toAsrtConfig, sandboxCommandLine, sandboxStartFailure, sandboxNoop, ASRT_VERSION } from '../airlock/runtime';
 
 const DRIVER = path.resolve(__dirname, 'fixtures/airlock-conformance-driver.mjs');
 const AIRLOCK_SCRIPT = path.resolve(__dirname, '../../../../bin/agenfk-airlock.mjs');
@@ -191,6 +191,15 @@ beforeAll(async () => {
   const a = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: {
     allow: ['api.github.com', ...(ip ? [ip] : [])], deny: ip ? [`${ip.split('.').slice(0, 2).join('.')}.0.0/16`] : [],
   } }), sessionFor({}));
+  // The runtime's binaries can all be present and the sandbox still unable to
+  // start (no user namespaces, no /proc mount: Docker's default profile). The
+  // launcher's own dry run decides, so these checks skip, with its reason,
+  // where it would refuse (025f3000).
+  await runAll(a, [{ name: 'start-probe', line: sandboxCommandLine(a, { ...sandboxNoop(), cwd: ws }) }]);
+  if (results['start-probe'].code !== 0) {
+    skipAll = sandboxStartFailure(results['start-probe'].stderr);
+    return;
+  }
   await runAll(a, [
     { name: 'fetch-allowed', line: line(a, ['fetch', ZEN]) },
     { name: 'fetch-unlisted', line: line(a, ['fetch', GITHUB]) },
@@ -268,7 +277,7 @@ describe('Airlock sandbox conformance (pinned Sandbox Runtime)', () => {
   describe('network', () => {
     it('in-process fetch to an allowed host succeeds (NODE_USE_ENV_PROXY=1)', (ctx) => {
       ctx.skip(!!skipAll, skipAll ?? '');
-      ctx.skip(!pre.reachable[ZEN], 'api.github.com is not reachable from this machine even outside the sandbox');
+      ctx.skip(!pre.answersOk?.[ZEN], 'api.github.com does not answer 200 to this machine even outside the sandbox (unreachable, or rate-limited)');
       expect(parse(results['fetch-allowed'])).toMatchObject({ status: 200 });
     });
 
@@ -377,7 +386,7 @@ describe('Airlock sandbox conformance (pinned Sandbox Runtime)', () => {
 
     it('with TLS termination on (masking), an allowed host still verifies', (ctx) => {
       ctx.skip(!!skipAll, skipAll ?? '');
-      ctx.skip(!pre.reachable[ZEN], 'api.github.com is not reachable from this machine even outside the sandbox');
+      ctx.skip(!pre.answersOk?.[ZEN], 'api.github.com does not answer 200 to this machine even outside the sandbox (unreachable, or rate-limited)');
       expect(parse(results['fetch-tls-terminated'])).toMatchObject({ status: 200 });
     });
 

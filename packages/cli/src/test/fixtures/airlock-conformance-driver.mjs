@@ -40,19 +40,25 @@ async function main() {
   }
   if (request.mode === 'preflight') {
     const reachable = {};
+    // Answers 2xx: a check expecting a 200 means nothing against a host that
+    // refuses this machine outside the sandbox too (api.github.com's
+    // unauthenticated rate limit answers 403).
+    const answersOk = {};
     for (const url of request.urls) {
       try {
         const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
         reachable[url] = res.status < 500;
+        answersOk[url] = res.ok;
       } catch {
         reachable[url] = false;
+        answersOk[url] = false;
       }
     }
     const addresses = {};
     for (const host of request.lookup ?? []) {
       try { addresses[host] = (await dns.lookup(host, { family: 4 })).address; } catch { addresses[host] = null; }
     }
-    return answer({ reachable, addresses });
+    return answer({ reachable, answersOk, addresses });
   }
   if (request.mode === 'run') {
     await SandboxManager.initialize(request.config);

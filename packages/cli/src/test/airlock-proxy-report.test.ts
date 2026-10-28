@@ -268,7 +268,7 @@ const cmd: SandboxCommand = { file: 'pi', args: [], cwd: '/work/repo' };
 describe('AsrtRuntime: proxy decisions', () => {
   it('with a hook the config is still exactly the spec\'s: no request filter, nothing ASRT decides differently', async () => {
     const { manager, store, load } = fakeAsrt();
-    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, platform: 'darwin' });
+    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: 'darwin' });
     await rt.launch(spec, cmd, { onProxyDecision: () => {} });
     expect(manager.initialize).toHaveBeenCalledWith(toAsrtConfig(spec));
     expect(manager.initialize.mock.calls[0][0].network).not.toHaveProperty('filterRequest');
@@ -279,7 +279,7 @@ describe('AsrtRuntime: proxy decisions', () => {
     const store = fakeStore([{ line: 'deny network-outbound old.example:443 (host is not on the allow list)' }]);
     const { load } = fakeAsrt(store);
     const seen: ProxyDecision[] = [];
-    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, platform: 'darwin' });
+    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: 'darwin' });
     await rt.launch(spec, cmd, { onProxyDecision: (d) => { seen.push(d); } });
     store.add('deny network-outbound evil.example:443 (host is not on the allow list)');
     store.add('deny file-read-data /home/u/.ssh/id_rsa');
@@ -293,7 +293,7 @@ describe('AsrtRuntime: proxy decisions', () => {
   it('a report that throws on a denial is contained', async () => {
     const store = fakeStore();
     const { load } = fakeAsrt(store);
-    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, platform: 'darwin' });
+    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: 'darwin' });
     await rt.launch(spec, cmd, { onProxyDecision: () => { throw new Error('boom'); } });
     expect(() => store.add('deny network-outbound evil.example:443 (host is not on the allow list)')).not.toThrow();
   });
@@ -302,7 +302,7 @@ describe('AsrtRuntime: proxy decisions', () => {
     const store = fakeStore();
     const { load } = fakeAsrt(store);
     const seen: ProxyDecision[] = [];
-    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, platform: 'darwin' });
+    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: 'darwin' });
     await rt.launch(spec, cmd, { onProxyDecision: (d) => { seen.push(d); } });
     await rt.dispose();
     expect(store.listeners.size).toBe(0);
@@ -312,7 +312,7 @@ describe('AsrtRuntime: proxy decisions', () => {
 
   it('with no hook the config is exactly the spec\'s: no filter, no subscription', async () => {
     const { manager, store, load } = fakeAsrt();
-    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, platform: 'darwin' });
+    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: 'darwin' });
     await rt.launch(spec, cmd);
     expect(manager.initialize).toHaveBeenCalledWith(toAsrtConfig(spec));
     expect(store.subscribe).not.toHaveBeenCalled();
