@@ -67,7 +67,7 @@ import { airlockCoverageMiddleware, coverWritesIn } from './airlock/coverage.js'
 import { airlockCollectionScope } from './airlock/scope.js';
 import { airlockRepoPins } from './airlock/repoPins.js';
 import { airlockCommandFor, airlockArgvFor, airlockHooksOff, noHooksGitEnv, serverUrlFor, type AirlockRunDeps } from './airlock/execWrap.js';
-import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockDatasetEnabled, currentAirlockGeneration } from './hub/airlockSync.js';
+import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockDatasetEnabled, currentAirlockGeneration, airlockAuthorityOf } from './hub/airlockSync.js';
 import { readActiveWorkForSession } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
@@ -3289,6 +3289,8 @@ registerAirlockRoutes(app, {
   projectRepoOf: airlockProjectRepo,
   datasetEnabled: () => hubClient.isEnabled && airlockDatasetEnabled(),
   datasetScope: () => currentAirlockGeneration(),
+  // Lasting, unlike the generation: an approval's dataset rows are kept linked under it across a restart (BUG 9ff092e9).
+  datasetLinkScope: () => (hubClient.isEnabled && hubClient.hubConfig ? airlockAuthorityOf(hubClient.hubConfig) : null),
   reportToken: airlockReportTokenReader(),
   refreshFromHub: async () => {
     if (!hubClient.isEnabled || !hubClient.hubConfig) return;

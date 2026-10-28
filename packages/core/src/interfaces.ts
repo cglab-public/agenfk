@@ -151,6 +151,12 @@ export interface StorageProvider extends AgEnFKPlugin {
   upsertAirlockApproval(request: AirlockApprovalRequest, now?: string): Promise<AirlockApprovalRecord>;
   getAirlockApproval(key: string): Promise<AirlockApprovalRecord | null>;
   listAirlockApprovals(query?: { pending?: boolean }): Promise<AirlockApprovalRecord[]>;
+  /** The Airlock dataset's approval links (BUG 9ff092e9): a row that asked, under the hub it went to. */
+  airlockDatasetLinkApproval?(key: string, scope: string, rowId: string, at?: string): Promise<void>;
+  airlockDatasetApprovalRows?(key: string, scope: string): Promise<string[]>;
+  airlockDatasetDropApprovalLinks?(key: string, scope: string): Promise<void>;
+  airlockDatasetMarkApprovalAnswered?(key: string, scope: string, decision: string): Promise<void>;
+  airlockDatasetAnsweredApprovalLinks?(scope: string): Promise<Array<{ key: string; rowId: string; decision: string }>>;
   /**
    * Grant a pending (or denied) request. With `generation`, only that
    * generation: a stale or replayed answer is refused and changes nothing. A

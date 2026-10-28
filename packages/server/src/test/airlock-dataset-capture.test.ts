@@ -208,6 +208,62 @@ describe('labels', () => {
     expect(labels()).toEqual([{ rowId: rows()[0].rowId, label: { kind: 'approval', decision: 'deny' } }]);
   });
 
+  it('a server restarted between the request and the answer still labels its rows (BUG 9ff092e9)', async () => {
+    const withLinks = () => {
+      const a = express();
+      a.use(express.json({ limit: '5mb' }));
+      registerAirlockRoutes(a, {
+        storage: () => storage, hubJoined: () => true, recordHubEvent: (e: any) => { sent.push(e); }, emit: vi.fn(),
+        activeWork: () => work, stateFile: () => path.join(tmp, 'airlock-state.json'), reportToken: () => REPORT,
+        datasetEnabled: () => on, datasetLinkScope: () => 'https://hub.example org-a',
+      });
+      return a;
+    };
+    const before = withLinks();
+    await request(before).post('/airlock/evaluate').send({ client: 'pi', model: { provider: 'p', id: 'm' }, toolName: 'bash', args: { command: 'aws s3 rm s3://b/k' }, sessionId: 's1' });
+    const asked = rows().map(r => r.rowId);
+    expect(asked).toHaveLength(1);
+    await new Promise(r => setTimeout(r, 20));
+    // restart: a new server over the same store
+    const after = withLinks();
+    const list = await request(after).get('/airlock/approvals');
+    const a = list.body.pending[0];
+    expect((await request(after).post(`/airlock/approvals/${encodeURIComponent(a.key)}/grant`).set(BOARD).send({ generation: a.generation })).status).toBe(200);
+    await vi.waitFor(() => expect(labels()).toEqual([{ rowId: asked[0], label: { kind: 'approval', decision: 'grant' } }]));
+  });
+
+  it('review: an answer whose labels a stopped server or failed send left unsent is labelled once the board next polls', async () => {
+    let failLabels = true;
+    const routes = () => {
+      const a = express();
+      a.use(express.json({ limit: '5mb' }));
+      registerAirlockRoutes(a, {
+        storage: () => storage, hubJoined: () => true, emit: vi.fn(),
+        recordHubEvent: (e: any) => { if (failLabels && e.type === 'airlock.dataset-label') throw new Error('outbox write failed'); sent.push(e); },
+        activeWork: () => work, stateFile: () => path.join(tmp, 'airlock-state.json'), reportToken: () => REPORT,
+        datasetEnabled: () => on, datasetLinkScope: () => 'https://hub.example org-a',
+      });
+      return a;
+    };
+    const first = routes();
+    await request(first).post('/airlock/evaluate').send({ client: 'pi', model: { provider: 'p', id: 'm' }, toolName: 'bash', args: { command: 'aws s3 rm s3://b/k' }, sessionId: 's1' });
+    const asked = rows().map(r => r.rowId);
+    await new Promise(r => setTimeout(r, 20));
+    const pending = (await request(first).get('/airlock/approvals')).body.pending[0];
+    expect((await request(first).post(`/airlock/approvals/${encodeURIComponent(pending.key)}/deny`).set(BOARD).send({ generation: pending.generation })).status).toBe(200);
+    await new Promise(r => setTimeout(r, 20));
+    expect(labels()).toEqual([]);
+    // the server restarts with a working outbox; the board polls
+    failLabels = false;
+    const second = routes();
+    await request(second).get('/airlock/approvals');
+    await vi.waitFor(() => expect(labels()).toEqual([{ rowId: asked[0], label: { kind: 'approval', decision: 'deny' } }]));
+    // and only once
+    await request(second).get('/airlock/approvals');
+    await new Promise(r => setTimeout(r, 20));
+    expect(labels()).toHaveLength(1);
+  });
+
   it('off: an answer sends no label', async () => {
     await evaluate('bash', { command: 'aws s3 rm s3://b/k' });
     on = false;

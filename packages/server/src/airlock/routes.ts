@@ -145,6 +145,11 @@ export interface AirlockRouteDeps {
   /** Changes when the hub configuration does (hub/airlockSync.ts): the dataset forgets what it remembered. */
   datasetScope?: () => unknown;
   /**
+   * The hub the dataset's rows go to, as a lasting name (its authority), or null when
+   * there is none: a row's approval link is kept in the store under it (BUG 9ff092e9).
+   */
+  datasetLinkScope?: () => string | null;
+  /**
    * A project's repository (its git origin, any form), for its per-project
    * override (PO-1); null when it has none. Absent: only project:<id> overrides apply.
    */
@@ -564,6 +569,35 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
     send: (event) => deps.recordHubEvent(event as { type: HubEventType; payload: Record<string, unknown> }),
     redactCommand: redactCommandWhole,
     redactText: redactPlainText,
+    ...(deps.datasetLinkScope ? {
+      approvalLinks: {
+        add: async (approvalKey: string, rowId: string) => {
+          const scope = deps.datasetLinkScope!();
+          const st = deps.storage();
+          if (scope && st.airlockDatasetLinkApproval) await st.airlockDatasetLinkApproval(approvalKey, scope, rowId);
+        },
+        rows: async (approvalKey: string) => {
+          const scope = deps.datasetLinkScope!();
+          const st = deps.storage();
+          return scope && st.airlockDatasetApprovalRows ? st.airlockDatasetApprovalRows(approvalKey, scope) : [];
+        },
+        drop: async (approvalKey: string) => {
+          const scope = deps.datasetLinkScope!();
+          const st = deps.storage();
+          if (scope && st.airlockDatasetDropApprovalLinks) await st.airlockDatasetDropApprovalLinks(approvalKey, scope);
+        },
+        mark: async (approvalKey: string, decision: 'grant' | 'deny') => {
+          const scope = deps.datasetLinkScope!();
+          const st = deps.storage();
+          if (scope && st.airlockDatasetMarkApprovalAnswered) await st.airlockDatasetMarkApprovalAnswered(approvalKey, scope, decision);
+        },
+        answered: async () => {
+          const scope = deps.datasetLinkScope!();
+          const st = deps.storage();
+          return scope && st.airlockDatasetAnsweredApprovalLinks ? st.airlockDatasetAnsweredApprovalLinks(scope) : [];
+        },
+      },
+    } : {}),
   });
   /** The card a row was for: its title, description and step (null when it cannot be read). */
   const cardOf = async (itemId: string | null | undefined) => {
@@ -1054,6 +1088,8 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
 
   app.get('/airlock/approvals', async (_req: any, res: any, next: any) => {
     try {
+      // The board polls this: labels of answers a stopped server or a failed send left behind go now.
+      dataset.replayAnswered().catch((e) => console.warn('[AIRLOCK] could not send the labels of earlier answers: %s', (e as Error)?.message ?? e));
       const at = now();
       const rows = (await deps.storage().listAirlockApprovals()).map(r => ({ ...r, status: approvalStatusOf(r, at) }));
       res.json({
@@ -1113,7 +1149,8 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
         deps.emit('airlock_approvals_changed', { key });
         // DS-1: the person's answer, as a label on the dataset rows of the request they
         // answered: the generation they named (the answer itself moves the row's on).
-        dataset.answered(`${key}#${generation}`, action);
+        dataset.answered(`${key}#${generation}`, action)
+          .catch((e) => console.warn('[AIRLOCK] could not label the dataset rows of an answered approval: %s', (e as Error)?.message ?? e));
       }
       res.json({ approval: { ...approval, status } });
     } catch (e) { next(e); }

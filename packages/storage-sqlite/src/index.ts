@@ -84,6 +84,12 @@ export function checkSnapshotFile(file: string): string {
   }
 }
 
+/** Rows a dataset approval link keeps per key, and how long a link waits for its answer (BUG 9ff092e9). */
+const AIRLOCK_APPROVAL_LINK_MAX_ROWS = 20;
+const AIRLOCK_APPROVAL_LINK_MAX_AGE_MS = 30 * 86_400_000;
+/** And at most this many links in all, whatever the keys (review). */
+export const AIRLOCK_APPROVAL_LINK_MAX_TOTAL = 10_000;
+
 export class SQLiteStorageProvider implements StorageProvider {
   name = 'sqlite-storage';
   version = '1.0.0';
@@ -516,6 +522,15 @@ export class SQLiteStorageProvider implements StorageProvider {
         alert TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_airlock_decisions_ts ON airlock_decisions(ts);
+      CREATE TABLE IF NOT EXISTS airlock_dataset_approval_rows (
+        approval_key TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        row_id TEXT NOT NULL,
+        linked_at TEXT NOT NULL,
+        decision TEXT,
+        PRIMARY KEY (approval_key, scope, row_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_airlock_dataset_approval_rows_at ON airlock_dataset_approval_rows(linked_at);
       CREATE TABLE IF NOT EXISTS airlock_approvals (
         key TEXT PRIMARY KEY,
         rule TEXT NOT NULL,
@@ -1816,6 +1831,56 @@ export class SQLiteStorageProvider implements StorageProvider {
   async getAirlockApproval(key: string): Promise<AirlockApprovalRecord | null> {
     const row = this.database.prepare('SELECT * FROM airlock_approvals WHERE key = ?').get(key) as any;
     return row ? this.rowToAirlockApproval(row) : null;
+  }
+
+  /**
+   * BUG 9ff092e9: an Airlock dataset row that asked for an approval, kept until a
+   * person answers it, so the label joins it after a restart. Under the hub (scope)
+   * it was sent to. Bounded: the newest rows per key, and links older than the
+   * longest an approval waits are dropped as new ones are made.
+   */
+  async airlockDatasetLinkApproval(key: string, scope: string, rowId: string, at: string = new Date().toISOString()): Promise<void> {
+    const cutoff = new Date(Date.parse(at) - AIRLOCK_APPROVAL_LINK_MAX_AGE_MS).toISOString();
+    this.database.prepare('DELETE FROM airlock_dataset_approval_rows WHERE linked_at < ?').run(cutoff);
+    this.database.prepare(
+      'INSERT OR IGNORE INTO airlock_dataset_approval_rows (approval_key, scope, row_id, linked_at) VALUES (?, ?, ?, ?)',
+    ).run(key, scope, rowId, at);
+    this.database.prepare(
+      `DELETE FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ? AND row_id NOT IN (
+         SELECT row_id FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ?
+         ORDER BY linked_at DESC, rowid DESC LIMIT ${AIRLOCK_APPROVAL_LINK_MAX_ROWS})`,
+    ).run(key, scope, key, scope);
+    // And across every key: however many approvals an agent asks for, the oldest links go first.
+    this.database.prepare(
+      `DELETE FROM airlock_dataset_approval_rows WHERE rowid NOT IN (
+         SELECT rowid FROM airlock_dataset_approval_rows ORDER BY linked_at DESC, rowid DESC LIMIT ${AIRLOCK_APPROVAL_LINK_MAX_TOTAL})`,
+    ).run();
+  }
+
+  /** The rows linked to an approval under this hub, oldest first. The links stay until dropped, after the labels are sent. */
+  async airlockDatasetApprovalRows(key: string, scope: string): Promise<string[]> {
+    const rows = this.database.prepare(
+      'SELECT row_id FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ? ORDER BY linked_at, rowid',
+    ).all(key, scope) as Array<{ row_id: string }>;
+    return rows.map(r => r.row_id);
+  }
+
+  /** A person answered: the decision kept on the links until their labels are sent, so a crash replays them. */
+  async airlockDatasetMarkApprovalAnswered(key: string, scope: string, decision: string): Promise<void> {
+    this.database.prepare('UPDATE airlock_dataset_approval_rows SET decision = ? WHERE approval_key = ? AND scope = ?').run(decision, key, scope);
+  }
+
+  /** Answered approvals whose labels were not all sent (a crash, a failed send), under this hub. */
+  async airlockDatasetAnsweredApprovalLinks(scope: string): Promise<Array<{ key: string; rowId: string; decision: string }>> {
+    const rows = this.database.prepare(
+      'SELECT approval_key, row_id, decision FROM airlock_dataset_approval_rows WHERE scope = ? AND decision IS NOT NULL ORDER BY linked_at, rowid',
+    ).all(scope) as Array<{ approval_key: string; row_id: string; decision: string }>;
+    return rows.map(r => ({ key: r.approval_key, rowId: r.row_id, decision: r.decision }));
+  }
+
+  /** The approval's links gone: an answer labels its rows once (BUG 9ff092e9). */
+  async airlockDatasetDropApprovalLinks(key: string, scope: string): Promise<void> {
+    this.database.prepare('DELETE FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ?').run(key, scope);
   }
 
   async listAirlockApprovals(query: { pending?: boolean } = {}): Promise<AirlockApprovalRecord[]> {

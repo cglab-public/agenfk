@@ -52,6 +52,21 @@ export interface DatasetDeps {
   redactCommand: (text: string) => string;
   /** Any other text with its secrets removed, its layout kept. */
   redactText: (text: string) => string;
+  /**
+   * Where a row that asked for an approval is linked to it until a person answers
+   * (BUG 9ff092e9): the store, so a restart does not lose it. `rows` reads the
+   * linked rows; `drop` removes the links, once their labels are sent - a crash in
+   * between sends a label again, never loses one. Absent: kept in memory, as before.
+   */
+  approvalLinks?: {
+    add: (approvalKey: string, rowId: string) => unknown;
+    rows: (approvalKey: string) => Promise<string[]> | string[];
+    drop: (approvalKey: string) => unknown;
+    /** The person's decision, kept on the links before any label is sent. */
+    mark: (approvalKey: string, decision: 'grant' | 'deny') => unknown;
+    /** Answered links whose labels were not all sent. */
+    answered: () => Promise<Array<{ key: string; rowId: string; decision: string }>> | Array<{ key: string; rowId: string; decision: string }>;
+  };
 }
 
 export interface ToolCallRow {
@@ -216,7 +231,12 @@ export function airlockDataset(deps: DatasetDeps) {
         card: r.card && (clean(r.card, cut) as ToolCallRow['card']),
         ...(cut.truncated ? { truncated: true } : {}),
       }, { tool, capabilities: capabilities.map(c => ({ kind: c.kind, value: c.value.slice(0, 512) })), decision: r.verdict.decision });
-      if (r.approvalKey) {
+      if (r.approvalKey && deps.approvalLinks) {
+        const key = r.approvalKey;
+        // A link that cannot be kept costs that row's label, never the call.
+        Promise.resolve().then(() => deps.approvalLinks!.add(key, rowId))
+          .catch((e) => console.warn('[AIRLOCK] could not keep a dataset row\'s approval link: %s', (e as Error)?.message ?? e));
+      } else if (r.approvalKey) {
         const rows = byApprovalKey.get(r.approvalKey) ?? [];
         remember(byApprovalKey, r.approvalKey, [...rows, rowId].slice(-MAX_ROWS_PER_KEY), MAX_APPROVAL_KEYS);
       }
@@ -277,14 +297,36 @@ export function airlockDataset(deps: DatasetDeps) {
     },
 
     /** A person's answer to an approval: a label on every row that asked for it. */
-    answered(approvalKey: string, decision: 'grant' | 'deny'): void {
+    async answered(approvalKey: string, decision: 'grant' | 'deny'): Promise<void> {
       rescope();
+      // The decision first: if the labels below are not all sent, replayAnswered sends them.
+      if (deps.approvalLinks && deps.enabled()) await deps.approvalLinks.mark(approvalKey, decision);
       // Answered: these rows are done with. A later request under the same key is new rows.
-      const rows = byApprovalKey.get(approvalKey) ?? [];
+      const rows = deps.approvalLinks ? await deps.approvalLinks.rows(approvalKey) : byApprovalKey.get(approvalKey) ?? [];
       byApprovalKey.delete(approvalKey);
-      if (!deps.enabled()) return;
-      for (const rowId of rows) {
-        deps.send({ type: 'airlock.dataset-label', payload: { rowId, label: { kind: 'approval', decision } } });
+      if (deps.enabled()) {
+        for (const rowId of rows) {
+          await deps.send({ type: 'airlock.dataset-label', payload: { rowId, label: { kind: 'approval', decision } } });
+        }
+      }
+      if (deps.approvalLinks) await deps.approvalLinks.drop(approvalKey);
+    },
+
+    /**
+     * Labels of answers that were not all sent - the server stopped, or a send failed -
+     * sent now, then their links dropped (BUG 9ff092e9 review). Kept while the switch is off.
+     */
+    async replayAnswered(): Promise<void> {
+      rescope();
+      if (!deps.approvalLinks || !deps.enabled()) return;
+      const pending = await deps.approvalLinks.answered();
+      const keys = [...new Set(pending.map(p => p.key))];
+      for (const key of keys) {
+        for (const p of pending.filter(x => x.key === key)) {
+          if (p.decision !== 'grant' && p.decision !== 'deny') continue;
+          await deps.send({ type: 'airlock.dataset-label', payload: { rowId: p.rowId, label: { kind: 'approval', decision: p.decision } } });
+        }
+        await deps.approvalLinks.drop(key);
       }
     },
   };
