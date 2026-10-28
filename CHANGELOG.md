@@ -4,6 +4,8 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.5] — 2026-10-28
+
 **Airlock**
 
 - **Commands the server runs for a sandboxed agent are sandboxed too, while the policy enforces** (#294).
@@ -33,6 +35,19 @@ All notable changes to AgEnFK are documented here.
   `agenfk airlock dataset import`, never because the switch was turned on. The hub keeps at most 100,000 rows
   per org for 90 days (64 KB a row, 20 labels of 4 KB each), and only an admin can download it, as JSONL, from
   the hub. There is no local export.
+- **What a sandboxed session can reach on the server is narrower** (#294). Refused from the Airlock sandbox, at the
+  launcher's relay and at the server: herdr panes and terminal sessions (they type into, or start, host terminals);
+  setting a project's verify, setup or test-report command, creating, changing, selecting or installing a flow, and
+  `/internal` (all of them would run later, on the host, for cards no sandbox touched). Listings (cards, runs, token
+  events, projects) answer with the launch's own project only; Airlock approvals, decisions, learning, verify runs, hub
+  refusals and the database status are refused; a verify run or a PR of another project is not found.
+- **A launch refuses a server older than this agenfk** while the policy enforces: that server would run the session's
+  cards' commands outside the sandbox. Restart it on this version (`agenfk restart`). In observe mode it only warns.
+- **Airlock dataset, more secrets kept out.** Text or a command that holds any credential-named key (`password:`,
+  `API_TOKEN=`, `"credentials":`, `[secrets]`, quoted or escaped) is sent as omitted, with its size only. Credential
+  values in content, YAML block scalars and quoted values over several lines, and `passphrase`, `cookie`, `session_id`
+  and `auth` keys are redacted in what is sent. A person's approve or deny still labels its rows after the server
+  restarts.
 
 *Known limits:*
 
@@ -53,6 +68,9 @@ All notable changes to AgEnFK are documented here.
   submodules' and other worktrees' git directories. It can still make git read config it wrote through a config
   `include` target inside the workspace, a nested repository or submodule `.git` file, or (on Linux) a repository
   created after launch. Running the server's git inside the sandbox for those cards is planned.
+- The dataset recognises a credential-named key in the usual syntaxes. Unusual ones (a YAML explicit key `? password`, a
+  shell backslash-escaped key, a line break between a key and its colon) are not recognised, and their values can reach
+  the hub's dataset while an admin has it on.
 
 ## [2.1.0-beta.4] — 2026-10-28
 
