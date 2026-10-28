@@ -6,7 +6,9 @@
  * visible conflict, not a silent overwrite); a hub-joined one shows the
  * policy read-only with a notice naming the hub (user decision 2026-10-27: no
  * passkeys; the hub cannot be overruled locally). Pending approvals are
- * approved or denied here, and recent decisions are listed.
+ * approved or denied here, and recent decisions are listed. Per-project
+ * overrides (PO-2) are edited with the policy on a standalone install, and shown
+ * read-only when the hub delivers them.
  */
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
@@ -238,6 +240,95 @@ describe('Airlock panel: hub-joined', () => {
     expect((screen.getByLabelText('Allowed hosts') as HTMLTextAreaElement).readOnly).toBe(true);
     expect((screen.getByLabelText('Cloud mutation') as HTMLSelectElement).disabled).toBe(true);
     expect(screen.queryByRole('button', { name: 'Save policy' })).toBeNull();
+  });
+});
+
+describe('Airlock panel: per-project overrides (PO-2)', () => {
+  const withOverrides = (over: Record<string, unknown> = {}) => view({
+    effective: { ...POLICY, projects: { 'github.com/acme/api': { hosts: { allow: ['pypi.org'], deny: [] }, rules: { cloudMutation: 'deny' } } } },
+    ...over,
+  });
+
+  it('shows each override with the policy: key, hosts, and the rules it sets', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(withOverrides() as never);
+    renderPanel();
+    await modeReady();
+    expect((screen.getByLabelText('Repository or project, override 1') as HTMLInputElement).value).toBe('github.com/acme/api');
+    expect((screen.getByLabelText('Allowed hosts, override 1') as HTMLTextAreaElement).value).toBe('pypi.org');
+    expect((screen.getByLabelText('Cloud mutation, override 1') as HTMLSelectElement).value).toBe('deny');
+    expect((screen.getByLabelText('Namespace escape, override 1') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('an override added here is saved with the policy, and one nobody touched goes back exactly as stored', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(withOverrides() as never);
+    renderPanel();
+    await modeReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Add a project override' }));
+    fireEvent.change(screen.getByLabelText('Repository or project, override 2'), { target: { value: 'project:local-1' } });
+    fireEvent.change(screen.getByLabelText('Allowed hosts, override 2'), { target: { value: 'localonly.example\n' } });
+    fireEvent.change(screen.getByLabelText('Publishing through an allowed host, override 2'), { target: { value: 'deny' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(api.saveAirlockPolicy).mock.calls[0][0] as any;
+    expect(body.expectedRevision).toBe(3);
+    expect(body.policy.projects).toEqual({
+      'github.com/acme/api': { hosts: { allow: ['pypi.org'], deny: [] }, rules: { cloudMutation: 'deny' } },
+      'project:local-1': { hosts: { allow: ['localonly.example'], deny: [] }, rules: { publishThroughAllowedHost: 'deny' } },
+    });
+  });
+
+  it('an override that sets only rules saves no hosts; a rule set back to the policy\'s is left out', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(withOverrides() as never);
+    renderPanel();
+    await modeReady();
+    fireEvent.change(screen.getByLabelText('Allowed hosts, override 1'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Namespace escape, override 1'), { target: { value: 'off' } });
+    fireEvent.change(screen.getByLabelText('Cloud mutation, override 1'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect((vi.mocked(api.saveAirlockPolicy).mock.calls[0][0] as any).policy.projects).toEqual({ 'github.com/acme/api': { rules: { namespaceEscape: 'off' } } });
+  });
+
+  it('removing the last override saves a policy without any', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(withOverrides() as never);
+    renderPanel();
+    await modeReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove override 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect((vi.mocked(api.saveAirlockPolicy).mock.calls[0][0] as any).policy.projects).toBeUndefined();
+  });
+
+  it('an edited override makes the form dirty, so a change elsewhere does not discard it', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(withOverrides() as never);
+    const qc = renderPanel();
+    await modeReady();
+    fireEvent.change(screen.getByLabelText('Denied hosts, override 1'), { target: { value: 'tracker.example' } });
+    qc.setQueryData(['airlock-policy'], withOverrides({ revision: 4 }));
+    expect(await screen.findByText(/your unsaved edits are against revision 3/)).toBeTruthy();
+    expect((screen.getByLabelText('Denied hosts, override 1') as HTMLTextAreaElement).value).toBe('tracker.example');
+  });
+
+  it('two overrides naming one key are refused before anything is sent, saying which', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(withOverrides() as never);
+    renderPanel();
+    await modeReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Add a project override' }));
+    fireEvent.change(screen.getByLabelText('Repository or project, override 2'), { target: { value: 'github.com/acme/api ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Overrides 1 and 2 both name github.com/acme/api');
+    expect(api.saveAirlockPolicy).not.toHaveBeenCalled();
+  });
+
+  it('hub-joined: the hub\'s overrides are shown read-only, with nothing to add or remove', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(withOverrides({ source: 'hub', hubManaged: true, revision: 9 }) as never);
+    renderPanel();
+    await modeReady();
+    expect((screen.getByLabelText('Repository or project, override 1') as HTMLInputElement).readOnly).toBe(true);
+    expect((screen.getByLabelText('Allowed hosts, override 1') as HTMLTextAreaElement).readOnly).toBe(true);
+    expect((screen.getByLabelText('Cloud mutation, override 1') as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Add a project override' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove override 1' })).toBeNull();
   });
 });
 

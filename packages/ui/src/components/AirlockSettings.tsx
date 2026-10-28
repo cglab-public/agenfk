@@ -13,6 +13,11 @@
  * the panel says the policy changed and lets the person reload it or keep
  * their edits and save them over the new revision.
  *
+ * Per-project overrides (PO-2) are part of the policy: edited and saved with
+ * it here, read-only when the hub delivers them. Each adds hosts to the
+ * policy's lists and sets the rules it names; a rule it leaves unset is the
+ * policy's.
+ *
  * Approvals are a person's either way: a pending request (an agent's tool call
  * a needs-human-approval rule stopped) shows every capability a grant would let
  * through, and is approved or denied here. A grant is single-use, expires, and
@@ -25,7 +30,7 @@ import {
   api,
   type AirlockPolicyDto, type AirlockPolicyViewDto, type AirlockModelSelectorDto,
   type AirlockRuleActionDto, type AirlockModeDto, type AirlockApprovalDto,
-  type AirlockDecisionFilterDto,
+  type AirlockDecisionFilterDto, type AirlockProjectOverrideDto,
 } from '../api';
 import { useSocketEvent } from '../SocketContext';
 import { AirlockLearning } from './AirlockLearning';
@@ -62,6 +67,16 @@ const ACTIONS: Array<{ value: AirlockRuleActionDto; label: string }> = [
 
 const lines = (text: string): string[] => text.split('\n').map(l => l.trim()).filter(Boolean);
 
+type RuleKey = keyof AirlockPolicyDto['rules'];
+
+interface OverrideDraft {
+  key: string;
+  allow: string;
+  deny: string;
+  /** Only the rules the override sets; the rest are the policy's. */
+  rules: Partial<AirlockPolicyDto['rules']>;
+}
+
 interface Draft {
   mode: AirlockModeDto;
   /** Kept as objects, field by field: an untouched selector goes back exactly as it came. */
@@ -70,7 +85,43 @@ interface Draft {
   allow: string;
   deny: string;
   rules: AirlockPolicyDto['rules'];
+  overrides: OverrideDraft[];
 }
+
+const overrideDraftOf = (key: string, o: AirlockProjectOverrideDto): OverrideDraft => ({
+  key,
+  allow: (o.hosts?.allow ?? []).join('\n'),
+  deny: (o.hosts?.deny ?? []).join('\n'),
+  rules: { ...o.rules },
+});
+
+/** The overrides as the policy holds them; undefined when there are none. */
+const projectsOf = (overrides: OverrideDraft[]): Record<string, AirlockProjectOverrideDto> | undefined => {
+  if (!overrides.length) return undefined;
+  const out: Record<string, AirlockProjectOverrideDto> = {};
+  for (const o of overrides) {
+    const allow = lines(o.allow);
+    const deny = lines(o.deny);
+    const rules = { ...o.rules };
+    out[o.key.trim()] = {
+      ...(allow.length || deny.length ? { hosts: { allow, deny } } : {}),
+      ...(Object.keys(rules).length ? { rules } : {}),
+    };
+  }
+  return out;
+};
+
+/** Why the overrides cannot be saved as they are (two naming one key would collapse into one), or null. */
+const duplicateKeyProblem = (keys: string[]): string | null => {
+  const first = new Map<string, number>();
+  for (const [i, raw] of keys.entries()) {
+    const k = raw.trim();
+    const j = first.get(k);
+    if (j !== undefined) return `Overrides ${j + 1} and ${i + 1} both name ${k}: merge them into one.`;
+    first.set(k, i);
+  }
+  return null;
+};
 
 const draftOf = (p: AirlockPolicyDto): Draft => ({
   mode: p.mode,
@@ -79,6 +130,7 @@ const draftOf = (p: AirlockPolicyDto): Draft => ({
   allow: p.hosts.allow.join('\n'),
   deny: p.hosts.deny.join('\n'),
   rules: { ...DEFAULT_RULES, ...p.rules },
+  overrides: Object.entries(p.projects ?? {}).map(([k, o]) => overrideDraftOf(k, o)),
 });
 
 /** The draft as a policy, on top of what it was made from (the IOC list is the hub's, never the board's). */
@@ -89,6 +141,7 @@ const policyOf = (base: AirlockPolicyDto, d: Draft): AirlockPolicyDto => ({
   appliesWhenModelUnknown: d.appliesWhenModelUnknown,
   hosts: { allow: lines(d.allow), deny: lines(d.deny) },
   rules: { ...d.rules },
+  projects: projectsOf(d.overrides),
 });
 
 const samePolicy = (a: AirlockPolicyDto, b: AirlockPolicyDto): boolean => JSON.stringify(a) === JSON.stringify(b);
@@ -197,6 +250,79 @@ function SelectorRows({
   );
 }
 
+function OverrideRows({
+  overrides, readOnly, onChange,
+}: {
+  overrides: OverrideDraft[];
+  readOnly: boolean;
+  onChange: (overrides: OverrideDraft[]) => void;
+}): React.ReactElement {
+  const edit = (i: number, patch: Partial<OverrideDraft>) => onChange(overrides.map((o, j) => (j === i ? { ...o, ...patch } : o)));
+  const setRule = (i: number, k: RuleKey, v: string) => {
+    const rules = { ...overrides[i].rules };
+    if (v === '') delete rules[k]; else rules[k] = v as AirlockRuleActionDto;
+    edit(i, { rules });
+  };
+  return (
+    <fieldset className={BLOCK}>
+      <legend className={LABEL}>Per-project overrides</legend>
+      <p className={HELP}>
+        For one repository (host/owner/repo, a git remote, or owner/repo on GitHub) or one project (project:&lt;id&gt;). Its hosts are added to the
+        policy&apos;s lists, and a host the policy denies stays denied; each rule it sets replaces the policy&apos;s, to loosen or tighten it.
+      </p>
+      {overrides.map((o, i) => {
+        const n = i + 1;
+        return (
+          <div key={i} className="mt-3 rounded-lg border border-border-soft p-3" data-testid="airlock-override">
+            <div className="flex items-center gap-2">
+              <input
+                aria-label={`Repository or project, override ${n}`}
+                placeholder="github.com/owner/repo or project:<id>"
+                value={o.key}
+                readOnly={readOnly}
+                onChange={e => edit(i, { key: e.target.value })}
+                className={clsx(FIELD, 'min-w-0 flex-1 font-mono')}
+              />
+              {!readOnly && (
+                <button type="button" className={SECONDARY_BUTTON} onClick={() => onChange(overrides.filter((_, j) => j !== i))}>
+                  <span className="sr-only">{`Remove override ${n}`}</span>
+                  <span aria-hidden="true">Remove</span>
+                </button>
+              )}
+            </div>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <textarea aria-label={`Allowed hosts, override ${n}`} placeholder="added allowed hosts" rows={2} value={o.allow} readOnly={readOnly} onChange={e => edit(i, { allow: e.target.value })} className={clsx(FIELD, 'font-mono')} />
+              <textarea aria-label={`Denied hosts, override ${n}`} placeholder="added denied hosts" rows={2} value={o.deny} readOnly={readOnly} onChange={e => edit(i, { deny: e.target.value })} className={clsx(FIELD, 'font-mono')} />
+            </div>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {RULES.map(rule => (
+                <label key={rule.key} className="flex items-center justify-between gap-2 text-[12px] text-ink-secondary">
+                  <span>{rule.label}</span>
+                  <select
+                    aria-label={`${rule.label}, override ${n}`}
+                    value={o.rules[rule.key] ?? ''}
+                    disabled={readOnly}
+                    onChange={e => setRule(i, rule.key, e.target.value)}
+                    className={clsx(FIELD, 'w-auto shrink-0')}
+                  >
+                    <option value="">As the policy says</option>
+                    {ACTIONS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+                  </select>
+                </label>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      {!readOnly && (
+        <button type="button" className={clsx(SECONDARY_BUTTON, 'mt-2')} onClick={() => onChange([...overrides, { key: '', allow: '', deny: '', rules: {} }])}>
+          Add a project override
+        </button>
+      )}
+    </fieldset>
+  );
+}
+
 function PolicyForm({
   view, onSave, saving,
 }: {
@@ -225,11 +351,15 @@ function PolicyForm({
   const changedElsewhere = view.revision !== base.revision || view.source !== base.source;
 
   const readOnly = view.hubManaged;
-  const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft(d => ({ ...d, [k]: v }));
+  const [duplicate, setDuplicate] = React.useState<string | null>(null);
+  const set = <K extends keyof Draft>(k: K, v: Draft[K]) => { setDuplicate(null); setDraft(d => ({ ...d, [k]: v })); };
   const adopt = (v: AirlockPolicyViewDto) => { setBase(v); setDraft(draftOf(v.effective)); };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const dup = duplicateKeyProblem(draft.overrides.map(o => o.key));
+    setDuplicate(dup);
+    if (dup) return;
     const stored = await onSave(policyOf(base.effective, draft), base.revision);
     if (stored) { setSeen(stored); adopt(stored); }
   };
@@ -319,6 +449,9 @@ function PolicyForm({
         )}
       </div>
 
+      <OverrideRows overrides={draft.overrides} readOnly={readOnly} onChange={overrides => set('overrides', overrides)} />
+
+      {duplicate && <Problem>{duplicate}</Problem>}
       {!readOnly && (
         <div className="flex justify-end py-4">
           <button

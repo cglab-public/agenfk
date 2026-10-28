@@ -17,9 +17,13 @@
  *  - lists the org's recent denials and alerts newest first (HUB-1): an
  *    observe-mode one named as what enforce would have done, an alert
  *    highlighted with its category, filterable by client, installation,
- *    source, alert and mode, a page at a time.
+ *    source, alert and mode, a page at a time;
+ *  - edits per-project overrides (PO-1/PO-2): each keyed by a repository (the
+ *    org's known ones offered) or project:<id>, adding allowed and denied hosts
+ *    and setting rules; saved into the org policy as its next revision, the rest
+ *    of the policy as stored, `{}` when the last one is removed.
  */
-import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, within, act } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -57,9 +61,10 @@ const NO_HISTORY = { entries: [], next: null };
 
 const NO_DECISIONS = { decisions: [], next: null };
 
-function hubAnswers(body: unknown, installations: unknown = NO_INSTALLATIONS, history: unknown = NO_HISTORY, decisions: unknown = NO_DECISIONS) {
+function hubAnswers(body: unknown, installations: unknown = NO_INSTALLATIONS, history: unknown = NO_HISTORY, decisions: unknown = NO_DECISIONS, projects: unknown = []) {
   get.mockImplementation(async (url: string) => {
     if (url === '/v1/admin/airlock') return { data: body };
+    if (url === '/v1/admin/projects') return { data: projects };
     if (url === '/v1/admin/airlock/installations') return { data: installations };
     if (url === '/v1/admin/airlock/history') return { data: history };
     if (url === '/v1/admin/airlock/decisions') return { data: decisions };
@@ -74,8 +79,10 @@ const installation = (over: Record<string, unknown>) => ({
   ...over,
 });
 
+let lastQc: QueryClient;
 const renderPage = () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  lastQc = qc;
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/admin/airlock']}>
@@ -427,5 +434,330 @@ describe('Admin → Airlock', () => {
       renderPage();
       expect(await screen.findByText(/no denials or alerts/i)).toBeInTheDocument();
     });
+  });
+});
+
+const WITH_OVERRIDES = {
+  ...STORED,
+  policy: {
+    ...STORED.policy,
+    projects: {
+      'github.com/acme/api': { hosts: { allow: ['pypi.org'], deny: ['tracker.example'] }, rules: { cloudMutation: 'deny' } },
+      'project:local-1': { rules: { publishThroughAllowedHost: 'off' } },
+    },
+  },
+};
+
+describe('Admin → Airlock: per-project overrides (PO-2)', () => {
+  it('shows each stored override: its key, its hosts, and the rules it sets (the rest are the org\'s)', async () => {
+    hubAnswers(WITH_OVERRIDES);
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Per-project overrides' });
+    expect((within(card).getByLabelText('Repository or project, override 1') as HTMLInputElement).value).toBe('github.com/acme/api');
+    expect((within(card).getByLabelText('Allowed hosts, override 1') as HTMLTextAreaElement).value).toBe('pypi.org');
+    expect((within(card).getByLabelText('Denied hosts, override 1') as HTMLTextAreaElement).value).toBe('tracker.example');
+    expect((within(card).getByLabelText(/^Change cloud resources.*, override 1$/) as HTMLSelectElement).value).toBe('deny');
+    expect((within(card).getByLabelText(/^Upload to a host.*, override 1$/) as HTMLSelectElement).value).toBe('');
+    expect((within(card).getByLabelText('Repository or project, override 2') as HTMLInputElement).value).toBe('project:local-1');
+    expect((within(card).getByLabelText(/^Publish through.*, override 2$/) as HTMLSelectElement).value).toBe('off');
+  });
+
+  it('adds one and saves the org policy as stored, with the overrides, as the next revision', async () => {
+    hubAnswers(WITH_OVERRIDES);
+    put.mockResolvedValue({ data: { ...WITH_OVERRIDES, revision: 5 } });
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Per-project overrides' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Add a project override' }));
+    fireEvent.change(within(card).getByLabelText('Repository or project, override 3'), { target: { value: ' git@github.com:acme/web.git ' } });
+    fireEvent.change(within(card).getByLabelText('Denied hosts, override 3'), { target: { value: 'a.example\n\nb.example' } });
+    fireEvent.change(within(card).getByLabelText(/^Enter another namespace.*, override 3$/), { target: { value: 'needs-human-approval' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const [url, body] = put.mock.calls[0];
+    expect(url).toBe('/v1/admin/airlock');
+    expect(body.expectedRevision).toBe(4);
+    const { iocHosts: _ioc, projects: _p, ...org } = WITH_OVERRIDES.policy;
+    expect(body.policy).toMatchObject(org);
+    expect(body.policy.iocHosts).toBeUndefined();
+    expect(body.policy.projects).toEqual({
+      'github.com/acme/api': { hosts: { allow: ['pypi.org'], deny: ['tracker.example'] }, rules: { cloudMutation: 'deny' } },
+      'project:local-1': { rules: { publishThroughAllowedHost: 'off' } },
+      'git@github.com:acme/web.git': { hosts: { allow: [], deny: ['a.example', 'b.example'] }, rules: { namespaceEscape: 'needs-human-approval' } },
+    });
+  });
+
+  it('a rule set back to the org\'s is left out of the override', async () => {
+    hubAnswers({ ...STORED, policy: { ...STORED.policy, projects: { 'acme/api': { hosts: { allow: ['x.example'], deny: [] }, rules: { cloudMutation: 'deny' } } } } });
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Per-project overrides' });
+    fireEvent.change(within(card).getByLabelText(/^Change cloud resources.*, override 1$/), { target: { value: '' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect(put.mock.calls[0][1].policy.projects).toEqual({ 'acme/api': { hosts: { allow: ['x.example'], deny: [] } } });
+  });
+
+  it('removing the last override saves none ({}), which clears them on the hub', async () => {
+    hubAnswers({ ...STORED, policy: { ...STORED.policy, projects: { 'acme/api': { rules: { cloudMutation: 'deny' } } } } });
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Per-project overrides' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Remove override 1' }));
+    fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect(put.mock.calls[0][1].policy.projects).toEqual({});
+  });
+
+  it('offers the org\'s known repositories as keys', async () => {
+    hubAnswers(WITH_OVERRIDES, NO_INSTALLATIONS, NO_HISTORY, NO_DECISIONS, [
+      { projectId: 'https://github.com/acme/api.git', remoteUrl: 'https://github.com/acme/api.git', lastSeen: '2026-10-27T10:00:00.000Z' },
+      { projectId: 'git@github.com:acme/web.git', remoteUrl: 'git@github.com:acme/web.git', lastSeen: '2026-10-26T10:00:00.000Z' },
+    ]);
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Per-project overrides' });
+    const input = within(card).getByLabelText('Repository or project, override 1');
+    const list = document.getElementById(input.getAttribute('list')!)!;
+    await waitFor(() => expect([...list.querySelectorAll('option')].map(o => o.getAttribute('value'))).toEqual(['https://github.com/acme/api.git', 'git@github.com:acme/web.git']));
+  });
+
+  it("shows the hub's refusal inline", async () => {
+    hubAnswers(WITH_OVERRIDES);
+    put.mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 400, data: { error: 'Invalid Airlock policy', errors: ['projects["not a repo"]: the key must name a repository'] } },
+      message: 'Request failed with status code 400',
+    });
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Per-project overrides' });
+    fireEvent.change(within(card).getByLabelText('Repository or project, override 1'), { target: { value: 'not a repo' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
+    expect(await within(card).findByRole('alert')).toHaveTextContent(/must name a repository/);
+  });
+
+  it('offers no overrides until a policy exists', async () => {
+    hubAnswers(NONE);
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Per-project overrides' });
+    expect(within(card).getByText(/overrides are part of the policy: save one first/i)).toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: 'Save overrides' })).toBeNull();
+  });
+});
+
+describe('Admin → Airlock: PO-2 review (Codex gpt-6.1-sol 01a18308)', () => {
+  /** The hub as a store: a PUT stores the next revision, and a GET reads what is stored. */
+  function liveHub(start: typeof WITH_OVERRIDES) {
+    let stored: any = start;
+    get.mockImplementation(async (url: string) => {
+      if (url === '/v1/admin/airlock') return { data: stored };
+      if (url === '/v1/admin/projects') return { data: [] };
+      if (url === '/v1/admin/airlock/installations') return { data: NO_INSTALLATIONS };
+      if (url === '/v1/admin/airlock/history') return { data: NO_HISTORY };
+      if (url === '/v1/admin/airlock/decisions') return { data: NO_DECISIONS };
+      throw new Error(`unexpected GET ${url}`);
+    });
+    put.mockImplementation(async (_url: string, body: any) => {
+      stored = { ...stored, revision: stored.revision + 1, policy: { ...stored.policy, ...body.policy, iocHosts: stored.policy.iocHosts } };
+      return { data: stored };
+    });
+  }
+
+  it('saving the policy keeps the overrides card\'s unsaved edits, says so, and they save over the new revision', async () => {
+    liveHub(WITH_OVERRIDES);
+    renderPage();
+    const overrides = await screen.findByRole('form', { name: 'Per-project overrides' });
+    fireEvent.change(within(overrides).getByLabelText('Denied hosts, override 1'), { target: { value: 'tracker.example\nmore.example' } });
+    fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'observe' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    expect(await within(overrides).findByText(/changed elsewhere \(it is now at revision 5\)/i)).toBeInTheDocument();
+    expect((within(overrides).getByLabelText('Denied hosts, override 1') as HTMLTextAreaElement).value).toBe('tracker.example\nmore.example');
+    fireEvent.click(within(overrides).getByRole('button', { name: 'Keep my edits and save them over revision 5' }));
+    fireEvent.click(within(overrides).getByRole('button', { name: 'Save overrides' }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    const body = put.mock.calls[1][1];
+    expect(body.expectedRevision).toBe(5);
+    expect(body.policy.mode).toBe('observe');
+    expect(body.policy.projects['github.com/acme/api'].hosts.deny).toEqual(['tracker.example', 'more.example']);
+  });
+
+  it('saving the overrides keeps the policy card\'s unsaved edits; discarding them loads the new revision', async () => {
+    liveHub(WITH_OVERRIDES);
+    renderPage();
+    const overrides = await screen.findByRole('form', { name: 'Per-project overrides' });
+    fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'off' } });
+    fireEvent.click(within(overrides).getByRole('button', { name: 'Remove override 2' }));
+    fireEvent.click(within(overrides).getByRole('button', { name: 'Save overrides' }));
+    expect(await screen.findByText(/changed elsewhere \(it is now at revision 5\)/i)).toBeInTheDocument();
+    expect((screen.getByLabelText(/^mode$/i) as HTMLSelectElement).value).toBe('off');
+    // its own save is not a change elsewhere
+    expect(within(overrides).queryByText(/changed elsewhere/i)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard my edits and load revision 5' }));
+    expect((screen.getByLabelText(/^mode$/i) as HTMLSelectElement).value).toBe('enforce');
+  });
+
+  it('two overrides naming one key are refused before anything is sent, saying which', async () => {
+    hubAnswers(WITH_OVERRIDES);
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Per-project overrides' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Add a project override' }));
+    fireEvent.change(within(card).getByLabelText('Repository or project, override 3'), { target: { value: '  github.com/acme/api ' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
+    expect(await within(card).findByRole('alert')).toHaveTextContent('Overrides 1 and 3 both name github.com/acme/api');
+    expect(put).not.toHaveBeenCalled();
+  });
+});
+
+describe('Admin → Airlock: PO-2 review 2 (Codex gpt-6.1-sol 01a18308)', () => {
+  it('a save that the following reload fails to read keeps what was saved, and the next save is against it', async () => {
+    let reads = 0;
+    get.mockImplementation(async (url: string) => {
+      if (url === '/v1/admin/airlock') {
+        reads += 1;
+        if (reads > 1) throw new Error('hub unreachable');
+        return { data: WITH_OVERRIDES };
+      }
+      if (url === '/v1/admin/projects') return { data: [] };
+      if (url === '/v1/admin/airlock/installations') return { data: NO_INSTALLATIONS };
+      if (url === '/v1/admin/airlock/history') return { data: NO_HISTORY };
+      if (url === '/v1/admin/airlock/decisions') return { data: NO_DECISIONS };
+      throw new Error(`unexpected GET ${url}`);
+    });
+    put.mockImplementation(async (_url: string, body: any) => ({ data: { ...WITH_OVERRIDES, revision: body.expectedRevision + 1, policy: { ...WITH_OVERRIDES.policy, ...body.policy } } }));
+    renderPage();
+    const mode = await screen.findByLabelText(/^mode$/i) as HTMLSelectElement;
+    fireEvent.change(mode, { target: { value: 'observe' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+    expect((screen.getByLabelText(/^mode$/i) as HTMLSelectElement).value).toBe('observe');
+    fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'off' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(put.mock.calls[1][1].expectedRevision).toBe(5);
+  });
+
+  it('edits put back as they were adopt the newer revision instead of hiding the conflict', async () => {
+    let stored: any = WITH_OVERRIDES;
+    get.mockImplementation(async (url: string) => {
+      if (url === '/v1/admin/airlock') return { data: stored };
+      if (url === '/v1/admin/projects') return { data: [] };
+      if (url === '/v1/admin/airlock/installations') return { data: NO_INSTALLATIONS };
+      if (url === '/v1/admin/airlock/history') return { data: NO_HISTORY };
+      if (url === '/v1/admin/airlock/decisions') return { data: NO_DECISIONS };
+      throw new Error(`unexpected GET ${url}`);
+    });
+    put.mockImplementation(async (_url: string, body: any) => {
+      stored = { ...stored, revision: stored.revision + 1, policy: { ...stored.policy, ...body.policy, iocHosts: stored.policy.iocHosts } };
+      return { data: stored };
+    });
+    renderPage();
+    const overrides = await screen.findByRole('form', { name: 'Per-project overrides' });
+    fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'off' } });
+    fireEvent.click(within(overrides).getByRole('button', { name: 'Remove override 2' }));
+    fireEvent.click(within(overrides).getByRole('button', { name: 'Save overrides' }));
+    expect(await screen.findByText(/changed elsewhere \(it is now at revision 5\)/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'enforce' } });
+    await waitFor(() => expect(screen.queryByText(/changed elsewhere/i)).toBeNull());
+    fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'observe' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(put.mock.calls[1][1].expectedRevision).toBe(5);
+  });
+});
+
+describe('Admin → Airlock: PO-2 review 2, each guard on its own', () => {
+  const failingReloads = () => {
+    let reads = 0;
+    get.mockImplementation(async (url: string) => {
+      if (url === '/v1/admin/airlock') {
+        reads += 1;
+        if (reads > 1) throw new Error('hub unreachable');
+        return { data: WITH_OVERRIDES };
+      }
+      if (url === '/v1/admin/projects') return { data: [] };
+      if (url === '/v1/admin/airlock/installations') return { data: NO_INSTALLATIONS };
+      if (url === '/v1/admin/airlock/history') return { data: NO_HISTORY };
+      if (url === '/v1/admin/airlock/decisions') return { data: NO_DECISIONS };
+      throw new Error(`unexpected GET ${url}`);
+    });
+    put.mockImplementation(async (_url: string, body: any) => ({ data: { ...WITH_OVERRIDES, revision: body.expectedRevision + 1, policy: { ...WITH_OVERRIDES.policy, ...body.policy } } }));
+  };
+
+  it('the other card learns of a save even when the reload fails, and saves against it', async () => {
+    failingReloads();
+    renderPage();
+    const overrides = await screen.findByRole('form', { name: 'Per-project overrides' });
+    fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'observe' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(overrides).getByRole('button', { name: 'Remove override 2' }));
+    fireEvent.click(within(overrides).getByRole('button', { name: 'Save overrides' }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(put.mock.calls[1][1].expectedRevision).toBe(5);
+  });
+
+  it('an older answer arriving after a save never replaces what was saved', async () => {
+    failingReloads();
+    renderPage();
+    fireEvent.change(await screen.findByLabelText(/^mode$/i), { target: { value: 'observe' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    // a read that started before the save, answered after it
+    await act(async () => {
+      lastQc.setQueryData(['admin-airlock'], WITH_OVERRIDES);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(screen.getByText(/revision 5/i)).toBeInTheDocument();
+    expect((screen.getByLabelText(/^mode$/i) as HTMLSelectElement).value).toBe('observe');
+    expect(screen.queryByText(/changed elsewhere/i)).toBeNull();
+    // with unsaved edits too: an older revision is no change elsewhere
+    fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'off' } });
+    await act(async () => {
+      lastQc.setQueryData(['admin-airlock'], { ...WITH_OVERRIDES, revision: 3 });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(screen.queryByText(/changed elsewhere/i)).toBeNull();
+    expect((screen.getByLabelText(/^mode$/i) as HTMLSelectElement).value).toBe('off');
+  });
+});
+
+describe('Admin → Airlock: PO-2 review 3 (Codex gpt-6.1-sol 01a18308)', () => {
+  it('a save answered after a newer revision arrived does not take the newer one back', async () => {
+    let hub: any = WITH_OVERRIDES;
+    get.mockImplementation(async (url: string) => {
+      if (url === '/v1/admin/airlock') {
+        if (!hub) throw new Error('hub unreachable');
+        return { data: hub };
+      }
+      if (url === '/v1/admin/projects') return { data: [] };
+      if (url === '/v1/admin/airlock/installations') return { data: NO_INSTALLATIONS };
+      if (url === '/v1/admin/airlock/history') return { data: NO_HISTORY };
+      if (url === '/v1/admin/airlock/decisions') return { data: NO_DECISIONS };
+      throw new Error(`unexpected GET ${url}`);
+    });
+    let answer!: (v: unknown) => void;
+    put.mockImplementation(() => new Promise((r) => { answer = r; }));
+    renderPage();
+    fireEvent.change(await screen.findByLabelText(/^mode$/i), { target: { value: 'observe' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    // our save stored revision 5, another admin's revision 6 followed, and it reaches the page first
+    const six = { ...WITH_OVERRIDES, revision: 6, policy: { ...WITH_OVERRIDES.policy, mode: 'off' } };
+    // and the reload after our answer fails: what the cache holds is what stays
+    hub = null;
+    await act(async () => {
+      lastQc.setQueryData(['admin-airlock'], six);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    await act(async () => {
+      answer({ data: { ...WITH_OVERRIDES, revision: 5, policy: { ...WITH_OVERRIDES.policy, mode: 'observe' } } });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect((lastQc.getQueryData(['admin-airlock']) as any).revision).toBe(6);
+    await waitFor(() => expect((screen.getByLabelText(/^mode$/i) as HTMLSelectElement).value).toBe('off'));
+    put.mockResolvedValue({ data: { ...WITH_OVERRIDES, revision: 7 } });
+    fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'enforce' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(put.mock.calls[1][1].expectedRevision).toBe(6);
   });
 });
