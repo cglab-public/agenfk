@@ -15,6 +15,7 @@
  */
 import http from 'http';
 import https from 'https';
+import { parse as legacyParse } from 'url';
 import { AIRLOCK_SESSION_HEADER } from '@agenfk/core';
 
 /** The server's answer to a marker it did not verify: the relay mints again and sends once more (a token just replaced). */
@@ -35,6 +36,44 @@ export interface ServerRelay {
   host: string;
   port: number;
   close(): Promise<void>;
+}
+
+/**
+ * SX-4 (4d1594b9): what only the board may do. Every board-only (or
+ * board-privileged) route trusts `x-agenfk-ui`; the board never comes through the
+ * relay and no agenfk client inside the sandbox sends it, so a request carrying
+ * it is refused. The routes themselves are refused too, by method and path,
+ * whatever the headers say (Express routes case-insensitively and takes a
+ * trailing slash, so these do as well).
+ */
+const BOARD_HEADER = 'x-agenfk-ui';
+const BOARD_ONLY: ReadonlyArray<{ method: string | null; path: RegExp }> = [
+  { method: 'PUT', path: /^\/airlock\/policy$/ },
+  { method: 'POST', path: /^\/airlock\/approvals\/[^/]+\/(?:grant|deny)$/ },
+  { method: 'POST', path: /^\/airlock\/learning\/(?:accept|forward)$/ },
+  { method: 'POST', path: /^\/items\/[^/]+\/(?:approvals|overrides)$/ },
+  { method: 'POST', path: /^\/projects\/[^/]+\/command-approvals$/ },
+  { method: null, path: /^\/webauthn(?:\/|$)/ },
+  { method: 'PUT', path: /^\/api\/telemetry\/config$/ },
+  { method: 'POST', path: /^\/github\/signout$/ },
+  { method: 'POST', path: /^\/releases\/update$/ },
+];
+
+/** Why a request from the sandbox must not reach the server, or null. */
+export function boardOnlyRefusal(method: string | undefined, url: string | undefined, headers: http.IncomingHttpHeaders): string | null {
+  if (headers[BOARD_HEADER] !== undefined) return 'the board\'s header (x-agenfk-ui) never comes from the Airlock sandbox';
+  const raw = (url ?? '/').split(/[?#]/)[0];
+  let decoded = raw;
+  try { decoded = decodeURIComponent(raw); } catch { /* judged as spelled */ }
+  // As Express's parseurl reads it: Node's legacy parser, which trims and rewrites some characters.
+  let legacy = raw;
+  try { legacy = legacyParse(url ?? '/').pathname ?? raw; } catch { /* judged as spelled */ }
+  // As spelled (Express routes the encoded path, then decodes its parameters), decoded, and as
+  // the legacy parser reads it; case and repeated or trailing slashes do not matter to any.
+  const forms = [raw, decoded, legacy, legacy.trim()].map((p) => p.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '') || '/');
+  const m = (method ?? 'GET').toUpperCase();
+  const hit = forms.find((p) => BOARD_ONLY.some((r) => (r.method === null || r.method === m) && r.path.test(p)));
+  return hit ? `${m} ${hit} is for a person on the board, not the Airlock sandbox` : null;
 }
 
 // RFC 9110 7.6.1: these concern one connection, not the request.
@@ -116,6 +155,23 @@ export function startServerRelay(opts: ServerRelayOptions): Promise<ServerRelay>
   };
 
   const server = http.createServer((req, res) => {
+    // Only a path: an absolute-form target (`PUT http://host/...`) or `*` would be
+    // routed by the server from a part this relay did not judge.
+    // ...and printable ASCII only: a parser on the server side may trim or rewrite anything else.
+    if (!req.url || !req.url.startsWith('/') || /[^\x21-\x7e]/.test(req.url)) {
+      req.on('end', () => refuse(res, 400, 'Airlock\'s relay takes a request for a path on the AgEnFK server only.'));
+      req.on('error', () => res.destroy());
+      req.resume();
+      return;
+    }
+    const boardOnly = boardOnlyRefusal(req.method, req.url, req.headers);
+    if (boardOnly) {
+      // read the body to its end first: answering mid-upload drops the connection
+      req.on('end', () => refuse(res, 403, `Airlock refused this request: ${boardOnly}.`));
+      req.on('error', () => res.destroy());
+      req.resume();
+      return;
+    }
     const chunks: Buffer[] = [];
     let size = 0;
     let tooBig = false;

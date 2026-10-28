@@ -42,6 +42,7 @@ const servers: http.Server[] = [];
 const FAKE_KEY = `real-secret-${Math.random().toString(36).slice(2)}`;
 const RELAY_MARK = 'v1.conformance.' + 'd'.repeat(64);
 let relay: ServerRelay | null = null;
+const echoSeen: string[] = [];
 
 /** Run the driver in its own process (async: the loopback servers live in this one). */
 function driver(request: unknown, env: NodeJS.ProcessEnv = process.env): Promise<any> {
@@ -269,7 +270,7 @@ beforeAll(async () => {
   // ASRT's request filter, measured) all arrive marked; the server's own port is
   // not reachable at all.
   const echoPort = await new Promise<number>((resolve) => {
-    const s = http.createServer((q, res) => { res.end(JSON.stringify({ marker: q.headers['x-agenfk-airlock-session'] ?? null })); });
+    const s = http.createServer((q, res) => { echoSeen.push(q.url ?? ''); res.end(JSON.stringify({ marker: q.headers['x-agenfk-airlock-session'] ?? null })); });
     servers.push(s);
     s.listen(0, '127.0.0.1', () => resolve((s.address() as any).port));
   });
@@ -286,6 +287,12 @@ beforeAll(async () => {
       { name: 'relay-curl-socks', line: sandboxCommandLine(rs, { file: '/bin/sh', args: ['-c', `curl -sS --max-time 10 -H 'x-agenfk-airlock-session: forged' --socks5-hostname "$(printf %s "$ALL_PROXY" | sed 's#.*://##')" ${relayUrl}/items`], cwd: ws }) },
     ] : []),
     { name: 'relay-server-direct', line: line(rs, ['fetch', `http://127.0.0.1:${echoPort}/items`]) },
+    // SX-4: the board's header, however it travels, is refused before the server sees it
+    ...(has('curl') ? [
+      { name: 'board-plain', line: sandboxCommandLine(rs, { file: 'curl', args: ['-sS', '--max-time', '10', '-o', '/dev/null', '-w', '%{http_code}', '-X', 'PUT', '-H', 'x-agenfk-ui: 1', `${relayUrl}/airlock/policy`], cwd: ws }) },
+      { name: 'board-connect', line: sandboxCommandLine(rs, { file: 'curl', args: ['-sS', '--max-time', '10', '-p', '-o', '/dev/null', '-w', '%{http_code}', '-X', 'PUT', '-H', 'x-agenfk-ui: 1', `${relayUrl}/airlock/policy`], cwd: ws }) },
+      { name: 'board-socks', line: sandboxCommandLine(rs, { file: '/bin/sh', args: ['-c', `curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X PUT -H 'x-agenfk-ui: 1' --socks5-hostname "$(printf %s "$ALL_PROXY" | sed 's#.*://##')" ${relayUrl}/airlock/policy`], cwd: ws }) },
+    ] : []),
     { name: 'relay-api-url', line: line(rs, ['env', 'AGENFK_API_URL']) },
   ]);
 
@@ -390,6 +397,14 @@ describe('Airlock sandbox conformance (pinned Sandbox Runtime)', () => {
       }
       // the server's own port: not on the allow list
       expect(parse(results['relay-server-direct']).status).not.toBe(200);
+    });
+
+    it('a board-only write from the sandbox is refused however it travels: plain, CONNECT, SOCKS (SX-4)', (ctx) => {
+      ctx.skip(!!skipAll || !results['board-plain'], skipAll ?? 'curl is not installed');
+      for (const name of ['board-plain', 'board-connect', 'board-socks']) {
+        expect(results[name].stdout.trim(), `${name}: ${results[name].stderr}`).toBe('403');
+      }
+      expect(echoSeen.filter((u) => u.includes('/airlock/policy'))).toEqual([]);
     });
 
     it('a command the server runs: its own loopback works; credentials, the report token, AgEnFK files and unlisted hosts do not (SX-2)', (ctx) => {

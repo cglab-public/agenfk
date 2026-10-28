@@ -205,3 +205,113 @@ describe('startServerRelay: review pass 2', () => {
     expect((await send(relay.port)).status).toBe(200);
   });
 });
+
+/**
+ * SX-4 (4d1594b9): the board-only writes. Every board-only (or board-privileged)
+ * route trusts `x-agenfk-ui: 1`; the board never comes through the relay and no
+ * agenfk client inside the sandbox sends it, so the relay refuses any request
+ * carrying it, and the board-only routes by method and path whatever the headers.
+ */
+describe('startServerRelay: board-only writes refused (SX-4)', () => {
+  it('a request carrying the board header is refused, whatever its casing, and never reaches the server', async () => {
+    relay = await startServerRelay({ target: targetUrl, marker: () => MARK, requireMarker: true });
+    for (const name of ['x-agenfk-ui', 'X-Agenfk-UI', 'X-AGENFK-UI']) {
+      const res = await send(relay.port, { method: 'PUT', path: '/items/t1', headers: { [name]: '1' }, body: '{}' });
+      expect(res.status, name).toBe(403);
+      expect(res.body).toMatch(/board/);
+    }
+    // even with a value the server would not honour
+    expect((await send(relay.port, { headers: { 'x-agenfk-ui': '0' } })).status).toBe(403);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('the board-only routes are refused by method and path, without the header too', async () => {
+    relay = await startServerRelay({ target: targetUrl, marker: () => MARK, requireMarker: true });
+    const refused: Array<[string, string]> = [
+      ['PUT', '/airlock/policy'], ['PUT', '/AIRLOCK/policy/'], ['POST', '/airlock/approvals/airlock-v1:x:y/grant'],
+      ['POST', '/airlock/approvals/k/deny'], ['POST', '/airlock/learning/accept'], ['POST', '/airlock/learning/forward'],
+      ['POST', '/items/t1/approvals'], ['POST', '/items/t1/overrides'], ['POST', '/projects/p1/command-approvals'],
+      ['POST', '/webauthn/challenge'], ['DELETE', '/webauthn/credentials/c1'], ['PUT', '/api/telemetry/config'], ['POST', '/github/signout'],
+      ['PUT', '/airlock/policy?x=1'],
+      // review (Codex gpt-6.1-sol 01a1827a)
+      ['POST', '/releases/update'],
+      ['POST', '/items/a%2Fb/approvals'],
+      ['PUT', '/airlock//policy'],
+    ];
+    for (const [method, p] of refused) {
+      expect((await send(relay.port, { method, path: p, body: method === 'POST' || method === 'PUT' ? '{}' : undefined })).status, `${method} ${p}`).toBe(403);
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  it('everything else the agent does still goes through', async () => {
+    relay = await startServerRelay({ target: targetUrl, marker: () => MARK, requireMarker: true });
+    const allowed: Array<[string, string]> = [
+      ['GET', '/airlock/policy'], ['POST', '/airlock/evaluate'], ['POST', '/items/t1/validate'], ['PUT', '/items/t1'],
+      ['GET', '/items/t1/approvals'], ['POST', '/items'], ['POST', '/items/t1/comments'], ['GET', '/airlock/approvals'],
+    ];
+    for (const [method, p] of allowed) {
+      expect((await send(relay.port, { method, path: p, body: method === 'GET' ? undefined : '{}' })).status, `${method} ${p}`).toBe(200);
+    }
+    expect(seen).toHaveLength(allowed.length);
+  });
+});
+
+describe('startServerRelay: request targets (SX-4 review)', () => {
+  /** One raw request line, as a client could write it. */
+  function raw(port: number, requestLine: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const net = require('net');
+      const sock = net.connect(port, '127.0.0.1', () => sock.write(`${requestLine}\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`));
+      let out = '';
+      sock.on('data', (d: Buffer) => { out += d.toString(); });
+      sock.on('end', () => resolve(out));
+      sock.on('error', reject);
+    });
+  }
+
+  it('only an origin-form target is relayed: an absolute-form or asterisk target is refused', async () => {
+    relay = await startServerRelay({ target: targetUrl, marker: () => MARK, requireMarker: true });
+    for (const line of ['PUT http://localhost/airlock/policy HTTP/1.1', 'PUT http://127.0.0.1:3000/airlock/policy HTTP/1.1', 'GET https://x/items HTTP/1.1', 'OPTIONS * HTTP/1.1']) {
+      expect((await raw(relay.port, line)).split('\r\n')[0], line).toMatch(/ 40[03] /);
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  it('boardOnlyRefusal judges the encoded path as Express routes it, and the decoded one too', async () => {
+    const { boardOnlyRefusal } = await import('../airlock/serverRelay');
+    expect(boardOnlyRefusal('POST', '/items/a%2Fb/approvals', {})).toBeTruthy();
+    expect(boardOnlyRefusal('PUT', '/airlock/%70olicy', {})).toBeTruthy();
+    expect(boardOnlyRefusal('POST', '/items/t1/comments', {})).toBeNull();
+  });
+});
+
+describe('startServerRelay: request targets (SX-4 review pass 2)', () => {
+  function rawBytes(port: number, line: Buffer): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const net = require('net');
+      const sock = net.connect(port, '127.0.0.1', () => {
+        sock.write(Buffer.concat([line, Buffer.from('\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}')]));
+      });
+      let out = '';
+      sock.on('data', (d: Buffer) => { out += d.toString('latin1'); });
+      sock.on('end', () => resolve(out));
+      sock.on('error', reject);
+    });
+  }
+
+  it('a target with a byte outside printable ASCII is refused, never forwarded (a trailing NBSP is trimmed by the parser Express uses)', async () => {
+    relay = await startServerRelay({ target: targetUrl, marker: () => MARK, requireMarker: true });
+    for (const tail of [[0xa0], [0x09], [0xc2, 0xa0], [0x7f]]) {
+      const line = Buffer.concat([Buffer.from('PUT /airlock/policy'), Buffer.from(tail), Buffer.from(' HTTP/1.1')]);
+      const out = await rawBytes(relay.port, line).catch((e) => `ERR ${e.message}`);
+      expect(out.split('\r\n')[0], JSON.stringify(tail)).toMatch(/ 40[03] |ERR|^$/);
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  it('boardOnlyRefusal also reads the path as the legacy URL parser does', async () => {
+    const { boardOnlyRefusal } = await import('../airlock/serverRelay');
+    expect(boardOnlyRefusal('PUT', '/airlock/policy ', {})).toBeTruthy();
+  });
+});
