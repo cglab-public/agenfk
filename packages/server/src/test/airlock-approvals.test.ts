@@ -423,10 +423,19 @@ describe('review fixes (T5 round 1)', () => {
   it('every denial stays listed, however many there are', async () => {
     const key = await needsApproval();
     await deny(key);
-    for (let i = 0; i < 1100; i++) {
-      const k = `airlock-v1:cloud-mutation:many${i}`;
-      await storage.upsertAirlockApproval({ key: k, rule: 'cloud-mutation', summary: 's', requestedAt: new Date(clock + (i + 1) * 1000).toISOString() });
-      await storage.denyAirlockApproval(k, { deniedBy: 'x' });
+    // One commit for the 2200 writes: one disk sync each took the Windows runner past 30s.
+    const db: any = (storage as any).database;
+    db.exec('BEGIN');
+    try {
+      for (let i = 0; i < 1100; i++) {
+        const k = `airlock-v1:cloud-mutation:many${i}`;
+        await storage.upsertAirlockApproval({ key: k, rule: 'cloud-mutation', summary: 's', requestedAt: new Date(clock + (i + 1) * 1000).toISOString() });
+        await storage.denyAirlockApproval(k, { deniedBy: 'x' });
+      }
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
     }
     const body = (await request(app).get('/airlock/approvals')).body;
     expect(body.denied).toHaveLength(1101);
