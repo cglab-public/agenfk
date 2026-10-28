@@ -153,6 +153,14 @@ describe('a row', () => {
     expect(all).not.toContain('hunter2hunter2');
   });
 
+  it('a credential under any name the key screen knows is removed from a write\'s content too (BUG 84604611)', async () => {
+    await evaluate('write', { path: 'creds.json', content: '{"passphrase":"fresh-private-91234","cookie":"opaque-cookie-91234"}' });
+    await evaluate('write', { path: 'creds.yaml', content: 'session_id: sess-plain-91234\nauth_token: at-plain-91234\nsignature: sig-plain-91234\n' });
+    await evaluate('write', { path: 'creds2.yaml', content: "'passphrase': 'yq-plain-91234'\nsession.key: dot-plain-91234\n" });
+    const all = JSON.stringify(rows());
+    for (const v of ['fresh-private-91234', 'opaque-cookie-91234', 'sess-plain-91234', 'at-plain-91234', 'sig-plain-91234', 'yq-plain-91234', 'dot-plain-91234']) expect(all).not.toContain(v);
+  });
+
   it('a value under a secret-looking name goes whole, even one no pattern would catch', async () => {
     await evaluate('http', { url: 'https://api.github.com/user', apiKey: 'letmein-plain', headers: { 'X-Session-Key': 'abc' }, auth: { password: 'pw1' } });
     const [r] = rows();

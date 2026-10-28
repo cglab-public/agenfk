@@ -42,8 +42,15 @@ const SECRET_ENV_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|PRIVA
 /** Shorter values are too likely to be ordinary words to replace everywhere. */
 const MIN_ENV_SECRET_LENGTH = 8;
 
-/** A key name that announces a secret value. Bounded on both sides of the word. */
-const SECRET_KEY_NAME = '[A-Za-z0-9_.-]{0,40}(?:password|passwd|secret|token|api[_-]?key|apikey|private[_-]?key|access[_-]?key|credential)[A-Za-z0-9_.-]{0,40}';
+/**
+ * A key name that announces a secret value. Bounded on both sides of the word.
+ * The words the Airlock dataset's key screen drops a value for are here too
+ * (BUG 84604611): a credential under them in a file's content is removed as one
+ * in a tool's arguments is. `pass` counts only as a word of its own (db_user_pass,
+ * pass), so `compass` is not a credential; `auth` but not `author`; not `sessions`.
+ */
+const SECRET_KEY_NAME = '(?:[A-Za-z0-9_.-]{0,40}(?:password|passwd|passphrase|pwd|secret|token|api[_.-]?key|private[_.-]?key|access[_.-]?key|credential|cookie|authorization|auth(?!or)|signature|session[_.-]?(?:id|key|secret|token))[A-Za-z0-9_.-]{0,40}'
+  + '|(?:[A-Za-z0-9_.-]{0,40}[_.-])?pass(?:[_.-][A-Za-z0-9_.-]{0,40})?)';
 /**
  * A value: double-quoted with escapes, single-quoted, or bare. NOT bounded, and
  * the closing quote is optional: once a secret-named key is recognised, its
@@ -94,11 +101,20 @@ const DETECTORS: Detector[] = [
     group: 1,
     unquote: 'inside',
   },
-  // name=value / name: value, the value quoted or bare
+  // A cookie header or line: every cookie in it, to the end of the line - a bare value
+  // stops at `;`, which would leave the cookies after the first (BUG 84604611 review).
   {
     kind: 'assigned',
-    re: new RegExp(`(?:^|[\\s,;{(])${SECRET_KEY_NAME}[ \\t]{0,8}[=:][ \\t]{0,8}(${DQ}|${SQ}|${BARE})`, 'dgim'),
-    group: 1,
+    re: new RegExp(`(?:^|[\\s,;{(])(["']?)(?:set-)?cookies?\\1[ \\t]{0,8}[=:][ \\t]{0,8}(${DQ}|${SQ}|[^\\n]+)`, 'dgim'),
+    group: 2,
+    unquote: 'outer',
+  },
+  // name=value / name: value, the value quoted or bare; the name may be quoted too
+  // ('passphrase': ..., YAML; BUG 84604611 review)
+  {
+    kind: 'assigned',
+    re: new RegExp(`(?:^|[\\s,;{(])(["']?)${SECRET_KEY_NAME}\\1[ \\t]{0,8}[=:][ \\t]{0,8}(${DQ}|${SQ}|${BARE})`, 'dgim'),
+    group: 2,
     unquote: 'outer',
   },
 ];
