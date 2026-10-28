@@ -64,6 +64,7 @@ import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { resolveAirlockPolicy, registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
 import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/reportToken.js';
 import { airlockCoverageMiddleware, coverWritesIn } from './airlock/coverage.js';
+import { airlockCollectionScope } from './airlock/scope.js';
 import { airlockRepoPins } from './airlock/repoPins.js';
 import { airlockCommandFor, airlockArgvFor, airlockHooksOff, noHooksGitEnv, serverUrlFor, type AirlockRunDeps } from './airlock/execWrap.js';
 import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockDatasetEnabled, currentAirlockGeneration } from './hub/airlockSync.js';
@@ -136,6 +137,8 @@ app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 // it never reaches a route, and every card such a request names is recorded as
 // covered, so the commands this server runs for that card's tree run sandboxed.
 app.use(airlockCoverageMiddleware({ storage: () => storage, reportToken: airlockReportTokenReader() }));
+// A sandboxed session's listings are its own project's (BUG afc07064).
+app.use(airlockCollectionScope());
 
 // SX-3 (8dd7c7c0): a covered card's commands (verify, suite, captures, worktree
 // setup) run through `agenfk airlock exec`, in the sandbox, while the policy enforces.
@@ -11162,7 +11165,13 @@ app.get("/items/validate-runs/:runId", asyncHandler(async (req: any, res: any) =
     return res.status(403).json({ error: "Forbidden: validate-runs endpoint requires internal token." });
   }
   const run = validateRuns.get(req.params.runId);
-  if (!run) return res.status(404).json({ error: 'RUN_NOT_FOUND', message: 'Unknown or expired validation run. If the server restarted, check the item\'s comments — the outcome is persisted there.' });
+  const notFound = () => res.status(404).json({ error: 'RUN_NOT_FOUND', message: 'Unknown or expired validation run. If the server restarted, check the item\'s comments — the outcome is persisted there.' });
+  if (!run) return notFound();
+  // An Airlock session sees its own project's runs only, and is not told another's exists (BUG afc07064).
+  if (req.airlockSession !== undefined) {
+    const item: any = await storage.getItem(run.itemId).catch(() => null);
+    if (!item || typeof req.airlockProject !== 'string' || item.projectId !== req.airlockProject) return notFound();
+  }
   return res.json(run);
 }));
 
