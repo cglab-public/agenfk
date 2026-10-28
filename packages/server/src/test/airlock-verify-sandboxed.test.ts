@@ -93,7 +93,7 @@ describePosix('SX-3: a covered card\'s verify runs in the Airlock sandbox', () =
     await storage.markAirlockCovered([item.id], new Date().toISOString());
     const done = await verify(item.id);
     expect(done.output).toContain('VIA-EXEC');
-    expect(done.output).toContain(JSON.stringify(['airlock', 'exec', '--no-process-group', '--cwd', projRoot, '--', 'echo ran-directly']));
+    expect(done.output).toContain(JSON.stringify(['airlock', 'exec', '--no-process-group', '--project-id', item.projectId, '--cwd', projRoot, '--', 'echo ran-directly']));
     expect(done.output).not.toMatch(/^ran-directly$/m);
   });
 

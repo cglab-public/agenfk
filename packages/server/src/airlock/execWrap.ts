@@ -87,13 +87,22 @@ export async function airlockCommandFor(deps: AirlockRunDeps, itemId: string | n
   if (!fs.existsSync(cli)) {
     return refuse(`An Airlock sandbox touched this card and the policy enforces, but the agenfk CLI that runs commands in the sandbox is not at ${cli}.`);
   }
+  // The card's project, so exec runs under that project's overrides (PO-1).
+  let projectId: string | null;
+  try {
+    const item: any = await deps.storage().getItem(itemId);
+    projectId = typeof item?.projectId === 'string' && item.projectId ? item.projectId : null;
+  } catch (e) {
+    return refuse(`An Airlock sandbox touched this card, and its project could not be read (${(e as Error)?.message ?? e}).`);
+  }
   // exec reads the policy from THIS server, never one it would rediscover.
   const url = deps.apiUrl?.() ?? null;
   return {
     command: [
       ...(url ? [`AGENFK_API_URL=${q(url)}`] : []),
       ...Object.entries(deps.lineEnv ?? {}).filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)).map(([k, v]) => `${k}=${q(v)}`),
-      q(deps.nodePath ?? process.execPath), q(cli), 'airlock', 'exec', '--no-process-group', '--cwd', q(cwd), '--', q(command),
+      q(deps.nodePath ?? process.execPath), q(cli), 'airlock', 'exec', '--no-process-group',
+      ...(projectId ? ['--project-id', q(projectId)] : []), '--cwd', q(cwd), '--', q(command),
     ].join(' '),
     sandboxed: true,
   };

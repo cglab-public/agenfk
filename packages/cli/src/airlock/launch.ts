@@ -19,8 +19,7 @@
  */
 import os from 'os';
 import path from 'path';
-import { randomBytes } from 'crypto';
-import { normalizeAirlockPolicy, mintAirlockSessionMarker, type AirlockClient } from '@agenfk/core';
+import { normalizeAirlockPolicy, mintAirlockSessionMarker, airlockLaunchNonce, airlockMarkerProject, type AirlockClient } from '@agenfk/core';
 import { buildSandboxSpec, writeRootHolding, ENV_NAME, type SandboxSpec } from './spec';
 import type { AirlockRuntime } from './runtime';
 import { startServerRelay, type ServerRelay, type ServerRelayOptions } from './serverRelay';
@@ -42,7 +41,10 @@ export interface PolicyView {
 }
 
 export interface LaunchDeps {
-  fetchPolicy(): Promise<PolicyView>;
+  /** GET /airlock/policy: for a project (its overrides applied, PO-1), or the org's when null. */
+  fetchPolicy(projectId?: string | null): Promise<PolicyView>;
+  /** The AgEnFK project the workspace belongs to, or null outside one. */
+  projectId?(): string | null;
   runtime: AirlockRuntime;
   env: NodeJS.ProcessEnv;
   home: string;
@@ -279,9 +281,13 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
   if (!ready.ok) throw new AirlockLaunchError(ready.reason);
   ready.warnings.forEach((w) => d.warn(w));
 
+  // One project for the policy and the marker (PO-1): the server judges the
+  // sandbox's tool calls under the project the launch is signed for.
+  const launchNonce = airlockLaunchNonce(d.projectId?.() ?? null);
+  const launchProject = airlockMarkerProject(launchNonce);
   let view: PolicyView;
   try {
-    view = await d.fetchPolicy();
+    view = await d.fetchPolicy(launchProject ?? null);
   } catch (e) {
     throw new AirlockLaunchError(
       `The AgEnFK server did not give the Airlock policy (${(e as Error)?.message ?? e}), so nothing was launched. Start it (agenfk up), or upgrade it if it predates Airlock, and retry.`,
@@ -377,7 +383,6 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     }
     d.warn('Airlock: ~/.agenfk/airlock/report-token is missing, so the sandbox\'s requests to the AgEnFK server are not marked (observe mode: they still go through). The AgEnFK server creates it when it starts: agenfk restart.');
   }
-  const launchNonce = randomBytes(16).toString('hex');
   const relay = await (d.startRelay ?? startServerRelay)({
     target: serverOrigin,
     marker: () => {

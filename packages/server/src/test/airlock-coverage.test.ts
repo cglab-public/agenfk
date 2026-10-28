@@ -15,7 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
-import { AIRLOCK_SESSION_HEADER, mintAirlockSessionMarker } from '@agenfk/core';
+import { AIRLOCK_SESSION_HEADER, airlockLaunchNonce, mintAirlockSessionMarker } from '@agenfk/core';
 import { airlockCoverageMiddleware, airlockTreeCovered, coverWritesIn } from '../airlock/coverage';
 
 const TOKEN = 'airlock-report-token-0123456789abcdef';
@@ -38,20 +38,25 @@ beforeEach(async () => {
   app = express();
   app.use(express.json());
   app.use(airlockCoverageMiddleware({ storage: () => storage, reportToken: () => token }));
-  const echo = (req: any, res: any) => { seenHeader = req.headers[AIRLOCK_SESSION_HEADER]; res.json({ covered: !!req.airlockSession }); };
+  const echo = (req: any, res: any) => { seenHeader = req.headers[AIRLOCK_SESSION_HEADER]; res.json({ covered: !!req.airlockSession, project: req.airlockProject ?? null }); };
   app.put('/items/:id', echo);
   // routes that write cards the way the real ones do: a bulk update, an import that creates several
   app.post('/items/bulk', async (req: any, res: any) => {
-    for (const e of req.body.items) await storage.updateItem(e.id, e.updates);
-    res.json({ ok: true });
+    try {
+      for (const e of req.body.items) await storage.updateItem(e.id, e.updates);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: String(e) }); }
   });
   app.post('/import', async (req: any, res: any) => {
-    const made = [];
-    for (const t of req.body.titles) made.push(await storage.createItem({ id: `imp-${t}`, projectId: 'p', type: 'TASK', title: t, status: 'TODO', createdAt: new Date(), updatedAt: new Date() } as any));
-    res.json({ created: made.length });
+    try {
+      const made = [];
+      for (const t of req.body.titles) made.push(await storage.createItem({ id: `imp-${t}`, projectId: 'p', type: 'TASK', title: t, status: 'TODO', createdAt: new Date(), updatedAt: new Date() } as any));
+      res.json({ created: made.length });
+    } catch (e) { res.status(500).json({ error: String(e) }); }
   });
   app.post('/items/:id/validate', echo);
   app.post('/gatekeeper', echo);
+  app.put('/projects/:id', echo);
   app.get('/items', echo);
   // writes the card as the real route does (storage.createItem)
   app.post('/items', async (req: any, res: any) => {
@@ -71,7 +76,7 @@ afterEach(async () => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-const marked = () => ({ [AIRLOCK_SESSION_HEADER]: mintAirlockSessionMarker(TOKEN, 'launch-1') });
+const marked = (project: string | null = 'p') => ({ [AIRLOCK_SESSION_HEADER]: mintAirlockSessionMarker(TOKEN, airlockLaunchNonce(project, 'launch1')) });
 
 describe('airlockCoverageMiddleware', () => {
   it('a marked request naming a card in its path covers that card', async () => {
@@ -200,3 +205,82 @@ describe('SX-1 review pass 2', () => {
     expect(await storage.airlockCoveredAmong(['new-10'])).toEqual(['new-10']);
   });
 });
+
+describe('PO-1 review: the marker names the launch\'s project', () => {
+  it('a marked request carries the project its launch was signed for; an unmarked one, none', async () => {
+    expect((await request(app).get('/items').set(marked('p'))).body).toEqual({ covered: true, project: 'p' });
+    expect((await request(app).get('/items').set(marked(null))).body).toEqual({ covered: true, project: null });
+    expect((await request(app).get('/items')).body).toEqual({ covered: false, project: null });
+  });
+
+  it('a launcher from before PO-1 (its nonce says no project either way) is refused, telling it to restart', async () => {
+    const res = await request(app).put('/items/t1').set(AIRLOCK_SESSION_HEADER, mintAirlockSessionMarker(TOKEN, 'launch-1')).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('AIRLOCK_LAUNCH_OUTDATED');
+    expect(await airlockTreeCovered(storage, 't1')).toBe(false);
+  });
+
+  it('a launch may not name a card of another project, nor any card when it has no project', async () => {
+    for (const project of ['q', null]) {
+      const res = await request(app).post('/items/t1/validate').set(marked(project)).send({});
+      expect(res.status, String(project)).toBe(403);
+      expect(res.body.error).toBe('AIRLOCK_CROSS_PROJECT');
+    }
+    expect((await request(app).post('/gatekeeper').set(marked('q')).send({ itemId: 's2' })).status).toBe(403);
+    expect((await request(app).post('/gatekeeper').set(marked('q')).send({ projectId: 'p' })).status).toBe(403);
+    expect((await request(app).put('/projects/p').set(marked('q')).send({})).status).toBe(403);
+    expect(await airlockTreeCovered(storage, 't1')).toBe(false);
+    expect((await request(app).post('/items/t1/validate').set(marked('p')).send({})).status).toBe(200);
+  });
+
+  it('nor write one: a card created or moved into another project is refused before it is written', async () => {
+    expect((await request(app).post('/import').set(marked('q')).send({ titles: ['x'] })).status).toBe(500);
+    expect(await storage.getItem('imp-x')).toBeFalsy();
+    expect((await request(app).post('/items/bulk').set(marked('p')).send({ items: [{ id: 't2', updates: { projectId: 'q' } }] })).status).toBe(500);
+    expect((await storage.getItem('t2') as any).projectId).toBe('p');
+  });
+});
+
+describe('PO-1 review 3 (Codex gpt-6.1-sol 01a182d1)', () => {
+  it('a sandbox cannot repoint a project\'s root (its repository picks its overrides): not by the route, not by any write', async () => {
+    app.put('/projects/:id/project-root', echo2);
+    app.post('/repoint', async (req: any, res: any) => {
+      try { await storage.updateProject('p', { projectRoot: '/elsewhere' } as any); res.json({ ok: true }); } catch (e) { res.status(500).json({ error: String(e) }); }
+    });
+    await storage.createProject({ id: 'p', name: 'p', projectRoot: '/orig', createdAt: new Date(), updatedAt: new Date() } as any);
+    const res = await request(app).put('/projects/p/project-root').set(marked('p')).send({ projectRoot: '/elsewhere' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('AIRLOCK_PROJECT_ROOT');
+    expect((await request(app).post('/repoint').set(marked('p')).send({})).status).toBe(500);
+    expect(((await storage.getProject('p')) as any).projectRoot).toBe('/orig');
+    // outside a sandbox nothing changes
+    expect((await request(app).post('/repoint').send({})).status).toBe(200);
+  });
+
+  it('a sandbox cannot delete a project (its repository pin would go with it)', async () => {
+    app.delete('/projects/:id', echo2);
+    const res = await request(app).delete('/projects/p').set(marked('p'));
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('AIRLOCK_PROJECT_ROOT');
+    expect((await request(app).delete('/projects/p')).status).toBe(200);
+  });
+
+  it('a run is reached through its card: a launch cannot touch another project\'s run', async () => {
+    app.patch('/agent-runs/:id', echo2);
+    app.post('/agent-runs/:id/events', echo2);
+    await (storage as any).createAgentRun({ id: 'run-b', itemId: 's2', projectId: 'p', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'm', status: 'running', startedAt: new Date().toISOString() });
+    expect((await request(app).patch('/agent-runs/run-b').set(marked('q')).send({ status: 'done' })).status).toBe(403);
+    expect((await request(app).post('/agent-runs/run-b/events').set(marked('q')).send({})).status).toBe(403);
+    expect((await request(app).patch('/agent-runs/run-b').set(marked('p')).send({ status: 'done' })).status).toBe(200);
+  });
+
+  it('a run whose card is gone belongs to no launch', async () => {
+    app.patch('/agent-runs/:id', echo2);
+    await (storage as any).createAgentRun({ id: 'run-orphan', itemId: 'gone', projectId: 'p', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'm', status: 'running', startedAt: new Date().toISOString() });
+    for (const project of ['p', 'q', null]) {
+      expect((await request(app).patch('/agent-runs/run-orphan').set(marked(project)).send({ status: 'done' })).status, String(project)).toBe(403);
+    }
+  });
+});
+
+const echo2 = (req: any, res: any) => res.json({ covered: !!req.airlockSession });

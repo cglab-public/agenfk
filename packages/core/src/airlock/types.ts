@@ -44,6 +44,17 @@ export interface AirlockPolicy {
   hosts: { allow: HostPattern[]; deny: HostPattern[] };
   iocHosts: { revision: string; hosts: HostPattern[]; updatedAt: string | null };
   rules: AirlockRules;
+  /**
+   * Per-project overrides, keyed by repository (host/owner/repo) or project:<local id>.
+   * Absent when there are none. effectivePolicyFor applies them; the result carries none.
+   */
+  projects?: Record<string, AirlockProjectOverride>;
+}
+
+/** Adds to the org's host lists (a deny always outranks an allow); each rule set wins over the org's. */
+export interface AirlockProjectOverride {
+  hosts?: { allow: HostPattern[]; deny: HostPattern[] };
+  rules?: Partial<AirlockRules>;
 }
 
 /** Cloud metadata endpoints. Always denied; no policy can allow-list them. */

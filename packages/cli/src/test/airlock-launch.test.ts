@@ -361,3 +361,27 @@ describe('Linux: the launcher tells the gate its own network namespace (second p
     expect(specOf(mac).env.AGENFK_AIRLOCK_HOST_NETNS).toBeUndefined();
   });
 });
+
+describe('PO-1: the launcher asks for its workspace\'s project', () => {
+  it('the policy fetch names the project the workspace belongs to', async () => {
+    const d = deps({ projectId: () => 'p-api' } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect((d.fetchPolicy as any).mock.calls[0][0]).toBe('p-api');
+  });
+
+  it('outside any project it asks for the org policy', async () => {
+    const d = deps({ projectId: () => null } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect((d.fetchPolicy as any).mock.calls[0][0] ?? null).toBeNull();
+  });
+});
+
+describe('PO-1 review: the launch marker is signed for the workspace\'s project', () => {
+  it('the relay\'s marker carries the project the policy was fetched for', async () => {
+    const { verifyAirlockSessionMarker, airlockMarkerProject } = await import('@agenfk/core');
+    const d = deps({ projectId: () => 'p-api' } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    const marker = (d.startRelay as any).mock.calls[0][0].marker();
+    expect(airlockMarkerProject(verifyAirlockSessionMarker('airlock-report-token-0123456789abcdef', marker)!)).toBe('p-api');
+  });
+});

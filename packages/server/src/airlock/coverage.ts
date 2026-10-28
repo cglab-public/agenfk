@@ -21,13 +21,38 @@
  * tree it was in; checking the whole tree means it covers the one it moves to.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { AIRLOCK_SESSION_HEADER, verifyAirlockSessionMarker, type StorageProvider } from '@agenfk/core';
+import { AIRLOCK_SESSION_HEADER, airlockMarkerProject, verifyAirlockSessionMarker, type StorageProvider } from '@agenfk/core';
 
 /** Set by the relay on a 401 for a marker that did not verify, so it can re-mint once (a token the server just replaced). */
 export const AIRLOCK_MARKER_STATUS_HEADER = 'x-agenfk-airlock-marker';
 
-/** The covered request the current async work belongs to, if any. */
-const coveredRequest = new AsyncLocalStorage<{ since: string }>();
+/** 409: a marker from a launcher older than PO-1, which does not say which project it is for. */
+export const AIRLOCK_LAUNCH_OUTDATED = 'AIRLOCK_LAUNCH_OUTDATED';
+/** 403: a launch reaching a card or project other than the one it was signed for. */
+export const AIRLOCK_CROSS_PROJECT = 'AIRLOCK_CROSS_PROJECT';
+/**
+ * 403: a sandbox changing a project's root. The root's git origin is the
+ * project's repository, which picks its per-project overrides (PO-1): an agent
+ * that could repoint it could choose a looser policy for its own project.
+ */
+export const AIRLOCK_PROJECT_ROOT = 'AIRLOCK_PROJECT_ROOT';
+const PROJECT_ROOT_MESSAGE = 'An Airlock session cannot change a project\'s root or delete a project: its repository decides the project\'s Airlock overrides. Do it outside the sandbox (agenfk init, or the board).';
+
+/**
+ * The covered request the current async work belongs to, if any, with the
+ * project its launch was signed for (PO-1): the only project it may touch,
+ * since the commands the server runs for a card run under that card's project's
+ * policy, and a launch reaching another project's card would run them under a
+ * policy it was not given (null: a launch outside any project touches no card).
+ */
+const coveredRequest = new AsyncLocalStorage<{ since: string; project: string | null }>();
+
+const crossProject = (project: string | null, what: string): Error =>
+  Object.assign(new Error(
+    project
+      ? `This Airlock session was launched for project ${project} and cannot reach ${what}. Launch agenfk airlock from that project's directory to work on it.`
+      : `This Airlock session was launched outside any AgEnFK project and cannot reach ${what}. Launch agenfk airlock from the project's directory.`,
+  ), { code: AIRLOCK_CROSS_PROJECT });
 
 export interface AirlockCoverageDeps {
   storage: () => StorageProvider;
@@ -50,6 +75,26 @@ function idsNamed(req: any): string[] {
   for (const bag of [req.body, req.query]) {
     if (!bag || typeof bag !== 'object') continue;
     for (const key of ['itemId', 'parentId']) if (typeof bag[key] === 'string' && bag[key]) ids.push(bag[key]);
+  }
+  return ids;
+}
+
+const decodeURIComponentSafe = (s: string): string => { try { return decodeURIComponent(s); } catch { return s; } };
+
+/** Projects a request names: its /projects/:id path, and projectId / targetProjectId in the body or the query. */
+function projectsNamed(req: any): string[] {
+  const ids: string[] = [];
+  const m = /^\/projects\/([^/?#]+)/i.exec(req.path ?? '');
+  if (m) {
+    try {
+      ids.push(decodeURIComponent(m[1]));
+    } catch {
+      ids.push(m[1]);
+    }
+  }
+  for (const bag of [req.body, req.query]) {
+    if (!bag || typeof bag !== 'object') continue;
+    for (const key of ['projectId', 'targetProjectId']) if (typeof bag[key] === 'string' && bag[key]) ids.push(bag[key]);
   }
   return ids;
 }
@@ -91,6 +136,7 @@ export function coverWritesIn<S extends StorageProvider>(storage: S): S {
   const update = storage.updateItem.bind(storage);
   storage.createItem = async (item) => {
     const ctx = coveredRequest.getStore();
+    if (ctx && item.projectId !== ctx.project) throw crossProject(ctx.project, `project ${item.projectId}`);
     if (ctx) {
       // Recorded BEFORE the card is written: a record that fails leaves no
       // uncovered card behind (a record for a card that never got written is harmless).
@@ -101,9 +147,21 @@ export function coverWritesIn<S extends StorageProvider>(storage: S): S {
     if (ctx && made.id !== item.id) await cover(storage, [made.id], ctx.since);
     return made;
   };
+  const updateProject = storage.updateProject.bind(storage);
+  storage.updateProject = async (id, updates) => {
+    if (coveredRequest.getStore() && (updates as any)?.projectRoot !== undefined) {
+      throw Object.assign(new Error(PROJECT_ROOT_MESSAGE), { code: AIRLOCK_PROJECT_ROOT });
+    }
+    return updateProject(id, updates);
+  };
   storage.updateItem = async (id, updates) => {
     const ctx = coveredRequest.getStore();
-    if (ctx) await cover(storage, [id], ctx.since);
+    if (ctx) {
+      const before: any = await storage.getItem(id);
+      if (before && before.projectId !== ctx.project) throw crossProject(ctx.project, `card ${id}`);
+      if (updates.projectId !== undefined && updates.projectId !== ctx.project) throw crossProject(ctx.project, `project ${updates.projectId}`);
+      await cover(storage, [id], ctx.since);
+    }
     const updated = await update(id, updates);
     if (ctx) await cover(storage, [updated.id, updated.parentId], ctx.since);
     return updated;
@@ -132,10 +190,41 @@ export function airlockCoverageMiddleware(deps: AirlockCoverageDeps) {
       res.set(AIRLOCK_MARKER_STATUS_HEADER, 'invalid');
       return res.status(401).json({ error: 'The Airlock marker on this request does not verify.' });
     }
+    // The project the launch was signed for (PO-1): what its tool calls are judged under.
+    const project = airlockMarkerProject(nonce);
+    if (project === undefined) {
+      return res.status(409).json({
+        error: AIRLOCK_LAUNCH_OUTDATED,
+        message: 'This Airlock session was launched by an agenfk older than this server, which does not say which project it is for. Exit it and launch it again (agenfk airlock pi|opencode).',
+      });
+    }
     req.airlockSession = nonce;
-    const ctx = { since: new Date(now()).toISOString() };
+    req.airlockProject = project;
+    const ctx = { since: new Date(now()).toISOString(), project };
     try {
-      await cover(deps.storage(), idsNamed(req), ctx.since);
+      const storage = deps.storage();
+      // Its root, or the project itself: the repository pin goes with either.
+      if (/^\/projects\/[^/]+\/project-root\/?$/i.test(req.path ?? '') || (req.method === 'DELETE' && /^\/projects\/[^/]+\/?$/i.test(req.path ?? ''))) {
+        return res.status(403).json({ error: AIRLOCK_PROJECT_ROOT, message: PROJECT_ROOT_MESSAGE });
+      }
+      const ids = idsNamed(req);
+      // A run is reached through its card (/agent-runs/:id and its events).
+      const run = /^\/agent-runs\/([^/?#]+)/i.exec(req.path ?? '');
+      if (run) {
+        const found: any = await storage.getAgentRun(decodeURIComponentSafe(run[1]));
+        // A run whose card is gone belongs to no launch.
+        if (found && !(found.itemId && (await storage.getItem(found.itemId)))) {
+          return res.status(403).json({ error: AIRLOCK_CROSS_PROJECT, message: crossProject(project, `run ${found.id}, whose card no longer exists`).message });
+        }
+        if (found?.itemId) ids.push(found.itemId);
+      }
+      for (const id of ids) {
+        const it: any = await storage.getItem(id);
+        if (it && it.projectId !== project) return res.status(403).json({ error: AIRLOCK_CROSS_PROJECT, message: crossProject(project, `card ${id}`).message });
+      }
+      const other = projectsNamed(req).find((p) => p !== project);
+      if (other !== undefined) return res.status(403).json({ error: AIRLOCK_CROSS_PROJECT, message: crossProject(project, `project ${other}`).message });
+      await cover(storage, ids, ctx.since);
     } catch (e) {
       return next(e);
     }

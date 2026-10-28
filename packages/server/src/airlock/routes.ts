@@ -2,7 +2,8 @@
  * Airlock server authority (GH-294, T2): where the policy lives, who may change
  * it, and the one place a tool call is judged.
  *
- *   GET  /airlock/policy     the effective policy and where it came from
+ *   GET  /airlock/policy     the effective policy and where it came from;
+ *                            ?projectId= that project's (its overrides applied)
  *   PUT  /airlock/policy     a local write: refused while the hub owns the policy
  *   POST /airlock/evaluate   judge one tool call (adapters, CLI, MCP); loopback only
  *   POST /airlock/proxy-decisions   what the sandbox proxy allowed and denied (TEL-1); loopback only
@@ -52,6 +53,8 @@ import {
   DEFAULT_AIRLOCK_POLICY,
   airlockAlertOf,
   airlockPolicyErrors,
+  airlockRepoKey,
+  effectivePolicyFor,
   capabilitiesOf,
   evaluateAirlock,
   modelFromPi,
@@ -78,6 +81,8 @@ import { registerAirlockLearning } from './learn.js';
 
 export const HUB_OWNS_AIRLOCK_POLICY = 'HUB_OWNS_AIRLOCK_POLICY';
 export const AIRLOCK_REVISION_CONFLICT = 'AIRLOCK_REVISION_CONFLICT';
+/** 503: a project's repository could not be read, so its overrides cannot be told (the adapter, unanswered, blocks in enforce). */
+export const AIRLOCK_PROJECT_UNKNOWN = 'AIRLOCK_PROJECT_UNKNOWN';
 
 const CLIENTS: readonly AirlockClient[] = ['pi', 'opencode'];
 /** A logged target is for a person to read, not a copy of the command. */
@@ -127,6 +132,11 @@ export interface AirlockRouteDeps {
   refreshFromHub?: () => Promise<void>;
   /** The clock grants are judged by (epoch ms). Defaults to Date.now. */
   now?: () => number;
+  /**
+   * A project's repository (its git origin, any form), for its per-project
+   * override (PO-1); null when it has none. Absent: only project:<id> overrides apply.
+   */
+  projectRepoOf?: (projectId: string) => Promise<string | null>;
 }
 
 export type AirlockApprovalStatus = 'pending' | 'granted' | 'consumed' | 'expired' | 'denied';
@@ -546,6 +556,33 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
     return true;
   };
 
+  /**
+   * A project's effective policy (PO-1). Its repository (pinned, repoPins.ts) is
+   * needed only when the policy has repository overrides; a lookup that fails or times out
+   * throws AIRLOCK_PROJECT_UNKNOWN rather than reading as "no repository", which
+   * would drop the overrides that tighten.
+   */
+  const projectPolicy = async (policy: AirlockPolicy, projectId: string, opts: { pin?: boolean } = {}): Promise<{ effective: AirlockPolicy; repo: string | null }> => {
+    const needsRepo = Object.keys(policy.projects ?? {}).some(k => !k.startsWith('project:'));
+    let repo: string | null = null;
+    // `pin`: the launcher's and exec's fetch, made before a sandbox runs, looks the
+    // repository up (and so pins it) even when no override needs it yet.
+    if ((needsRepo || opts.pin) && deps.projectRepoOf) {
+      try {
+        repo = airlockRepoKey(await deps.projectRepoOf(projectId));
+      } catch (e) {
+        if (!needsRepo) return { effective: effectivePolicyFor(policy, { repo: null, projectId }), repo: null };
+        throw Object.assign(new Error(`The repository of project ${projectId} could not be read (${(e as Error)?.message ?? e}), so its Airlock overrides cannot be told; retry shortly.`), { code: AIRLOCK_PROJECT_UNKNOWN });
+      }
+    }
+    return { effective: effectivePolicyFor(policy, { repo, projectId }), repo };
+  };
+  const projectUnknown = (e: unknown, res: any): boolean => {
+    if ((e as any)?.code !== AIRLOCK_PROJECT_UNKNOWN) return false;
+    res.status(503).json({ error: AIRLOCK_PROJECT_UNKNOWN, message: (e as Error).message });
+    return true;
+  };
+
   app.get('/airlock/policy', async (req: any, res: any, next: any) => {
     try {
       // `?refresh=1` (or true) pulls the hub's policy now instead of at the next
@@ -555,8 +592,13 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       if ((refresh === '1' || refresh === 'true') && deps.hubJoined() && deps.refreshFromHub) {
         try { await deps.refreshFromHub(); } catch (e) { console.error('[AIRLOCK] refresh from hub failed:', (e as Error).message); }
       }
-      res.json(await resolveAirlockPolicy(deps.storage(), deps.hubJoined()));
-    } catch (e) { next(e); }
+      const view = await resolveAirlockPolicy(deps.storage(), deps.hubJoined());
+      const p = req.query?.projectId;
+      const projectId = typeof p === 'string' && p ? p : null;
+      if (!projectId) return res.json(view);
+      const { effective, repo } = await projectPolicy(view.effective, projectId, { pin: true });
+      res.json({ ...view, effective, project: { id: projectId, repo } });
+    } catch (e) { if (!projectUnknown(e, res)) next(e); }
   });
 
   app.put('/airlock/policy', async (req: any, res: any, next: any) => {
@@ -646,10 +688,15 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       const dryRun = body.dryRun === true;
       const view = await resolveAirlockPolicy(storage, deps.hubJoined());
       const work = deps.activeWork(sessionId);
+      // A sandboxed call is judged under the project its launch was signed for
+      // (the coverage middleware read it from the marker), never a note the
+      // agent could choose; any other call, under its active card's project.
+      const projectId: string | null = req.airlockSession !== undefined ? (req.airlockProject ?? null) : (work?.projectId ?? null);
+      const effective = projectId ? (await projectPolicy(view.effective, projectId)).effective : view.effective;
       const at = now();
-      const judge = (grants: string[]) => evaluateAirlock(view.effective, {
+      const judge = (grants: string[]) => evaluateAirlock(effective, {
         client: body.client, model, toolName, capabilities,
-        card: { itemId: work?.itemId, projectId: work?.projectId, grants },
+        card: { itemId: work?.itemId, projectId: projectId ?? undefined, grants },
       });
       const targetOf = (v: { target?: string }) => (v.target && capabilities.find(c => capabilityText(c).includes(v.target!))) || capabilities[0];
 
@@ -684,7 +731,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
             rule: approval.rule,
             summary,
             capabilities: bound,
-            projectId: work?.projectId ?? null,
+            projectId,
             itemId: work?.itemId ?? null,
             sessionId: sessionId ?? null,
             requestedAt: nowIso,
@@ -693,7 +740,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
           if (approvalStatusOf(row, at) === 'pending' && (!prior || approvalStatusOf(prior, at) !== 'pending')) {
             deps.recordHubEvent({
               type: 'airlock.approval',
-              payload: { action: 'requested', key: approval.approvalKey, rule: approval.rule, summary, capabilities: excerpts, itemId: work?.itemId ?? null, projectId: work?.projectId ?? null },
+              payload: { action: 'requested', key: approval.approvalKey, rule: approval.rule, summary, capabilities: excerpts, itemId: work?.itemId ?? null, projectId },
             });
           }
           deps.emit('airlock_approvals_changed', { key: approval.approvalKey });
@@ -723,7 +770,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       if (!dryRun) await learning.observeTool(capabilities, body.client, work?.itemId ?? null);
 
       res.json({ verdict: publicVerdict(verdict), mode: view.effective.mode, applies, revision: view.revision, source: view.source });
-    } catch (e) { next(e); }
+    } catch (e) { if (!projectUnknown(e, res)) next(e); }
   });
 
   app.post('/airlock/proxy-decisions', async (req: any, res: any, next: any) => {

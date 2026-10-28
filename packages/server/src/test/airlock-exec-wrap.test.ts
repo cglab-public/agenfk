@@ -94,7 +94,7 @@ describePosix('airlockCommandFor: the wrapped line, run by a shell', () => {
     const cwd = path.join(tmp, "it's a dir");
     const r = await airlockCommandFor(deps(), 't1', command, cwd);
     const out = spawnSync('/bin/sh', ['-c', r.command], { encoding: 'utf8' });
-    expect(JSON.parse(out.stdout)).toEqual(['airlock', 'exec', '--no-process-group', '--cwd', cwd, '--', command]);
+    expect(JSON.parse(out.stdout)).toEqual(['airlock', 'exec', '--no-process-group', '--project-id', 'p', '--cwd', cwd, '--', command]);
     expect(fs.existsSync(path.join(tmp, 'marker'))).toBe(false);
   });
 
@@ -127,7 +127,7 @@ describe('SX-3 review (Codex gpt-6.1-sol 01a18260)', () => {
     const out = spawnSync(r.argv[0], r.argv.slice(1), { encoding: 'utf8' });
     // every word quoted: the shell exec hands it to reads it back as exactly this argv
     const line = "'npm' 'run' 'lint' '--' 'it'\\''s'";
-    expect(JSON.parse(out.stdout)).toEqual(['airlock', 'exec', '--no-process-group', '--cwd', '/w', '--', line]);
+    expect(JSON.parse(out.stdout)).toEqual(['airlock', 'exec', '--no-process-group', '--project-id', 'p', '--cwd', '/w', '--', line]);
     expect(spawnSync('/bin/sh', ['-c', `printf '%s\\n' ${line}`], { encoding: 'utf8' }).stdout).toBe("npm\nrun\nlint\n--\nit's\n");
     expect((await airlockArgvFor(deps(), 's2', ['npm', 'run', 'lint'], '/w'))).toEqual({ argv: ['npm', 'run', 'lint'] });
     expect((await airlockArgvFor(deps({ platform: 'win32' }), 't1', ['npm', 'run', 'lint'], '/w')).refused).toMatch(/Windows/);
@@ -243,5 +243,14 @@ describe('ea94c023: the desktop server runs exec with Electron as Node', () => {
     if (process.platform === 'win32') return;
     const r = await airlockCommandFor(deps({ lineEnv: { ELECTRON_RUN_AS_NODE: '1' } }), 't1', 'npm test', '/w');
     expect(r.command.startsWith("AGENFK_API_URL='http://127.0.0.1:47555' ELECTRON_RUN_AS_NODE='1' ")).toBe(true);
+  });
+});
+
+describe('PO-1: exec is told the card\'s project', () => {
+  it('the line names the card\'s project for exec\'s policy fetch', async () => {
+    if (process.platform === 'win32') return;
+    const r = await airlockCommandFor(deps(), 't1', 'npm test', '/w');
+    const out = spawnSync('/bin/sh', ['-c', r.command], { encoding: 'utf8' });
+    expect(JSON.parse(out.stdout)).toEqual(['airlock', 'exec', '--no-process-group', '--project-id', 'p', '--cwd', '/w', '--', 'npm test']);
   });
 });

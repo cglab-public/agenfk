@@ -10,12 +10,14 @@ import {
   DEFAULT_AIRLOCK_RULES,
   type AirlockMode,
   type AirlockPolicy,
+  type AirlockProjectOverride,
   type AirlockRules,
   type HostPattern,
   type ModelSelector,
   type RuleAction,
 } from './types';
 import { isValidHostPattern, matchHost, normalizeHost, parseCidr } from './hosts';
+import { airlockRepoKey } from './repoKey';
 
 const MODES: readonly AirlockMode[] = ['off', 'observe', 'enforce'];
 const ACTIONS: readonly RuleAction[] = ['deny', 'needs-human-approval', 'off'];
@@ -58,6 +60,82 @@ function selector(raw: unknown): ModelSelector | null {
   return out;
 }
 
+function override(raw: unknown): AirlockProjectOverride | null {
+  if (!isObject(raw)) return null;
+  const out: AirlockProjectOverride = {};
+  if (isObject(raw.hosts)) {
+    const allow = hostList(raw.hosts.allow, true);
+    const deny = hostList(raw.hosts.deny, false);
+    if (allow.length || deny.length) out.hosts = { allow, deny };
+  }
+  if (isObject(raw.rules)) {
+    const rules: Partial<AirlockRules> = {};
+    for (const k of RULE_KEYS) {
+      if (ACTIONS.includes(raw.rules[k] as RuleAction)) rules[k] = raw.rules[k] as RuleAction;
+    }
+    if (Object.keys(rules).length) out.rules = rules;
+  }
+  return out.hosts || out.rules ? out : null;
+}
+
+/** Two raw keys naming one repository merge: their lists unite, the later rules win. */
+function projectOverrides(raw: unknown): Record<string, AirlockProjectOverride> | undefined {
+  if (!isObject(raw)) return undefined;
+  const out: Record<string, AirlockProjectOverride> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const key = airlockRepoKey(k);
+    const o = key ? override(v) : null;
+    if (key && o) out[key] = out[key] ? applyOverride(out[key], o) : o;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function union(a: HostPattern[], b: HostPattern[]): HostPattern[] {
+  return [...new Set([...a, ...b])];
+}
+
+function applyOverride(base: AirlockProjectOverride, o: AirlockProjectOverride): AirlockProjectOverride {
+  const out: AirlockProjectOverride = {};
+  if (base.hosts || o.hosts) {
+    out.hosts = {
+      allow: union(base.hosts?.allow ?? [], o.hosts?.allow ?? []),
+      deny: union(base.hosts?.deny ?? [], o.hosts?.deny ?? []),
+    };
+  }
+  if (base.rules || o.rules) out.rules = { ...base.rules, ...o.rules };
+  return out;
+}
+
+/**
+ * The policy a project runs under: the org's, with the project's repository
+ * override applied, then its project:<id> one. Allow and deny lists add to the
+ * org's - an override cannot remove an org deny, and evaluation ranks a deny
+ * over an allow - and each rule set wins (loosen or tighten). Mode, models and
+ * the IOC list stay the org's, and no allow can reach a built-in metadata host.
+ * The result carries no projects.
+ */
+export function effectivePolicyFor(
+  policy: AirlockPolicy,
+  project: { repo?: string | null; projectId?: string | null },
+): AirlockPolicy {
+  const { projects, ...org } = policy;
+  const keys = [airlockRepoKey(project.repo), project.projectId ? airlockRepoKey(`project:${project.projectId}`) : null];
+  let hosts = org.hosts;
+  let rules = org.rules;
+  for (const key of keys) {
+    const o = key ? projects?.[key] : undefined;
+    if (!o) continue;
+    if (o.hosts) {
+      hosts = {
+        allow: union(hosts.allow, o.hosts.allow.filter((h) => !coversBuiltin(normalizeHost(h)))),
+        deny: union(hosts.deny, o.hosts.deny),
+      };
+    }
+    if (o.rules) rules = { ...rules, ...o.rules };
+  }
+  return { ...org, hosts, rules };
+}
+
 export function normalizeAirlockPolicy(raw: unknown): AirlockPolicy {
   const r = isObject(raw) ? raw : {};
   const hosts = isObject(r.hosts) ? r.hosts : {};
@@ -67,6 +145,7 @@ export function normalizeAirlockPolicy(raw: unknown): AirlockPolicy {
   for (const k of RULE_KEYS) {
     if (ACTIONS.includes(rules[k] as RuleAction)) normalizedRules[k] = rules[k] as RuleAction;
   }
+  const projects = projectOverrides(r.projects);
   return {
     schemaVersion: 1,
     mode: MODES.includes(r.mode as AirlockMode) ? (r.mode as AirlockMode) : 'off',
@@ -81,7 +160,42 @@ export function normalizeAirlockPolicy(raw: unknown): AirlockPolicy {
       updatedAt: typeof ioc.updatedAt === 'string' ? ioc.updatedAt : null,
     },
     rules: normalizedRules,
+    ...(projects ? { projects } : {}),
   };
+}
+
+function rulesErrors(field: string, raw: unknown): string[] {
+  if (raw === undefined) return [];
+  if (!isObject(raw)) return [`${field} must be an object`];
+  return RULE_KEYS.filter((k) => raw[k] !== undefined && !ACTIONS.includes(raw[k] as RuleAction)).map(
+    (k) => `${field}.${k} must be one of ${ACTIONS.join(', ')}`,
+  );
+}
+
+function projectsErrors(raw: unknown): string[] {
+  if (raw === undefined) return [];
+  if (!isObject(raw)) return ['projects must be an object'];
+  const errors: string[] = [];
+  for (const [k, o] of Object.entries(raw)) {
+    const field = `projects[${JSON.stringify(k)}]`;
+    if (!airlockRepoKey(k)) {
+      errors.push(`${field}: the key must name a repository (host/owner/repo, a git remote or owner/repo) or project:<id>`);
+      continue;
+    }
+    if (!isObject(o)) {
+      errors.push(`${field} must be an object`);
+      continue;
+    }
+    if (o.hosts !== undefined) {
+      if (!isObject(o.hosts)) errors.push(`${field}.hosts must be an object`);
+      else {
+        errors.push(...hostListErrors(`${field}.hosts.allow`, o.hosts.allow, true));
+        errors.push(...hostListErrors(`${field}.hosts.deny`, o.hosts.deny, false));
+      }
+    }
+    errors.push(...rulesErrors(`${field}.rules`, o.rules));
+  }
+  return errors;
 }
 
 function hostListErrors(field: string, raw: unknown, isAllow: boolean): string[] {
@@ -148,15 +262,7 @@ export function airlockPolicyErrors(raw: unknown): string[] {
       errors.push(...hostListErrors('iocHosts.hosts', ioc.hosts, false));
     }
   }
-  if (raw.rules !== undefined) {
-    if (!isObject(raw.rules)) errors.push('rules must be an object');
-    else
-      for (const k of RULE_KEYS) {
-        const v = raw.rules[k];
-        if (v !== undefined && !ACTIONS.includes(v as RuleAction)) {
-          errors.push(`rules.${k} must be one of ${ACTIONS.join(', ')}`);
-        }
-      }
-  }
+  errors.push(...rulesErrors('rules', raw.rules));
+  errors.push(...projectsErrors(raw.projects));
   return errors;
 }

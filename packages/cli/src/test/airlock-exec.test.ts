@@ -158,7 +158,7 @@ describe('agenfk airlock exec (command wiring)', () => {
     const program = new Command();
     registerAirlockCommands(program, { launch: async () => 0, exec, exit });
     await program.parseAsync(['node', 'agenfk', 'airlock', 'exec', '--cwd', '/work/repo', '--', 'npm test -- --run']);
-    expect(exec).toHaveBeenCalledWith('npm test -- --run', { cwd: '/work/repo', processGroup: true });
+    expect(exec).toHaveBeenCalledWith('npm test -- --run', { cwd: '/work/repo', processGroup: true, projectId: undefined });
     expect(exit).toHaveBeenCalledWith(4);
   });
 
@@ -222,7 +222,7 @@ describe('SX-2 review (Codex gpt-6.1-sol 01a18251)', () => {
     const program = new Command();
     registerAirlockCommands(program, { launch: async () => 0, exec, exit });
     await program.parseAsync(['node', 'agenfk', 'airlock', 'exec', '--cwd', '/w', '--', "printf '%s\\n' 'a; touch marker'"]);
-    expect(exec).toHaveBeenCalledWith("printf '%s\\n' 'a; touch marker'", { cwd: '/w', processGroup: true });
+    expect(exec).toHaveBeenCalledWith("printf '%s\\n' 'a; touch marker'", { cwd: '/w', processGroup: true, projectId: undefined });
     const program2 = new Command();
     registerAirlockCommands(program2, { launch: async () => 0, exec, exit });
     await program2.parseAsync(['node', 'agenfk', 'airlock', 'exec', '--cwd', '/w', '--', 'printf', '%s', 'a; touch marker']);
@@ -257,7 +257,7 @@ describe('exec --no-process-group (SX-3)', () => {
     const program = new Command();
     registerAirlockCommands(program, { launch: async () => 0, exec, exit: vi.fn() });
     await program.parseAsync(['node', 'agenfk', 'airlock', 'exec', '--no-process-group', '--cwd', '/w', '--', 'npm test']);
-    expect(exec).toHaveBeenCalledWith('npm test', { cwd: '/w', processGroup: false });
+    expect(exec).toHaveBeenCalledWith('npm test', { cwd: '/w', processGroup: false, projectId: undefined });
   });
 });
 
@@ -266,5 +266,30 @@ describe('SX-3 review: a command cannot read the verify token', () => {
     const d = deps();
     await runAirlockExec('true', { cwd: CWD }, d);
     expect(specOf(d).filesystem.denyRead).toContain(path.join(HOME, '.agenfk', 'verify-token'));
+  });
+});
+
+describe('PO-1: exec asks for the card\'s project', () => {
+  it('--project-id reaches the policy fetch', async () => {
+    const d = deps();
+    await runAirlockExec('true', { cwd: CWD, projectId: 'p-api' }, d);
+    expect((d.fetchPolicy as any).mock.calls[0][0]).toBe('p-api');
+  });
+
+  it('is parsed from the command line', async () => {
+    const { Command } = await import('commander');
+    const { registerAirlockCommands } = await import('../commands/airlock');
+    const exec = vi.fn(async () => 0);
+    const program = new Command();
+    registerAirlockCommands(program, { launch: async () => 0, exec, exit: vi.fn() });
+    await program.parseAsync(['node', 'agenfk', 'airlock', 'exec', '--project-id', 'p-api', '--cwd', '/w', '--', 'npm test']);
+    expect(exec).toHaveBeenCalledWith('npm test', { cwd: '/w', processGroup: true, projectId: 'p-api' });
+  });
+
+  it('defaultExecDeps asks the server for that project', async () => {
+    const { defaultExecDeps } = await import('../commands/airlock');
+    const get = vi.fn(async (_url: string) => ({ data: { effective: normalizeAirlockPolicy({ mode: 'enforce' }) } }));
+    await defaultExecDeps('http://127.0.0.1:47999', get as any).fetchPolicy('p api');
+    expect(get.mock.calls[0][0]).toBe('http://127.0.0.1:47999/airlock/policy?projectId=p%20api');
   });
 });

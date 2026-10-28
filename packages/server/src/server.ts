@@ -64,6 +64,7 @@ import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { resolveAirlockPolicy, registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
 import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/reportToken.js';
 import { airlockCoverageMiddleware, coverWritesIn } from './airlock/coverage.js';
+import { airlockRepoPins } from './airlock/repoPins.js';
 import { airlockCommandFor, airlockArgvFor, airlockHooksOff, noHooksGitEnv, serverUrlFor, type AirlockRunDeps } from './airlock/execWrap.js';
 import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs } from './hub/airlockSync.js';
 import { readActiveWorkForSession } from './agent-runs/activeWork.js';
@@ -71,7 +72,7 @@ import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
 import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
 import { killProcessTree } from './killTree.js';
-import { oneInFlight, readRemoteUrl, remoteCacheLifetimeMs } from './projectRemote.js';
+import { oneInFlight, readRemoteUrl, readAirlockRemoteUrl, remoteCacheLifetimeMs } from './projectRemote.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -318,6 +319,16 @@ async function resolveProjectRepo(projectId: string): Promise<string | null> {
   const cached = projectRemoteCache.get(projectId);
   return cached && cached.length > 0 ? cached : null;
 }
+
+// The repository for Airlock's per-project overrides (PO-1): pinned per
+// project root under ~/.agenfk/airlock, where no sandbox can write (repoPins.ts),
+// and read again only after a person sets the root (forgetAirlockRepo).
+const airlockRepos = airlockRepoPins({
+  file: path.join(os.homedir(), '.agenfk', 'airlock', 'repo-pins.json'),
+  rootOf: async (projectId) => ((await storage.getProject(projectId)) as any)?.projectRoot ?? null,
+  read: (root) => readAirlockRemoteUrl(root),
+});
+const airlockProjectRepo = (projectId: string): Promise<string | null> => airlockRepos.repoOf(projectId);
 
 // ── Validation log persistence ───────────────────────────────────────────────
 // Full command output from validate_progress is written to
@@ -3272,6 +3283,7 @@ registerAirlockRoutes(app, {
   recordHubEvent: (event) => recordHubEvent(event as RecordEventInput).catch(() => { /* never fails a request */ }),
   emit: (event, payload) => io.emit(event, payload),
   activeWork: (sessionId) => readActiveWorkForSession(sessionId),
+  projectRepoOf: airlockProjectRepo,
   reportToken: airlockReportTokenReader(),
   refreshFromHub: async () => {
     if (!hubClient.isEnabled || !hubClient.hubConfig) return;
@@ -5656,6 +5668,8 @@ app.put("/projects/:id/project-root", limitExpensive, asyncHandler(async (req: a
     const updated = await storage.updateProject(req.params.id, { projectRoot: candidate } as any);
     if (!updated) return res.status(404).json({ error: "Project not found" });
     forgetProjectRemote(req.params.id);
+    // A person set it (a sandbox may not): Airlock reads its origin again.
+    airlockRepos.forget(req.params.id);
     io.emit('items_updated');
     res.json(updated);
   } catch {
@@ -11484,9 +11498,13 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
        * aimed at it. Ask git, which knows.
        */
       const kind = resolvedRoot ? await checkoutKind(resolvedRoot) : 'unknown';
-      if (resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
+      if (req.airlockSession !== undefined) {
+        // Its repository picks the project's Airlock overrides (PO-1): never from a sandbox.
+        console.warn(`[PROJECT_ROOT] Not recording ${resolvedRoot ?? cwd} as a project root (item ${item.id}): the request came from an Airlock sandbox`);
+      } else if (resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
         await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
         forgetProjectRemote(item.projectId);
+        airlockRepos.forget(item.projectId);
       } else {
         const why = resolvedRoot === null
           ? 'no .agenfk marker above it (a worktree has none) - it is not a project root'

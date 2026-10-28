@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { getApiUrl } from '@agenfk/telemetry';
+import { resolveProjectIdentity } from '@agenfk/core';
 import { resolveDashboardUrl } from '../uiUrl.js';
 import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
 import { runAirlockExec, scopedCommandEnv, EXEC_CANNOT_SANDBOX, type ExecDeps } from '../airlock/exec.js';
@@ -106,11 +107,16 @@ function runtimePackageDir(): string {
   }
 }
 
+/** GET /airlock/policy, for a project when one is named (PO-1). */
+const policyUrl = (apiUrl: string, projectId?: string | null): string =>
+  `${apiUrl}/airlock/policy${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`;
+
 /** The real launcher's dependencies: this machine, this server, ASRT. */
 export function defaultLaunchDeps(): LaunchDeps {
   const home = os.homedir();
   return {
-    fetchPolicy: async () => (await axios.get(`${getApiUrl()}/airlock/policy`, { timeout: 5000 })).data,
+    fetchPolicy: async (projectId) => (await axios.get(policyUrl(getApiUrl(), projectId), { timeout: 5000 })).data,
+    projectId: () => { try { return resolveProjectIdentity(process.cwd())?.projectId ?? null; } catch { return null; } },
     runtime: new AsrtRuntime(),
     env: process.env,
     home,
@@ -150,7 +156,7 @@ export function defaultLaunchDeps(): LaunchDeps {
 }
 
 type Launch = (client: 'pi' | 'opencode', args: string[], opts: LaunchOptions) => Promise<number>;
-type Exec = (command: string, opts: { cwd: string; processGroup: boolean }) => Promise<number>;
+type Exec = (command: string, opts: { cwd: string; processGroup: boolean; projectId?: string }) => Promise<number>;
 
 /**
  * The real exec's dependencies (SX-2): the launcher's, as a command needs them,
@@ -167,7 +173,7 @@ export function defaultExecDeps(apiUrl: string, get: (url: string, opts: object)
     directServerPort = undefined;
   }
   return {
-    fetchPolicy: async () => (await get(`${apiUrl}/airlock/policy`, { timeout: 5000 })).data as any,
+    fetchPolicy: async (projectId) => (await get(policyUrl(apiUrl, projectId), { timeout: 5000 })).data as any,
     runtime: l.runtime, home: l.home, tmpDir: l.tmpDir, installDirs: l.installDirs,
     runtimePackageDir: l.runtimePackageDir, directServerPort, listDir: l.listDir, realpath: l.realpath,
     isDirectory: l.isDirectory, exists: l.exists, platform: l.platform, ensurePrivateDir: l.ensurePrivateDir,
@@ -292,10 +298,11 @@ export function registerAirlockCommands(
     .command('exec')
     .description('Run one command inside the Airlock sandbox built from the effective policy (the AgEnFK server uses it for verify and suite runs of cards a sandboxed session touched). Exits 125, without running it, when it cannot be sandboxed.')
     .requiredOption('--cwd <dir>', 'the directory to run it in (writable inside the sandbox)')
+    .option('--project-id <id>', 'the AgEnFK project the command is for: its per-project Airlock overrides apply (the AgEnFK server passes the card\'s)')
     .option('--no-process-group', 'keep the command in exec\'s own process group (for a caller that kills that group whole, as the AgEnFK server does)')
     .argument('[command...]', 'the command, after --, as ONE argument, run with /bin/sh -c')
     .allowExcessArguments()
-    .action(async (words: string[], options: { cwd: string; processGroup: boolean }) => {
+    .action(async (words: string[], options: { cwd: string; processGroup: boolean; projectId?: string }) => {
       // One argument, verbatim: joining several would lose their quoting (and could make shell operators of them).
       if ((words ?? []).length !== 1 || !words[0].trim()) {
         console.error(chalk.red('❌ agenfk airlock exec takes the command as one argument after --, e.g. agenfk airlock exec --cwd . -- \'npm test\'.'));
@@ -303,7 +310,7 @@ export function registerAirlockCommands(
       }
       const command = words[0];
       try {
-        exit(await exec(command, { cwd: options.cwd, processGroup: options.processGroup !== false }));
+        exit(await exec(command, { cwd: options.cwd, processGroup: options.processGroup !== false, projectId: options.projectId }));
       } catch (e) {
         console.error(chalk.red(`❌ ${(e as Error)?.message ?? String(e)}`));
         exit(EXEC_CANNOT_SANDBOX);
