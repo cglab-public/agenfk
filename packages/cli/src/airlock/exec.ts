@@ -23,7 +23,7 @@ import path from 'path';
 import { normalizeAirlockPolicy, airlockPolicyErrors, type AirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSpec } from './spec';
 import type { AirlockRuntime } from './runtime';
-import { findAgenfkDirs, projectAgenfkDirs, AGENFK_SCAN_LIMIT, type LaunchDeps } from './launch';
+import { findAgenfkDirs, projectAgenfkDirs, workspaceGitDir, AGENFK_SCAN_LIMIT, type LaunchDeps } from './launch';
 
 /** The exit when the command could not be sandboxed, so never ran (like a shell's "cannot execute"). */
 export const EXEC_CANNOT_SANDBOX = 125;
@@ -129,6 +129,7 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
       directServerPort: d.directServerPort,
       installDirs: d.installDirs,
       projectAgenfkDirs: [...projectAgenfkDirs({ cwd, home: d.home, exists: d.exists }), ...nested.dirs],
+      gitDir: workspaceGitDir(cwd, d),
       runtimePackageDir: d.runtimePackageDir,
     });
   } catch (e) {

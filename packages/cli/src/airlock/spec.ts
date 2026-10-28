@@ -43,6 +43,14 @@ export interface SandboxSession {
   installDirs: string[];
   /** Project `.agenfk` directories found above the workspace: never writable. */
   projectAgenfkDirs?: string[];
+  /**
+   * The workspace's own `.git`, when it is a directory (BUG 4639c6a4). The runtime
+   * already keeps its config and hooks unwritable; what else git takes config from -
+   * a commondir that points elsewhere, a worktree's config, the git dirs of submodules
+   * and of other worktrees - is kept unwritable here, so nothing the server's git runs
+   * on the host can be planted. Objects, refs and the index stay writable: commits work.
+   */
+  gitDir?: string | null;
   /** Env vars holding the model key: masked inside, injected by the proxy to the inference hosts. */
   maskedEnv?: string[];
   /** The sandbox runtime package itself: never writable. */
@@ -257,6 +265,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     j(home, '.config', 'opencode', 'plugin'),
     j(session.workspace, '.agenfk'),
     ...(session.projectAgenfkDirs ?? []),
+    ...(session.gitDir ? ['commondir', 'config.worktree', 'modules', 'worktrees'].map((n) => j(session.gitDir!, n)) : []),
     // Every .agenfk below the workspace (macOS globs; Linux applies literal paths only).
     j(session.workspace, '**', '.agenfk'),
     ...(session.runtimePackageDir ? [session.runtimePackageDir] : []),

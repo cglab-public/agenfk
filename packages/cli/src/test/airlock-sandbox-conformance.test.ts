@@ -169,6 +169,14 @@ beforeAll(async () => {
   plant('.config/ok.txt', 'readable');
   for (const rel of ['.aws/sso/cache/token.json', '.git-credentials', '.pypirc', '.kube/config', '.config/gcloud/credentials.db', '.azure/msal_token_cache.json']) plant(rel);
   fs.writeFileSync(path.join(root, 'probe.cjs'), PROBE);
+  // The workspace is a git repository with a submodule's git dir and another card's worktree
+  // entry (BUG 4639c6a4): what git reads its config from must not be the sandbox's to write.
+  spawnSync('git', ['init', '-q', ws]);
+  fs.mkdirSync(path.join(ws, '.git', 'modules', 's'), { recursive: true });
+  fs.writeFileSync(path.join(ws, '.git', 'modules', 's', 'config'), '[core]\n');
+  fs.mkdirSync(path.join(ws, '.git', 'worktrees', 'w'), { recursive: true });
+  fs.writeFileSync(path.join(ws, '.git', 'worktrees', 'w', 'commondir'), '../..\n');
+  fs.mkdirSync(path.join(ws, '.git', 'objects', 'aa'), { recursive: true });
 
   check = await driver({ mode: 'check' });
   if (!check.supported || check.errors.length) {
@@ -189,7 +197,7 @@ beforeAll(async () => {
   const nested = findAgenfkDirs(ws, { listDir, realpath, isDirectory });
   const sessionFor = (over: object) => ({
     client: 'pi' as const, home, workspace: ws, tempDirs: [tmp], inferenceHosts: [] as string[],
-    serverPort: agenfkPort, installDirs: [install], projectAgenfkDirs: nested.dirs, ...over,
+    serverPort: agenfkPort, installDirs: [install], projectAgenfkDirs: nested.dirs, gitDir: path.join(ws, '.git'), ...over,
   });
   const line = (spec: SandboxSpec, args: string[]) => sandboxCommandLine(spec, { file: node, args: [probe, ...args], cwd: ws });
   const runAll = async (spec: SandboxSpec, commands: Array<{ name: string; line: string; pty?: boolean }>) => {
@@ -238,6 +246,11 @@ beforeAll(async () => {
     { name: 'write-install', line: line(a, ['write', path.join(install, 'x.js')]) },
     { name: 'write-linked-agenfk', line: line(a, ['write', path.join(ws, 'linked', '.agenfk', 'db.sqlite')]) },
     { name: 'write-workspace', line: line(a, ['write', path.join(ws, 'out.txt')]) },
+    { name: 'git-write-commondir', line: line(a, ['write', path.join(ws, '.git', 'commondir')]) },
+    { name: 'git-write-config-worktree', line: line(a, ['write', path.join(ws, '.git', 'config.worktree')]) },
+    { name: 'git-write-module-config', line: line(a, ['write', path.join(ws, '.git', 'modules', 's', 'config')]) },
+    { name: 'git-write-worktree-commondir', line: line(a, ['write', path.join(ws, '.git', 'worktrees', 'w', 'commondir')]) },
+    { name: 'git-write-objects', line: line(a, ['write', path.join(ws, '.git', 'objects', 'aa', 'probe')]) },
     { name: 'write-pi-state', line: line(a, ['write', path.join(home, '.pi/agent/sessions/s.jsonl')]) },
     { name: 'marker', line: line(a, ['env', 'AGENFK_AIRLOCK_SANDBOX']) },
     { name: 'gate-probe', line: line(a, ['gate', AIRLOCK_SCRIPT, home]) },
@@ -309,6 +322,7 @@ beforeAll(async () => {
     { name: 'cmd-read-report-token', line: xline(['read', path.join(home, '.agenfk/airlock/report-token')]) },
     { name: 'cmd-write-agenfk', line: xline(['write', path.join(home, '.agenfk/x.json')]) },
     { name: 'cmd-write-workspace', line: xline(['write', path.join(ws, 'cmd-out.txt')]) },
+    { name: 'cmd-git-write-commondir', line: xline(['write', path.join(ws, '.git', 'commondir')]) },
     { name: 'cmd-host-loopback', line: xline(['fetch', `http://127.0.0.1:${agenfkPort}/`]) },
   ]);
 
@@ -451,6 +465,16 @@ describe('Airlock sandbox conformance (pinned Sandbox Runtime)', () => {
       expect(fs.readFileSync(path.join(home, '.agenfk/airlock-state.json'), 'utf8')).toBe('{}');
       expect(parse(results['write-workspace'])).toMatchObject({ wrote: true });
       expect(parse(results['write-pi-state'])).toMatchObject({ wrote: true });
+    });
+
+    it('what git reads its config from cannot be written; its objects can, so commits still work (BUG 4639c6a4)', (ctx) => {
+      ctx.skip(!!skipAll, skipAll ?? '');
+      for (const name of ['git-write-commondir', 'git-write-config-worktree', 'git-write-module-config', 'git-write-worktree-commondir', 'cmd-git-write-commondir']) {
+        expect(parse(results[name]), name).toMatchObject({ error: expect.stringMatching(/EPERM|EACCES|EROFS/) });
+      }
+      expect(fs.readFileSync(path.join(ws, '.git', 'modules', 's', 'config'), 'utf8')).toBe('[core]\n');
+      expect(fs.readFileSync(path.join(ws, '.git', 'worktrees', 'w', 'commondir'), 'utf8')).toBe('../..\n');
+      expect(parse(results['git-write-objects'])).toMatchObject({ wrote: true });
     });
   });
 

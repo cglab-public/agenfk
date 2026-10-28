@@ -62,6 +62,13 @@ describePosix('runAirlockExec', () => {
     expect(d.runtime.dispose).toHaveBeenCalled();
   });
 
+  it('a command\'s sandbox keeps what git reads its config from unwritable too (BUG 4639c6a4)', async () => {
+    const d = deps();
+    (d as any).isDirectory = (p: string) => p === path.join(CWD, '.git');
+    await runAirlockExec('true', { cwd: CWD }, d);
+    expect(specOf(d).filesystem.denyWrite).toEqual(expect.arrayContaining(['commondir', 'config.worktree', 'modules', 'worktrees'].map((n) => path.join(CWD, '.git', n))));
+  });
+
   it('a command killed by a signal exits 128 + its number', async () => {
     const d = deps({}, { code: null, signal: 'SIGTERM' });
     expect(await runAirlockExec('sleep 99', { cwd: CWD }, d)).toBe(128 + 15);

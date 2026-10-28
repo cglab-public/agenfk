@@ -120,6 +120,19 @@ describePosix('runAirlockLaunch: pi', () => {
     expect(d.warnings.join('\n')).toMatch(/auth\.json/);
   });
 
+  it('what git reads its config from in the workspace is unwritable when .git is a directory (BUG 4639c6a4)', async () => {
+    const d = deps();
+    d.isDirectory = (p: string) => p === path.join(path.resolve(CWD), '.git');
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).filesystem.denyWrite).toEqual(expect.arrayContaining(['commondir', 'config.worktree', 'modules', 'worktrees'].map((n) => path.join(path.resolve(CWD), '.git', n))));
+  });
+
+  it('a workspace whose .git is a file (a linked worktree) adds none of them', async () => {
+    const d = deps();
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).filesystem.denyWrite.filter((p: string) => p.startsWith(path.join(path.resolve(CWD), '.git')))).toEqual([]);
+  });
+
   it('marks the project .agenfk directories above the workspace unwritable', async () => {
     const d = deps({}, { '/work/.agenfk': {} });
     await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);

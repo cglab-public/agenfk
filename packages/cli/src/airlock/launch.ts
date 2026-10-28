@@ -270,6 +270,12 @@ export function findAgenfkDirs(
 
 /** `.agenfk` directories in the workspace and above it (not the home one, handled apart). */
 /** Project `.agenfk` directories from `cwd` up (the home one aside): never writable from the sandbox. */
+/** The workspace's `.git` when it is a directory (not a linked worktree's `.git` file): BUG 4639c6a4. */
+export function workspaceGitDir(workspace: string, d: Pick<LaunchDeps, 'isDirectory'>): string | null {
+  const dotGit = path.join(workspace, '.git');
+  return d.isDirectory(dotGit) ? dotGit : null;
+}
+
 export function projectAgenfkDirs(d: Pick<LaunchDeps, 'cwd' | 'home' | 'exists'>): string[] {
   const out: string[] = [];
   let dir = path.resolve(d.cwd);
@@ -424,6 +430,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         // A .agenfk made after launch is not a registered project; those that
         // exist now are, whatever the platform does with patterns.
         projectAgenfkDirs: [...projectAgenfkDirs(d), ...nested.dirs],
+        gitDir: workspaceGitDir(path.resolve(d.cwd), d),
         maskedEnv,
         runtimePackageDir: d.runtimePackageDir,
         hostNetns: d.platform === 'linux' ? d.hostNetns ?? null : null,

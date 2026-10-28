@@ -48,6 +48,11 @@ All notable changes to AgEnFK are documented here.
 - On macOS a sandboxed command can reach local services (macOS has no network namespace).
 - An installation learns that the dataset switch went off at its next policy sync (every few minutes). Until
   then it may still send rows, which the hub drops. Rows it had queued are not sent after that sync.
+- The server still runs git on the host in the tree of a card a sandboxed session touched (git status, the close
+  commit, worktrees). The sandbox cannot write that repository's config, hooks, `commondir`, worktree config, or its
+  submodules' and other worktrees' git directories. It can still make git read config it wrote through a config
+  `include` target inside the workspace, a nested repository or submodule `.git` file, or (on Linux) a repository
+  created after launch. Running the server's git inside the sandbox for those cards is planned.
 
 ## [2.1.0-beta.4] — 2026-10-28
 
