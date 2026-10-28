@@ -1839,25 +1839,35 @@ export class SQLiteStorageProvider implements StorageProvider {
    * it was sent to. Bounded: the newest rows per key, and links older than the
    * longest an approval waits are dropped as new ones are made.
    */
-  async airlockDatasetLinkApproval(key: string, scope: string, rowId: string, at: string = new Date().toISOString()): Promise<void> {
+  async airlockDatasetLinkApproval(
+    key: string, scope: string, rowId: string, at: string = new Date().toISOString(), maxTotal: number = AIRLOCK_APPROVAL_LINK_MAX_TOTAL,
+  ): Promise<void> {
     const cutoff = new Date(Date.parse(at) - AIRLOCK_APPROVAL_LINK_MAX_AGE_MS).toISOString();
-    this.database.prepare('DELETE FROM airlock_dataset_approval_rows WHERE linked_at < ?').run(cutoff);
-    this.database.prepare(
-      'INSERT OR IGNORE INTO airlock_dataset_approval_rows (approval_key, scope, row_id, linked_at) VALUES (?, ?, ?, ?)',
-    ).run(key, scope, rowId, at);
-    this.database.prepare(
-      `DELETE FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ? AND row_id NOT IN (
-         SELECT row_id FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ?
-         ORDER BY linked_at DESC, rowid DESC LIMIT ${AIRLOCK_APPROVAL_LINK_MAX_ROWS})`,
-    ).run(key, scope, key, scope);
-    // And across every key: however many approvals an agent asks for, the oldest links go first.
-    // Only the overflow is touched, oldest first by the linked_at index: not a re-sort per insert.
-    const { n } = this.database.prepare('SELECT COUNT(*) AS n FROM airlock_dataset_approval_rows').get() as { n: number };
-    if (n > AIRLOCK_APPROVAL_LINK_MAX_TOTAL) {
+    // One transaction: one write to disk per link, not one per statement (Windows CI took 137s).
+    this.database.exec('BEGIN');
+    try {
+      this.database.prepare('DELETE FROM airlock_dataset_approval_rows WHERE linked_at < ?').run(cutoff);
       this.database.prepare(
-        `DELETE FROM airlock_dataset_approval_rows WHERE rowid IN (
-           SELECT rowid FROM airlock_dataset_approval_rows ORDER BY linked_at, rowid LIMIT ?)`,
-      ).run(n - AIRLOCK_APPROVAL_LINK_MAX_TOTAL);
+        'INSERT OR IGNORE INTO airlock_dataset_approval_rows (approval_key, scope, row_id, linked_at) VALUES (?, ?, ?, ?)',
+      ).run(key, scope, rowId, at);
+      this.database.prepare(
+        `DELETE FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ? AND row_id NOT IN (
+           SELECT row_id FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ?
+           ORDER BY linked_at DESC, rowid DESC LIMIT ${AIRLOCK_APPROVAL_LINK_MAX_ROWS})`,
+      ).run(key, scope, key, scope);
+      // And across every key: however many approvals an agent asks for, the oldest links go first.
+      // Only the overflow is touched, oldest first by the linked_at index: not a re-sort per insert.
+      const { n } = this.database.prepare('SELECT COUNT(*) AS n FROM airlock_dataset_approval_rows').get() as { n: number };
+      if (n > maxTotal) {
+        this.database.prepare(
+          `DELETE FROM airlock_dataset_approval_rows WHERE rowid IN (
+             SELECT rowid FROM airlock_dataset_approval_rows ORDER BY linked_at, rowid LIMIT ?)`,
+        ).run(n - maxTotal);
+      }
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
     }
   }
 

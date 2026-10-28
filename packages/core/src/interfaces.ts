@@ -152,7 +152,7 @@ export interface StorageProvider extends AgEnFKPlugin {
   getAirlockApproval(key: string): Promise<AirlockApprovalRecord | null>;
   listAirlockApprovals(query?: { pending?: boolean }): Promise<AirlockApprovalRecord[]>;
   /** The Airlock dataset's approval links (BUG 9ff092e9): a row that asked, under the hub it went to. */
-  airlockDatasetLinkApproval?(key: string, scope: string, rowId: string, at?: string): Promise<void>;
+  airlockDatasetLinkApproval?(key: string, scope: string, rowId: string, at?: string, maxTotal?: number): Promise<void>;
   airlockDatasetApprovalRows?(key: string, scope: string): Promise<string[]>;
   airlockDatasetDropApprovalLinks?(key: string, scope: string): Promise<void>;
   airlockDatasetMarkApprovalAnswered?(key: string, scope: string, decision: string): Promise<void>;

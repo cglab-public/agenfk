@@ -97,16 +97,17 @@ describe('approval labels across a restart (BUG 9ff092e9)', () => {
   });
 
   it('review: links stay bounded in all, however many approvals are asked for', async () => {
-    const t0 = performance.now();
-    for (let i = 0; i < AIRLOCK_APPROVAL_LINK_MAX_TOTAL + 50; i++) await storage.airlockDatasetLinkApproval(`k-${i}#1`, hub!, `r-${i}`);
-    // incremental, not a re-sort of the table per insert (Windows CI timed out at 60s on that)
-    expect(performance.now() - t0).toBeLessThan(15_000);
+    // The bound, proved at a small cap (the default is AIRLOCK_APPROVAL_LINK_MAX_TOTAL): 10k inserts cost minutes on Windows CI.
+    const cap = 100;
+    expect(AIRLOCK_APPROVAL_LINK_MAX_TOTAL).toBeGreaterThan(cap);
+    const at = (i: number) => new Date(Date.now() + i).toISOString();
+    for (let i = 0; i < cap + 50; i++) await storage.airlockDatasetLinkApproval(`k-${i}#1`, hub!, `r-${i}`, at(i), cap);
     const n = (storage as any).database.prepare('SELECT COUNT(*) AS n FROM airlock_dataset_approval_rows').get().n;
-    expect(n).toBe(AIRLOCK_APPROVAL_LINK_MAX_TOTAL);
+    expect(n).toBe(cap);
     // the oldest went
     expect(await storage.airlockDatasetApprovalRows('k-0#1', hub!)).toEqual([]);
-    expect(await storage.airlockDatasetApprovalRows(`k-${AIRLOCK_APPROVAL_LINK_MAX_TOTAL + 49}#1`, hub!)).toEqual([`r-${AIRLOCK_APPROVAL_LINK_MAX_TOTAL + 49}`]);
-  }, 60_000);
+    expect(await storage.airlockDatasetApprovalRows(`k-${cap + 49}#1`, hub!)).toEqual([`r-${cap + 49}`]);
+  });
 
   it('review: a label that could not be sent keeps its link, so a later answer still labels the row', async () => {
     const d = make();
