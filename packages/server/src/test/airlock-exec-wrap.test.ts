@@ -29,7 +29,8 @@ function deps(over: Partial<AirlockRunDeps> = {}): AirlockRunDeps {
     cliPath: () => cli,
     apiUrl: () => 'http://127.0.0.1:47555',
     nodePath: process.execPath,
-    platform: process.platform,
+    // A platform with an Airlock sandbox, whatever runs the suite: the Windows refusal is tested by passing 'win32'.
+    platform: 'linux',
     ...over,
   };
 }

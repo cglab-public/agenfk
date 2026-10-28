@@ -7,9 +7,19 @@
  */
 const SEGMENT = /^[a-z0-9._-]+$/;
 const PROJECT_KEY = /^project:[A-Za-z0-9_-]{1,128}$/;
+/** No git remote is longer: anything that is, is no key (and costs nothing to refuse). */
+const MAX_REMOTE_CHARS = 2048;
+
+/** `s` without its trailing slashes, then without every trailing `.git` - from the end, no regex: linear (CodeQL). */
+function stripTrailing(s: string): string {
+  let end = s.length;
+  while (end > 0 && s[end - 1] === '/') end--;
+  while (end >= 4 && s.startsWith('.git', end - 4)) end -= 4;
+  return s.slice(0, end);
+}
 
 export function airlockRepoKey(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
+  if (typeof raw !== 'string' || raw.length > MAX_REMOTE_CHARS) return null;
   const s = raw.trim();
   if (PROJECT_KEY.test(s)) return s;
   let rest = s.toLowerCase();
@@ -21,7 +31,7 @@ export function airlockRepoKey(raw: unknown): string | null {
     if (scp) rest = `${scp[1]}/${scp[2]}`;
   }
   // Every trailing .git, so a key normalised again is itself.
-  rest = rest.replace(/^[^@/]*@/, '').replace(/\/+$/, '').replace(/(?:\.git)+$/, '');
+  rest = stripTrailing(rest.replace(/^[^@/]*@/, ''));
   const parts = rest.split('/');
   if (parts.length === 2) parts.unshift('github.com');
   if (parts.length < 3) return null;

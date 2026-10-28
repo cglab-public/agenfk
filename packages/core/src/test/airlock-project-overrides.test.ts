@@ -23,6 +23,30 @@ import {
 const org = (over: Partial<AirlockPolicy> = {}): AirlockPolicy =>
   normalizeAirlockPolicy({ ...DEFAULT_AIRLOCK_POLICY, mode: 'enforce', hosts: { allow: ['api.github.com'], deny: ['evil.example'] }, ...over });
 
+describe('airlockRepoKey: adversarial input (CodeQL, BUG b9bd4f1e)', () => {
+  it('refuses a string longer than any remote at once, however it repeats .git or /', () => {
+    for (const s of ['github.com/a/b' + '.git'.repeat(50_000) + 'x', 'github.com/a/b' + '/'.repeat(200_000) + 'x', 'github.com/a/b' + '/.git'.repeat(50_000) + 'x']) {
+      const t0 = performance.now();
+      airlockRepoKey(s);
+      expect(performance.now() - t0).toBeLessThan(200);
+    }
+  });
+
+  it('just under the cap, repetitions are stripped in linear time', () => {
+    const t0 = performance.now();
+    expect(airlockRepoKey('github.com/a/b' + '.git'.repeat(500))).toBe('github.com/a/b');
+    expect(airlockRepoKey('github.com/a/b' + '/'.repeat(2000))).toBe('github.com/a/b');
+    airlockRepoKey('github.com/a/b' + '.git'.repeat(500) + 'x');
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+
+  it('still strips every trailing .git and slash', () => {
+    expect(airlockRepoKey('https://github.com/acme/api.git.git//')).toBe('github.com/acme/api');
+    expect(airlockRepoKey('acme/api/.git')).toBeNull();
+    expect(airlockRepoKey('acme/api.git/')).toBe('github.com/acme/api');
+  });
+});
+
 describe('airlockRepoKey', () => {
   it('every form of a git remote names the same repository', () => {
     for (const r of [
