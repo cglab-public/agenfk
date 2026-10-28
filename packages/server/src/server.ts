@@ -61,9 +61,10 @@ import * as net from "net";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
-import { registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
+import { resolveAirlockPolicy, registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
 import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/reportToken.js';
 import { airlockCoverageMiddleware, coverWritesIn } from './airlock/coverage.js';
+import { airlockCommandFor, airlockArgvFor, airlockHooksOff, noHooksGitEnv, serverUrlFor, type AirlockRunDeps } from './airlock/execWrap.js';
 import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs } from './hub/airlockSync.js';
 import { readActiveWorkForSession } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
@@ -134,6 +135,23 @@ app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 // it never reaches a route, and every card such a request names is recorded as
 // covered, so the commands this server runs for that card's tree run sandboxed.
 app.use(airlockCoverageMiddleware({ storage: () => storage, reportToken: airlockReportTokenReader() }));
+
+// SX-3 (8dd7c7c0): a covered card's commands (verify, suite, captures, worktree
+// setup) run through `agenfk airlock exec`, in the sandbox, while the policy enforces.
+const airlockRunDeps: AirlockRunDeps = {
+  storage: () => storage,
+  effectiveMode: async () => (await resolveAirlockPolicy(storage, hubClient.isEnabled)).effective.mode,
+  // The CLI beside this server (an installed copy is a repo-shaped tree). The
+  // variable is for tests and development checkouts only.
+  cliPath: () => process.env.AGENFK_AIRLOCK_EXEC_CLI || path.resolve(__dirname, '..', '..', 'cli', 'bin', 'agenfk.js'),
+  // exec reads the policy from this server and no other (SX-3 review).
+  apiUrl: () => serverUrlFor(BIND_HOST, boundPort),
+};
+
+/** git's environment for this card's own commits and worktrees: hooks off when an Airlock sandbox touched it (SX-3). */
+async function gitEnvForCard(itemId: string | null | undefined): Promise<NodeJS.ProcessEnv | undefined> {
+  return (await airlockHooksOff(airlockRunDeps, itemId)) ? noHooksGitEnv(process.env) : undefined;
+}
 
 // Initialised dynamically in initStorage() based on dbPath file extension.
 let storage: StorageProvider;
@@ -1562,10 +1580,12 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
    * it. That module owns "commit the INDEX" and the reason strings;
    * reimplementing either here is how the two would drift.
    */
+  // SX-3 review: the repository's commit hooks are its code; off for a card an Airlock sandbox touched.
+  const commitEnv = await gitEnvForCard(item.id);
   const result = commitStagedForCard(
     item as any,
     root,
-    { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }) },
+    { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...(commitEnv ? { env: commitEnv } : {}) }) },
     { message },
   );
   if (result.committed) {
@@ -3104,6 +3124,7 @@ app.post("/projects/:id/tasks-from-branch", asyncHandler(async (req: any, res: a
       root: defaultWorktreeRoot(),
       branchName: branch,
       setupCommand: project.setupCommand,
+      gitEnv: await gitEnvForCard(created.id),
     });
     const withWorktree = await storage.updateItem(created.id, {
       worktreePath: result.path,
@@ -5302,7 +5323,10 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       opts?.onOutput?.(`[agenfk] ${lazy.changed.length} file(s) changed since this step began: running the tests they affect over the entry results\n`);
     } else opts?.onOutput?.(`[agenfk] only test files changed since this step began: running ${lazy.ran.length} of them over the entry results\n`);
   }
-  record.exitCode = await runForExitCode(lazy ? lazy.command : command, root, verifyMaxMs(), opts?.onOutput);
+  // SX-3: in the Airlock sandbox when an Airlock sandbox touched this card's tree and the policy enforces.
+  const airlockRun = await airlockCommandFor(airlockRunDeps, item.id, lazy ? lazy.command : command, root);
+  if (airlockRun.sandboxed) opts?.onOutput?.('[agenfk] An Airlock sandbox touched this card, so this run is in the Airlock sandbox (agenfk airlock exec).\n');
+  record.exitCode = await runForExitCode(airlockRun.command, root, verifyMaxMs(), opts?.onOutput);
   // de5e5a03: one read for the fence AND everything the record says the run saw - a later read may see a later tree.
   const after = treeContentRead(root, owned);
   const stateAfter = after?.state ?? null;
@@ -6384,7 +6408,7 @@ app.post("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, re
   let result;
   try {
     const proj: any = await storage.getProject(item.projectId);
-    result = createWorktree({ repoRoot, root, branchName, setupCommand: proj?.setupCommand });
+    result = createWorktree({ repoRoot, root, branchName, setupCommand: proj?.setupCommand, gitEnv: await gitEnvForCard(item.id) });
   } catch (e: any) {
     return res.status(400).json({ error: e.message });
   }
@@ -9745,6 +9769,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const commandResults = commandChecks.length
     ? await judgeCommandChecks(commandChecks, {
       root, origin: (flow as any).origin, approvals: Array.isArray(project?.commandApprovals) ? project.commandApprovals : [], timeoutMs: verifyMaxMs(),
+      // SX-3 review: a covered card's flow command runs in the Airlock sandbox too.
+      airlock: (argv, cwd) => airlockArgvFor(airlockRunDeps, item.id, argv, cwd),
       // 3ffc9651: a pass is shared by this project's cards at the same state of this tree.
       ...(root ? { share: { scope: `${item.projectId}\0${root}`, itemId: item.id, state: () => commandStateOf(root, project) } } : {}),
     })
@@ -10740,12 +10766,19 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // occurrence with no recovery short of a restart. capture.end() is idempotent
   // and owns the close.
   let settledCapture: CapturedOutput | null = null;
+  // SX-3: in the Airlock sandbox when an Airlock sandbox touched this card's tree and the policy enforces.
+  const airlockRun = await airlockCommandFor(airlockRunDeps, itemId, resolvedCommand, runRoot ?? process.cwd());
+  if (airlockRun.sandboxed) capture.note('[agenfk] An Airlock sandbox touched this card, so this command runs in the Airlock sandbox (agenfk airlock exec).\n');
   const { captured, code, timedOut, signal, spawnError } = await (async () => {
    try {
     return await new Promise<{
       captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
     }>((resolve) => {
-    const child = spawn(resolvedCommand, { shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' }, windowsHide: true });
+    // A sandboxed run is a process group of its own, so a timeout's group kill takes all of it (SX-3 review).
+    const child = spawn(airlockRun.command, {
+      shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' }, windowsHide: true,
+      ...(airlockRun.sandboxed && process.platform !== 'win32' ? { detached: true } : {}),
+    });
     let killed = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -11229,7 +11262,15 @@ function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: st
     if (!decision.ready) void noteOnItem(item.id, decision.notice);
     return;
   }
-  const child = spawn(decision.command, {
+  // SX-3: a covered card's setup script runs in the Airlock sandbox (it is the repository's own code).
+  void airlockCommandFor(airlockRunDeps, item.id, decision.command, worktreePath).then(
+    (run) => runWorktreeSetup(item, decision, worktreePath, run.command),
+    (e) => void noteOnItem(item.id, applySetupResult(decision, { ok: false, output: String(e?.message ?? e), timedOut: false }).notice),
+  );
+}
+
+function runWorktreeSetup(item: any, decision: SetupDecision, worktreePath: string, commandLine: string): void {
+  const child = spawn(commandLine, {
     shell: true,
     cwd: worktreePath,
     detached: process.platform !== 'win32',
@@ -11279,6 +11320,7 @@ async function ensureWorktreeForItem(item: any, allowSetup = false): Promise<voi
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
       branchName,
+      gitEnv: await gitEnvForCard(item.id),
       /*
        * If origin already has this branch, start there rather than at local
        * HEAD. Raised by review against the PR import: a card whose branch
@@ -12865,6 +12907,7 @@ app.post("/projects/:id/tasks-from-pr", limitExpensive, asyncHandler(async (req:
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
       branchName: plan.branchName,
+      gitEnv: await gitEnvForCard(created.id),
       // FROM THE FETCHED REF. Without this the branch is cut from local HEAD:
       // a directory named after the PR, containing none of its commits, which
       // an agent then works in and pushes. Found in review, reproduced against

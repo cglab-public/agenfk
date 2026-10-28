@@ -95,7 +95,13 @@ function effectivePolicyOf(view: any): AirlockPolicy {
 
 const SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
-export async function runAirlockExec(command: string, opts: { cwd: string }, d: ExecDeps): Promise<number> {
+/**
+ * `processGroup` (default true): the command gets a process group of its own, and
+ * signals reach all of it. False (`--no-process-group`, what the AgEnFK server
+ * passes): it stays in exec's own group, because the caller already gave exec one
+ * and kills that whole group - SIGKILL, which exec could not pass on (SX-3).
+ */
+export async function runAirlockExec(command: string, opts: { cwd: string; processGroup?: boolean }, d: ExecDeps): Promise<number> {
   const cannot = (why: string): number => {
     d.error(`[agenfk airlock] ${why} The command was not run.`);
     return EXEC_CANNOT_SANDBOX;
@@ -129,7 +135,7 @@ export async function runAirlockExec(command: string, opts: { cwd: string }, d: 
   let launched;
   try {
     // Its own process group: a signal, and the cleanup after it, reach everything the command started.
-    launched = await d.runtime.launch(spec, { file: '/bin/sh', args: ['-c', command], cwd, processGroup: true });
+    launched = await d.runtime.launch(spec, { file: '/bin/sh', args: ['-c', command], cwd, processGroup: opts.processGroup ?? true });
   } catch (e) {
     await d.runtime.dispose().catch(() => undefined);
     return cannot((e as Error)?.message ?? String(e));

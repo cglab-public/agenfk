@@ -239,6 +239,8 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     // stays readable: the agent's own workflow (agenfk verify, review record)
     // needs it.
     j(home, '.agenfk', 'airlock'),
+    // A command the server runs needs no agenfk token (SX-3 review): it could only use it against the server.
+    ...(session.purpose === 'command' ? [j(home, '.agenfk', 'verify-token')] : []),
   ];
 
   const command = session.purpose === 'command';

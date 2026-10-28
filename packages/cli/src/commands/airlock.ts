@@ -137,7 +137,7 @@ export function defaultLaunchDeps(): LaunchDeps {
 }
 
 type Launch = (client: 'pi' | 'opencode', args: string[], opts: LaunchOptions) => Promise<number>;
-type Exec = (command: string, opts: { cwd: string }) => Promise<number>;
+type Exec = (command: string, opts: { cwd: string; processGroup: boolean }) => Promise<number>;
 
 /**
  * The real exec's dependencies (SX-2): the launcher's, as a command needs them,
@@ -279,9 +279,10 @@ export function registerAirlockCommands(
     .command('exec')
     .description('Run one command inside the Airlock sandbox built from the effective policy (the AgEnFK server uses it for verify and suite runs of cards a sandboxed session touched). Exits 125, without running it, when it cannot be sandboxed.')
     .requiredOption('--cwd <dir>', 'the directory to run it in (writable inside the sandbox)')
+    .option('--no-process-group', 'keep the command in exec\'s own process group (for a caller that kills that group whole, as the AgEnFK server does)')
     .argument('[command...]', 'the command, after --, as ONE argument, run with /bin/sh -c')
     .allowExcessArguments()
-    .action(async (words: string[], options: { cwd: string }) => {
+    .action(async (words: string[], options: { cwd: string; processGroup: boolean }) => {
       // One argument, verbatim: joining several would lose their quoting (and could make shell operators of them).
       if ((words ?? []).length !== 1 || !words[0].trim()) {
         console.error(chalk.red('❌ agenfk airlock exec takes the command as one argument after --, e.g. agenfk airlock exec --cwd . -- \'npm test\'.'));
@@ -289,7 +290,7 @@ export function registerAirlockCommands(
       }
       const command = words[0];
       try {
-        exit(await exec(command, { cwd: options.cwd }));
+        exit(await exec(command, { cwd: options.cwd, processGroup: options.processGroup !== false }));
       } catch (e) {
         console.error(chalk.red(`❌ ${(e as Error)?.message ?? String(e)}`));
         exit(EXEC_CANNOT_SANDBOX);

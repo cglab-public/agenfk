@@ -64,6 +64,8 @@ export interface WorktreeInfo {
 export interface CreateWorktreeOptions {
   /** Root of the repository the worktree is cut from. */
   repoRoot: string;
+  /** The environment `git worktree add` runs with (SX-3: hooks off for a card an Airlock sandbox touched). */
+  gitEnv?: NodeJS.ProcessEnv;
   /** Directory that holds all worktrees (e.g. ~/.agenfk/worktrees). */
   root: string;
   branchName: string;
@@ -123,8 +125,8 @@ function isRemovableWorktree(target: string): boolean {
   }
 }
 
-const git = (cwd: string, args: string[]): string =>
-  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+const git = (cwd: string, args: string[], env?: NodeJS.ProcessEnv): string =>
+  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...(env ? { env } : {}) });
 
 /**
  * Absolute path with symlinks resolved, so two spellings of the same directory
@@ -284,7 +286,8 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
       : ['worktree', 'add', '-b', branchName, target];
 
   try {
-    git(repoRoot, args);
+    // SX-3: a covered card's worktree is added with the repository's hooks off (post-checkout is its code).
+    git(repoRoot, args, opts.gitEnv);
   } catch (e: any) {
     const detail = (e?.stderr?.toString() || e?.message || '').trim();
     throw new Error(`git worktree add failed for branch '${branchName}': ${detail}`);

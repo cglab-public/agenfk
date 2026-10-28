@@ -158,7 +158,7 @@ describe('agenfk airlock exec (command wiring)', () => {
     const program = new Command();
     registerAirlockCommands(program, { launch: async () => 0, exec, exit });
     await program.parseAsync(['node', 'agenfk', 'airlock', 'exec', '--cwd', '/work/repo', '--', 'npm test -- --run']);
-    expect(exec).toHaveBeenCalledWith('npm test -- --run', { cwd: '/work/repo' });
+    expect(exec).toHaveBeenCalledWith('npm test -- --run', { cwd: '/work/repo', processGroup: true });
     expect(exit).toHaveBeenCalledWith(4);
   });
 
@@ -222,7 +222,7 @@ describe('SX-2 review (Codex gpt-6.1-sol 01a18251)', () => {
     const program = new Command();
     registerAirlockCommands(program, { launch: async () => 0, exec, exit });
     await program.parseAsync(['node', 'agenfk', 'airlock', 'exec', '--cwd', '/w', '--', "printf '%s\\n' 'a; touch marker'"]);
-    expect(exec).toHaveBeenCalledWith("printf '%s\\n' 'a; touch marker'", { cwd: '/w' });
+    expect(exec).toHaveBeenCalledWith("printf '%s\\n' 'a; touch marker'", { cwd: '/w', processGroup: true });
     const program2 = new Command();
     registerAirlockCommands(program2, { launch: async () => 0, exec, exit });
     await program2.parseAsync(['node', 'agenfk', 'airlock', 'exec', '--cwd', '/w', '--', 'printf', '%s', 'a; touch marker']);
@@ -240,5 +240,31 @@ describe('SX-2 review pass 2', () => {
     expect(d.directServerPort).toBe(47999);
     await d.fetchPolicy();
     expect(get.mock.calls[0][0]).toBe('http://127.0.0.1:47999/airlock/policy');
+  });
+});
+
+describe('exec --no-process-group (SX-3)', () => {
+  it('keeps the command in exec\'s own group, so a caller that kills exec\'s group kills it too', async () => {
+    const d = deps();
+    await runAirlockExec('true', { cwd: CWD, processGroup: false }, d);
+    expect(cmdOf(d)).toMatchObject({ processGroup: false });
+  });
+
+  it('is parsed from the command line', async () => {
+    const { Command } = await import('commander');
+    const { registerAirlockCommands } = await import('../commands/airlock');
+    const exec = vi.fn(async () => 0);
+    const program = new Command();
+    registerAirlockCommands(program, { launch: async () => 0, exec, exit: vi.fn() });
+    await program.parseAsync(['node', 'agenfk', 'airlock', 'exec', '--no-process-group', '--cwd', '/w', '--', 'npm test']);
+    expect(exec).toHaveBeenCalledWith('npm test', { cwd: '/w', processGroup: false });
+  });
+});
+
+describe('SX-3 review: a command cannot read the verify token', () => {
+  it('~/.agenfk/verify-token is unreadable in a command\'s sandbox (the agent\'s own clients keep it)', async () => {
+    const d = deps();
+    await runAirlockExec('true', { cwd: CWD }, d);
+    expect(specOf(d).filesystem.denyRead).toContain(path.join(HOME, '.agenfk', 'verify-token'));
   });
 });
