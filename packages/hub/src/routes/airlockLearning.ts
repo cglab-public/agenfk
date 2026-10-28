@@ -4,6 +4,7 @@ import { asyncRoute } from '../util/asyncRoute.js';
 import { withLock } from '../util/withLock.js';
 import { AirlockPolicyError } from '../services/airlock.js';
 import { acceptAirlockLearning, listAirlockLearning } from '../services/airlockLearning.js';
+import { labelAirlockDatasetHosts } from '../services/airlockDataset.js';
 
 /**
  * Airlock learning proposals on Admin -> Airlock (GH-294, TEL-3), on the admin
@@ -23,8 +24,16 @@ export function registerAirlockLearningRoutes(router: Router, ctx: HubServerCont
     const orgId = req.session!.orgId;
     try {
       const user = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session!.userId]);
-      res.json(await withLock(`airlock:${orgId}`, () =>
-        acceptAirlockLearning(ctx.db, orgId, req.body?.hosts, req.body?.expectedRevision, user?.email ?? null)));
+      const view = await withLock(`airlock:${orgId}`, () =>
+        acceptAirlockLearning(ctx.db, orgId, req.body?.hosts, req.body?.expectedRevision, user?.email ?? null));
+      // DS-1: the admin's accept labels the dataset rows that reached those hosts. A
+      // label that cannot be written costs only itself: the policy change stands.
+      try {
+        await labelAirlockDatasetHosts(ctx.db, orgId, Array.isArray(req.body?.hosts) ? req.body.hosts : []);
+      } catch (err) {
+        console.warn('[AIRLOCK] could not label dataset rows for accepted hosts: %s', (err as Error).message);
+      }
+      res.json(view);
     } catch (e) {
       if (!(e instanceof AirlockPolicyError)) throw e;
       res.status(STATUS_FOR[e.code]).json({ error: e.message, code: e.code, errors: e.errors });

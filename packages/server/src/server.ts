@@ -66,7 +66,7 @@ import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/re
 import { airlockCoverageMiddleware, coverWritesIn } from './airlock/coverage.js';
 import { airlockRepoPins } from './airlock/repoPins.js';
 import { airlockCommandFor, airlockArgvFor, airlockHooksOff, noHooksGitEnv, serverUrlFor, type AirlockRunDeps } from './airlock/execWrap.js';
-import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs } from './hub/airlockSync.js';
+import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockDatasetEnabled, currentAirlockGeneration } from './hub/airlockSync.js';
 import { readActiveWorkForSession } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
@@ -3284,6 +3284,8 @@ registerAirlockRoutes(app, {
   emit: (event, payload) => io.emit(event, payload),
   activeWork: (sessionId) => readActiveWorkForSession(sessionId),
   projectRepoOf: airlockProjectRepo,
+  datasetEnabled: () => hubClient.isEnabled && airlockDatasetEnabled(),
+  datasetScope: () => currentAirlockGeneration(),
   reportToken: airlockReportTokenReader(),
   refreshFromHub: async () => {
     if (!hubClient.isEnabled || !hubClient.hubConfig) return;

@@ -76,6 +76,7 @@ import {
   type StoredAirlockPolicy,
 } from '@agenfk/core';
 import { redactLog } from '../hub/redact.js';
+import { airlockDataset } from './dataset.js';
 import { AIRLOCK_REPORT_HEADER } from './reportToken.js';
 import { registerAirlockLearning } from './learn.js';
 
@@ -132,6 +133,14 @@ export interface AirlockRouteDeps {
   refreshFromHub?: () => Promise<void>;
   /** The clock grants are judged by (epoch ms). Defaults to Date.now. */
   now?: () => number;
+  /**
+   * The hub's dataset switch (DS-1, hub/airlockSync.ts). On, and joined to a hub:
+   * each judged call and proxy decision is sent as a full row (airlock/dataset.ts).
+   * Absent or off: nothing is built or sent.
+   */
+  datasetEnabled?: () => boolean;
+  /** Changes when the hub configuration does (hub/airlockSync.ts): the dataset forgets what it remembered. */
+  datasetScope?: () => unknown;
   /**
    * A project's repository (its git origin, any form), for its per-project
    * override (PO-1); null when it has none. Absent: only project:<id> overrides apply.
@@ -371,6 +380,43 @@ export function redactTarget(text: string): string {
   return redacted.length > MAX_TARGET_CHARS ? `${redacted.slice(0, MAX_TARGET_CHARS)}…` : redacted;
 }
 
+/**
+ * Text that is not a shell command (a file's content, a path, a URL), with its
+ * secrets removed and its layout kept: the stages of redactText that do not
+ * reparse it as shell words, then redactLog (DS-1).
+ */
+export function redactPlainText(text: string): string {
+  return redactStages(text);
+}
+
+/** `NAME=value` as one shell word (quotes already gone), NAME naming a secret. */
+const SECRET_NAMED_WORD = /^([A-Za-z_][A-Za-z0-9_]{0,100})=([\s\S]+)$/;
+/** Every name SECRET_ASSIGNMENT and redactLog treat as a secret, and more: the word rule hides the whole value. */
+const SECRET_NAME = /(TOKEN|SECRET|PASS|PWD|API_?KEY|KEY|CREDENTIAL|AUTH|SESSION|SIG)/i;
+
+/**
+ * A shell command with its secrets removed, whole - no excerpt (DS-1). Read as shell
+ * words, so a value is hidden however it was quoted or escaped (-u alice:'pw'), and a
+ * word that assigns a secret-named variable loses its whole value (PASSWORD='a b c');
+ * then the stages redactText applies. Its quoting and spacing come back normalised.
+ */
+export function redactCommandWhole(text: string): string {
+  const words = redactWords(shellWords(text)).map((w) => {
+    const m = SECRET_NAMED_WORD.exec(w);
+    return m && SECRET_NAME.test(m[1]) ? `${m[1]}=${R}` : w;
+  });
+  return redactStages(words.join(' '));
+}
+
+/** redactText's stages after the shell words: URL userinfo and query values, Authorization, key=value secrets, redactLog. */
+function redactStages(text: string): string {
+  let s = text.replace(URL_USERINFO, `$1${R}@`);
+  s = s.replace(URL_QUERY, (_m, base: string, query: string) => `${base}?${query.replace(/=[^&]*/g, `=${R}`)}`);
+  s = s.replace(AUTHORIZATION_VALUE, `$1: ${R}`);
+  s = s.replace(SECRET_ASSIGNMENT, `$1=${R}`);
+  return redactLog(s, { home: os.homedir(), env: process.env }).text;
+}
+
 /** The redaction redactTarget applies, without its input bound or its excerpt cap. */
 function redactText(text: string): string {
   return redactTextTracked(text).text;
@@ -506,6 +552,26 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
     writeStateFile: (view) => tryWriteAirlockStateFile(view as AirlockPolicyView, stateFile()),
     redact: redactTarget,
   });
+
+  // DS-1: full rows for the hub's dataset, only while its switch is on and this installation is joined.
+  const datasetOn = (): boolean => !!deps.datasetEnabled?.() && deps.hubJoined();
+  const dataset = airlockDataset({
+    enabled: datasetOn,
+    scope: () => deps.datasetScope?.(),
+    send: (event) => deps.recordHubEvent(event as { type: HubEventType; payload: Record<string, unknown> }),
+    redactCommand: redactCommandWhole,
+    redactText: redactPlainText,
+  });
+  /** The card a row was for: its title, description and step (null when it cannot be read). */
+  const cardOf = async (itemId: string | null | undefined) => {
+    if (!itemId) return null;
+    try {
+      const it: any = await deps.storage().getItem(itemId);
+      return it ? { itemId, title: it.title ?? null, description: it.description ?? null, step: it.status ?? null } : { itemId, title: null, description: null, step: null };
+    } catch {
+      return { itemId, title: null, description: null, step: null };
+    }
+  };
 
   /**
    * One decision into the log, to the hub and to the board. The session id
@@ -703,6 +769,8 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       const nowIso = new Date(at).toISOString();
       const scope: AirlockGrantScope = { sessionId: sessionId ?? null, itemId: work?.itemId ?? null };
       const granted = await verdictWithGrants(storage, judge, scope, at, dryRun);
+      /** The approval request's generation, when this call opened or re-asked one (DS-1 labels join it). */
+      let approvalGeneration: number | null = null;
       let verdict = granted.verdict;
       for (const key of granted.used) {
         deps.recordHubEvent({ type: 'airlock.approval', payload: { action: 'consumed', key, itemId: work?.itemId ?? null } });
@@ -736,6 +804,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
             sessionId: sessionId ?? null,
             requestedAt: nowIso,
           }, nowIso);
+          approvalGeneration = row.generation ?? null;
           // The hub hears of a request when it (re)opens, not on every retry.
           if (approvalStatusOf(row, at) === 'pending' && (!prior || approvalStatusOf(prior, at) !== 'pending')) {
             deps.recordHubEvent({
@@ -768,6 +837,14 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
         await logDecision(record, view, target ? capabilityText(target) : undefined);
       }
       if (!dryRun) await learning.observeTool(capabilities, body.client, work?.itemId ?? null);
+      if (!dryRun && datasetOn()) {
+        dataset.tool({
+          client: body.client, model: modelLabel(model), sessionId: sessionId ?? null, tool: toolName, args: body.args, capabilities,
+          verdict: { decision: verdict.decision, rule: 'rule' in verdict ? verdict.rule : null, ...(verdict.decision === 'allow' ? { why: verdict.why } : {}) },
+          mode: effective.mode, revision: view.revision, card: await cardOf(work?.itemId),
+          ...(verdict.decision === 'needs-human-approval' && approvalGeneration !== null ? { approvalKey: `${verdict.approvalKey}#${approvalGeneration}` } : {}),
+        });
+      }
 
       res.json({ verdict: publicVerdict(verdict), mode: view.effective.mode, applies, revision: view.revision, source: view.source });
     } catch (e) { if (!projectUnknown(e, res)) next(e); }
@@ -848,6 +925,12 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
           sessionId: sessionId ?? null,
           source: 'proxy',
         }, view, port === null ? d.host : `${d.host}:${port}`);
+        if (datasetOn()) {
+          dataset.proxy({
+            client: body.client as string, model: modelLabel(model), sessionId: sessionId ?? null, host: d.host, port,
+            decision: d.decision, rule: d.rule, mode: view.effective.mode, revision: view.revision, card: await cardOf(work?.itemId),
+          });
+        }
         recorded++;
       }
       await learning.observeProxy(list.filter(valid).map((d: any) => d.host), body.client, work?.itemId ?? null);
@@ -944,6 +1027,9 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
           payload: { action: action === 'grant' ? 'granted' : 'denied', key, rule: approval.rule, generation: approval.generation, itemId: approval.itemId ?? null, projectId: approval.projectId ?? null, expiresAt: approval.expiresAt },
         });
         deps.emit('airlock_approvals_changed', { key });
+        // DS-1: the person's answer, as a label on the dataset rows of the request they
+        // answered: the generation they named (the answer itself moves the row's on).
+        dataset.answered(`${key}#${generation}`, action);
       }
       res.json({ approval: { ...approval, status } });
     } catch (e) { next(e); }

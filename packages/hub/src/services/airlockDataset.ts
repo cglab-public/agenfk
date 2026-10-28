@@ -59,6 +59,9 @@ export const AIRLOCK_DATASET_EVENT_TYPES = Object.freeze(['airlock.dataset', 'ai
 export const isAirlockDatasetEvent = (type: string): boolean => (AIRLOCK_DATASET_EVENT_TYPES as readonly string[]).includes(type);
 
 const MAX_ROW_ID_CHARS = 200;
+/** A host name as the index keeps it, and how many a row adds (DS-1 rows carry at most 50). */
+const PLAIN_HOST = /^[a-z0-9.-]{1,253}$/;
+const MAX_ROW_HOSTS = 50;
 const DAY_MS = 86_400_000;
 /** Rows per export page: with the row and label caps, a page is at most ~6.4 MB of rows and ~8 MB of labels. */
 const EXPORT_PAGE = 100;
@@ -199,10 +202,52 @@ async function keepOne(db: DB, orgId: string, e: DatasetEvent, userKey: string, 
      ON CONFLICT (org_id, event_id) DO NOTHING`,
     [orgId, e.eventId, kind, rowId, e.installationId, userKey, at, received, json, orgId],
   );
+  // A kept row's hosts, for the exact host index (learning labels).
+  if (kind === 'row' && result.changes > 0 && Array.isArray(p.hosts)) {
+    const hosts = [...new Set(p.hosts.filter((h): h is string => typeof h === 'string' && PLAIN_HOST.test(h)))].slice(0, MAX_ROW_HOSTS);
+    for (const host of hosts) {
+      await db.run(
+        'INSERT INTO airlock_dataset_hosts (org_id, host, row_id, occurred_at) VALUES (?, ?, ?, ?) ON CONFLICT (org_id, host, row_id) DO NOTHING',
+        [orgId, host, rowId, at],
+      );
+    }
+  }
   return result.changes;
 }
 
-/** Drop rows past the age, then the oldest past the cap, then labels whose row is gone. */
+/** Rows a learning accept labels per host: the newest that reached it. */
+const MAX_LEARNING_LABEL_ROWS = 1000;
+
+/**
+ * An admin allowed some proposed hosts (a learning accept, DS-1): a label on the
+ * newest rows that reached each - the host index, from their `hosts` - while the
+ * switch is on. Deterministic event ids, so accepting the same host again adds nothing.
+ */
+export async function labelAirlockDatasetHosts(db: DB, orgId: string, hosts: unknown[], now: number = Date.now()): Promise<number> {
+  if (!(await airlockDatasetEnabled(db, orgId))) return 0;
+  const at = new Date(now).toISOString();
+  let kept = 0;
+  for (const raw of hosts) {
+    const host = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+    if (!PLAIN_HOST.test(host)) continue;
+    // The newest rows whose hosts name it exactly, by index: a row that only mentions
+    // the host elsewhere is not in the index, so it cannot crowd out those that reached it.
+    const rows = await db.all<{ row_id: string }>(
+      `SELECT row_id FROM airlock_dataset_hosts WHERE org_id = ? AND host = ?
+       ORDER BY occurred_at DESC, row_id DESC LIMIT ${MAX_LEARNING_LABEL_ROWS}`,
+      [orgId, host],
+    );
+    for (const r of rows) {
+      kept += await keepOne(db, orgId, {
+        eventId: `learning:${r.row_id}:${host}`.slice(0, MAX_ROW_ID_CHARS), installationId: 'hub', occurredAt: at,
+        type: 'airlock.dataset-label', payload: { rowId: r.row_id, label: { kind: 'learning-accept', host } },
+      }, 'hub-admin', at, now);
+    }
+  }
+  return kept;
+}
+
+/** Drop rows past the age, then the oldest past the cap, then labels and host entries whose row is gone. */
 export async function pruneAirlockDataset(
   db: DB, orgId: string, opts: { maxRows?: number; maxAgeDays?: number; now?: number } = {},
 ): Promise<void> {
@@ -225,6 +270,11 @@ export async function pruneAirlockDataset(
   }
   await db.run(
     `DELETE FROM airlock_dataset WHERE org_id = ? AND kind = 'label'
+       AND row_id NOT IN (SELECT row_id FROM airlock_dataset WHERE org_id = ? AND kind = 'row')`,
+    [orgId, orgId],
+  );
+  await db.run(
+    `DELETE FROM airlock_dataset_hosts WHERE org_id = ?
        AND row_id NOT IN (SELECT row_id FROM airlock_dataset WHERE org_id = ? AND kind = 'row')`,
     [orgId, orgId],
   );

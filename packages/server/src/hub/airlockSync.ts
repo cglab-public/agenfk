@@ -108,9 +108,34 @@ export function currentAirlockGeneration(): number {
   return generation;
 }
 
+/**
+ * The hub's dataset switch (DS-1), as its last adopted answer said: off until a hub
+ * says on, kept over a 304 or a failed sync, and off again whenever the hub
+ * configuration changes. An answer without it (a hub from before the dataset) is off.
+ */
+let datasetEnabled = false;
+/** Syncs started, and the latest whose answer set the switch: an answer from an earlier-started sync never overrides a later one's. */
+let syncsStarted = 0;
+let datasetDecidedBy = 0;
+/** The ETag of the answer the switch came from: only that one may be revalidated (a 304 keeps the switch as it is). */
+let datasetEtag: string | null = null;
+export function airlockDatasetEnabled(): boolean {
+  return datasetEnabled;
+}
+const setDataset = (seq: number, on: boolean, etag: string | null): void => {
+  if (seq < datasetDecidedBy) return;
+  datasetDecidedBy = seq;
+  datasetEnabled = on;
+  datasetEtag = etag;
+};
+const datasetOf = (body: Record<string, any>): boolean => isObject(body.dataset) && body.dataset.enabled === true;
+
 /** The hub configuration changed: answers to syncs already in flight are not adopted. */
 export function invalidateAirlockSyncs(): void {
   generation++;
+  datasetEnabled = false;
+  datasetDecidedBy = syncsStarted;
+  datasetEtag = null;
   // Whichever hub this installation answers to now has heard nothing from it yet.
   lastReported = { applied: null, refused: null };
 }
@@ -167,12 +192,17 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
   };
   // A caller that outlived its configuration does not even ask (its credential is the old one).
   if (!current()) return { outcome: 'superseded' };
+  const seq = ++syncsStarted;
 
   // Revalidate only what THIS authority gave us: never another org's ETag.
   const stored = await storage.getAirlockPolicy('hub');
   const mine = stored && stored.updatedBy === authority ? stored : null;
   const headers: Record<string, string> = { Authorization: `Bearer ${hubConfig.token}`, Accept: 'application/json' };
-  if (mine?.etag) headers['If-None-Match'] = mine.etag;
+  // Only when the dataset switch in memory came from that same answer: a fresh process
+  // (or a new hub configuration) reads the answer whole, switch and all (DS-1).
+  // The switch that ETag stands for, as the request is made: what a 304 confirms.
+  const revalidated = mine?.etag && mine.etag === datasetEtag ? { on: datasetEnabled, etag: datasetEtag } : null;
+  if (revalidated) headers['If-None-Match'] = mine!.etag!;
 
   let res: Awaited<ReturnType<FetchLike>>;
   try {
@@ -180,7 +210,11 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
   } catch (e) {
     return fail((e as Error).message);
   }
-  if (res.status === 304) return { outcome: 'not-modified' };
+  if (res.status === 304) {
+    // Revalidated: a decision too, so an earlier-started sync answered later cannot override it.
+    if (current() && revalidated) setDataset(seq, revalidated.on, revalidated.etag);
+    return { outcome: 'not-modified' };
+  }
   if (res.status < 200 || res.status >= 300) return fail(`HTTP ${res.status}`);
 
   let body: any;
@@ -202,6 +236,7 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
   if (body.policy === null) {
     return exclusive(async () => {
       if (!current()) return { outcome: 'superseded' } as const;
+      setDataset(seq, datasetOf(body), null);
       // This authority has no policy: a row another authority left is not its to keep in force.
       const stored = await storage.getAirlockPolicy('hub');
       if (stored && stored.updatedBy !== authority) {
@@ -240,6 +275,7 @@ export async function syncAirlockPolicy(args: SyncAirlockPolicyArgs): Promise<Ai
       etag,
     }, stored ? stored.revision : 0);
     await reconcileAirlockStateFile(storage, true, args.stateFile ?? defaultAirlockStateFile());
+    setDataset(seq, datasetOf(body), etag);
     return { outcome: 'adopted', etag, revision };
   });
 }

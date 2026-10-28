@@ -332,7 +332,10 @@ export type HubEventType =
   // A human-approval request: requested, granted or denied on the board, or a grant used.
   | 'airlock.approval'
   // Learning mode (TEL-3): a person's proposed allowlist, host names and counts, for an org admin to accept.
-  | 'airlock.learning-proposal';
+  | 'airlock.learning-proposal'
+  /** DS-1: a full tool-call row, and a label joined to one, for the Airlock dataset (sent only while the hub's switch is on). */
+  | 'airlock.dataset'
+  | 'airlock.dataset-label';
 
 export interface HubActor {
   osUser: string;

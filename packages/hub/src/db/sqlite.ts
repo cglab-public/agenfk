@@ -768,6 +768,16 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_time ON airlock_dataset(org_id, occurred_at, event_id);
   CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_row ON airlock_dataset(org_id, row_id);
+  -- The hosts each kept row reached (its payload's hosts, at most 50), so a learning
+  -- accept labels the rows that reached a host exactly, by index, not by scanning.
+  CREATE TABLE IF NOT EXISTS airlock_dataset_hosts (
+    org_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    row_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, host, row_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_hosts_time ON airlock_dataset_hosts(org_id, host, occurred_at);
 
   -- The command's history. One row per revision, written by whoever moved it:
   -- the installation that claimed it first (source 'init', its installation id)

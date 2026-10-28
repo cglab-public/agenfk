@@ -366,8 +366,61 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub Airlock dataset (%s)', (back
     });
   });
 
+  describe('learning accepts (DS-1)', () => {
+    it('an admin allowing a proposed host labels the rows that reached it, and only those', async () => {
+      await supertest(__server).put('/v1/admin/airlock').set('Cookie', cookieAdmin).send({ policy: {
+        schemaVersion: 1, mode: 'enforce', models: [], appliesWhenModelUnknown: true,
+        hosts: { allow: ['github.com'], deny: [] },
+        rules: { uploadToUnlistedHost: 'deny', credentialReadWithNetwork: 'deny', namespaceEscape: 'deny', cloudMutation: 'needs-human-approval' },
+      } });
+      await post(keyAlice, [event('org-a', 'inst-alice', 'airlock.learning-proposal', { hosts: [{
+        host: 'api.example.com', hits: 3, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported', clients: ['pi'],
+        firstSeen: new Date(Date.now() - 3_600_000).toISOString(), lastSeen: new Date().toISOString(), cardCount: 1,
+      }] }, new Date(Date.now() - 60_000).toISOString())]);
+      await setSwitch(true);
+      await sendRow(row('reached', { hosts: ['api.example.com'] }));
+      await sendRow(row('elsewhere', { hosts: ['api.example.com.evil.example'] }));
+      // names the host in its arguments, but never reached it
+      await sendRow(row('mentions', { hosts: ['other.example'], args: { note: 'see "api.example.com"', list: ['api.example.com'] } }));
+      const r = await supertest(__server).post('/v1/admin/airlock/learning/accept').set('Cookie', cookieAdmin).send({ hosts: ['api.example.com'], expectedRevision: 1 });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const { lines } = await exportLines();
+      expect(lines.find((l: any) => l.id === 'reached').labels).toEqual([{ kind: 'learning-accept', host: 'api.example.com' }]);
+      expect(lines.find((l: any) => l.id === 'elsewhere').labels).toEqual([]);
+      expect(lines.find((l: any) => l.id === 'mentions').labels).toEqual([]);
+    });
+  });
+
+  it('rows that only mention a host cannot crowd out the rows that reached it', async () => {
+    await supertest(__server).put('/v1/admin/airlock').set('Cookie', cookieAdmin).send({ policy: {
+      schemaVersion: 1, mode: 'enforce', models: [], appliesWhenModelUnknown: true, hosts: { allow: ['github.com'], deny: [] },
+      rules: { uploadToUnlistedHost: 'deny', credentialReadWithNetwork: 'deny', namespaceEscape: 'deny', cloudMutation: 'needs-human-approval' },
+    } });
+    await post(keyAlice, [event('org-a', 'inst-alice', 'airlock.learning-proposal', { hosts: [{
+      host: 'api.example.com', hits: 3, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported', clients: ['pi'],
+      firstSeen: new Date(Date.now() - 3_600_000).toISOString(), lastSeen: new Date().toISOString(), cardCount: 1,
+    }] }, new Date(Date.now() - 60_000).toISOString())]);
+    await setSwitch(true);
+    await sendRow(row('reached', { hosts: ['api.example.com'] }), new Date(Date.now() - 3_600_000).toISOString());
+    for (let b = 0; b < 3; b++) {
+      await post(keyAlice, Array.from({ length: 400 }, (_, i) => event('org-a', 'inst-alice', 'airlock.dataset', row(`decoy-${b}-${i}`, { hosts: ['other.example'], args: { list: ['api.example.com'] } }))));
+    }
+    expect((await supertest(__server).post('/v1/admin/airlock/learning/accept').set('Cookie', cookieAdmin).send({ hosts: ['api.example.com'], expectedRevision: 1 })).status).toBe(200);
+    const labelled = await db.all<{ row_id: string }>("SELECT row_id FROM airlock_dataset WHERE org_id = 'org-a' AND kind = 'label'");
+    expect(labelled.map(l => l.row_id)).toEqual(['reached']);
+  }, 60_000);
+
+  it('a pruned row leaves no host entries behind', async () => {
+    await setSwitch(true);
+    await sendRow(row('gone', { hosts: ['api.example.com'] }), new Date(Date.now() - 10 * 86_400_000).toISOString());
+    await sendRow(row('stays', { hosts: ['api.example.com'] }));
+    await pruneAirlockDataset(db, 'org-a', { maxAgeDays: 5 });
+    const hosts = await db.all<{ row_id: string }>("SELECT row_id FROM airlock_dataset_hosts WHERE org_id = 'org-a'");
+    expect(hosts.map(h => h.row_id)).toEqual(['stays']);
+  });
+
   it('an org rename carries the dataset and its switch along', () => {
-    expect(ORG_ID_CHILD_TABLES).toEqual(expect.arrayContaining(['airlock_dataset', 'airlock_dataset_settings']));
+    expect(ORG_ID_CHILD_TABLES).toEqual(expect.arrayContaining(['airlock_dataset', 'airlock_dataset_hosts', 'airlock_dataset_settings']));
   });
 });
 
