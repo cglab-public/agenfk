@@ -26,6 +26,8 @@ import { AIRLOCK_SESSION_HEADER, airlockMarkerProject, verifyAirlockSessionMarke
 /** Set by the relay on a 401 for a marker that did not verify, so it can re-mint once (a token the server just replaced). */
 export const AIRLOCK_MARKER_STATUS_HEADER = 'x-agenfk-airlock-marker';
 
+/** 403: a sandboxed session reaching the host's terminals (herdr panes, terminal sessions). */
+export const AIRLOCK_HOST_TERMINAL = 'AIRLOCK_HOST_TERMINAL';
 /** 409: a marker from a launcher older than PO-1, which does not say which project it is for. */
 export const AIRLOCK_LAUNCH_OUTDATED = 'AIRLOCK_LAUNCH_OUTDATED';
 /** 403: a launch reaching a card or project other than the one it was signed for. */
@@ -203,6 +205,12 @@ export function airlockCoverageMiddleware(deps: AirlockCoverageDeps) {
     const ctx = { since: new Date(now()).toISOString(), project };
     try {
       const storage = deps.storage();
+      // The host's terminals (BUG 794bb674): herdr panes take text and keys typed into shells
+      // outside the sandbox, a terminal session launches an agent on the host. Refused here as
+      // well as at the launcher's relay, whatever the request is.
+      if (/^\/(?:herdr|terminal-sessions)(?:\/|$)/i.test(req.path ?? '')) {
+        return res.status(403).json({ error: AIRLOCK_HOST_TERMINAL, message: 'An Airlock session cannot reach the host\'s terminals (herdr panes, terminal sessions).' });
+      }
       // Its root, or the project itself: the repository pin goes with either.
       if (/^\/projects\/[^/]+\/project-root\/?$/i.test(req.path ?? '') || (req.method === 'DELETE' && /^\/projects\/[^/]+\/?$/i.test(req.path ?? ''))) {
         return res.status(403).json({ error: AIRLOCK_PROJECT_ROOT, message: PROJECT_ROOT_MESSAGE });

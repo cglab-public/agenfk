@@ -60,6 +60,11 @@ const BOARD_ONLY: ReadonlyArray<{ method: string | null; path: RegExp }> = [
   // DS-3: what the Airlock scorer learns from is a person's to import, never a sandbox's -
   // whether or not this relay could mark the request (an observe launch with no token).
   { method: 'POST', path: /^\/airlock\/dataset\/import$/ },
+  // BUG 794bb674 (epic review): the host's terminals. herdr's panes take text and keys the
+  // server types into shells outside the sandbox, and a terminal session launches an agent
+  // on the host; reading them shows other terminals. None of it is the sandbox's, reads included.
+  { method: null, path: /^\/herdr(?:\/|$)/ },
+  { method: null, path: /^\/terminal-sessions(?:\/|$)/ },
 ];
 
 /** Why a request from the sandbox must not reach the server, or null. */

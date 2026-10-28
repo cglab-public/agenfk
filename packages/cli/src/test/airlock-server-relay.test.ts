@@ -270,6 +270,31 @@ describe('startServerRelay: board-only writes refused (SX-4)', () => {
   });
 });
 
+describe('startServerRelay: host terminals refused (BUG 794bb674, epic review)', () => {
+  it('herdr and terminal-session routes never reach the server, marked or not, reads too', async () => {
+    for (const marker of [() => MARK, () => null]) {
+      relay = await startServerRelay({ target: targetUrl, marker, requireMarker: false });
+      const refused: Array<[string, string]> = [
+        ['GET', '/herdr/sessions'], ['GET', '/herdr/panes/p1/content'], ['POST', '/herdr/panes/p1/text'],
+        ['POST', '/herdr/panes/p1/keys'], ['POST', '/herdr/panes/p1/focus'], ['POST', '/HERDR/panes/p1/keys/'],
+        ['POST', '/herdr//panes/p1/text'], ['POST', '/herdr/panes/p%2F1/text'], ['GET', '/herdr'],
+        ['GET', '/terminal-sessions'], ['POST', '/terminal-sessions'], ['DELETE', '/terminal-sessions/t1'], ['POST', '/Terminal-Sessions/'],
+      ];
+      for (const [method, p] of refused) {
+        expect((await send(relay.port, { method, path: p, body: method === 'POST' ? '{}' : undefined })).status, `${method} ${p}`).toBe(403);
+      }
+      await relay.close();
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  it('a path that only starts with the same letters still goes through', async () => {
+    const { boardOnlyRefusal } = await import('../airlock/serverRelay');
+    expect(boardOnlyRefusal('GET', '/herdrx', {})).toBeNull();
+    expect(boardOnlyRefusal('GET', '/terminal-sessionsx', {})).toBeNull();
+  });
+});
+
 describe('startServerRelay: request targets (SX-4 review)', () => {
   /** One raw request line, as a client could write it. */
   function raw(port: number, requestLine: string): Promise<string> {

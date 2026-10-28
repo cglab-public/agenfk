@@ -55,6 +55,7 @@ beforeEach(async () => {
     } catch (e) { res.status(500).json({ error: String(e) }); }
   });
   app.post('/items/:id/validate', echo);
+  for (const [m, route] of [['get', '/herdr/sessions'], ['post', '/herdr/panes/:paneId/text'], ['post', '/herdr/panes/:paneId/keys'], ['get', '/herdr/panes/:paneId/content'], ['post', '/terminal-sessions'], ['get', '/terminal-sessions'], ['delete', '/terminal-sessions/:id']] as const) (app as any)[m](route, echo);
   app.post('/gatekeeper', echo);
   app.put('/projects/:id', echo);
   app.get('/items', echo);
@@ -284,3 +285,22 @@ describe('PO-1 review 3 (Codex gpt-6.1-sol 01a182d1)', () => {
 });
 
 const echo2 = (req: any, res: any) => res.json({ covered: !!req.airlockSession });
+
+describe('host terminals (BUG 794bb674, epic review)', () => {
+  it('a marked request to a herdr or terminal-session route is refused, and never reaches it', async () => {
+    const cases: Array<[string, string]> = [
+      ['get', '/herdr/sessions'], ['post', '/herdr/panes/p1/text'], ['post', '/herdr/panes/p1/keys'], ['get', '/herdr/panes/p1/content'],
+      ['post', '/terminal-sessions'], ['get', '/terminal-sessions'], ['delete', '/terminal-sessions/t1'], ['post', '/HERDR/panes/p1/keys/'],
+    ];
+    for (const [m, p] of cases) {
+      const res = await (request(app) as any)[m](p).set(marked()).send({});
+      expect(res.status, `${m} ${p}`).toBe(403);
+      expect(res.body.error).toBe('AIRLOCK_HOST_TERMINAL');
+    }
+  });
+
+  it('an unmarked request (the board, the CLI outside the sandbox) still reaches them', async () => {
+    expect((await request(app).post('/herdr/panes/p1/keys').send({})).status).toBe(200);
+    expect((await request(app).get('/terminal-sessions')).status).toBe(200);
+  });
+});
