@@ -65,6 +65,18 @@ const BOARD_ONLY: ReadonlyArray<{ method: string | null; path: RegExp }> = [
   // on the host; reading them shows other terminals. None of it is the sandbox's, reads included.
   { method: null, path: /^\/herdr(?:\/|$)/ },
   { method: null, path: /^\/terminal-sessions(?:\/|$)/ },
+  // BUG d4a53bf5: a project's commands are run on the host by every later verify of a card no
+  // sandbox touched; the sandbox holds the internal token (agenfk verify needs it), so setting
+  // them is refused here. So is /internal (the hub outbox's reload, flush and rewrite).
+  { method: 'PUT', path: /^\/projects\/[^/]+\/(?:verify-command|setup-command|test-report)$/ },
+  // A flow's command checks run on the host for every card the flow governs (review): creating,
+  // changing, deleting or selecting a flow, and installing one, are not the sandbox's.
+  { method: 'POST', path: /^\/flows$/ },
+  { method: 'PUT', path: /^\/flows\/[^/]+$/ },
+  { method: 'DELETE', path: /^\/flows\/[^/]+$/ },
+  { method: 'POST', path: /^\/projects\/[^/]+\/flow(?:\/(?:migrate|select-org))?$/ },
+  { method: 'POST', path: /^\/registry\/flows\/(?:install|publish)$/ },
+  { method: null, path: /^\/internal(?:\/|$)/ },
 ];
 
 /** Why a request from the sandbox must not reach the server, or null. */

@@ -55,6 +55,10 @@ beforeEach(async () => {
     } catch (e) { res.status(500).json({ error: String(e) }); }
   });
   app.post('/items/:id/validate', echo);
+  for (const route of ['/projects/:id/verify-command', '/projects/:id/setup-command', '/projects/:id/test-report']) app.put(route, echo);
+  app.post('/internal/hub/reload', echo);
+  app.post('/flows', echo); app.put('/flows/:id', echo); app.delete('/flows/:id', echo); app.get('/flows/:id', echo);
+  app.post('/projects/:id/flow', echo); app.post('/projects/:id/flow/select-org', echo); app.post('/registry/flows/install', echo);
   for (const [m, route] of [['get', '/herdr/sessions'], ['post', '/herdr/panes/:paneId/text'], ['post', '/herdr/panes/:paneId/keys'], ['get', '/herdr/panes/:paneId/content'], ['post', '/terminal-sessions'], ['get', '/terminal-sessions'], ['delete', '/terminal-sessions/:id']] as const) (app as any)[m](route, echo);
   app.post('/gatekeeper', echo);
   app.put('/projects/:id', echo);
@@ -302,5 +306,30 @@ describe('host terminals (BUG 794bb674, epic review)', () => {
   it('an unmarked request (the board, the CLI outside the sandbox) still reaches them', async () => {
     expect((await request(app).post('/herdr/panes/p1/keys').send({})).status).toBe(200);
     expect((await request(app).get('/terminal-sessions')).status).toBe(200);
+  });
+});
+
+describe('project commands (BUG d4a53bf5)', () => {
+  it('a marked request cannot set its project\'s verify, setup or test-report command, or reach /internal', async () => {
+    const cases: Array<[string, string]> = [
+      ['put', '/projects/p/verify-command'], ['put', '/projects/p/setup-command'], ['put', '/projects/p/test-report'],
+      ['put', '/Projects/p/Verify-Command/'], ['post', '/internal/hub/reload'],
+      ['post', '/flows'], ['put', '/flows/f1'], ['delete', '/flows/f1'], ['post', '/projects/p/flow'], ['post', '/projects/p/flow/select-org'], ['post', '/registry/flows/install'],
+    ];
+    for (const [m, p] of cases) {
+      const res = await (request(app) as any)[m](p).set(marked()).send({});
+      expect(res.status, `${m} ${p}`).toBe(403);
+      expect(res.body.error).toBe('AIRLOCK_PROJECT_COMMAND');
+    }
+  });
+
+  it('unmarked (a person, the CLI outside the sandbox) still can', async () => {
+    expect((await request(app).put('/projects/p/verify-command').send({})).status).toBe(200);
+    expect((await request(app).post('/internal/hub/reload').send({})).status).toBe(200);
+    expect((await request(app).put('/flows/f1').send({})).status).toBe(200);
+  });
+
+  it('a marked request still reads a flow', async () => {
+    expect((await request(app).get('/flows/f1').set(marked())).status).toBe(200);
   });
 });

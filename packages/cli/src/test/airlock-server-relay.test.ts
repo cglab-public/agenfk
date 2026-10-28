@@ -295,6 +295,36 @@ describe('startServerRelay: host terminals refused (BUG 794bb674, epic review)',
   });
 });
 
+describe('startServerRelay: project commands refused (BUG d4a53bf5)', () => {
+  it('setting a project\'s verify, setup or test-report command, and /internal, never reach the server', async () => {
+    for (const marker of [() => MARK, () => null]) {
+      relay = await startServerRelay({ target: targetUrl, marker, requireMarker: false });
+      const refused: Array<[string, string]> = [
+        ['PUT', '/projects/p1/verify-command'], ['PUT', '/projects/p1/setup-command'], ['PUT', '/projects/p1/test-report'],
+        ['PUT', '/PROJECTS/p1/Verify-Command/'], ['PUT', '/projects//p1/verify-command'], ['PUT', '/projects/p%31/setup-command'],
+        ['POST', '/internal/hub/rewrite-outbox-org'], ['POST', '/internal/hub/reload'], ['GET', '/internal/hub/status'],
+        // review: a flow's command checks
+        ['POST', '/flows'], ['PUT', '/flows/f1'], ['DELETE', '/flows/f1'], ['PUT', '/FLOWS/f1/'], ['POST', '/projects/p1/flow'],
+        ['POST', '/projects/p1/flow/migrate'], ['POST', '/projects/p1/flow/select-org'], ['POST', '/registry/flows/install'], ['POST', '/registry/flows/publish'],
+      ];
+      for (const [method, p] of refused) {
+        expect((await send(relay.port, { method, path: p, body: method === 'POST' || method === 'PUT' ? '{}' : undefined })).status, `${method} ${p}`).toBe(403);
+      }
+      await relay.close();
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  it('reading a project, and verifying a card, still go through', async () => {
+    const { boardOnlyRefusal } = await import('../airlock/serverRelay');
+    expect(boardOnlyRefusal('GET', '/projects/p1', {})).toBeNull();
+    expect(boardOnlyRefusal('POST', '/items/t1/validate', {})).toBeNull();
+    expect(boardOnlyRefusal('GET', '/internals', {})).toBeNull();
+    expect(boardOnlyRefusal('GET', '/flows/f1', {})).toBeNull();
+    expect(boardOnlyRefusal('POST', '/flows/contract', {})).toBeNull();
+  });
+});
+
 describe('startServerRelay: request targets (SX-4 review)', () => {
   /** One raw request line, as a client could write it. */
   function raw(port: number, requestLine: string): Promise<string> {

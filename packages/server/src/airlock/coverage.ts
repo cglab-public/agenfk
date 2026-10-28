@@ -26,6 +26,8 @@ import { AIRLOCK_SESSION_HEADER, airlockMarkerProject, verifyAirlockSessionMarke
 /** Set by the relay on a 401 for a marker that did not verify, so it can re-mint once (a token the server just replaced). */
 export const AIRLOCK_MARKER_STATUS_HEADER = 'x-agenfk-airlock-marker';
 
+/** 403: a sandboxed session setting a project's commands, or reaching /internal. */
+export const AIRLOCK_PROJECT_COMMAND = 'AIRLOCK_PROJECT_COMMAND';
 /** 403: a sandboxed session reaching the host's terminals (herdr panes, terminal sessions). */
 export const AIRLOCK_HOST_TERMINAL = 'AIRLOCK_HOST_TERMINAL';
 /** 409: a marker from a launcher older than PO-1, which does not say which project it is for. */
@@ -210,6 +212,20 @@ export function airlockCoverageMiddleware(deps: AirlockCoverageDeps) {
       // well as at the launcher's relay, whatever the request is.
       if (/^\/(?:herdr|terminal-sessions)(?:\/|$)/i.test(req.path ?? '')) {
         return res.status(403).json({ error: AIRLOCK_HOST_TERMINAL, message: 'An Airlock session cannot reach the host\'s terminals (herdr panes, terminal sessions).' });
+      }
+      // A project's commands (BUG d4a53bf5): every later verify of a card no sandbox touched
+      // runs them on the host. The sandbox holds the internal token, so its own project's are
+      // refused too; a person sets them outside the sandbox. /internal is not an agent's either.
+      if ((req.method === 'PUT' && /^\/projects\/[^/]+\/(?:verify-command|setup-command|test-report)\/?$/i.test(req.path ?? ''))
+        || /^\/internal(?:\/|$)/i.test(req.path ?? '')) {
+        return res.status(403).json({ error: AIRLOCK_PROJECT_COMMAND, message: 'An Airlock session cannot set a project\'s verify, setup or test-report command: a person sets it outside the sandbox (agenfk update-project).' });
+      }
+      // A flow's command checks run on the host for every card it governs (review): a sandbox
+      // creates, changes, deletes, selects or installs no flow.
+      const flowWrite = (req.method === 'POST' && /^\/(?:flows|projects\/[^/]+\/flow(?:\/(?:migrate|select-org))?|registry\/flows\/(?:install|publish))\/?$/i.test(req.path ?? ''))
+        || ((req.method === 'PUT' || req.method === 'DELETE') && /^\/flows\/[^/]+\/?$/i.test(req.path ?? ''));
+      if (flowWrite) {
+        return res.status(403).json({ error: AIRLOCK_PROJECT_COMMAND, message: 'An Airlock session cannot create, change, select or install a flow: its command checks run on the host. A person does it outside the sandbox.' });
       }
       // Its root, or the project itself: the repository pin goes with either.
       if (/^\/projects\/[^/]+\/project-root\/?$/i.test(req.path ?? '') || (req.method === 'DELETE' && /^\/projects\/[^/]+\/?$/i.test(req.path ?? ''))) {
