@@ -68,7 +68,7 @@ import { airlockCollectionScope } from './airlock/scope.js';
 import { airlockRepoPins } from './airlock/repoPins.js';
 import { airlockCommandFor, airlockArgvFor, airlockHooksOff, noHooksGitEnv, serverUrlFor, type AirlockRunDeps } from './airlock/execWrap.js';
 import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockDatasetEnabled, currentAirlockGeneration, airlockAuthorityOf } from './hub/airlockSync.js';
-import { readActiveWorkForSession } from './agent-runs/activeWork.js';
+import { readActiveWorkForSession, writeActiveWork, activeWorkKeyFor } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
 import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
@@ -6107,6 +6107,30 @@ const RUN_EVENT_KINDS = new Set(['dispatch', 'think', 'tool', 'result', 'diff', 
 const runGitSync = (args: readonly string[]): string =>
   execFileSync('git', args as string[], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5_000, windowsHide: true });
 const gitRun = { run: runGitSync };
+
+/**
+ * The card a session works on, recorded for a gatekeeper that cannot write it itself: one inside
+ * the Airlock sandbox, where ~/.agenfk is unwritable (BUG 3afbbf7e). Keyed to the session, the
+ * note the run recorder and Airlock read; never the shared one, which every session without an
+ * id reads. A sandbox may only name a card of its own project (airlock/coverage.ts), and its
+ * note is kept under its launch (sandboxSessionKey).
+ */
+app.post("/active-work", asyncHandler(async (req: any, res: any) => {
+  const { itemId, sessionId } = req.body || {};
+  if (typeof itemId !== 'string' || !itemId) return res.status(400).json({ error: 'itemId is required' });
+  // A plain note's file name is the session id: at most 200, under the 255-byte limit. A
+  // sandbox's note is under a fixed-length hash, so its session id may run to 256.
+  const maxSession = typeof req.airlockSession === 'string' ? 256 : 200;
+  if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > maxSession) {
+    return res.status(400).json({ error: `sessionId is required (at most ${maxSession} characters): a note without one would be every session's` });
+  }
+  const item: any = await storage.getItem(itemId);
+  if (!item) return res.status(404).json({ error: `Item ${itemId} not found` });
+  // From a sandbox, under its launch: the session id alone is the sandbox's word (review S3).
+  const key = activeWorkKeyFor(sessionId, typeof req.airlockSession === 'string' ? req.airlockSession : undefined)!.key;
+  writeActiveWork({ itemId: item.id, projectId: item.projectId }, key);
+  res.status(204).end();
+}));
 
 app.post("/agent-runs", asyncHandler(async (req: any, res: any) => {
   const { itemId, projectId, step, actor, harness, model, sessionId, sourcePath } = req.body || {};
@@ -13309,7 +13333,7 @@ export const API_PATH_PREFIXES = [
   '/herdr',
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
   '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
-  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/verify-runs',
+  '/releases', '/agent-runs', '/active-work', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/verify-runs',
   // `/decompositions` reviews a proposed tree and writes nothing. Same trap as
   // `/herdr`: without the prefix the desktop answers it with index.html and a
   // 200, so the caller's `r.ok` is true and the JSON parse is what fails.

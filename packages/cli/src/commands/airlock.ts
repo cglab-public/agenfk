@@ -11,6 +11,7 @@ import { resolveDashboardUrl } from '../uiUrl.js';
 import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
 import { runAirlockExec, scopedCommandEnv, EXEC_CANNOT_SANDBOX, type ExecDeps } from '../airlock/exec.js';
 import { AsrtRuntime } from '../airlock/runtime.js';
+import { stagePiAgentDir } from '../airlock/piAgentDir.js';
 import { PROXY_REPORT_TIMEOUT_MS } from '../airlock/proxyReport.js';
 import { runLearnImport, defaultPiSessionsDir } from '../airlock/learnImport.js';
 import { runDatasetImport, defaultOpenCodeDb, DatasetImportError } from '../airlock/datasetImport.js';
@@ -27,8 +28,17 @@ export function airlockBoardUrl(base: string = resolveDashboardUrl('')): string 
   return `${base}${base.includes('?') ? '&' : '?'}settings=airlock`;
 }
 
+/**
+ * A 404 the server did not explain (no JSON error of its own: Express's page for an unknown
+ * route) is a server older than this CLI - one without the route (BUG 3a5ec1ff).
+ */
+const PREDATES = 'The AgEnFK server running is older than this agenfk and predates Airlock (it does not know this request). Restart it on this version (agenfk restart), or upgrade it, and retry.';
 const fail = (e: any): void => {
-  const message = e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e);
+  const data = e?.response?.data;
+  const explained = data && typeof data === 'object' && (data.message || data.error);
+  const message = e?.response?.status === 404 && !explained
+    ? PREDATES
+    : (explained || e?.message || String(e));
   console.error(chalk.red(`❌ ${message}`));
   process.exit(1);
 };
@@ -163,6 +173,7 @@ export function defaultLaunchDeps(): LaunchDeps {
       try { return fs.readFileSync(path.join(home, '.agenfk', 'verify-token'), 'utf8').trim(); } catch { return null; }
     }),
     runtime: new AsrtRuntime(),
+    stageAgentDir: (realDir) => stagePiAgentDir(realDir, realpath(os.tmpdir())),
     env: process.env,
     home,
     cwd: realpath(process.cwd()),
@@ -339,9 +350,30 @@ export function registerAirlockCommands(
       } catch (e) { fail(e); }
     });
 
-  airlock
+  const dataset = airlock
     .command('dataset')
-    .description('The Airlock dataset (DS-3): your organization\'s hub keeps full tool calls, secrets removed, to train Airlock\'s scorer, while an org admin has it switched on.')
+    .description('The Airlock dataset (DS-3): your organization\'s hub keeps full tool calls, secrets removed, to train Airlock\'s scorer, while an org admin has it switched on.');
+
+  dataset
+    .command('status')
+    .description('Whether your organization\'s hub has the Airlock dataset switched on, as the hub says now (BUG 4f2e0354).')
+    .option('--json', 'Print the server answer as JSON')
+    .action(async (options) => {
+      try {
+        // refresh=1: the hub's word now, not the last 5-minute sync's.
+        const { data } = await axios.get(`${getApiUrl()}/airlock/dataset?refresh=1`, { timeout: 15_000 });
+        if (options.json) { console.log(JSON.stringify(data, null, 2)); return; }
+        if (!data?.joined) {
+          console.log('Airlock dataset: off - this installation is not joined to a hub, so there is no dataset.');
+        } else if (data.enabled) {
+          console.log(`Airlock dataset: ${chalk.bold('on')} - your organization's hub keeps this installation's pi and OpenCode tool calls, secrets removed.`);
+        } else {
+          console.log(`Airlock dataset: ${chalk.bold('off')} - an org admin switches it on (Admin -> Airlock -> Dataset).`);
+        }
+      } catch (e) { fail(e); }
+    });
+
+  dataset
     .command('import')
     .description('Send past pi and OpenCode sessions to the hub\'s Airlock dataset: every tool call, judged under the current policy and joined to its card, secrets removed here first. Only while this installation is joined to a hub whose dataset switch is on. Importing again adds nothing.')
     .option('--pi-dir <dir>', 'Where pi\'s session logs are (default ~/.pi/agent/sessions)')

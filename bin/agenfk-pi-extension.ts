@@ -70,7 +70,7 @@ interface PiEvent {
 interface PiUi { notify?: (message: string, type?: 'info' | 'warning' | 'error') => void }
 // pi 1.4's ExtensionContext carries the live model as `model` (with `cwd`);
 // getModel() exists only on an internal runner type and is kept as a fallback.
-interface PiContext { model?: PiModel; getModel?: () => PiModel | undefined; ui?: PiUi; cwd?: string }
+interface PiContext { model?: PiModel; getModel?: () => PiModel | undefined; ui?: PiUi; cwd?: string; sessionManager?: { getSessionId?: () => string } }
 interface PiMessage { customType: string; content: string; display?: boolean }
 interface PiSendOptions { deliverAs?: 'steer' | 'followUp' | 'nextTurn'; triggerTurn?: boolean }
 interface PiApi {
@@ -902,6 +902,23 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
     if (!id) return null;
     return { provider: typeof live?.provider === 'string' && live.provider.trim() ? live.provider.trim() : null, id };
   };
+  /**
+   * The session Airlock (and the agent's own agenfk calls) name: AGENFK_SESSION_ID when the
+   * harness that started pi set one, else the session pi is on now (BUG 3afbbf7e: neither pi
+   * nor the Airlock launcher sets the env, so every live dataset row went out with no session
+   * and no card). Read once: pi's own export never stands in for a harness's (review C2).
+   */
+  const harnessSessionId = (process.env.AGENFK_SESSION_ID ?? '').trim();
+  const sessionIdFor = (ctx: PiContext | undefined): string => {
+    if (harnessSessionId) return harnessSessionId;
+    try {
+      const own = ctx?.sessionManager?.getSessionId?.();
+      return typeof own === 'string' ? own.trim() : '';
+    } catch {
+      return '';
+    }
+  };
+
   const airlockModelFor = (ctx: PiContext | undefined): AirlockSessionModel | null => {
     try { const m = liveModel(ctx?.model); if (m) return m; } catch { /* next */ }
     try { const e = deps.readEnvModel(); if (e) return splitJoinedModel(e); } catch { /* next */ }
@@ -929,7 +946,7 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
     const modelKey = model ? `${model.provider ?? ''}/${model.id ?? ''}` : '';
     let result: AirlockResult | null = null;
     try {
-      const sessionId = (process.env.AGENFK_SESSION_ID ?? '').trim();
+      const sessionId = sessionIdFor(ctx);
       result = ask({
         client: 'pi',
         model,
@@ -986,6 +1003,16 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
   // pi's event bus dispatches to it (the open question on every pi upgrade). The
   // detected model rides along so this doubles as a model-resolution smoke test.
   pi.on('session_start', (_event, ctx) => {
+    // Exported for every shell pi starts, so `agenfk gatekeeper` keys its note of the card to the
+    // session Airlock names (BUG 3afbbf7e) - again at every start, resume or fork (review C2).
+    // pi's own variable, ranked below Claude Code's by the gatekeeper, so a harness started from
+    // pi's shell keeps its own (C3); and a Claude Code session pi itself was started from is not
+    // its shells' session.
+    try {
+      const id = sessionIdFor(ctx);
+      if (id) process.env.AGENFK_PI_SESSION_ID = id;
+      delete process.env.CLAUDE_CODE_SESSION_ID;
+    } catch { /* never break the host */ }
     try {
       const model = modelFor(ctx);
       const suffix = model ? ` — model: ${model}` : '';

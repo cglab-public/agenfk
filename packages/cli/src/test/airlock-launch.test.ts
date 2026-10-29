@@ -57,6 +57,7 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
     isDirectory: () => false,
     platform: 'darwin',
     ensurePrivateDir: vi.fn(),
+    stageAgentDir: vi.fn(() => ({ dir: '/tmp/t/agenfk-airlock-pi-0', cleanup: vi.fn() })),
     ...over,
     warnings,
   } as LaunchDeps & { warnings: string[] };
@@ -112,6 +113,61 @@ describePosix('runAirlockLaunch: pi', () => {
     expect(specOf(d).maskedEnv.map((m) => m.name).sort()).toEqual(['MY_KEY', 'OPENAI_API_KEY']);
     await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: ['NOPE'] }, deps()))
       .rejects.toThrow(/NOPE.*not set/);
+  });
+
+  // BUG ff9969f5: pi treats an auth.json it cannot read as "no key" (it copes with a missing
+  // one), so with the sandbox denying it every pi session failed: "No API key found".
+  it('runs pi on a staged agent dir: everything but auth.json, which it cannot read, and removes it after', async () => {
+    const staged = { dir: '/tmp/t/agenfk-airlock-pi-1', cleanup: vi.fn() };
+    const stageAgentDir = vi.fn(() => staged);
+    const d = deps({ stageAgentDir });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(stageAgentDir).toHaveBeenCalledWith('/home/u/.pi/agent');
+    const spec = specOf(d);
+    expect(spec.env.PI_CODING_AGENT_DIR).toBe(staged.dir);
+    expect(spec.filesystem.denyRead).toContain('/home/u/.pi/agent/auth.json');
+    expect(staged.cleanup).toHaveBeenCalledTimes(1);
+    expect((d.runtime.launch as any).mock.invocationCallOrder[0]).toBeLessThan(staged.cleanup.mock.invocationCallOrder[0]);
+  });
+
+  it('a pi agent dir the user set (PI_CODING_AGENT_DIR) is the one read, staged, writable - and its auth.json is denied', async () => {
+    const custom = '/home/u/pi-alt';
+    const stageAgentDir = vi.fn(() => ({ dir: '/tmp/t/agenfk-airlock-pi-2', cleanup: vi.fn() }));
+    const d = deps({ env: { PI_CODING_AGENT_DIR: custom }, stageAgentDir }, {
+      [path.join(custom, 'settings.json')]: { defaultProvider: 'spark', defaultModel: 'GLM' },
+      [path.join(custom, 'models.json')]: { providers: { spark: { baseUrl: 'https://spark.example.com/v1', apiKey: 'literal-key' } } },
+    });
+    await runAirlockLaunch('pi', [], { keyEnv: [] }, d);
+    const spec = specOf(d);
+    expect(stageAgentDir).toHaveBeenCalledWith(custom);
+    expect(spec.network.allow).toContain('spark.example.com');
+    expect(spec.filesystem.denyRead).toEqual(expect.arrayContaining([path.join(custom, 'auth.json'), '/home/u/.pi/agent/auth.json']));
+    expect(spec.filesystem.allowWrite).toContain(custom);
+    expect(spec.filesystem.denyWrite).toContain(path.join(custom, 'extensions'));
+  });
+
+  // Review C5: pi expands ~ and accepts a file:// URL there; so does the launcher.
+  it('a PI_CODING_AGENT_DIR spelled with ~ or as a file:// URL is the dir pi reads', async () => {
+    for (const spelled of ['~/pi-alt', 'file:///home/u/pi-alt']) {
+      const stageAgentDir = vi.fn(() => ({ dir: '/tmp/t/x', cleanup: vi.fn() }));
+      const d = deps({ env: { OPENAI_API_KEY: 'k', PI_CODING_AGENT_DIR: spelled }, stageAgentDir });
+      await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+      expect(stageAgentDir, spelled).toHaveBeenCalledWith('/home/u/pi-alt');
+    }
+  });
+
+  it('a staging that fails launches nothing', async () => {
+    const d = deps({ stageAgentDir: vi.fn(() => { throw new Error('EACCES: permission denied'); }) });
+    await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/agent dir.*EACCES/);
+    expect(d.runtime.launch).not.toHaveBeenCalled();
+  });
+
+  // BUG 38d7231e (user decision 2026-10-28): pi packages that hardcode /tmp (pi-patty-bg-tasks
+  // logs to /tmp/pi-bg) failed with EPERM on macOS, where only os.tmpdir() was writable.
+  it('the shared /tmp is writable, by its real path', async () => {
+    const d = deps({ realpath: (p: string) => (p === '/tmp' ? '/private/tmp' : p) });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).filesystem.allowWrite).toEqual(expect.arrayContaining(['/tmp/t', '/private/tmp']));
   });
 
   it('says pi auth.json is not readable inside when no key variable is masked', async () => {
@@ -225,6 +281,14 @@ describePosix('runAirlockLaunch: opencode', () => {
     expect(spec.env.AGENFK_AIRLOCK_SANDBOX).toBe('opencode');
     expect(spec.filesystem.allowWrite).toContain('/home/u/.local/share/opencode');
     expect(spec.maskedEnv).toEqual([{ name: 'ANTHROPIC_API_KEY', injectHosts: ['api.anthropic.com'] }]);
+  });
+
+  it('opencode is not given a pi agent dir', async () => {
+    const stageAgentDir = vi.fn(() => ({ dir: '/tmp/t/x', cleanup: vi.fn() }));
+    const d = deps({ env: { ANTHROPIC_API_KEY: 'x' }, stageAgentDir });
+    await runAirlockLaunch('opencode', ['-m', 'anthropic/claude-x'], { keyEnv: [] }, d);
+    expect(stageAgentDir).not.toHaveBeenCalled();
+    expect(specOf(d).env.PI_CODING_AGENT_DIR).toBeUndefined();
   });
 
   it('takes the model and a custom endpoint from opencode.json', async () => {

@@ -366,6 +366,7 @@ function launchDeps(over: Partial<LaunchDeps> = {}) {
     isDirectory: () => false,
     platform: 'darwin',
     ensurePrivateDir: vi.fn(),
+    stageAgentDir: vi.fn(() => ({ dir: '/tmp/t/agenfk-airlock-pi-0', cleanup: vi.fn() })),
     ...over,
   };
   return { d, runtime, hooks: () => hooks, exit: () => release() };
@@ -386,6 +387,9 @@ describe('runAirlockLaunch: proxy decisions reach the server', () => {
     expect(bodies.length).toBeGreaterThan(0);
     expect(bodies[0]).toMatchObject({ client: 'pi', model: 'openai/gpt-x', sessionId: 'sess-9' });
     expect(bodies.flatMap(b => b.decisions).map((x: any) => x.host)).toEqual(['evil.example', '10.1.2.3']);
+    // Second review: the launch it reports for - the one the relay marks the sandbox's requests
+    // with - so the server finds the card that launch's sandbox recorded.
+    expect(bodies[0].launch).toBe(verifyAirlockSessionMarker(TOKEN, relayStub.opts!.marker()));
     expect(post.mock.calls.every(c => c[2] === TOKEN)).toBe(true);
   });
 

@@ -85,6 +85,24 @@ describe('credential-named values in text', () => {
     for (const t of ['author: Ada', 'compass: north', 'sessions: 3', 'the password is in the vault', 'tokenizer settings']) expect(hasCredentialKey(t), t).toBe(false);
   });
 
+  it('hasCredentialKey: a key after an escaped newline or tab in a one-line command (BUG 9e6fc052)', () => {
+    // The beta.5 prod dataset row: printf wrote a YAML document whose second line is the secret.
+    for (const t of ["printf 'user: demo\\npassword: x\\n' > ds-smoke.yml", 'echo -e "a: 1\\r\\ntoken=x"', "printf 'a\\tsecret: x'", 'echo $\'user: x\\npassword: y\'']) {
+      expect(hasCredentialKey(t), t).toBe(true);
+    }
+    // An escape is not a separator by itself: a word that merely contains a key stays out.
+    for (const t of ["printf 'compass: north\\n'", 'echo "\\nsessions: 3"']) expect(hasCredentialKey(t), t).toBe(false);
+  });
+
+  it('hasCredentialKey: a credential-named XML element or attribute (review of BUG 493ede38)', () => {
+    for (const t of ['<config><password>local-db-password</password></config>', '<api-key>x</api-key>', '<Token type="a">x</Token>', '< secret >x</ secret >', '<db password="x"/>',
+      // second review: XML whitespace includes line breaks, and a local name may carry a prefix
+      '<password\n>x</password>', '<password\r\n  type="a">x</password>', '<db:password>x</db:password>', '<ns.v2:api-key>x</ns.v2:api-key>']) {
+      expect(hasCredentialKey(t), t).toBe(true);
+    }
+    for (const t of ['<compass>north</compass>', '<sessions>3</sessions>', '<p>the password is in the vault</p>']) expect(hasCredentialKey(t), t).toBe(false);
+  });
+
   it('ordinary words that only contain a credential word are kept', () => {
     const out = redact('author: Ada Lovelace\ncompass: north\nsessions: 3\n');
     expect(out).toContain('Ada Lovelace');

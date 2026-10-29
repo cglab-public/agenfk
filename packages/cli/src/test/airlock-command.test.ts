@@ -60,7 +60,9 @@ function resetCommanderOptions(cmd: any) {
 }
 
 let logSpy: ReturnType<typeof vi.spyOn>;
-const printed = () => logSpy.mock.calls.flat().join('\n');
+// Colours on or off (a full run may force them): the words, not their escapes.
+// eslint-disable-next-line no-control-regex
+const printed = () => logSpy.mock.calls.flat().join('\n').replace(/\x1b\[[0-9;]*m/g, '');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -99,6 +101,61 @@ describe('agenfk airlock status', () => {
     mockedAxios.get.mockRejectedValue(new Error('connect ECONNREFUSED'));
     await program.parseAsync(['node', 'agenfk', 'airlock', 'status']);
     expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  // BUG 3a5ec1ff: a beta.3 server answered Express's own 404 page and the CLI printed only
+  // "Request failed with status code 404".
+  it('a server that predates Airlock (a route 404 with no error of its own) is named as such', async () => {
+    mockedAxios.get.mockRejectedValue(Object.assign(new Error('Request failed with status code 404'), {
+      response: { status: 404, data: '<!DOCTYPE html><pre>Cannot GET /airlock/policy</pre>' },
+    }));
+    await program.parseAsync(['node', 'agenfk', 'airlock', 'status']);
+    const err = vi.mocked(console.error).mock.calls.flat().join('\n');
+    expect(err).toMatch(/older than this agenfk|predates Airlock/);
+    expect(err).toContain('agenfk restart');
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it('a 404 the server explains itself keeps the server\'s message', async () => {
+    mockedAxios.get.mockRejectedValue(Object.assign(new Error('Request failed with status code 404'), {
+      response: { status: 404, data: { error: 'Project p1 not found' } },
+    }));
+    await program.parseAsync(['node', 'agenfk', 'airlock', 'status']);
+    const err = vi.mocked(console.error).mock.calls.flat().join('\n');
+    expect(err).toContain('Project p1 not found');
+    expect(err).not.toMatch(/predates Airlock/);
+  });
+});
+
+// BUG 4f2e0354: nothing on the CLI said whether the org's dataset switch was on, and the
+// local server only adopted it on its 5-minute hub sync.
+describe('agenfk airlock dataset status', () => {
+  it('asks the server to refresh from the hub and prints the switch', async () => {
+    mockedAxios.get.mockResolvedValue({ status: 200, data: { joined: true, enabled: true } });
+    await program.parseAsync(['node', 'agenfk', 'airlock', 'dataset', 'status']);
+    expect(mockedAxios.get).toHaveBeenCalledWith(`${API}/airlock/dataset?refresh=1`, expect.anything());
+    expect(printed()).toMatch(/dataset.*\bon\b/i);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+    expect(mockedAxios.put).not.toHaveBeenCalled();
+  });
+
+  it('off on a joined installation says an org admin switches it on', async () => {
+    mockedAxios.get.mockResolvedValue({ status: 200, data: { joined: true, enabled: false } });
+    await program.parseAsync(['node', 'agenfk', 'airlock', 'dataset', 'status']);
+    expect(printed()).toMatch(/dataset.*\boff\b/i);
+    expect(printed()).toContain('Admin -> Airlock -> Dataset');
+  });
+
+  it('an installation not joined to a hub says there is no dataset', async () => {
+    mockedAxios.get.mockResolvedValue({ status: 200, data: { joined: false, enabled: false } });
+    await program.parseAsync(['node', 'agenfk', 'airlock', 'dataset', 'status']);
+    expect(printed()).toMatch(/not joined to a hub/);
+  });
+
+  it('--json prints the server answer', async () => {
+    mockedAxios.get.mockResolvedValue({ status: 200, data: { joined: true, enabled: true } });
+    await program.parseAsync(['node', 'agenfk', 'airlock', 'dataset', 'status', '--json']);
+    expect(JSON.parse(printed())).toEqual({ joined: true, enabled: true });
   });
 });
 

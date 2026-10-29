@@ -9,7 +9,7 @@ import readline from 'readline';
 import { writePrivateFileSync } from './private-file.mjs';
 import { forceLocalFlag, tarPath } from '../bin/tar-flags.mjs';
 import { runTool } from './client-cli.mjs';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, withSkillName, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, withSkillName, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive, probeServerPort } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -127,17 +127,18 @@ async function run() {
         } else {
             debugLog('~/.agenfk/config.json: NOT FOUND');
         }
-        // Check if an agenfk server is already reachable on the persisted (or default) port
-        let serverPort = process.env.AGENFK_PORT || '3000';
-        try {
-            const persistedPort = fs.readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
-            if (persistedPort) serverPort = persistedPort;
-        } catch { /* ignore */ }
-        const serverCheck = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${serverPort}/`], { encoding: 'utf8', windowsHide: true });
-        const serverReachable = serverCheck.status === 0 && serverCheck.stdout.trim() !== '000';
-        debugLog(`server on localhost:${serverPort}:`, serverReachable ? `REACHABLE (HTTP ${serverCheck.stdout.trim()})` : 'NOT REACHABLE');
-        wasReachableBeforeInstall = serverReachable;
-        preInstallServerPort = serverPort;
+        // Check if this install's server is reachable on the port it persisted (BUG d95009ff:
+        // never the bare default - in a HOME that has run no server, 3000 is somebody else's).
+        const serverPort = probeServerPort({ env: process.env, readPortFile: () => readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8') });
+        if (serverPort) {
+            const serverCheck = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${serverPort}/`], { encoding: 'utf8', windowsHide: true });
+            const serverReachable = serverCheck.status === 0 && serverCheck.stdout.trim() !== '000';
+            debugLog(`server on localhost:${serverPort}:`, serverReachable ? `REACHABLE (HTTP ${serverCheck.stdout.trim()})` : 'NOT REACHABLE');
+            wasReachableBeforeInstall = serverReachable;
+            preInstallServerPort = serverPort;
+        } else {
+            debugLog('server: no persisted port and no AGENFK_PORT - nothing of this install\'s to probe');
+        }
     }
 
     // BUG 174270e6: even when --debuglog is OFF we still need to know if a
@@ -145,13 +146,11 @@ async function run() {
     // Cheap (one localhost curl with 1s timeout). The debug branch above will
     // overwrite this with the same value if --debuglog is on; idempotent.
     if (!wasReachableBeforeInstall) {
-        let probePort = process.env.AGENFK_PORT || '3000';
-        try {
-            const persistedPort = readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
-            if (persistedPort) probePort = persistedPort;
-        } catch { /* ignore */ }
-        const probe = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${probePort}/`], { encoding: 'utf8', windowsHide: true });
-        if (probe.status === 0 && probe.stdout.trim() !== '000') {
+        const probePort = probeServerPort({ env: process.env, readPortFile: () => readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8') });
+        const probe = probePort
+            ? spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${probePort}/`], { encoding: 'utf8', windowsHide: true })
+            : null;
+        if (probe && probe.status === 0 && probe.stdout.trim() !== '000') {
             wasReachableBeforeInstall = true;
             preInstallServerPort = probePort;
         }
@@ -187,7 +186,7 @@ async function run() {
         // not depend on HTTP timing or hub connectivity — if the process is
         // there, we restart it onto the new code.
         const run = (file, args, opts) => spawnSync(file, args, { ...opts, windowsHide: true });
-        if (!wasReachableBeforeInstall && serverProcessAlive(run)) {
+        if (!wasReachableBeforeInstall && serverProcessAlive(run, { root: rootDir })) {
             wasReachableBeforeInstall = true;
         }
         // Resolve the .agenfk dir the server uses, mirroring the server's own

@@ -82,6 +82,7 @@ import { redactLog } from '../hub/redact.js';
 import { airlockDataset, AIRLOCK_DATASET_IMPORT_MAX_CALLS } from './dataset.js';
 import { AIRLOCK_REPORT_HEADER } from './reportToken.js';
 import { registerAirlockLearning } from './learn.js';
+import { activeWorkKeyFor } from '../agent-runs/activeWork.js';
 
 export const HUB_OWNS_AIRLOCK_POLICY = 'HUB_OWNS_AIRLOCK_POLICY';
 export const AIRLOCK_REVISION_CONFLICT = 'AIRLOCK_REVISION_CONFLICT';
@@ -558,6 +559,24 @@ async function verdictWithGrants(
  */
 export const AIRLOCK_SERVER_CAPABILITIES = Object.freeze(['sandboxed-commands']);
 
+/**
+ * The file-body keys the adapter (bin/agenfk-airlock.mjs CONTENT_KEYS) keeps out of the judged
+ * arguments and sends beside them in `bodies` (BUG 493ede38). Only these are taken from it, and
+ * only into a dataset row: a body is never judged, and cannot add a command, path or URL.
+ */
+const AIRLOCK_BODY_KEYS = new Set(['content', 'newString', 'oldString', 'new_string', 'old_string', 'edits', 'new_source', 'patch', 'patchText', 'text']);
+
+/** The call's arguments with the bodies the adapter sent beside them, for the dataset row. */
+export function argsWithBodies(args: unknown, bodies: unknown): unknown {
+  if (!bodies || typeof bodies !== 'object' || Array.isArray(bodies)) return args;
+  const base = args && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(bodies as Record<string, unknown>)) {
+    if (AIRLOCK_BODY_KEYS.has(k) && v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
 export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
   const stateFile = deps.stateFile ?? defaultAirlockStateFile;
   const now = deps.now ?? Date.now;
@@ -694,15 +713,35 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
     return true;
   };
 
+  /**
+   * `?refresh=1` (or true): pull the hub's Airlock configuration now instead of at the next
+   * flow-sync tick - the policy and the dataset switch both come with it. A hub that fails
+   * leaves what is stored, as the tick does.
+   */
+  /**
+   * The session each launch's sandboxed calls last named (third review): pi learns its own
+   * session id inside the sandbox, so the launcher reports its proxy decisions with none. Only a
+   * marked request - its launch verified by the relay's MAC - sets it, and only for its launch.
+   */
+  const launchSessions = new Map<string, string>();
+  const MAX_LAUNCH_SESSIONS = 1000;
+  const noteLaunchSession = (launch: string, sessionId: string): void => {
+    launchSessions.delete(launch);
+    launchSessions.set(launch, sessionId);
+    while (launchSessions.size > MAX_LAUNCH_SESSIONS) launchSessions.delete(launchSessions.keys().next().value as string);
+  };
+
+  const refreshIfAsked = async (req: any): Promise<void> => {
+    const q = req.query?.refresh;
+    const refresh = Array.isArray(q) ? q[q.length - 1] : q;
+    if ((refresh === '1' || refresh === 'true') && deps.hubJoined() && deps.refreshFromHub) {
+      try { await deps.refreshFromHub(); } catch (e) { console.error('[AIRLOCK] refresh from hub failed:', (e as Error).message); }
+    }
+  };
+
   app.get('/airlock/policy', async (req: any, res: any, next: any) => {
     try {
-      // `?refresh=1` (or true) pulls the hub's policy now instead of at the next
-      // flow-sync tick; a hub that fails leaves what is stored, as the tick does.
-      const q = req.query?.refresh;
-      const refresh = Array.isArray(q) ? q[q.length - 1] : q;
-      if ((refresh === '1' || refresh === 'true') && deps.hubJoined() && deps.refreshFromHub) {
-        try { await deps.refreshFromHub(); } catch (e) { console.error('[AIRLOCK] refresh from hub failed:', (e as Error).message); }
-      }
+      await refreshIfAsked(req);
       const view = { ...(await resolveAirlockPolicy(deps.storage(), deps.hubJoined())), capabilities: AIRLOCK_SERVER_CAPABILITIES };
       const p = req.query?.projectId;
       const projectId = typeof p === 'string' && p ? p : null;
@@ -798,7 +837,11 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       const storage = deps.storage();
       const dryRun = body.dryRun === true;
       const view = await resolveAirlockPolicy(storage, deps.hubJoined());
-      const work = deps.activeWork(sessionId);
+      // A sandboxed call reads the note its own launch wrote (POST /active-work, review S3).
+      const launch = typeof req.airlockSession === 'string' ? req.airlockSession : undefined;
+      if (launch && sessionId) noteLaunchSession(launch, sessionId);
+      const noteKey = activeWorkKeyFor(sessionId, launch);
+      const work = noteKey ? deps.activeWork(noteKey.key) : null;
       // A sandboxed call is judged under the project its launch was signed for
       // (the coverage middleware read it from the marker), never a note the
       // agent could choose; any other call, under its active card's project.
@@ -884,7 +927,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       if (!dryRun) await learning.observeTool(capabilities, body.client, work?.itemId ?? null);
       if (!dryRun && datasetOn()) {
         dataset.tool({
-          client: body.client, model: modelLabel(model), sessionId: sessionId ?? null, tool: toolName, args: body.args, capabilities,
+          client: body.client, model: modelLabel(model), sessionId: sessionId ?? null, tool: toolName, args: argsWithBodies(body.args, body.bodies), capabilities,
           verdict: { decision: verdict.decision, rule: 'rule' in verdict ? verdict.rule : null, ...(verdict.decision === 'allow' ? { why: verdict.why } : {}) },
           mode: effective.mode, revision: view.revision, card: await cardOf(work?.itemId),
           ...(verdict.decision === 'needs-human-approval' && approvalGeneration !== null ? { approvalKey: `${verdict.approvalKey}#${approvalGeneration}` } : {}),
@@ -932,9 +975,14 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
         && (d.decision === 'allow' || d.decision === 'deny')
         && typeof d.rule === 'string' && !!d.rule && d.rule.length <= MAX_AIRLOCK_FIELD;
 
-      const sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : undefined;
+      // The launch the launcher reports for (it holds the report token): its session's note is
+      // the one its sandbox wrote (second review), and without a session of its own, the one
+      // that launch's calls last named (third review).
+      const launch = typeof body.launch === 'string' && body.launch && body.launch.length <= MAX_AIRLOCK_FIELD * 2 ? body.launch : undefined;
+      const sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : (launch ? launchSessions.get(launch) : undefined);
       const view = await resolveAirlockPolicy(deps.storage(), deps.hubJoined());
-      const work = deps.activeWork(sessionId);
+      const noteKey = activeWorkKeyFor(sessionId, launch);
+      const work = noteKey ? deps.activeWork(noteKey.key) : null;
       const at = now();
       let recorded = 0;
       let skipped = 0;
@@ -983,7 +1031,9 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
     } catch (e) { next(e); }
   });
 
-  app.get('/airlock/dataset', (_req: any, res: any) => {
+  app.get('/airlock/dataset', async (req: any, res: any) => {
+    // The hub's switch now with `?refresh=1`, not the last tick's (BUG 4f2e0354).
+    await refreshIfAsked(req);
     res.json({ joined: deps.hubJoined(), enabled: datasetOn() });
   });
 

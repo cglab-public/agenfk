@@ -19,11 +19,13 @@
  */
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { normalizeAirlockPolicy, mintAirlockSessionMarker, airlockLaunchNonce, airlockMarkerProject, type AirlockClient } from '@agenfk/core';
-import { buildSandboxSpec, writeRootHolding, ENV_NAME, type SandboxSpec } from './spec';
+import { buildSandboxSpec, writeRootHolding, sharedTempDir, ENV_NAME, type SandboxSpec } from './spec';
 import type { AirlockRuntime } from './runtime';
 import { startServerRelay, type ServerRelay, type ServerRelayOptions } from './serverRelay';
 import { ProxyDecisionReporter, type ProxyReportBody } from './proxyReport';
+import type { StagedAgentDir } from './piAgentDir';
 
 export class AirlockLaunchError extends Error {
   constructor(message: string) {
@@ -101,6 +103,12 @@ export interface LaunchDeps {
    * exists at launch, and the server may create the directory later.
    */
   ensurePrivateDir: (dir: string) => void;
+  /**
+   * Stage the agent dir pi runs on inside (BUG ff9969f5, piAgentDir.ts): every entry of
+   * `realDir` but auth.json, which the sandbox denies and pi reads as "no key" when it
+   * cannot open it. Throws when it cannot.
+   */
+  stageAgentDir: (realDir: string) => StagedAgentDir;
 }
 
 export interface LaunchOptions {
@@ -148,9 +156,25 @@ const split = (joined: string): SessionModel => {
   return slash > 0 ? { provider: joined.slice(0, slash), id: joined.slice(slash + 1) || null } : { provider: null, id: joined };
 };
 
+/**
+ * pi's agent dir: PI_CODING_AGENT_DIR when the user set one, spelled as pi accepts it (`~`, a
+ * file:// URL - review C5), else ~/.pi/agent.
+ */
+const piAgentDirOf = (d: LaunchDeps): string => {
+  const set = str(d.env.PI_CODING_AGENT_DIR);
+  if (!set) return path.join(d.home, '.pi', 'agent');
+  if (set.startsWith('file://')) {
+    try { return fileURLToPath(set); } catch { /* not a file URL: as a path */ }
+  }
+  if (set === '~') return d.home;
+  if (set.startsWith('~/')) return path.join(d.home, set.slice(2));
+  return path.resolve(d.cwd, set);
+};
+
 function piSession(args: string[], d: LaunchDeps): { model: SessionModel; endpoint: (p: string) => Endpoint | null } {
-  const settings = obj(d.readJson(path.join(d.home, '.pi', 'agent', 'settings.json')));
-  const models = obj(obj(d.readJson(path.join(d.home, '.pi', 'agent', 'models.json'))).providers);
+  const agentDir = piAgentDirOf(d);
+  const settings = obj(d.readJson(path.join(agentDir, 'settings.json')));
+  const models = obj(obj(d.readJson(path.join(agentDir, 'models.json'))).providers);
   const flagModel = argValue(args, ['--model']);
   const flagProvider = argValue(args, ['--provider']);
   let model: SessionModel;
@@ -369,7 +393,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     maskedEnv = [];
   }
   if (client === 'pi' && !maskedEnv.length) {
-    d.warn('pi\'s ~/.pi/agent/auth.json is not readable inside the Airlock sandbox. Give pi its key as an env var (it is masked: the agent sees a stand-in, the proxy sends the real one to the inference host), or with --key-env NAME.');
+    d.warn('pi\'s auth.json (its /login logins and saved keys) is not readable inside the Airlock sandbox; keys in models.json are. For a provider you logged into, give pi its key as an env var (it is masked: the agent sees a stand-in, the proxy sends the real one to the inference host), or with --key-env NAME.');
   }
 
   let serverOrigin: string;
@@ -424,14 +448,24 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     },
     requireMarker: enforce,
   });
+  let staged: StagedAgentDir | null = null;
   try {
+    const agentDir = client === 'pi' ? piAgentDirOf(d) : null;
+    if (agentDir) {
+      try {
+        staged = d.stageAgentDir(agentDir);
+      } catch (e) {
+        throw new AirlockLaunchError(`Could not stage pi's agent dir (${agentDir}) for the sandbox: ${(e as Error)?.message ?? e}. Nothing was launched.`);
+      }
+    }
+    const sharedTmp = sharedTempDir(d.platform, d.realpath);
     let spec: SandboxSpec;
     try {
       spec = buildSandboxSpec(policy, {
         client,
         home: d.home,
         workspace: path.resolve(d.cwd),
-        tempDirs: [d.tmpDir],
+        tempDirs: sharedTmp && sharedTmp !== d.tmpDir ? [d.tmpDir, sharedTmp] : [d.tmpDir],
         inferenceHosts: [endpoint.host],
         serverPort: relay.port,
         serverUrl: `http://${relay.host}:${relay.port}`,
@@ -444,6 +478,8 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         maskedEnv,
         runtimePackageDir: d.runtimePackageDir,
         hostNetns: d.platform === 'linux' ? d.hostNetns ?? null : null,
+        ...(agentDir && agentDir !== path.join(d.home, '.pi', 'agent') ? { piAgentDir: agentDir } : {}),
+        ...(staged ? { piStagedAgentDir: staged.dir } : {}),
       });
     } catch (e) {
       // A denied inference host: the session could not reach its model.
@@ -472,6 +508,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         client,
         model: [provider, session.model.id].filter(Boolean).join('/') || null,
         sessionId: str(d.env.AGENFK_SESSION_ID),
+        launch: launchNonce,
       })
       : null;
     const launched = await d.runtime.launch(
@@ -491,6 +528,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
       await reporter?.close();
     }
   } finally {
+    staged?.cleanup();
     await relay.close();
   }
 }

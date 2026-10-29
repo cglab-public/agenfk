@@ -57,6 +57,13 @@ export interface SandboxSession {
   runtimePackageDir?: string;
   /** Linux: the launcher's own network namespace (`net:[…]`), handed to the launch gate. */
   hostNetns?: string | null;
+  /**
+   * pi: its real agent dir when not ~/.pi/agent (PI_CODING_AGENT_DIR): its state is pi's, its
+   * auth.json is denied and its extensions are unwritable, as ~/.pi/agent's are.
+   */
+  piAgentDir?: string;
+  /** pi: the staged agent dir pi is pointed at inside (BUG ff9969f5; piAgentDir.ts). */
+  piStagedAgentDir?: string;
 }
 
 export interface SandboxSpec {
@@ -241,6 +248,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     // The credential stores layer 1 also recognises (core's HOME_CREDENTIAL_STORES).
     ...HOME_CREDENTIAL_STORES.map((p) => j(home, p)),
     j(home, '.pi', 'agent', 'auth.json'),
+    ...(session.piAgentDir ? [j(session.piAgentDir, 'auth.json')] : []),
     j(home, '.local', 'share', 'opencode', 'auth.json'),
     // Where the token the launcher's proxy reports carry lives (TEL-1), its
     // temp files included: an agent holding it could forge them. verify-token
@@ -253,7 +261,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
 
   const command = session.purpose === 'command';
   const clientState = command ? [] : session.client === 'pi'
-    ? [j(home, '.pi', 'agent')]
+    ? [session.piAgentDir ?? j(home, '.pi', 'agent')]
     : [j(home, '.local', 'share', 'opencode'), j(home, '.local', 'state', 'opencode'), j(home, '.cache', 'opencode'), j(home, '.config', 'opencode')];
   const allowWrite = uniq([session.workspace, ...session.tempDirs, ...clientState]);
 
@@ -261,6 +269,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     j(home, '.agenfk'),
     ...session.installDirs,
     j(home, '.pi', 'agent', 'extensions'),
+    ...(session.piAgentDir ? [j(session.piAgentDir, 'extensions')] : []),
     j(home, '.config', 'opencode', 'plugins'),
     j(home, '.config', 'opencode', 'plugin'),
     j(session.workspace, '.agenfk'),
@@ -296,12 +305,28 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
       ...(session.hostNetns ? { AGENFK_AIRLOCK_HOST_NETNS: session.hostNetns } : {}),
       // Every agenfk client inside (CLI, hooks, the pi and OpenCode adapters) reads it first.
       ...(session.serverUrl ? { AGENFK_API_URL: session.serverUrl } : {}),
+      // pi reads its config through the staged dir, whose auth.json it can open (BUG ff9969f5).
+      ...(!command && session.client === 'pi' && session.piStagedAgentDir ? { PI_CODING_AGENT_DIR: session.piStagedAgentDir } : {}),
     },
     // A TUI needs raw mode on its terminal: EPERM without it (measured, macOS).
     allowPty: true,
     skipped,
     ...(command ? { allowLocalBinding: true } : {}),
   };
+}
+
+/**
+ * The shared /tmp by its real path (/private/tmp on macOS), writable inside the sandbox as the
+ * temp dir is (BUG 38d7231e): tools that hardcode /tmp failed with EPERM where only
+ * os.tmpdir() was. None on Windows.
+ *
+ * ACCEPTED RISK (user decision 2026-10-28, after the security review): the sandbox can modify
+ * anything of the user's under /tmp - a git checkout's hooks there run unsandboxed on the next
+ * host commit, other tools' scratch files are writable. ASRT cannot give the sandbox a private
+ * /tmp on macOS, and agenfk keeps no list of tool-specific paths.
+ */
+export function sharedTempDir(platform: NodeJS.Platform, realpath: (p: string) => string | null): string | null {
+  return platform === 'win32' ? null : realpath('/tmp');
 }
 
 /** The write root `p` sits in (or is), or null when it is outside all of them. */

@@ -21,9 +21,14 @@ import { linesOf, sessionFiles, MAX_LINE_BYTES } from './learnImport';
 
 // node:sqlite is built into Node 22 (this CLI's floor); its types are not in the
 // CLI's @types/node, so it is required with the little of its shape used here,
-// as packages/storage-sqlite does.
+// as packages/storage-sqlite does. Required when a database is opened, not when this
+// module loads: the CLI loads it for every command, and Node 22 prints an
+// ExperimentalWarning on every load of node:sqlite (BUG 7a9b2032).
 interface ReadOnlyDb { prepare(sql: string): { iterate(): Iterable<unknown> }; close(): void }
-const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (file: string, opts: { readOnly: boolean }) => ReadOnlyDb };
+const openReadOnly = (file: string): ReadOnlyDb => {
+  const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (file: string, opts: { readOnly: boolean }) => ReadOnlyDb };
+  return new DatabaseSync(file, { readOnly: true });
+};
 
 /** Calls per request, and the most bytes one may carry (the server's /airlock body limit is 256 KB). */
 export const DATASET_IMPORT_BATCH = 200;
@@ -109,7 +114,7 @@ export async function readPiSessionCalls(file: string): Promise<ImportSession | 
  */
 function* openCodeCalls(dbPath: string): Generator<ReadCall> {
   if (!fs.existsSync(dbPath)) return;
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const db = openReadOnly(dbPath);
   try {
     const rows = db.prepare(
       `SELECT p.session_id AS session_id, p.data AS data, p.time_created AS time_created, m.data AS message

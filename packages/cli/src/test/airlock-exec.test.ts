@@ -69,6 +69,13 @@ describePosix('runAirlockExec', () => {
     expect(specOf(d).filesystem.denyWrite).toEqual(expect.arrayContaining(['commondir', 'config.worktree', 'modules', 'worktrees'].map((n) => path.join(CWD, '.git', n))));
   });
 
+  // BUG 38d7231e (user decision 2026-10-28): tools that hardcode /tmp work in the sandbox too.
+  it('a command\'s sandbox has the shared /tmp writable, by its real path', async () => {
+    const d = deps({ realpath: (p: string) => (p === '/tmp' ? '/private/tmp' : p) });
+    await runAirlockExec('true', { cwd: CWD }, d);
+    expect(specOf(d).filesystem.allowWrite).toEqual(expect.arrayContaining(['/tmp/t', '/private/tmp']));
+  });
+
   it('a command killed by a signal exits 128 + its number', async () => {
     const d = deps({}, { code: null, signal: 'SIGTERM' });
     expect(await runAirlockExec('sleep 99', { cwd: CWD }, d)).toBe(128 + 15);

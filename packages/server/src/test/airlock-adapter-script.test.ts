@@ -72,6 +72,51 @@ describe('requestVerdict', () => {
     expect(sent.args.content.length).toBeLessThan(100);
   });
 
+  // BUG 493ede38 (user decision 2026-10-28): the dataset carries a write's body (DS-1), so it
+  // travels to the LOCAL server beside the judged arguments, bounded; what is judged is
+  // unchanged, and the server drops it unless the org's dataset switch is on.
+  it('a write\'s body travels to the local server in `bodies`, bounded; the judged args still omit it', async () => {
+    const sentBodies: any[] = [];
+    const fetchImpl = async (_url: string, init: any) => {
+      sentBodies.push(JSON.parse(init.body));
+      return answer({ verdict: { decision: 'allow', why: 'no-rule-matched' }, mode: 'observe', applies: true, revision: 1 });
+    };
+    await requestVerdict({ client: 'pi', toolName: 'write', args: { path: 'a.yml', content: 'user: demo\npassword: x\n' } }, { fetchImpl, env: {}, homeDir: tmp });
+    await requestVerdict({ client: 'pi', toolName: 'edit', args: { path: 'b.ts', oldText: 'a', newText: 'b', edits: [{ oldText: 'c', newText: 'd' }] } }, { fetchImpl, env: {}, homeDir: tmp });
+    await requestVerdict({ client: 'pi', toolName: 'write', args: { path: 'big', content: 'z'.repeat(40_000) } }, { fetchImpl, env: {}, homeDir: tmp });
+    await requestVerdict({ client: 'pi', toolName: 'bash', args: { command: 'ls' } }, { fetchImpl, env: {}, homeDir: tmp });
+
+    expect(sentBodies[0].bodies).toEqual({ content: 'user: demo\npassword: x\n' });
+    expect(sentBodies[0].args.content).toMatch(/^\[omitted by agenfk airlock/);
+    expect(sentBodies[1].bodies).toEqual({ edits: [{ oldText: 'c', newText: 'd' }] });
+    expect(sentBodies[1].args).toMatchObject({ oldText: 'a', newText: 'b' });
+    // Over the bound it does not travel at all.
+    expect(sentBodies[2].bodies.content).toMatch(/^\[omitted by agenfk airlock: 40000 chars\]$/);
+    // A call with no body sends none.
+    expect(sentBodies[3].bodies).toBeUndefined();
+  });
+
+  it('a request too heavy with its bodies goes without them, judged args whole (review S4/C1)', async () => {
+    const sent: any[] = [];
+    const fetchImpl = async (_url: string, init: any) => {
+      sent.push(init.body);
+      return answer({ verdict: { decision: 'allow', why: 'no-rule-matched' }, mode: 'enforce', applies: true, revision: 1 });
+    };
+    // A long judged command plus multibyte bodies, each under its own character bound: the
+    // characters fit, the UTF-8 bytes would not.
+    const command = 'echo ' + 'x'.repeat(120_000);
+    const cjk = '\u4e2d'.repeat(16_000);
+    await requestVerdict({ client: 'pi', toolName: 'edit', args: { command, content: cjk, patch: cjk, text: cjk } }, { fetchImpl, env: {}, homeDir: tmp });
+    const body = JSON.parse(sent[0]);
+    expect(body.bodies).toBeUndefined();
+    expect(body.args.command).toBe(command);
+    expect(Buffer.byteLength(sent[0], 'utf8')).toBeLessThanOrEqual(192 * 1024);
+
+    // The same bodies beside a short command fit, and go.
+    await requestVerdict({ client: 'pi', toolName: 'edit', args: { command: 'ls', content: cjk } }, { fetchImpl, env: {}, homeDir: tmp });
+    expect(JSON.parse(sent[1]).bodies).toEqual({ content: cjk });
+  });
+
   it('keeps toolName and sessionId within the server limit of 256 characters', async () => {
     let sent: any;
     const fetchImpl = async (_url: string, init: any) => {

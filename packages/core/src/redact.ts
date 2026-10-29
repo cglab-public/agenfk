@@ -300,6 +300,11 @@ export function redactLog(input: string, opts: RedactOptions): Redacted {
 
 /** A credential-named key in the usual syntaxes: `key:`, `key=`, `"key":`, `key =>`, `export KEY=`, aligned with any blanks. */
 const CREDENTIAL_KEY = new RegExp(`(?:^|[\\s,;{(\\[])(?:export[ \\t]+)?(["']?)${SECRET_KEY_NAME}\\1[ \\t]*(?:=>|[:=])`, 'im');
+/**
+ * A credential-named XML/HTML element: `<password>`, `<api-key attr="">`, `<db:password>`, any
+ * XML whitespace after the name - line breaks too (a write's config file, review of BUG 493ede38).
+ */
+const CREDENTIAL_ELEMENT = new RegExp(`<\\s*(?:[A-Za-z_][\\w.-]{0,40}:)?${SECRET_KEY_NAME}(?:\\s[^>]*)?\\/?>`, 'i');
 /** A table header line (TOML, INI): `[name]`, `[[name]]`, its name quoted or dotted. */
 const TABLE_HEADER = /^[ \t]*\[\[?([^\]\n]{1,512})\]/gm;
 /** One component of a table name that names a credential. */
@@ -319,16 +324,20 @@ const credentialTable = (text: string): boolean => {
  * YAML tags and continuations, INI values...).
  */
 export function hasCredentialKey(text: string): boolean {
-  if (CREDENTIAL_KEY.test(text) || credentialTable(text)) return true;
+  if (CREDENTIAL_KEY.test(text) || CREDENTIAL_ELEMENT.test(text) || credentialTable(text)) return true;
   // And however the key is spelled (review): escapes decoded, every quote gone - a shell-quoted
   // document, a quoted dotted key (db."password"), an escaped JSON key ("pass\u0077ord").
   const plain = decodeEscapes(text).replace(/["'`]/g, '');
-  return CREDENTIAL_KEY.test(plain) || credentialTable(plain);
+  return CREDENTIAL_KEY.test(plain) || CREDENTIAL_ELEMENT.test(plain) || credentialTable(plain);
 }
 
-/** `\uXXXX`, `\u{X..}`, `\xNN` and `%NN` decoded, the rest as it is (one pass, linear). */
+/**
+ * `\uXXXX`, `\u{X..}`, `\xNN` and `%NN` decoded, and `\n`, `\r`, `\t` as the blanks they stand
+ * for - a one-line `printf 'user: x\npassword: y'` writes a document (BUG 9e6fc052) - the rest
+ * as it is (one pass, linear).
+ */
 function decodeEscapes(text: string): string {
   const ch = (hex: string): string => { const n = parseInt(hex, 16); return n <= 0x10ffff ? String.fromCodePoint(n) : ''; };
-  return text.replace(/\\u\{([0-9a-fA-F]{1,6})\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})|%([0-9a-fA-F]{2})/g,
-    (_m, a: string | undefined, b: string | undefined, c: string | undefined, d: string | undefined) => ch((a ?? b ?? c ?? d)!));
+  return text.replace(/\\u\{([0-9a-fA-F]{1,6})\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})|%([0-9a-fA-F]{2})|\\[nrt]/g,
+    (_m, a: string | undefined, b: string | undefined, c: string | undefined, d: string | undefined) => (a ?? b ?? c ?? d) === undefined ? '\n' : ch((a ?? b ?? c ?? d)!));
 }

@@ -73,6 +73,33 @@ export function boundArgs(args) {
 }
 
 const clip = (v) => (typeof v === 'string' ? v.slice(0, MAX_FIELD) : v);
+
+/**
+ * The file bodies boundArgs leaves out of what is judged, for the Airlock dataset (BUG
+ * 493ede38, DS-1: a row carries a write's content). They go to the LOCAL server only, beside
+ * the judged arguments; the server never judges them, redacts them, and keeps them only while
+ * the org's dataset switch is on. Each over MAX_ARG_CHARS stays a placeholder. Undefined when
+ * the call has none.
+ */
+export function boundBodies(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return undefined;
+  let out;
+  for (const [key, value] of Object.entries(args)) {
+    if (!CONTENT_KEYS.has(key)) continue;
+    const size = sizeOf(value);
+    (out ??= {})[key] = size > MAX_ARG_CHARS ? omitted(size) : value;
+  }
+  return out;
+}
+
+/**
+ * The most a request may weigh, in UTF-8 bytes, with its bodies: well inside the server's
+ * 256 KB /airlock limit. Bodies are optional; a request over it goes without them, because a
+ * refused request reads as an unreachable server, which blocks an enforced session's call
+ * (review findings S4/C1).
+ */
+export const MAX_REQUEST_BYTES = 192 * 1024;
+const bytesOf = (v) => Buffer.byteLength(JSON.stringify(v), 'utf8');
 /** How long a server answer may stand in for the server when it is unreachable. */
 export const LAST_KNOWN_TTL_MS = 30_000;
 
@@ -120,6 +147,11 @@ export async function requestVerdict(payload, opts = {}) {
     toolName: clip(typeof p.toolName === 'string' ? p.toolName : ''),
     args: boundArgs(p.args),
   };
+  const bodies = boundBodies(p.args);
+  if (bodies) {
+    body.bodies = bodies;
+    if (bytesOf(body) > MAX_REQUEST_BYTES) delete body.bodies;
+  }
   // A clipped id names some other session, so an over-long one is left out.
   if (typeof p.sessionId === 'string' && p.sessionId && p.sessionId.length <= MAX_FIELD) body.sessionId = p.sessionId;
   if (typeof p.cwd === 'string' && p.cwd) body.cwd = p.cwd;

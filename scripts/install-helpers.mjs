@@ -362,6 +362,18 @@ export function isDevCheckout(root, home = os.homedir()) {
 const SERVER_PATTERN = 'packages/server/dist/server.js';
 
 /**
+ * The port the installer may probe for a server of its own (BUG d95009ff), or null: the port
+ * this install's server persisted (~/.agenfk/server-port), else an AGENFK_PORT the caller set.
+ * Never the bare default - in a HOME that has run no server, port 3000 is somebody else's.
+ */
+export function probeServerPort({ env = process.env, readPortFile }) {
+  const valid = (v) => (typeof v === 'string' && /^\d{1,5}$/.test(v.trim()) ? v.trim() : null);
+  let persisted = null;
+  try { persisted = valid(readPortFile()); } catch { persisted = null; }
+  return persisted ?? valid(env.AGENFK_PORT ?? '');
+}
+
+/**
  * Is an agenfk server process alive right now? `run` is spawnSync's shape,
  * passed in so this stays side-effect-free. Only an actual node/bun invocation
  * of the server bin counts - not any process whose argv happens to embed the
@@ -372,11 +384,19 @@ const SERVER_PATTERN = 'packages/server/dist/server.js';
  * The CLI's killPatterns (packages/cli/src/index.ts) lists the same way; it
  * cannot import from scripts/.
  */
-export function serverProcessAlive(run, { platform = process.platform } = {}) {
+export function serverProcessAlive(run, { platform = process.platform, root } = {}) {
+  // BUG d95009ff: only THIS install's server. Matching the bare relative path saw every
+  // install's server on the machine, so an install into another HOME restarted - killed -
+  // the developer's live one. Required: a caller that forgets it must not match them all.
+  if (typeof root !== 'string' || !root) throw new TypeError('serverProcessAlive: root (this install\'s directory) is required');
   // Windows paths take either slash and any case; POSIX paths are what they say.
   const asPath = (line) => (platform === 'win32' ? line.replace(/\\/g, '/').toLowerCase() : line);
+  const target = asPath(`${root.replace(/[\\/]+$/, '')}/${SERVER_PATTERN}`);
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // The whole path, as an argument: not the tail of a longer one (/x/opt/agenfk/... for /opt/agenfk).
+  const ownServer = new RegExp(`(?:^|[\\s"'])${escaped}(?=$|[\\s"'])`);
   const looksLikeServerCmd = (line) =>
-    asPath(line).includes(SERVER_PATTERN) && /(^|[\/\\\s"])(node|node\.exe|bun|bun\.exe)([\s."]|$)/i.test(line);
+    ownServer.test(asPath(line)) && /(^|[\/\\\s"])(node|node\.exe|bun|bun\.exe)([\s."]|$)/i.test(line);
   try {
     if (platform === 'win32') {
       const out = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
@@ -396,7 +416,7 @@ export function serverProcessAlive(run, { platform = process.platform } = {}) {
     // Fallback: pgrep against a node-anchored regex if ps is unavailable.
     // Escape every regex metacharacter, not just the dot - a partial escape is
     // the kind that quietly stops matching when the pattern changes.
-    const pgPattern = SERVER_PATTERN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pgPattern = escaped;
     const pg = run('pgrep', ['-f', `(node|bun).*${pgPattern}`], { encoding: 'utf8', windowsHide: true });
     return pg.status === 0 && (pg.stdout || '').trim().length > 0;
   } catch {
