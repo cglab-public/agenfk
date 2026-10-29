@@ -4,6 +4,35 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.6] — 2026-10-29
+
+Fixes from the beta.5 post-release tests (#297, CGLAB-694).
+
+**Airlock**
+
+- **`agenfk airlock pi` works on a machine that has `~/.pi/agent/auth.json`.** pi reads an auth.json it cannot open
+  as "no key", even for a key in `models.json`, and the sandbox denies it: every launch failed with "No API key
+  found". pi now runs on a staged agent dir (every entry but `auth.json`, which is an empty one of its own). A
+  `PI_CODING_AGENT_DIR` you set is honoured (`~` and `file://` too), its `auth.json` denied and `extensions`
+  unwritable. pi's `/login` logins are not available inside; give a provider's key as an env var.
+- **The shared `/tmp` is writable inside the sandbox**, for tools that hardcode it (e.g. `pi-patty-bg-tasks`).
+  Accepted risk: a sandboxed agent can change anything of yours under `/tmp`, such as a git checkout's hooks there.
+- **Dataset: no secret in a one-line shell command or an XML file.** `printf 'user: x\npassword: y'` (escaped
+  newlines), `<password>`, `<db:password>` and multiline elements are now recognised, and the content left out.
+- **Dataset: live rows carry their card and session.** The pi extension names its own session (exported to its
+  shells as `AGENFK_PI_SESSION_ID`, ranked after Claude Code's), and a sandboxed gatekeeper records its card
+  through the server, under its launch. Proxy rows take the session the launch's calls last named.
+- **Dataset: a write's content is in its row** (it was a placeholder), redacted before it leaves; bodies are
+  dropped from a call that would be too large rather than blocking it.
+- `agenfk airlock dataset status` says whether the org's dataset switch is on, asking the hub now.
+- `agenfk airlock status` against a server older than Airlock says so, instead of a bare 404.
+
+**CLI and installer**
+
+- An install into another HOME no longer restarts (kills) the AgEnFK server of a different install on the same
+  machine.
+- No more Node 22 `ExperimentalWarning: SQLite` on every command.
+
 ## [2.1.0-beta.5] — 2026-10-28
 
 **Airlock**
