@@ -138,12 +138,18 @@ export function readActiveWorkForSession(sessionId?: string): ActiveWork | null 
 /** Record the item the gatekeeper just authorized. Never throws. */
 export function writeActiveWork(work: ActiveWork, sessionId?: string): void {
   try {
-    const target = path.resolve(activeWorkPath(sessionId));
+    if (!sessionId) {
+      const shared = activeWorkPath();
+      fs.mkdirSync(path.dirname(shared), { recursive: true });
+      fs.writeFileSync(shared, serializeActiveWork(work), 'utf8');
+      return;
+    }
     // A session id names the file (POST /active-work takes it from a request): whatever it
-    // holds, the note stays in the notes dir or is the shared one (PR #297 CodeQL).
+    // holds, the note stays in the notes dir (PR #297 CodeQL js/path-injection).
     const notes = path.resolve(os.homedir(), '.agenfk', 'active-work');
-    if (!target.startsWith(notes + path.sep) && target !== path.resolve(activeWorkPath())) return;
-    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const target = path.resolve(notes, path.basename(activeWorkPath(sessionId)));
+    if (!target.startsWith(notes + path.sep)) return;
+    fs.mkdirSync(notes, { recursive: true });
     fs.writeFileSync(target, serializeActiveWork(work), 'utf8');
   } catch {
     // A lost note costs a run that is not recorded — never a failed command.
