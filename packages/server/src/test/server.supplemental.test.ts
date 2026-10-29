@@ -155,10 +155,19 @@ describe('GET /version', () => {
 describe('GET /api/readme', () => {
   // GH-281: the test above accepts either answer. These pin each one against a
   // directory the test controls, rather than whatever the runner's cwd holds.
-  const withCwd = async (setup: (dir: string) => void, fn: () => Promise<void>) => {
+  const withCwd = async (setup: (dir: string) => void, fn: () => Promise<void>, sub?: string) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-readme-'));
+    // The temp dir is its own project root (BUG 8e914bf9). Without a marker,
+    // findProjectRoot walks up out of it: on Windows os.tmpdir() lives under
+    // the REAL home, which holds ~/.agenfk, and os.homedir() is mocked to the
+    // sandbox in this file, so the home guard never stops the walk there - the
+    // route then reads the real home's README, or not, and the spec measures
+    // the developer's machine instead of this directory.
+    fs.mkdirSync(path.join(dir, '.agenfk'));
     setup(dir);
-    const spy = vi.spyOn(process, 'cwd').mockReturnValue(dir);
+    const cwd = sub ? path.join(dir, sub) : dir;
+    if (sub) fs.mkdirSync(cwd, { recursive: true });
+    const spy = vi.spyOn(process, 'cwd').mockReturnValue(cwd);
     try { await fn(); } finally { spy.mockRestore(); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   };
 
@@ -176,6 +185,14 @@ describe('GET /api/readme', () => {
       expect(res.status).toBe(200);
       expect(res.body.content).toBe('# Hello readme\n');
     });
+  });
+
+  it('walks up to the project root for README.md', async () => {
+    await withCwd(dir => fs.writeFileSync(path.join(dir, 'README.md'), '# Root readme\n'), async () => {
+      const res = await agent().get('/api/readme');
+      expect(res.status).toBe(200);
+      expect(res.body.content).toBe('# Root readme\n');
+    }, path.join('packages', 'x'));
   });
 });
 
