@@ -21,7 +21,7 @@
 import os from 'os';
 import path from 'path';
 import { normalizeAirlockPolicy, airlockPolicyErrors, type AirlockPolicy } from '@agenfk/core';
-import { buildSandboxSpec, type SandboxSpec } from './spec';
+import { buildSandboxSpec, type SandboxSpec, sharedTempDir } from './spec';
 import type { AirlockRuntime } from './runtime';
 import { findAgenfkDirs, projectAgenfkDirs, workspaceGitDir, AGENFK_SCAN_LIMIT, type LaunchDeps } from './launch';
 
@@ -123,7 +123,7 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
       purpose: 'command',
       home: d.home,
       workspace: cwd,
-      tempDirs: [d.tmpDir],
+      tempDirs: [...new Set([d.tmpDir, sharedTempDir(d.platform, d.realpath) ?? d.tmpDir])],
       inferenceHosts: [],
       serverPort: 0,
       directServerPort: d.directServerPort,

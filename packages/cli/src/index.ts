@@ -4,7 +4,7 @@ import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
 import { readProjectFile, unreadableFileCommand, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets, VERIFY_COMMAND_FLAG, SETUP_COMMAND_FLAG } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
-import { writeActiveWork } from './activeWork.js';
+import { recordActiveWork, gatekeeperSessionId } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
@@ -4282,7 +4282,7 @@ program
   .option('--role <role>', 'Role label (planning|coding|review|testing|closing); defaults to the role of the step the card is on')
   .option('--item-id <id>', 'Specific item ID to check against')
   .option('--json', 'Output as JSON')
-  .option('--session <id>', 'Harness session id to key the active-work note on (defaults to AGENFK_SESSION_ID, then CLAUDE_CODE_SESSION_ID)')
+  .option('--session <id>', 'Harness session id to key the active-work note on (defaults to AGENFK_SESSION_ID, then CLAUDE_CODE_SESSION_ID, then AGENFK_PI_SESSION_ID)')
   .action(async (options) => {
     try {
       const { data: items } = await axios.get(`${API_URL}/items`);
@@ -4376,17 +4376,18 @@ program
       // CGLAB-570: the note is KEYED to this session when one is known. The
       // explicit flag wins; otherwise the env the harness sets for us —
       // AGENFK_SESSION_ID, then Claude Code's CLAUDE_CODE_SESSION_ID (set in
-      // Bash tool subprocesses, matching the session_id hooks receive). A
+      // Bash tool subprocesses, matching the session_id hooks receive), then
+      // pi's AGENFK_PI_SESSION_ID (gatekeeperSessionId). A
       // keyed note is the common path now: the run recorder STRICTLY refuses
       // the shared note for sessions it can name, so a sessionless gatekeeper
       // run records nothing rather than capturing every other session's runs
       // for the TTL.
       if (decision.authorized && decision.task?.id) {
-        const sessionId = options.session
-          || process.env.AGENFK_SESSION_ID
-          || process.env.CLAUDE_CODE_SESSION_ID
-          || undefined;
-        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId }, sessionId);
+        const sessionId = gatekeeperSessionId(options.session, process.env);
+        await recordActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId }, sessionId, {
+          env: process.env,
+          post: (body) => axios.post(`${API_URL}/active-work`, body, { timeout: 5000 }),
+        });
       }
 
       // 37a292a7: what leaving this step will run, so the agent does not run the

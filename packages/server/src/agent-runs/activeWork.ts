@@ -13,6 +13,7 @@
  * the CLI records it here for the run recorder to pick up.
  */
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -106,6 +107,27 @@ export function readActiveWork(reader: FileReader = readerFor()): ActiveWork | n
     itemId: note.itemId,
     projectId: typeof note.projectId === 'string' ? note.projectId : undefined,
   };
+}
+
+/**
+ * The key a note from an Airlock sandbox is kept under (review finding S3): its signed launch
+ * and the session it names. The session id is the sandbox's word, the launch is not, so a
+ * sandbox can only write - and its calls only read - notes of its own launch.
+ */
+export function sandboxSessionKey(launchNonce: string, sessionId: string): string {
+  // Hashed to a fixed length: a launch nonce and a 256-character session id would pass the
+  // 255-byte limit on a file name, and the note would be lost without a word (second review).
+  return `airlock-${createHash('sha256').update(`${launchNonce}\0${sessionId}`).digest('hex').slice(0, 40)}`;
+}
+
+/**
+ * The note for a call: under its launch when it came from an Airlock sandbox (or the launcher
+ * speaking for one), where a call without a session has none - never the shared note, which may
+ * be any project's (second review) - else the session's own, as before.
+ */
+export function activeWorkKeyFor(sessionId: string | undefined, launchNonce: string | undefined): { key: string | undefined } | null {
+  if (launchNonce === undefined) return { key: sessionId };
+  return sessionId ? { key: sandboxSessionKey(launchNonce, sessionId) } : null;
 }
 
 /** Read the note for a specific session, falling back to the shared one. */

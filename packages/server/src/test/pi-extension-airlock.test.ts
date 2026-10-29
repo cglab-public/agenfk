@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 // @ts-ignore — .ts extension is loaded by pi via jiti; here we import it directly.
 import activate from '../../../../bin/agenfk-pi-extension.ts';
 
@@ -342,5 +342,67 @@ describe('pi: Airlock runs after the workflow checks', () => {
     await fire('tool_call', { toolName: 'bash', input: { ...CURL } });
     expect(deps.enforcerVerdict).toHaveBeenCalledTimes(1);
     expect(deps.enforcerVerdict.mock.invocationCallOrder[0]).toBeLessThan(deps.airlockVerdict.mock.invocationCallOrder[0]);
+  });
+});
+
+// BUG 3afbbf7e: every live pi row in the beta.5 prod dataset had session:null and card:null. The
+// extension named its session only from AGENFK_SESSION_ID, which neither pi nor the Airlock
+// launcher sets, so nothing joined a call to its card or to the session's earlier calls.
+// Review C2/C3: the session pi is on NOW (pi starts, resumes and forks sessions in one process),
+// exported as pi's own variable so a harness started from pi's shell keeps its own.
+describe('pi: the session Airlock is told about (BUG 3afbbf7e)', () => {
+  const KEYS = ['AGENFK_SESSION_ID', 'AGENFK_PI_SESSION_ID', 'CLAUDE_CODE_SESSION_ID'] as const;
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => { for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; } });
+  afterEach(() => { for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
+  const ctxWithSession = (id: string) => ({ cwd: '/work', sessionManager: { getSessionId: () => id } });
+
+  it('without AGENFK_SESSION_ID it is pi\'s own session id', async () => {
+    const { pi, fire } = makeFakePi();
+    const deps = makeDeps();
+    activate(pi as any, deps);
+    await fire('tool_call', { toolName: 'bash', input: { command: 'ls' } }, ctxWithSession('01a184d4-pi'));
+    expect(deps.airlockVerdict.mock.calls[0][0]).toMatchObject({ sessionId: '01a184d4-pi' });
+  });
+
+  it('each session start exports the session pi is on now, as AGENFK_PI_SESSION_ID (C2)', async () => {
+    const { pi, fire } = makeFakePi();
+    const deps = makeDeps();
+    activate(pi as any, deps);
+    await fire('session_start', {}, ctxWithSession('session-a'));
+    expect(process.env.AGENFK_PI_SESSION_ID).toBe('session-a');
+    await fire('session_start', {}, ctxWithSession('session-b'));
+    expect(process.env.AGENFK_PI_SESSION_ID).toBe('session-b');
+    await fire('tool_call', { toolName: 'bash', input: { command: 'ls' } }, ctxWithSession('session-b'));
+    expect(deps.airlockVerdict.mock.calls[0][0]).toMatchObject({ sessionId: 'session-b' });
+    // AGENFK_SESSION_ID stays the harness's to set: a child harness never reads pi's from it (C3).
+    expect(process.env.AGENFK_SESSION_ID).toBeUndefined();
+  });
+
+  it('a Claude Code session pi was started from is not its shells\' session', async () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'claude-parent';
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps());
+    await fire('session_start', {}, ctxWithSession('session-a'));
+    expect(process.env.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+  });
+
+  it('an AGENFK_SESSION_ID the harness set wins, for every session', async () => {
+    process.env.AGENFK_SESSION_ID = 'harness-session';
+    const { pi, fire } = makeFakePi();
+    const deps = makeDeps();
+    activate(pi as any, deps);
+    await fire('session_start', {}, ctxWithSession('session-a'));
+    await fire('tool_call', { toolName: 'bash', input: { command: 'ls' } }, ctxWithSession('session-b'));
+    expect(process.env.AGENFK_SESSION_ID).toBe('harness-session');
+    expect(deps.airlockVerdict.mock.calls[0][0]).toMatchObject({ sessionId: 'harness-session' });
+  });
+
+  it('a pi without a session manager sends no session, as before', async () => {
+    const { pi, fire } = makeFakePi();
+    const deps = makeDeps();
+    activate(pi as any, deps);
+    await fire('tool_call', { toolName: 'bash', input: { command: 'ls' } }, { cwd: '/work' });
+    expect(deps.airlockVerdict.mock.calls[0][0].sessionId).toBeUndefined();
   });
 });

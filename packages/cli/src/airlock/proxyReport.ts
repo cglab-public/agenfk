@@ -41,6 +41,8 @@ export interface ProxyReportBody {
   client: string;
   model: string | null;
   sessionId: string | null;
+  /** The launch the decisions are for: its session's card is the one its sandbox recorded. */
+  launch?: string;
   decisions: Array<ProxyDecision & { ts: string }>;
 }
 
@@ -50,6 +52,8 @@ export interface ProxyReporterOptions {
   client: string;
   model: string | null;
   sessionId: string | null;
+  /** The launch nonce (the launcher's own, never the sandbox's word). */
+  launch?: string;
   now?: () => number;
 }
 
@@ -96,7 +100,11 @@ export class ProxyDecisionReporter {
   async flush(): Promise<void> {
     const decisions = this.queue.splice(0, PROXY_REPORT_MAX_QUEUE);
     if (!decisions.length) return;
-    const body: ProxyReportBody = { client: this.opts.client, model: this.opts.model, sessionId: this.opts.sessionId, decisions };
+    const body: ProxyReportBody = {
+      client: this.opts.client, model: this.opts.model, sessionId: this.opts.sessionId,
+      ...(this.opts.launch ? { launch: this.opts.launch } : {}),
+      decisions,
+    };
     const abort = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<void>((resolve) => {
