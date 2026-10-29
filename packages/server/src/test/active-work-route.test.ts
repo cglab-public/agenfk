@@ -66,6 +66,24 @@ describe('POST /active-work', () => {
     const c = await card();
     expect((await agent().post('/active-work').send({ itemId: c.id, sessionId: 'x'.repeat(257) })).status).toBe(400);
   });
+
+  // PR #297 CodeQL: a plain note's file name is the session id; past 200 characters it would
+  // pass the 255-byte limit and the note would be lost while the route answered 204.
+  it('takes a session id of up to 200 characters, and refuses a longer one', async () => {
+    const c = await card();
+    expect((await agent().post('/active-work').send({ itemId: c.id, sessionId: 'y'.repeat(201) })).status).toBe(400);
+    expect((await agent().post('/active-work').send({ itemId: c.id, sessionId: 'y'.repeat(200) })).status).toBe(204);
+    expect(readActiveWorkForSession('y'.repeat(200))).toEqual({ itemId: c.id, projectId: c.projectId });
+  });
+
+  it('a session id spelled as a path writes its note inside the notes dir, nowhere else', async () => {
+    const c = await card();
+    const res = await agent().post('/active-work').send({ itemId: c.id, sessionId: '../../../escaped' });
+    expect(res.status).toBe(204);
+    expect(fs.existsSync(path.join(os.homedir(), 'escaped.json'))).toBe(false);
+    expect(fs.existsSync(path.join(os.homedir(), '.agenfk', 'escaped.json'))).toBe(false);
+    expect(path.dirname(activeWorkPath('../../../escaped'))).toBe(path.join(os.homedir(), '.agenfk', 'active-work'));
+  });
 });
 
 // Review finding S3: the coverage middleware confines the CARD to the sandbox's project, but the

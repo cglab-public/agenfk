@@ -6118,8 +6118,11 @@ const gitRun = { run: runGitSync };
 app.post("/active-work", asyncHandler(async (req: any, res: any) => {
   const { itemId, sessionId } = req.body || {};
   if (typeof itemId !== 'string' || !itemId) return res.status(400).json({ error: 'itemId is required' });
-  if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 256) {
-    return res.status(400).json({ error: 'sessionId is required (at most 256 characters): a note without one would be every session\'s' });
+  // A plain note's file name is the session id: at most 200, under the 255-byte limit. A
+  // sandbox's note is under a fixed-length hash, so its session id may run to 256.
+  const maxSession = typeof req.airlockSession === 'string' ? 256 : 200;
+  if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > maxSession) {
+    return res.status(400).json({ error: `sessionId is required (at most ${maxSession} characters): a note without one would be every session's` });
   }
   const item: any = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: `Item ${itemId} not found` });

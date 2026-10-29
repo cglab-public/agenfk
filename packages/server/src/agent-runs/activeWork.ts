@@ -138,7 +138,11 @@ export function readActiveWorkForSession(sessionId?: string): ActiveWork | null 
 /** Record the item the gatekeeper just authorized. Never throws. */
 export function writeActiveWork(work: ActiveWork, sessionId?: string): void {
   try {
-    const target = activeWorkPath(sessionId);
+    const target = path.resolve(activeWorkPath(sessionId));
+    // A session id names the file (POST /active-work takes it from a request): whatever it
+    // holds, the note stays in the notes dir or is the shared one (PR #297 CodeQL).
+    const notes = path.resolve(os.homedir(), '.agenfk', 'active-work');
+    if (!target.startsWith(notes + path.sep) && target !== path.resolve(activeWorkPath())) return;
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, serializeActiveWork(work), 'utf8');
   } catch {
