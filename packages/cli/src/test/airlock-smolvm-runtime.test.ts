@@ -1,0 +1,1341 @@
+/**
+ * CGLAB-696 task 1: the smolvm Airlock runtime. One persistent machine per
+ * workspace (the folder Airlock is launched from), started for a session and
+ * stopped when the last one leaves. The guest sees only what is mounted: the
+ * workspace and the client's state, at their host paths; what the spec keeps
+ * unwritable inside them is bound read-only in the guest, and what it keeps
+ * unreadable is hidden. Tested with a fake smolvm CLI; the last block runs the
+ * real one where it is installed.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'events';
+import { spawnSync } from 'child_process';
+import net from 'net';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { normalizeAirlockPolicy } from '@agenfk/core';
+import { buildSandboxSpec, type SandboxSession, type SandboxSpec } from '../airlock/spec';
+import type { ProxyDecision } from '../airlock/runtime';
+import {
+  SmolvmRuntime,
+  SMOLVM_VERSION,
+  machineNameOf,
+  guestPlanOf,
+  guestSetupScript,
+  runAirlockReset,
+  type EgressBroker,
+  type SmolvmResult,
+} from '../airlock/smolvm';
+
+const IMAGE = 'ghcr.io/cglab-public/agenfk-airlock-base:test';
+
+type Machine = { state: 'running' | 'stopped'; labels: Record<string, string>; image: string };
+
+const flag = (args: string[], ...names: string[]): string | undefined => {
+  for (const n of names) {
+    const i = args.indexOf(n);
+    if (i >= 0) return args[i + 1];
+  }
+  return undefined;
+};
+
+/** The smolvm CLI, as far as the runtime uses it: machines, mounts, exec, version. */
+function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string; startFails?: string; missing?: boolean; stopTakesMs?: number; stopFails?: string } = {}) {
+  const machines = new Map<string, Machine>(Object.entries(init.machines ?? {}));
+  const mounts = new Map<string, Array<{ source: string; target: string; readOnly: boolean }>>();
+  const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+  const ok = (stdout = ''): SmolvmResult => ({ code: 0, stdout, stderr: '' });
+  const fail = (stderr: string): SmolvmResult => ({ code: 1, stdout: '', stderr });
+  const run = vi.fn(async (args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): Promise<SmolvmResult> => {
+    if (init.missing) throw Object.assign(new Error('spawn smolvm ENOENT'), { code: 'ENOENT' });
+    calls.push({ args, env: opts.env });
+    if (args[0] === '--version') return ok(`smolvm ${init.version ?? SMOLVM_VERSION}\n`);
+    expect(args[0]).toBe('machine');
+    const name = flag(args, '--name', '-n') as string;
+    const m = machines.get(name);
+    switch (args[1]) {
+      case 'ls':
+        return ok(JSON.stringify([...machines].map(([n, v]) => ({ name: n, state: v.state, labels: v.labels, image: v.image }))));
+      case 'create': {
+        const labels: Record<string, string> = {};
+        args.forEach((a, i) => {
+          if (a === '--label') {
+            const [k, ...v] = args[i + 1].split('=');
+            labels[k] = v.join('=');
+          }
+        });
+        machines.set(name, { state: 'stopped', labels, image: flag(args, '-I', '--image') as string });
+        return ok();
+      }
+      case 'delete':
+        if (!m) return fail('vm not found');
+        machines.delete(name);
+        return ok();
+      case 'start':
+        if (init.startFails) return fail(init.startFails);
+        if (!m) return fail('vm not found');
+        m.state = 'running';
+        return ok();
+      case 'stop':
+        // A real stop takes a while: long enough for another session to join meanwhile.
+        if (init.stopTakesMs) await new Promise((r) => setTimeout(r, init.stopTakesMs));
+        if (init.stopFails) return fail(init.stopFails);
+        if (m) m.state = 'stopped';
+        mounts.delete(name);
+        return ok();
+      case 'mount':
+        if (args[2] === 'ls') return ok(JSON.stringify(mounts.get(name) ?? []));
+        if (args[2] === 'add') {
+          const [source, target, ro] = (flag(args, '-v', '--volume') as string).split(':');
+          const list = mounts.get(name) ?? [];
+          if (list.some((x) => x.target === target)) return fail(`${target} already has an attached mount`);
+          list.push({ source, target, readOnly: ro === 'ro' });
+          mounts.set(name, list);
+          return ok();
+        }
+        return fail('unknown mount verb');
+      case 'exec':
+        return ok();
+      default:
+        return fail(`unknown verb ${args[1]}`);
+    }
+  });
+  const verbs = () => calls.filter((c) => c.args[0] === 'machine').map((c) => c.args[1]);
+  const execs = () => calls.filter((c) => c.args[1] === 'exec').map((c) => c.args);
+  return { run, calls, machines, mounts, verbs, execs };
+}
+
+function fakeEgress(): EgressBroker & { ensure: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; watch: ReturnType<typeof vi.fn>; emit(d: ProxyDecision): void; unwatched: number } {
+  const listeners = new Set<(d: ProxyDecision) => void>();
+  const broker = {
+    unwatched: 0,
+    ensure: vi.fn(async () => ({ address: '127.0.0.1:47001', token: 'a'.repeat(64) })),
+    stop: vi.fn(async () => undefined),
+    watch: vi.fn((_machine: string, fn: (d: ProxyDecision) => void) => {
+      listeners.add(fn);
+      return () => { listeners.delete(fn); broker.unwatched++; };
+    }),
+    emit: (d: ProxyDecision) => { for (const l of listeners) l(d); },
+  };
+  return broker;
+}
+
+/** The host side of `smolvm machine exec` for the session: exits when told to. */
+function fakeSpawn() {
+  const children: Array<EventEmitter & { pid: number; kill: ReturnType<typeof vi.fn>; finish(code: number | null, signal?: string | null): void }> = [];
+  const spawn = vi.fn((_file: string, _args: string[]) => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 5000 + children.length,
+      kill: vi.fn(() => true),
+      finish(code: number | null, signal: string | null = null) { child.emit('exit', code, signal); },
+    });
+    children.push(child);
+    return child;
+  });
+  return { spawn, children };
+}
+
+let root: string;
+let home: string;
+let workspace: string;
+let agentDir: string;
+let stagedDir: string;
+let stateDir: string;
+let tmpDir: string;
+
+function session(over: Partial<SandboxSession> = {}): SandboxSession {
+  return {
+    client: 'pi',
+    home,
+    workspace,
+    tempDirs: [tmpDir],
+    inferenceHosts: ['api.openai.com'],
+    serverPort: 3123,
+    installDirs: [path.join(home, '.agenfk-system')],
+    gitDir: path.join(workspace, '.git'),
+    piAgentDir: agentDir,
+    piStagedAgentDir: stagedDir,
+    ...over,
+  };
+}
+const specOf = (over: Partial<SandboxSession> = {}): SandboxSpec =>
+  buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }), session(over));
+
+beforeEach(() => {
+  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-smolvm-')));
+  home = path.join(root, 'home');
+  workspace = path.join(root, 'work', 'repo');
+  agentDir = path.join(home, '.pi', 'agent');
+  tmpDir = path.join(root, 'tmp');
+  stagedDir = path.join(tmpDir, 'agenfk-airlock-pi-x');
+  stateDir = path.join(root, 'state');
+  for (const d of [
+    path.join(workspace, '.agenfk'), path.join(workspace, '.git', 'hooks'), path.join(workspace, 'packages', 'a', '.agenfk'),
+    path.join(workspace, 'node_modules', 'dep', '.agenfk'),
+    path.join(agentDir, 'extensions'), path.join(agentDir, 'sessions'), stagedDir, path.join(home, '.ssh'),
+  ]) fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(workspace, '.git', 'config'), '[core]\n');
+  fs.writeFileSync(path.join(agentDir, 'auth.json'), '{"fake":"not-a-key"}\n');
+  fs.writeFileSync(path.join(home, '.ssh', 'id_fake'), 'fake\n');
+});
+afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+
+function runtime({ smolvm: givenSmolvm, egress: givenEgress, ...over }: Record<string, unknown> = {}) {
+  const smolvm = (givenSmolvm as ReturnType<typeof fakeSmolvm>) ?? fakeSmolvm();
+  const egress = (givenEgress as ReturnType<typeof fakeEgress>) ?? fakeEgress();
+  const sp = fakeSpawn();
+  const rt = new SmolvmRuntime({
+    image: IMAGE,
+    smolvm: smolvm.run,
+    spawn: sp.spawn as any,
+    platform: 'darwin',
+    arch: 'arm64',
+    kvmAccessible: () => false,
+    stateDir,
+    egress,
+    uid: 503,
+    gid: 20,
+    isTTY: false,
+    hostEnv: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8', OPENAI_API_KEY: 'sk-fake-not-real', PATH: '/host/bin' },
+    pidAlive: (pid: number) => pid === process.pid,
+    ...over,
+  });
+  return { rt, smolvm, egress, sp };
+}
+
+const cmd = () => ({ file: 'pi', args: ['--approve'], cwd: workspace });
+/** Another session in the machine, alive (this process). */
+function liveSession(name: string, id = 'other', network: SandboxSpec['network'] = specOf().network) {
+  const sessions = path.join(stateDir, 'machines', name, 'sessions');
+  fs.mkdirSync(sessions, { recursive: true });
+  fs.writeFileSync(path.join(sessions, `${id}.json`), JSON.stringify({ pid: process.pid }));
+  // The network policy and file protections the machine was started under, as the session that started it records them.
+  fs.writeFileSync(path.join(stateDir, 'machines', name, 'network.json'), JSON.stringify(network));
+  const plan = guestPlanOf(specOf(), workspace);
+  fs.writeFileSync(path.join(stateDir, 'machines', name, 'protections.json'), JSON.stringify({ pinned: plan.pinned, readOnly: plan.readOnly, hidden: plan.hidden }));
+}
+/** The mounts this session's plan makes, as `mount ls` lists them. */
+const sameMounts = () => guestPlanOf(specOf(), workspace).mounts.map((m) => ({ source: m.host, target: m.guest, readOnly: false }));
+const running = (name: string): Machine => ({ state: 'running', image: IMAGE, labels: { 'agenfk.workspace': workspace, 'agenfk.image': IMAGE } });
+/** Let the launch's queued smolvm calls run. */
+const settle = () => new Promise((r) => setTimeout(r, 20));
+
+describe('SmolvmRuntime.check', () => {
+  it('refuses Windows, and says why', async () => {
+    const r = await runtime({ platform: 'win32' }).rt.check();
+    expect(r).toMatchObject({ ok: false });
+    expect((r as { reason: string }).reason).toMatch(/Windows/);
+  });
+
+  it('refuses an Intel Mac: smolvm needs Apple Silicon', async () => {
+    const r = await runtime({ arch: 'x64' }).rt.check();
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/Apple Silicon/);
+  });
+
+  it('refuses Linux without a usable /dev/kvm, and says how to get one', async () => {
+    const r = await runtime({ platform: 'linux', arch: 'x64', kvmAccessible: () => false }).rt.check();
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/\/dev\/kvm/);
+    expect((r as { reason: string }).reason).toMatch(/kvm group|virtuali[sz]ation/i);
+  });
+
+  it('accepts Linux with /dev/kvm', async () => {
+    expect(await runtime({ platform: 'linux', arch: 'x64', kvmAccessible: () => true }).rt.check()).toEqual({ ok: true, warnings: [] });
+  });
+
+  it('accepts Apple Silicon with the pinned smolvm', async () => {
+    expect(await runtime().rt.check()).toEqual({ ok: true, warnings: [] });
+  });
+
+  it('refuses when smolvm is not installed, and says how to install it', async () => {
+    const r = await runtime({ smolvm: fakeSmolvm({ missing: true }) }).rt.check();
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/smolvm/);
+    expect((r as { reason: string }).reason).toMatch(/install/i);
+  });
+
+  it('refuses another smolvm version, naming both', async () => {
+    const r = await runtime({ smolvm: fakeSmolvm({ version: '1.31.0' }) }).rt.check();
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toContain('1.31.0');
+    expect((r as { reason: string }).reason).toContain(SMOLVM_VERSION);
+  });
+
+  it('names itself after smolvm and its version', () => {
+    expect(runtime().rt.id).toBe(`smolvm@${SMOLVM_VERSION}`);
+  });
+});
+
+describe('machineNameOf', () => {
+  it('is one name per workspace folder, stable, and a valid machine name', () => {
+    expect(machineNameOf('/work/a')).toBe(machineNameOf('/work/a'));
+    expect(machineNameOf('/work/a')).not.toBe(machineNameOf('/work/b'));
+    expect(machineNameOf('/work/a')).toMatch(/^agenfk-[0-9a-f]{16}$/);
+  });
+});
+
+describe('the machine of a workspace', () => {
+  it('is created on the first launch from the image, with mediated networking, labelled with its workspace and image', async () => {
+    const { rt, smolvm, sp } = runtime();
+    const launched = rt.launch(specOf(), cmd());
+    await launched;
+    const name = machineNameOf(workspace);
+    const create = smolvm.calls.find((c) => c.args[1] === 'create')!.args;
+    expect(flag(create, '--name', '-n')).toBe(name);
+    expect(flag(create, '-I', '--image')).toBe(IMAGE);
+    expect(create).toContain('--net');
+    expect(flag(create, '--net-backend')).toBe('virtio-net');
+    expect(create).toContain('--trust-host-certs');
+    expect(create).toContain(`agenfk.workspace=${workspace}`);
+    expect(create).toContain(`agenfk.image=${IMAGE}`);
+    // Never smolvm's own escape hatches.
+    for (const f of ['--allow-system-mounts', '--ssh-agent', '--docker-socket', '--nested', '--use-host-proxy']) expect(create).not.toContain(f);
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('is started behind the egress interceptor, whose token goes in the environment and never on the command line', async () => {
+    const { rt, smolvm, egress } = runtime();
+    await rt.launch(specOf(), cmd());
+    const start = smolvm.calls.find((c) => c.args[1] === 'start')!;
+    expect(start.args).toContain('--mediated-egress');
+    expect(flag(start.args, '--egress-interceptor')).toBe('127.0.0.1:47001');
+    expect(start.env?.SMOLVM_INTERCEPTOR_TOKEN).toBe('a'.repeat(64));
+    expect(start.args.join(' ')).not.toContain('a'.repeat(64));
+    expect(egress.ensure).toHaveBeenCalledWith(machineNameOf(workspace), expect.objectContaining({ network: expect.any(Object) }));
+  });
+
+  it('is reused when it exists with the same image: started, not created again', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: { state: 'stopped', image: IMAGE, labels: { 'agenfk.workspace': workspace, 'agenfk.image': IMAGE } } } });
+    await runtime({ smolvm }).rt.launch(specOf(), cmd());
+    expect(smolvm.verbs()).not.toContain('create');
+    expect(smolvm.verbs()).not.toContain('delete');
+    expect(smolvm.verbs()).toContain('start');
+  });
+
+  it('is made again when the base image changed', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: { state: 'stopped', image: 'old', labels: { 'agenfk.workspace': workspace, 'agenfk.image': 'old' } } } });
+    await runtime({ smolvm }).rt.launch(specOf(), cmd());
+    const v = smolvm.verbs();
+    expect(v.indexOf('delete')).toBeGreaterThanOrEqual(0);
+    expect(v.indexOf('delete')).toBeLessThan(v.indexOf('create'));
+    expect(smolvm.machines.get(name)?.labels['agenfk.image']).toBe(IMAGE);
+  });
+
+  it('is refused when a machine of that name belongs to another workspace: nothing is started', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: { state: 'stopped', image: IMAGE, labels: { 'agenfk.workspace': '/somewhere/else', 'agenfk.image': IMAGE } } } });
+    const { rt, sp } = runtime({ smolvm });
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(/\/somewhere\/else/);
+    expect(smolvm.verbs()).not.toContain('start');
+    expect(smolvm.verbs()).not.toContain('delete');
+    // Not this workspace's machine: the failed launch's cleanup leaves it alone.
+    expect(smolvm.verbs()).not.toContain('stop');
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('is joined, not started again, while another session runs it', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: { state: 'running', image: IMAGE, labels: { 'agenfk.workspace': workspace, 'agenfk.image': IMAGE } } } });
+    const egress = fakeEgress();
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name);
+    const { rt, sp } = runtime({ smolvm, egress });
+    await rt.launch(specOf(), cmd());
+    expect(smolvm.verbs()).not.toContain('start');
+    expect(egress.ensure).not.toHaveBeenCalled();
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a launch smolvm cannot start, with what smolvm said; nothing runs and nothing is left registered', async () => {
+    const smolvm = fakeSmolvm({ startFails: 'Error: hypervisor refused' });
+    const egress = fakeEgress();
+    const { rt, sp } = runtime({ smolvm, egress });
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(/hypervisor refused/);
+    expect(sp.spawn).not.toHaveBeenCalled();
+    expect(egress.stop).toHaveBeenCalled();
+    const sessions = path.join(stateDir, 'machines', machineNameOf(workspace), 'sessions');
+    expect(fs.existsSync(sessions) ? fs.readdirSync(sessions) : []).toEqual([]);
+  });
+});
+
+describe('guestPlanOf: what the guest sees', () => {
+  const plan = (over: Partial<SandboxSession> = {}) => guestPlanOf(specOf(over), workspace);
+
+  it('mounts the workspace and the client state read-write at their host paths, and no host temp dir', () => {
+    const p = plan();
+    const targets = p.mounts.map((m) => m.host);
+    expect(targets).toContain(workspace);
+    expect(targets).toContain(agentDir);
+    expect(p.mounts.every((m) => m.guest === m.host && !m.readOnly)).toBe(true);
+    // The guest has its own /tmp: the host's temp dirs are not shared.
+    expect(targets).not.toContain(tmpDir);
+    expect(targets.some((t) => t === '/tmp' || t === '/private/tmp')).toBe(false);
+  });
+
+  it('mounts the staged pi agent dir on its own though it sits in a host temp dir', () => {
+    expect(plan().mounts.map((m) => m.host)).toContain(stagedDir);
+  });
+
+  it('mounts a write root inside another one once, through the outer one', () => {
+    const inner = path.join(workspace, 'sub');
+    fs.mkdirSync(inner);
+    const p = guestPlanOf({ ...specOf(), filesystem: { ...specOf().filesystem, allowWrite: [...specOf().filesystem.allowWrite, inner] } }, workspace);
+    expect(p.mounts.map((m) => m.host)).not.toContain(inner);
+  });
+
+  it('never mounts the home dir or its credential stores', () => {
+    const targets = plan().mounts.map((m) => m.host);
+    expect(targets).not.toContain(home);
+    expect(targets.some((t) => t.startsWith(path.join(home, '.ssh')))).toBe(false);
+  });
+
+  it('binds read-only what the spec keeps unwritable inside a mount: the project .agenfk, git hooks and config, pi extensions', () => {
+    const ro = plan().readOnly;
+    expect(ro).toContain(path.join(workspace, '.agenfk'));
+    expect(ro).toContain(path.join(workspace, '.git', 'hooks'));
+    expect(ro).toContain(path.join(workspace, '.git', 'config'));
+    expect(ro).toContain(path.join(agentDir, 'extensions'));
+  });
+
+  it('finds the .agenfk directories below the workspace (the spec writes them as a glob), but not inside node_modules', () => {
+    const ro = plan().readOnly;
+    expect(ro).toContain(path.join(workspace, 'packages', 'a', '.agenfk'));
+    expect(ro).not.toContain(path.join(workspace, 'node_modules', 'dep', '.agenfk'));
+    expect(ro.some((p) => p.includes('*'))).toBe(false);
+  });
+
+  it('does not list protections outside every mount: nothing there is visible to bind', () => {
+    const ro = plan().readOnly;
+    expect(ro).not.toContain(path.join(home, '.agenfk'));
+    expect(ro).not.toContain(path.join(home, '.agenfk-system'));
+  });
+
+  it('hides what the spec keeps unreadable inside a mount: pi\'s auth.json', () => {
+    expect(plan().hidden).toEqual([{ path: path.join(agentDir, 'auth.json'), kind: 'file' }]);
+  });
+
+  it('holds the git paths that do not exist yet with placeholders git accepts, so none can be planted', () => {
+    const ph = plan().placeholders;
+    const git = path.join(workspace, '.git');
+    expect(ph).toContainEqual({ path: path.join(git, 'commondir'), kind: 'file', content: '.\n' });
+    expect(ph).toContainEqual({ path: path.join(git, 'config.worktree'), kind: 'file', content: '' });
+    expect(ph).toContainEqual({ path: path.join(git, 'modules'), kind: 'dir' });
+    expect(ph).toContainEqual({ path: path.join(git, 'worktrees'), kind: 'dir' });
+    // Each placeholder is bound read-only too.
+    for (const p of ph) expect(plan().readOnly).toContain(p.path);
+  });
+
+  it('leaves a git path that exists alone: no placeholder over a real worktrees dir', () => {
+    fs.mkdirSync(path.join(workspace, '.git', 'worktrees'));
+    expect(plan().placeholders.map((p) => p.path)).not.toContain(path.join(workspace, '.git', 'worktrees'));
+    expect(plan().readOnly).toContain(path.join(workspace, '.git', 'worktrees'));
+  });
+});
+
+describe('a session in the machine', () => {
+  it('joins a machine holding exactly its own mounts without mounting anything again', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name);
+    await runtime({ smolvm }).rt.launch(specOf(), cmd());
+    expect(smolvm.calls.filter((c) => c.args[1] === 'mount' && c.args[2] === 'add')).toEqual([]);
+  });
+
+  it('attaches the mounts a machine it starts does not hold yet', async () => {
+    const { rt, smolvm } = runtime();
+    await rt.launch(specOf(), cmd());
+    const added = smolvm.calls.filter((c) => c.args[1] === 'mount' && c.args[2] === 'add').map((c) => flag(c.args, '-v', '--volume'));
+    expect(added.sort()).toEqual(sameMounts().map((m) => `${m.source}:${m.target}`).sort());
+  });
+
+  it('applies the protections as root in the guest before the session starts', async () => {
+    const { rt, smolvm, sp } = runtime();
+    await rt.launch(specOf(), cmd());
+    const setup = smolvm.calls.find((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root');
+    expect(setup).toBeTruthy();
+    const script = setup!.args.join(' ');
+    expect(script).toContain(path.join(workspace, '.git', 'hooks'));
+    expect(script).toContain(path.join(agentDir, 'auth.json'));
+    expect(script).toMatch(/remount,bind,ro/);
+    // The setup ran before the session was spawned.
+    expect(smolvm.run.mock.invocationCallOrder[smolvm.calls.indexOf(setup!)]).toBeLessThan(sp.spawn.mock.invocationCallOrder[0]);
+  });
+
+  it('creates the git placeholders on the host for the session and removes them when it ends', async () => {
+    const { rt, sp } = runtime();
+    const commondir = path.join(workspace, '.git', 'commondir');
+    const launched = await rt.launch(specOf(), cmd());
+    expect(fs.readFileSync(commondir, 'utf8')).toBe('.\n');
+    expect(fs.statSync(path.join(workspace, '.git', 'worktrees')).isDirectory()).toBe(true);
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(fs.existsSync(commondir)).toBe(false);
+    expect(fs.existsSync(path.join(workspace, '.git', 'worktrees'))).toBe(false);
+  });
+
+  it('runs the command as the host user, in its folder, with the spec\'s env and nothing else of the host\'s but the terminal\'s', async () => {
+    const { rt, sp } = runtime();
+    const spec = specOf();
+    await rt.launch(spec, cmd());
+    const [file, args] = sp.spawn.mock.calls[0] as unknown as [string, string[]];
+    expect(file).toMatch(/smolvm$/);
+    expect(args.slice(0, 2)).toEqual(['machine', 'exec']);
+    expect(flag(args, '--name')).toBe(machineNameOf(workspace));
+    expect(flag(args, '-u', '--user')).toBe('503:20');
+    expect(flag(args, '-w', '--workdir')).toBe(workspace);
+    expect(args).toContain('-i');
+    const env = args.flatMap((a, i) => (args[i - 1] === '-e' ? [a] : []));
+    for (const [k, v] of Object.entries(spec.env)) expect(env).toContain(`${k}=${v}`);
+    expect(env).toContain(`HOME=${home}`);
+    expect(env).toContain('TMPDIR=/tmp');
+    expect(env).toContain('TERM=xterm-256color');
+    expect(env).toContain('LANG=en_US.UTF-8');
+    expect(env.some((e) => e.startsWith('OPENAI_API_KEY='))).toBe(false);
+    expect(env.some((e) => e.startsWith('PATH='))).toBe(false);
+    const tail = args.slice(args.indexOf('--') + 1);
+    expect(tail[0]).toBe('setsid');
+    expect(tail.slice(-2)).toEqual(['pi', '--approve']);
+  });
+
+  it('gives the session a terminal only when there is one', async () => {
+    const noTty = runtime();
+    const first = await noTty.rt.launch(specOf(), cmd());
+    expect((noTty.sp.spawn.mock.calls[0] as unknown as [string, string[]])[1]).not.toContain('-t');
+    noTty.sp.children[0].finish(0);
+    await first.exited;
+    const tty = runtime({ isTTY: true });
+    await tty.rt.launch(specOf(), cmd());
+    const args = (tty.sp.spawn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(args).toContain('-t');
+    // The session leader takes the terminal, so Ctrl-C reaches the agent.
+    expect(args.slice(args.indexOf('--') + 1).slice(0, 2)).toEqual(['setsid', '-c']);
+  });
+
+  it('exits with the command\'s exit code', async () => {
+    const { rt, sp } = runtime();
+    const launched = await rt.launch(specOf(), cmd());
+    sp.children[0].finish(7);
+    expect(await launched.exited).toEqual({ code: 7, signal: null });
+  });
+
+  it('signals the command\'s process group inside the guest: signalling the host side alone leaves it running', async () => {
+    const { rt, smolvm } = runtime();
+    const launched = await rt.launch(specOf(), cmd());
+    expect(launched.kill('SIGTERM')).toBe(true);
+    await settle();
+    const kill = smolvm.execs().find((a) => a.join(' ').includes('kill -TERM'));
+    expect(kill).toBeTruthy();
+    expect(flag(kill!, '-u', '--user')).toBe('503:20');
+  });
+
+  it('ends what the command left running, then stops the machine and its interceptor when the last session leaves', async () => {
+    const { rt, smolvm, sp, egress } = runtime();
+    const launched = await rt.launch(specOf(), cmd());
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(smolvm.execs().some((a) => a.join(' ').includes('kill -KILL'))).toBe(true);
+    expect(smolvm.verbs()).toContain('stop');
+    expect(egress.stop).toHaveBeenCalledWith(machineNameOf(workspace));
+  });
+
+  it('keeps the machine running while another session is in it', async () => {
+    const smolvm = fakeSmolvm();
+    const egress = fakeEgress();
+    const a = runtime({ smolvm, egress });
+    const b = runtime({ smolvm, egress, pidAlive: () => true });
+    const first = await a.rt.launch(specOf(), cmd());
+    const second = await b.rt.launch(specOf(), cmd());
+    a.sp.children[0].finish(0);
+    await first.exited;
+    expect(smolvm.verbs()).not.toContain('stop');
+    b.sp.children[0].finish(0);
+    await second.exited;
+    expect(smolvm.verbs()).toContain('stop');
+  });
+
+  it('does not count a session whose process is gone', async () => {
+    const sessions = path.join(stateDir, 'machines', machineNameOf(workspace), 'sessions');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(path.join(sessions, 'stale.json'), JSON.stringify({ pid: 999999 }));
+    const { rt, smolvm, sp } = runtime();
+    const launched = await rt.launch(specOf(), cmd());
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(smolvm.verbs()).toContain('stop');
+  });
+
+  it('hands the interceptor\'s decisions to the hook while it runs; a hook that throws changes nothing', async () => {
+    const { rt, sp, egress } = runtime();
+    const seen: ProxyDecision[] = [];
+    const launched = await rt.launch(specOf(), cmd(), {
+      onProxyDecision: (d) => { seen.push(d); if (d.host === 'boom') throw new Error('hook failed'); },
+    });
+    egress.emit({ host: 'db.example.com', port: 5432, decision: 'allow', rule: 'observe' });
+    expect(() => egress.emit({ host: 'boom', port: 443, decision: 'deny', rule: 'deny-list' })).not.toThrow();
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(seen.map((d) => d.host)).toEqual(['db.example.com', 'boom']);
+    expect(egress.unwatched).toBe(1);
+  });
+});
+
+describe('guestPlanOf: what the session cannot move aside or plant', () => {
+  it('pins the workspace .git, so it cannot be renamed and replaced around its read-only hooks and config', () => {
+    const p = guestPlanOf(specOf(), workspace);
+    expect(p.pinned).toContain(path.join(workspace, '.git'));
+    expect(p.readOnly).not.toContain(path.join(workspace, '.git'));
+  });
+
+  it('pins every directory between a protected path and its mount root, so none can carry a bind away', () => {
+    fs.mkdirSync(path.join(workspace, '.claude', 'commands'), { recursive: true });
+    const p = guestPlanOf(specOf(), workspace);
+    // packages/a/.agenfk: renaming packages/a would leave packages/a/.agenfk free to plant.
+    expect(p.pinned).toContain(path.join(workspace, 'packages'));
+    expect(p.pinned).toContain(path.join(workspace, 'packages', 'a'));
+    expect(p.pinned).toContain(path.join(workspace, '.claude'));
+    // Never a mount root.
+    expect(p.pinned).not.toContain(workspace);
+    expect(p.pinned).not.toContain(agentDir);
+  });
+
+  it('lists pins and read-only binds outer first: a bind over a directory hides the binds inside it', () => {
+    const p = guestPlanOf(specOf(), workspace);
+    const depth = (x: string) => x.split(path.sep).length;
+    for (const list of [p.pinned, p.readOnly]) {
+      expect(list.map(depth)).toEqual([...list.map(depth)].sort((a, b) => a - b));
+    }
+  });
+
+  it('never pins a read-only path: an overlapping protection keeps .claude/commands read-only', () => {
+    fs.mkdirSync(path.join(workspace, '.claude', 'commands', 'tool', '.agenfk'), { recursive: true });
+    const p = guestPlanOf(specOf(), workspace);
+    const commands = path.join(workspace, '.claude', 'commands');
+    expect(p.readOnly).toContain(commands);
+    expect(p.readOnly).toContain(path.join(commands, 'tool', '.agenfk'));
+    expect(p.pinned).not.toContain(commands);
+    expect(p.pinned).not.toContain(path.join(commands, 'tool'));
+    expect(p.pinned).toContain(path.join(workspace, '.claude'));
+  });
+
+  it('refuses to mount the home folder, or anything above it', () => {
+    expect(() => guestPlanOf(specOf({ workspace: home }), home)).toThrow(/whole home folder/);
+  });
+
+  it('refuses a write root that is, or is inside, a protected path: a bind on a mount root protects nothing', () => {
+    const state = path.join(home, '.agenfk', 'proj');
+    fs.mkdirSync(state, { recursive: true });
+    expect(() => guestPlanOf(specOf({ workspace: state }), state)).toThrow(/\.agenfk/);
+  });
+
+  it('refuses a write root in the directory of a protected pattern: ~/.ssh by ~/.ssh/id_*', () => {
+    const ssh = path.join(home, '.ssh');
+    expect(() => guestPlanOf(specOf({ workspace: ssh }), ssh)).toThrow(/\.ssh/);
+  });
+
+  it('hides what a last-segment pattern matches inside the mounts', () => {
+    const keys = path.join(workspace, 'keys');
+    fs.mkdirSync(keys);
+    for (const f of ['secret-a', 'secret-b', 'public']) fs.writeFileSync(path.join(keys, f), 'fake');
+    const spec = specOf();
+    const p = guestPlanOf({ ...spec, filesystem: { ...spec.filesystem, denyRead: [...spec.filesystem.denyRead, path.join(keys, 'secret-*')] } }, workspace);
+    const hidden = p.hidden.map((h) => h.path);
+    expect(hidden).toEqual(expect.arrayContaining([path.join(keys, 'secret-a'), path.join(keys, 'secret-b')]));
+    expect(hidden).not.toContain(path.join(keys, 'public'));
+  });
+
+  it('refuses a protection pattern it cannot match, rather than dropping it', () => {
+    const spec = specOf();
+    const bad = { ...spec, filesystem: { ...spec.filesystem, denyWrite: [...spec.filesystem.denyWrite, path.join(workspace, '*', 'x', 'y')] } };
+    expect(() => guestPlanOf(bad, workspace)).toThrow(/cannot apply the protection/);
+  });
+
+  it('protects what a protected tree links to: a hook linking to a workspace script makes the script read-only', () => {
+    fs.mkdirSync(path.join(workspace, 'scripts'));
+    fs.writeFileSync(path.join(workspace, 'scripts', 'pre-commit.sh'), '#!/bin/sh\n');
+    fs.symlinkSync('../../scripts/pre-commit.sh', path.join(workspace, '.git', 'hooks', 'pre-commit'));
+    const p = guestPlanOf(specOf(), workspace);
+    expect(p.readOnly).toContain(path.join(workspace, 'scripts', 'pre-commit.sh'));
+    expect(p.pinned).toContain(path.join(workspace, 'scripts'));
+  });
+
+  it('follows links on from what a protected tree links to: a plugin dir and the file it links to', () => {
+    const plugin = path.join(workspace, 'plugin');
+    fs.mkdirSync(plugin);
+    fs.writeFileSync(path.join(workspace, 'payload.ts'), 'export {}\n');
+    fs.symlinkSync('../payload.ts', path.join(plugin, 'main.ts'));
+    fs.symlinkSync(plugin, path.join(agentDir, 'extensions', 'pkg'));
+    const p = guestPlanOf(specOf(), workspace);
+    expect(p.readOnly).toContain(plugin);
+    expect(p.readOnly).toContain(path.join(workspace, 'payload.ts'));
+  });
+
+  it('refuses a protected tree linking to a whole write root, which cannot be made read-only', () => {
+    fs.symlinkSync(workspace, path.join(agentDir, 'extensions', 'everything'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/whole write root/);
+  });
+
+  it('refuses a hidden file that has another name: it could be read by that one', () => {
+    fs.linkSync(path.join(agentDir, 'auth.json'), path.join(agentDir, 'backup.json'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/hard link/);
+  });
+
+  it('refuses a hidden directory holding a file with another name', () => {
+    const store = path.join(agentDir, 'store');
+    fs.mkdirSync(store);
+    fs.writeFileSync(path.join(store, 'key'), 'fake');
+    fs.linkSync(path.join(store, 'key'), path.join(agentDir, 'key-copy'));
+    const spec = specOf();
+    const p = { ...spec, filesystem: { ...spec.filesystem, denyRead: [...spec.filesystem.denyRead, store] } };
+    expect(() => guestPlanOf(p, workspace)).toThrow(/hard link/);
+  });
+
+  it('walks a directory named objects inside a protected tree that is no git dir', () => {
+    const objects = path.join(workspace, '.git', 'hooks', 'objects');
+    fs.mkdirSync(objects);
+    fs.writeFileSync(path.join(workspace, 'helper.sh'), '#!/bin/sh\n');
+    fs.linkSync(path.join(workspace, 'helper.sh'), path.join(objects, 'helper'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/hard link/);
+  });
+
+  it('walks a protected tree to any depth', () => {
+    let deep = path.join(agentDir, 'extensions');
+    for (let i = 0; i < 12; i++) deep = path.join(deep, `d${i}`);
+    fs.mkdirSync(deep, { recursive: true });
+    fs.writeFileSync(path.join(workspace, 'payload.ts'), 'export {}\n');
+    fs.linkSync(path.join(workspace, 'payload.ts'), path.join(deep, 'main.ts'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/hard link/);
+  });
+
+  it('walks a hidden directory to any depth for files with another name', () => {
+    const store = path.join(agentDir, 'store');
+    let deep = store;
+    for (let i = 0; i < 12; i++) deep = path.join(deep, `d${i}`);
+    fs.mkdirSync(deep, { recursive: true });
+    fs.writeFileSync(path.join(deep, 'key'), 'fake');
+    fs.linkSync(path.join(deep, 'key'), path.join(agentDir, 'key-copy'));
+    const spec = specOf();
+    const p = { ...spec, filesystem: { ...spec.filesystem, denyRead: [...spec.filesystem.denyRead, store] } };
+    expect(() => guestPlanOf(p, workspace)).toThrow(/hard link/);
+  });
+
+  it('refuses a hidden path that is a symbolic link', () => {
+    fs.renameSync(path.join(agentDir, 'auth.json'), path.join(agentDir, 'saved.json'));
+    fs.symlinkSync('saved.json', path.join(agentDir, 'auth.json'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/cannot hide .*symbolic link/);
+  });
+
+  it('protects the hooks dir git\'s core.hooksPath names, and the config files git reads', () => {
+    fs.mkdirSync(path.join(workspace, '.githooks'));
+    fs.writeFileSync(path.join(workspace, 'shared.gitconfig'), '[alias]\n');
+    const included = [
+      `file:${path.join(workspace, '.git', 'config')}`, 'core.hookspath\n.githooks',
+      `file:${path.join(workspace, 'shared.gitconfig')}`, 'alias.st\nstatus',
+      'file:/etc/gitconfig', 'core.autocrlf\ninput',
+    ].join('\0') + '\0';
+    const hooks = `file:${path.join(workspace, '.git', 'config')}\0core.hookspath\n.githooks\0`;
+    const p = guestPlanOf(specOf(), workspace, () => ({ list: '', included, hooks, top: workspace }));
+    expect(p.readOnly).toContain(path.join(workspace, '.githooks'));
+    expect(p.readOnly).toContain(path.join(workspace, 'shared.gitconfig'));
+    expect(p.readOnly).not.toContain('/etc/gitconfig');
+  });
+
+  it('refuses a core.hooksPath inside the mounts that does not exist: the session could create it', () => {
+    const hooks = `file:${path.join(workspace, '.git', 'config')}\0core.hookspath\n.husky/_\0`;
+    expect(() => guestPlanOf(specOf(), workspace, () => ({ list: '', included: hooks, hooks, top: workspace }))).toThrow(/core\.hooksPath/);
+  });
+
+  it('reads core.hooksPath from the real git config', () => {
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true });
+    const git = (...a: string[]) => spawnSync('git', ['-C', workspace, ...a], { encoding: 'utf8' });
+    expect(git('init', '-q').status).toBe(0);
+    fs.mkdirSync(path.join(workspace, '.husky'));
+    expect(git('config', 'core.hooksPath', '.husky').status).toBe(0);
+    expect(guestPlanOf(specOf(), workspace).readOnly).toContain(path.join(workspace, '.husky'));
+  });
+
+  it('refuses a link chain through a link the session could swap: hook -> scripts/current -> safe.sh', () => {
+    fs.mkdirSync(path.join(workspace, 'scripts'));
+    fs.writeFileSync(path.join(workspace, 'scripts', 'safe.sh'), '#!/bin/sh\n');
+    fs.symlinkSync('safe.sh', path.join(workspace, 'scripts', 'current'));
+    fs.symlinkSync('../../scripts/current', path.join(workspace, '.git', 'hooks', 'pre-commit'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/resolves through .*scripts\/current/);
+  });
+
+  it('refuses a link whose path runs through a linked directory the session could swap', () => {
+    fs.mkdirSync(path.join(workspace, 'scripts'));
+    fs.writeFileSync(path.join(workspace, 'scripts', 'safe.sh'), '#!/bin/sh\n');
+    fs.symlinkSync('scripts', path.join(workspace, 'via'));
+    fs.symlinkSync('../../via/safe.sh', path.join(workspace, '.git', 'hooks', 'pre-commit'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/resolves through .*via/);
+  });
+
+  describe('against real git', () => {
+    const git = (dir: string, ...a: string[]) => {
+      const r = spawnSync('git', ['-C', dir, ...a], { encoding: 'utf8' });
+      expect(r.status, r.stderr).toBe(0);
+    };
+    beforeEach(() => {
+      fs.rmSync(path.join(workspace, '.git'), { recursive: true });
+      git(workspace, 'init', '-q');
+    });
+
+    it('protects a file an include names even when it sets nothing, active or not', () => {
+      fs.writeFileSync(path.join(workspace, 'shared.gitconfig'), '');
+      fs.writeFileSync(path.join(workspace, 'cond.gitconfig'), '');
+      git(workspace, 'config', 'include.path', '../shared.gitconfig');
+      git(workspace, 'config', 'includeIf.gitdir:/nowhere/.path', '../cond.gitconfig');
+      const p = guestPlanOf(specOf(), workspace);
+      expect(p.readOnly).toContain(path.join(workspace, 'shared.gitconfig'));
+      expect(p.readOnly).toContain(path.join(workspace, 'cond.gitconfig'));
+    });
+
+    it('reads an include written ~user/ as git does: the user\'s home, not a path in the repository', () => {
+      git(workspace, 'config', 'include.path', `~${os.userInfo().username}/agenfk-no-such.gitconfig`);
+      expect(() => guestPlanOf(specOf(), workspace)).not.toThrow();
+    });
+
+    it('refuses an include naming a file inside the mounts that does not exist', () => {
+      git(workspace, 'config', 'include.path', '../later.gitconfig');
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/later\.gitconfig/);
+    });
+
+    it('protects nested repositories as the top one: pinned git dir, read-only hooks and config, read-only pointer files', () => {
+      const lib = path.join(workspace, 'vendor', 'lib');
+      fs.mkdirSync(lib, { recursive: true });
+      git(lib, 'init', '-q');
+      fs.mkdirSync(path.join(workspace, 'sub'));
+      fs.writeFileSync(path.join(workspace, 'sub', '.git'), 'gitdir: ../.git/modules/sub\n');
+      const p = guestPlanOf(specOf(), workspace);
+      expect(p.pinned).toContain(path.join(lib, '.git'));
+      expect(p.readOnly).toContain(path.join(lib, '.git', 'hooks'));
+      expect(p.readOnly).toContain(path.join(lib, '.git', 'config'));
+      expect(p.readOnly).toContain(path.join(workspace, 'sub', '.git'));
+    });
+
+    it('refuses a nested .git that is a symbolic link', () => {
+      fs.mkdirSync(path.join(workspace, 'elsewhere'));
+      fs.mkdirSync(path.join(workspace, 'sub'));
+      fs.symlinkSync(path.join(workspace, 'elsewhere'), path.join(workspace, 'sub', '.git'));
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/symbolic link/);
+    });
+  });
+
+  it('reads the config of the repository above a workspace that has none of its own', () => {
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true });
+    const top = path.dirname(workspace);
+    expect(spawnSync('git', ['-C', top, 'init', '-q']).status).toBe(0);
+    // Relative to the top of the working tree, as git reads it.
+    expect(spawnSync('git', ['-C', top, 'config', 'core.hooksPath', `${path.basename(workspace)}/.githooks`]).status).toBe(0);
+    fs.mkdirSync(path.join(workspace, '.githooks'));
+    expect(guestPlanOf(specOf({ gitDir: null }), workspace).readOnly).toContain(path.join(workspace, '.githooks'));
+  });
+
+  it('refuses a .agenfk below the workspace that is a symbolic link', () => {
+    fs.mkdirSync(path.join(workspace, 'elsewhere'));
+    fs.mkdirSync(path.join(workspace, 'packages', 'b'));
+    fs.symlinkSync(path.join(workspace, 'elsewhere'), path.join(workspace, 'packages', 'b', '.agenfk'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/symbolic link/);
+  });
+
+  it('refuses a pattern with a wildcard in its directory part, ? included', () => {
+    const spec = specOf();
+    const bad = { ...spec, filesystem: { ...spec.filesystem, denyWrite: [...spec.filesystem.denyWrite, path.join(workspace, 'pkg?', 'secret*')] } };
+    expect(() => guestPlanOf(bad, workspace)).toThrow(/cannot apply the protection/);
+  });
+
+  it('hides first and counts only a tmpfs as hidden: a read-only bind already there does not hide', () => {
+    const script = guestSetupScript(guestPlanOf(specOf(), workspace), 503, 20);
+    const auth = path.join(agentDir, 'auth.json');
+    expect(script.indexOf(`hide_file '${auth}'`)).toBeLessThan(script.indexOf('\nro '));
+    expect(script).toMatch(/hide_file\(\) \{ hidden "\$2"/);
+  });
+
+  it('refuses a protected tree linking into the mounts at nothing yet: the session could create the target', () => {
+    fs.symlinkSync('../../scripts/missing.sh', path.join(workspace, '.git', 'hooks', 'pre-push'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/does not exist/);
+  });
+
+  it('refuses a file in a protected tree that has another name', () => {
+    fs.writeFileSync(path.join(workspace, 'notes.json'), '{}');
+    fs.linkSync(path.join(workspace, 'notes.json'), path.join(workspace, '.agenfk', 'local.json'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/hard link/);
+  });
+
+  it('leaves a link out of the mounts alone: the guest cannot reach its target', () => {
+    fs.symlinkSync('/usr/share/git-core/templates/hooks/pre-commit.sample', path.join(workspace, '.git', 'hooks', 'pre-commit'));
+    expect(() => guestPlanOf(specOf(), workspace)).not.toThrow();
+  });
+
+  it('refuses a protected path that is a symbolic link: a bind would protect its target and leave the link replaceable', () => {
+    fs.renameSync(path.join(workspace, '.git', 'config'), path.join(root, 'real-config'));
+    fs.symlinkSync(path.join(root, 'real-config'), path.join(workspace, '.git', 'config'));
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/symbolic link/);
+  });
+
+  it('holds a missing .git with an empty read-only one, which git passes over, so none can be planted', () => {
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true });
+    const p = guestPlanOf(specOf({ gitDir: null }), workspace);
+    expect(p.placeholders).toContainEqual({ path: path.join(workspace, '.git'), kind: 'dir' });
+    expect(p.readOnly).toContain(path.join(workspace, '.git'));
+  });
+
+  it('refuses a linked git worktree, saying why: its git metadata is outside the mounts', () => {
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.git'), 'gitdir: /elsewhere/.git/worktrees/x\n');
+    expect(() => guestPlanOf(specOf({ gitDir: null }), workspace)).toThrow(/linked git worktree/);
+  });
+
+  it('holds a missing protected directory with an empty one: pi extensions a session could plant for host pi', () => {
+    fs.rmSync(path.join(agentDir, 'extensions'), { recursive: true });
+    const p = guestPlanOf(specOf(), workspace);
+    expect(p.placeholders).toContainEqual({ path: path.join(agentDir, 'extensions'), kind: 'dir' });
+    expect(p.readOnly).toContain(path.join(agentDir, 'extensions'));
+  });
+
+  it('holds a missing workspace .agenfk and git hooks dir', () => {
+    fs.rmSync(path.join(workspace, '.agenfk'), { recursive: true });
+    fs.rmSync(path.join(workspace, '.git', 'hooks'), { recursive: true });
+    const held = guestPlanOf(specOf(), workspace).placeholders.map((p) => p.path);
+    expect(held).toContain(path.join(workspace, '.agenfk'));
+    expect(held).toContain(path.join(workspace, '.git', 'hooks'));
+  });
+
+  it('does not hold the IDE dirs ASRT protected when they are missing: an empty .idea would be noticed', () => {
+    const held = guestPlanOf(specOf(), workspace).placeholders.map((p) => p.path);
+    for (const n of ['.vscode', '.idea', '.mcp.json', '.gitmodules']) expect(held).not.toContain(path.join(workspace, n));
+  });
+
+  it('holds nothing outside the mounts, and nothing through a linked parent', () => {
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.rmSync(path.join(agentDir, 'extensions'), { recursive: true });
+    fs.symlinkSync(outside, path.join(workspace, 'linked'));
+    const spec = specOf();
+    const p = guestPlanOf({ ...spec, filesystem: { ...spec.filesystem, denyWrite: [...spec.filesystem.denyWrite, path.join(workspace, 'linked', 'x'), path.join(home, '.config', 'x')] } }, workspace);
+    const held = p.placeholders.map((x) => x.path);
+    expect(held).not.toContain(path.join(workspace, 'linked', 'x'));
+    expect(held).not.toContain(path.join(home, '.config', 'x'));
+  });
+
+  it('binds the pinned .git before what is inside it: a bind over a directory hides binds already in it', async () => {
+    const { rt, smolvm } = runtime();
+    await rt.launch(specOf(), cmd());
+    const script = smolvm.calls.find((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root')!.args.at(-1) as string;
+    const pin = script.indexOf(`pin '${path.join(workspace, '.git')}'`);
+    const hooks = script.indexOf(`ro '${path.join(workspace, '.git', 'hooks')}'`);
+    expect(pin).toBeGreaterThan(0);
+    expect(hooks).toBeGreaterThan(pin);
+  });
+});
+
+describe('placeholders are taken back only as they were made', () => {
+  it('holds a missing .git/config with an empty file, which git reads as no settings', () => {
+    fs.rmSync(path.join(workspace, '.git', 'config'));
+    expect(guestPlanOf(specOf(), workspace).placeholders).toContainEqual({ path: path.join(workspace, '.git', 'config'), kind: 'file', content: '' });
+  });
+
+  it('holds only directly in a mount root or the pinned .git, never deeper', () => {
+    fs.mkdirSync(path.join(workspace, 'sub'));
+    const spec = specOf();
+    const deeper = path.join(workspace, 'sub', 'held');
+    const p = guestPlanOf({ ...spec, filesystem: { ...spec.filesystem, denyWrite: [...spec.filesystem.denyWrite, deeper] } }, workspace);
+    expect(p.placeholders.map((x) => x.path)).not.toContain(deeper);
+  });
+
+  it('recovers from a launcher that crashed: its placeholders are taken back and held again, and the session starts', async () => {
+    const smolvm = fakeSmolvm();
+    const crashed = runtime({ smolvm });
+    await crashed.rt.launch(specOf(), cmd());
+    const commondir = path.join(workspace, '.git', 'commondir');
+    expect(fs.existsSync(commondir)).toBe(true);
+    // It died without releasing: its record is of a process that is gone, the machine still runs.
+    const sessions = path.join(stateDir, 'machines', machineNameOf(workspace), 'sessions');
+    for (const f of fs.readdirSync(sessions)) fs.writeFileSync(path.join(sessions, f), JSON.stringify({ pid: 999999 }));
+    const next = runtime({ smolvm });
+    const launched = await next.rt.launch(specOf(), cmd());
+    const setup = smolvm.calls.filter((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root').at(-1)!.args.at(-1) as string;
+    expect(setup).toContain(`ro '${commondir}'`);
+    expect(fs.readFileSync(commondir, 'utf8')).toBe('.\n');
+    next.sp.children[0].finish(0);
+    await launched.exited;
+    expect(fs.existsSync(commondir)).toBe(false);
+  });
+
+  it('keeps the protections and says so when smolvm does not confirm the stop: exited rejects, never hangs', async () => {
+    const smolvm = fakeSmolvm({ stopFails: 'Error: vm busy' });
+    const { rt, sp, egress } = runtime({ smolvm });
+    const commondir = path.join(workspace, '.git', 'commondir');
+    const launched = await rt.launch(specOf(), cmd());
+    sp.children[0].finish(0);
+    await expect(launched.exited).rejects.toThrow(/vm busy/);
+    expect(fs.existsSync(commondir)).toBe(true);
+    expect(egress.stop).not.toHaveBeenCalled();
+  });
+
+  it('leaves a placeholder dir the session replaced with another one', async () => {
+    const { rt, sp } = runtime();
+    const worktrees = path.join(workspace, '.git', 'worktrees');
+    const launched = await rt.launch(specOf(), cmd());
+    fs.rmdirSync(worktrees);
+    fs.mkdirSync(worktrees);
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(fs.existsSync(worktrees)).toBe(true);
+  });
+
+  it('leaves a placeholder file that was changed', async () => {
+    const { rt, sp } = runtime();
+    const conf = path.join(workspace, '.git', 'config.worktree');
+    const launched = await rt.launch(specOf(), cmd());
+    fs.writeFileSync(conf, '[core]\n');
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(fs.readFileSync(conf, 'utf8')).toBe('[core]\n');
+  });
+});
+
+describe('sessions starting and leaving at once', () => {
+  it('two launches at once make one machine and start it once', async () => {
+    const smolvm = fakeSmolvm();
+    const egress = fakeEgress();
+    const a = runtime({ smolvm, egress, pidAlive: () => true });
+    const b = runtime({ smolvm, egress, pidAlive: () => true });
+    await Promise.all([a.rt.launch(specOf(), cmd()), b.rt.launch(specOf(), cmd())]);
+    expect(smolvm.verbs().filter((v) => v === 'create')).toHaveLength(1);
+    expect(smolvm.verbs().filter((v) => v === 'start')).toHaveLength(1);
+    expect(egress.ensure).toHaveBeenCalledTimes(1);
+  });
+
+  it('a session joining while the last one leaves is never left in a stopped machine', async () => {
+    const smolvm = fakeSmolvm({ stopTakesMs: 30 });
+    const egress = fakeEgress();
+    const a = runtime({ smolvm, egress, pidAlive: () => true });
+    const b = runtime({ smolvm, egress, pidAlive: () => true });
+    const first = await a.rt.launch(specOf(), cmd());
+    a.sp.children[0].finish(0);
+    // B arrives while A's stop is in flight.
+    while (!smolvm.verbs().includes('stop')) await new Promise((r) => setTimeout(r, 1));
+    const [, second] = await Promise.all([first.exited, b.rt.launch(specOf(), cmd())]);
+    expect(smolvm.machines.get(machineNameOf(workspace))?.state).toBe('running');
+    expect(second.pid).toBeDefined();
+  });
+
+  it('refuses to join a machine holding a mount this session may not see', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, [{ source: '/home/other/secrets', target: '/home/other/secrets', readOnly: false }]);
+    liveSession(name);
+    const { rt, sp } = runtime({ smolvm });
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(/\/home\/other\/secrets/);
+    expect(sp.spawn).not.toHaveBeenCalled();
+    // The other session's machine keeps running.
+    expect(smolvm.machines.get(name)?.state).toBe('running');
+  });
+
+  it('refuses a session that would mount more than the one already in the machine may see', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    // The session in it has the workspace alone (a command's sandbox: no client state).
+    smolvm.mounts.set(name, [{ source: workspace, target: workspace, readOnly: false }]);
+    liveSession(name);
+    const { rt, sp } = runtime({ smolvm });
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(new RegExp(agentDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    expect(smolvm.calls.filter((c) => c.args[1] === 'mount' && c.args[2] === 'add')).toEqual([]);
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses to join a machine started under another network policy: one interceptor decides for it', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name, 'other', { ...specOf().network, allow: ['*.example.com'] });
+    const { rt, sp } = runtime({ smolvm });
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(/different network policy/);
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses to join when the machine\'s network policy was never recorded', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name);
+    fs.rmSync(path.join(stateDir, 'machines', name, 'network.json'));
+    await expect(runtime({ smolvm }).rt.launch(specOf(), cmd())).rejects.toThrow(/different network policy/);
+  });
+
+  it('refuses to join a machine whose file protections differ: what is already open would stay writable', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name);
+    fs.writeFileSync(path.join(stateDir, 'machines', name, 'protections.json'), JSON.stringify({ pinned: [], readOnly: [], hidden: [] }));
+    const { rt, sp } = runtime({ smolvm });
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(/different file protections/);
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('lets a second session join a workspace with no repository: the .git placeholder is planned as missing again', async () => {
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true });
+    const smolvm = fakeSmolvm();
+    const egress = fakeEgress();
+    const a = runtime({ smolvm, egress, pidAlive: () => true });
+    const b = runtime({ smolvm, egress, pidAlive: () => true });
+    await a.rt.launch(specOf({ gitDir: null }), cmd());
+    expect(fs.statSync(path.join(workspace, '.git')).isDirectory()).toBe(true);
+    await b.rt.launch(specOf({ gitDir: null }), cmd());
+    expect(b.sp.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('restarts a machine left running with no session in it: its interceptor is gone, and so are its mounts', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, [{ source: '/gone/session', target: '/gone/session', readOnly: false }]);
+    const egress = fakeEgress();
+    const { rt, sp } = runtime({ smolvm, egress });
+    await rt.launch(specOf(), cmd());
+    const v = smolvm.verbs();
+    expect(v.indexOf('stop')).toBeLessThan(v.indexOf('start'));
+    expect(egress.ensure).toHaveBeenCalledTimes(1);
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a lock a live process holds, and goes on once it is released', async () => {
+    const name = machineNameOf(workspace);
+    const lock = path.join(stateDir, 'machines', name, 'lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, `${process.pid} other`);
+    const { rt, sp } = runtime();
+    const launching = rt.launch(specOf(), cmd());
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sp.spawn).not.toHaveBeenCalled();
+    fs.rmSync(lock);
+    await launching;
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits while another launcher is breaking a stale lock', async () => {
+    const name = machineNameOf(workspace);
+    const lock = path.join(stateDir, 'machines', name, 'lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, '999999 gone');
+    fs.writeFileSync(`${lock}.break`, String(process.pid));
+    const { rt, sp } = runtime();
+    const launching = rt.launch(specOf(), cmd());
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sp.spawn).not.toHaveBeenCalled();
+    expect(fs.existsSync(lock)).toBe(true);
+    fs.rmSync(`${lock}.break`);
+    await launching;
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a breaking turn whose launcher is gone, and goes on', async () => {
+    const name = machineNameOf(workspace);
+    const lock = path.join(stateDir, 'machines', name, 'lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, '999999 gone');
+    fs.writeFileSync(`${lock}.break`, '999998 crashed');
+    const { rt, sp } = runtime();
+    await rt.launch(specOf(), cmd());
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(`${lock}.break`)).toBe(false);
+  });
+
+  it('never breaks a lock a live owner took after the stale one was seen', () => {
+    const name = machineNameOf(workspace);
+    const lock = path.join(stateDir, 'machines', name, 'lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, '999999 gone');
+    const staleIno = fs.statSync(lock).ino;
+    // Before this launcher gets its turn, the stale lock is cleared and a live owner takes a new one.
+    fs.rmSync(lock);
+    fs.writeFileSync(lock, `${process.pid} live`);
+    const { rt } = runtime();
+    expect((rt as unknown as { breakStaleLock(l: string, ino: number): boolean }).breakStaleLock(lock, staleIno)).toBe(true);
+    expect(fs.readFileSync(lock, 'utf8')).toBe(`${process.pid} live`);
+  });
+
+  it('takes over the lock of a process that is gone', async () => {
+    const name = machineNameOf(workspace);
+    fs.mkdirSync(path.join(stateDir, 'machines', name), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'machines', name, 'lock'), '999999');
+    const { rt, sp } = runtime();
+    await rt.launch(specOf(), cmd());
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('signalling through a pid file the session owns', () => {
+  it('bounds the signalling exec and accepts nothing but a pid from the file', async () => {
+    const { rt, smolvm } = runtime();
+    const launched = await rt.launch(specOf(), cmd());
+    launched.kill('SIGINT');
+    await settle();
+    const kill = smolvm.execs().find((a) => a.join(' ').includes('kill -INT'))!;
+    expect(flag(kill, '--timeout')).toBe('10s');
+    const script = kill[kill.indexOf('-c') + 1];
+    // Run the reader on the host's sh against crafted files: only a plain pid gets through.
+    for (const [content, ok] of [['4242\n', true], ['1', false], ['0', false], ['12 13', false], ['$(touch /tmp/x)', false], ['', false]] as const) {
+      const f = path.join(root, `pid-${Math.random()}`);
+      fs.writeFileSync(f, content);
+      const r = spawnSync('sh', ['-c', script.replace(/kill -INT -\$pid$/, 'echo "$pid"'), f], { encoding: 'utf8', timeout: 5000 });
+      expect(r.status === 0 && r.stdout.trim() === '4242').toBe(ok);
+    }
+  });
+
+  it('refuses a signal name that is not one', async () => {
+    const { rt } = runtime();
+    const launched = await rt.launch(specOf(), cmd());
+    expect(launched.kill('TERM; reboot' as NodeJS.Signals)).toBe(false);
+  });
+});
+
+describe('airlock reset', () => {
+  it('deletes the workspace\'s machine', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: { state: 'running', image: IMAGE, labels: { 'agenfk.workspace': workspace, 'agenfk.image': IMAGE } } } });
+    const { rt } = runtime({ smolvm });
+    expect(await rt.reset(workspace)).toBe('deleted');
+    expect(smolvm.machines.has(name)).toBe(false);
+  });
+
+  it('refuses to delete a machine of that name that belongs to another workspace', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: { state: 'stopped', image: IMAGE, labels: { 'agenfk.workspace': '/somewhere/else', 'agenfk.image': IMAGE } } } });
+    await expect(runtime({ smolvm }).rt.reset(workspace)).rejects.toThrow(/\/somewhere\/else/);
+    expect(smolvm.machines.has(name)).toBe(true);
+    expect(smolvm.verbs()).not.toContain('stop');
+  });
+
+  it('says so when the workspace has no machine', async () => {
+    expect(await runtime().rt.reset(workspace)).toBe('absent');
+  });
+
+  it('refuses while a session is in the machine', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: { state: 'running', image: IMAGE, labels: { 'agenfk.workspace': workspace, 'agenfk.image': IMAGE } } } });
+    const sessions = path.join(stateDir, 'machines', name, 'sessions');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(path.join(sessions, 'live.json'), JSON.stringify({ pid: process.pid }));
+    await expect(runtime({ smolvm }).rt.reset(workspace)).rejects.toThrow(/session/);
+    expect(smolvm.machines.has(name)).toBe(true);
+  });
+
+  it('runAirlockReset prints what happened and exits 0, or the refusal and 1', async () => {
+    const out: string[] = [];
+    expect(await runAirlockReset(workspace, { reset: async () => 'deleted', log: (m) => out.push(m) })).toBe(0);
+    expect(out.join('\n')).toContain(workspace);
+    expect(await runAirlockReset(workspace, { reset: async () => 'absent', log: (m) => out.push(m) })).toBe(0);
+    expect(await runAirlockReset(workspace, { reset: async () => { throw new Error('a session is running'); }, log: (m) => out.push(m) })).toBe(1);
+    expect(out.join('\n')).toContain('a session is running');
+  });
+});
+
+describe('buildSandboxSpec, for a runtime that mounts', () => {
+  it('names the workspace, the home and the temp dirs a machine keeps its own', () => {
+    const spec = specOf();
+    expect(spec.workspace).toBe(workspace);
+    expect(spec.home).toBe(home);
+    expect(spec.filesystem.privateTemp).toEqual([tmpDir]);
+  });
+
+  it('lists pi\'s staged agent dir as a write root of its own', () => {
+    expect(specOf().filesystem.allowWrite).toContain(stagedDir);
+  });
+});
+
+// The real smolvm, where it is installed and can run here (Apple Silicon, or Linux with KVM).
+const smolvmHere = (() => {
+  if (process.env.AGENFK_SMOLVM_TESTS !== '1') return false;
+  const v = spawnSync('smolvm', ['--version'], { encoding: 'utf8' });
+  return v.status === 0 && v.stdout.includes(SMOLVM_VERSION);
+})();
+
+/** Answers every flow "allow", after reading its header (protocol v2). */
+function allowAllInterceptor(): Promise<{ address: string; token: string; close(): void }> {
+  const token = 'b'.repeat(64);
+  const server = net.createServer((sock) => {
+    let buf = Buffer.alloc(0);
+    sock.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      if (buf.length < 8 + 32 + 16 + 16 + 1) return;
+      const family = buf[8 + 32 + 32];
+      const ipLen = family === 6 ? 16 : 4;
+      const fixed = 8 + 32 + 32 + 1 + 2 + ipLen;
+      if (buf.length < fixed + 2) return;
+      const payload = buf.readUInt16BE(fixed);
+      if (buf.length < fixed + 2 + payload) return;
+      sock.write(Buffer.from([0]));
+      sock.end();
+    });
+    sock.on('error', () => undefined);
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => {
+    const { port } = server.address() as net.AddressInfo;
+    resolve({ address: `127.0.0.1:${port}`, token, close: () => server.close() });
+  }));
+}
+
+describe.skipIf(!smolvmHere)('SmolvmRuntime against the real smolvm (AGENFK_SMOLVM_TESTS=1)', () => {
+  it('runs a command in the workspace machine: exit code, writes, protections, hidden files', async () => {
+    fs.mkdirSync(path.join(workspace, '.claude', 'commands', 'tool', '.agenfk'), { recursive: true });
+    fs.mkdirSync(path.join(workspace, 'scripts'));
+    fs.writeFileSync(path.join(workspace, 'scripts', 'pre-commit.sh'), '#!/bin/sh\n');
+    fs.symlinkSync('../../scripts/pre-commit.sh', path.join(workspace, '.git', 'hooks', 'pre-commit'));
+    const icpt = await allowAllInterceptor();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address: icpt.address, token: icpt.token }),
+      watch: () => () => undefined,
+      stop: async () => undefined,
+    };
+    const rt = new SmolvmRuntime({ image: 'alpine', egress, stateDir, isTTY: false, hostEnv: {} });
+    // smolvm keeps its sockets under HOME, and a vitest worker's sandbox HOME is past the 103-byte socket path limit.
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      const probe = [
+        'echo made > made-by-guest',
+        `{ echo x > ${path.join(workspace, '.agenfk', 'planted')}; } 2>/dev/null && echo agenfk-writable`,
+        `{ echo x > ${path.join(workspace, '.git', 'hooks', 'pre-commit')}; } 2>/dev/null && echo hooks-writable`,
+        `test -s ${path.join(agentDir, 'auth.json')} && echo auth-readable`,
+        `test -e ${path.join(home, '.ssh', 'id_fake')} && echo ssh-visible`,
+        // Moving .git aside to plant a fresh one around its read-only hooks.
+        '{ mv .git .git-moved; } 2>/dev/null && echo git-renamed',
+        // Moving a protected .agenfk's parent aside to plant a fresh one in its place.
+        '{ mv packages/a packages/a-moved; } 2>/dev/null && echo ancestor-renamed',
+        // The script a hook links to is read-only with the hook.
+        `{ echo x >> ${path.join(workspace, 'scripts', 'pre-commit.sh')}; } 2>/dev/null && echo hook-target-writable`,
+        // .claude/commands is read-only though a protected .agenfk lies below it.
+        `{ echo x > ${path.join(workspace, '.claude', 'commands', 'planted.md')}; } 2>/dev/null && echo commands-writable`,
+        'exit 7',
+      ].join('; ');
+      const out = path.join(workspace, 'probe.out');
+      // auth.json in both deny lists: bound read-only AND hidden, and hidden it must stay.
+      const base = specOf();
+      const spec = { ...base, filesystem: { ...base.filesystem, denyWrite: [...base.filesystem.denyWrite, path.join(agentDir, 'auth.json')] } };
+      const launched = await rt.launch(spec, { file: 'sh', args: ['-c', `(${probe}) > ${out} 2>&1`], cwd: workspace });
+      const exit = await launched.exited;
+      expect(exit.code).toBe(7);
+      expect(fs.readFileSync(path.join(workspace, 'made-by-guest'), 'utf8')).toBe('made\n');
+      expect(fs.readFileSync(out, 'utf8')).toBe('');
+      expect(fs.existsSync(path.join(workspace, '.git', 'commondir'))).toBe(false);
+
+      // A signal reaches the command inside the guest.
+      const looping = await rt.launch(specOf(), { file: 'sh', args: ['-c', 'trap "exit 143" TERM; while :; do sleep 0.2; done'], cwd: workspace });
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(looping.kill('SIGTERM')).toBe(true);
+      const ended = await Promise.race([looping.exited, new Promise((r) => setTimeout(() => r('still running'), 20_000))]);
+      expect(ended).toEqual({ code: 143, signal: null });
+    } finally {
+      await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      icpt.close();
+      process.env.HOME = sandboxHome;
+    }
+  }, 180_000);
+});

@@ -75,7 +75,17 @@ export interface SandboxSpec {
     /** Address ranges an allowed name may not resolve to. */
     denyResolved: string[];
   };
-  filesystem: { denyRead: string[]; allowWrite: string[]; denyWrite: string[] };
+  filesystem: {
+    denyRead: string[];
+    allowWrite: string[];
+    denyWrite: string[];
+    /** The temp dirs among allowWrite: a runtime with its own file system (a VM) gives the guest its own instead. */
+    privateTemp?: string[];
+  };
+  /** The folder the session was launched from: a runtime that keeps a machine keeps one per workspace. */
+  workspace?: string;
+  /** The user's home, at the same path inside a runtime that mounts. */
+  home?: string;
   maskedEnv: Array<{ name: string; injectHosts: string[] }>;
   /** Set for the sandboxed process, over the runtime's own. */
   env: Record<string, string>;
@@ -263,7 +273,9 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   const clientState = command ? [] : session.client === 'pi'
     ? [session.piAgentDir ?? j(home, '.pi', 'agent')]
     : [j(home, '.local', 'share', 'opencode'), j(home, '.local', 'state', 'opencode'), j(home, '.cache', 'opencode'), j(home, '.config', 'opencode')];
-  const allowWrite = uniq([session.workspace, ...session.tempDirs, ...clientState]);
+  // pi's staged agent dir sits in a temp dir: listed on its own, so a runtime that does not share the temp dirs still mounts it.
+  const staged = !command && session.client === 'pi' && session.piStagedAgentDir ? [session.piStagedAgentDir] : [];
+  const allowWrite = uniq([session.workspace, ...session.tempDirs, ...clientState, ...staged]);
 
   const denyWrite = uniq([
     j(home, '.agenfk'),
@@ -289,7 +301,9 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
 
   return {
     network: { allow: uniq(allow), deny: uniq(deny), denyResolved: uniq(denyResolved) },
-    filesystem: { denyRead, allowWrite, denyWrite },
+    filesystem: { denyRead, allowWrite, denyWrite, privateTemp: uniq(session.tempDirs) },
+    workspace: session.workspace,
+    home,
     maskedEnv,
     env: {
       [AIRLOCK_SANDBOX_MARKER]: command ? 'command' : session.client,
