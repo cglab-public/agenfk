@@ -119,6 +119,15 @@ describe('agenfk airlock install / reset', () => {
     }
   });
 
+  // Story review 2 (LIFE-4): what a launcher's watchdog runs once the launcher is gone.
+  it('reap reaps the session it is given, and exits with its code', async () => {
+    const reap = vi.fn(async () => 0);
+    const { p, exit } = program({ reap });
+    await p.parseAsync(['node', 'agenfk', 'airlock', 'reap', '--machine', 'agenfk-abc', '--session', 's1', '--workspace', '/work/repo']);
+    expect(reap).toHaveBeenCalledWith({ machine: 'agenfk-abc', session: 's1', workspace: '/work/repo' });
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
   it('reset deletes the machine of the folder it is run in, or of --cwd, and exits with its code', async () => {
     const reset = vi.fn(async () => 1);
     const { p, exit } = program({ reset });

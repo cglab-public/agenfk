@@ -264,7 +264,7 @@ export function defaultExecDeps(apiUrl: string, get: (url: string, opts: object)
 
 export function registerAirlockCommands(
   program: Command,
-  overrides: { launch?: Launch; exec?: Exec; exit?: (code: number) => void; install?: (opts: { ifEnabled: boolean }) => Promise<number>; reset?: (workspace: string) => Promise<number> } = {},
+  overrides: { launch?: Launch; exec?: Exec; exit?: (code: number) => void; install?: (opts: { ifEnabled: boolean }) => Promise<number>; reset?: (workspace: string) => Promise<number>; reap?: (o: { machine: string; session: string; workspace: string }) => Promise<number> } = {},
 ): void {
   const launch: Launch = overrides.launch ?? ((client, args, opts) => runAirlockLaunch(client, args, opts, defaultLaunchDeps()));
   const exec: Exec = overrides.exec ?? ((command, opts) => {
@@ -285,6 +285,10 @@ export function registerAirlockCommands(
   const reset = overrides.reset ?? ((workspace: string) => {
     const l = defaultLaunchDeps();
     return runAirlockReset(workspace, { reset: (w) => (l.runtime as SmolvmRuntime).reset(w), log: (m) => console.log(m) });
+  });
+  const reap = overrides.reap ?? (async (o: { machine: string; session: string; workspace: string }) => {
+    await (defaultLaunchDeps().runtime as SmolvmRuntime).reap(o);
+    return 0;
   });
   const airlock = program
     .command('airlock')
@@ -474,6 +478,22 @@ export function registerAirlockCommands(
       // The machine a launch from here uses: the repository's (story review).
       const from = realpath(path.resolve(options.cwd ?? process.cwd()));
       exit(await reset(workspaceOf(from, { home: realpath(os.homedir()), exists: (p) => fs.existsSync(p), isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } } })));
+    });
+
+  // What a launcher's watchdog runs once the launcher is gone (story review 2): not for people.
+  airlock
+    .command('reap', { hidden: true })
+    .description('Reap an Airlock session whose launcher is gone')
+    .requiredOption('--machine <name>')
+    .requiredOption('--session <id>')
+    .requiredOption('--workspace <dir>')
+    .action(async (options: { machine: string; session: string; workspace: string }) => {
+      try {
+        exit(await reap({ machine: options.machine, session: options.session, workspace: options.workspace }));
+      } catch (e) {
+        console.error(chalk.red(`❌ ${(e as Error)?.message ?? e}`));
+        exit(1);
+      }
     });
 
   for (const client of ['pi', 'opencode'] as const) {

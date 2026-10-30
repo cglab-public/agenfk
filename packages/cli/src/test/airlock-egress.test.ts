@@ -638,6 +638,8 @@ describe('HelperEgressBroker: one decider per running machine, outliving the ses
       },
       pidAlive: (pid) => pid === 4242 && !killed.includes(pid),
       kill: (pid: number) => { killed.push(pid); },
+      // The decider is the process started with its machine's config.
+      commandLineOf: (pid: number) => (pid === 4242 && started.length ? `/usr/bin/node /x/egressMain.js ${started.at(-1)!.configPath}` : null),
       ...over,
     });
     return { b, started, killed };
@@ -665,6 +667,16 @@ describe('HelperEgressBroker: one decider per running machine, outliving the ses
     expect(started).toHaveLength(2);
     expect(killed).toEqual([4242]);
     expect(JSON.parse(fs.readFileSync(started[1].configPath, 'utf8')).network).toEqual(other.network);
+  });
+
+  // Story review 2 (LIFE-3): after a crash or a reboot the recorded pid can be anyone's.
+  it('never takes another process for the decider (a pid reused after a crash or reboot): not reused, never signalled', async () => {
+    const { b, started, killed } = broker({ commandLineOf: () => '/Applications/Some.app/Contents/MacOS/Some' });
+    await b.ensure('agenfk-m1', spec);
+    await b.ensure('agenfk-m1', spec);
+    expect(started).toHaveLength(2);
+    await b.stop('agenfk-m1');
+    expect(killed).toEqual([]);
   });
 
   it('reuses a running decider for the same policy, whatever relay port a session has', async () => {
@@ -750,7 +762,7 @@ describe('HelperEgressBroker: one decider per running machine, outliving the ses
   });
 
   it('refuses when the decider does not come up, and leaves nothing running', async () => {
-    const { b, killed } = broker({ startHelper: async () => 4242, readyTimeoutMs: 100 });
+    const { b, killed } = broker({ startHelper: async () => 4242, readyTimeoutMs: 100, commandLineOf: () => `node egressMain.js ${path.join(stateDir, 'egress', 'agenfk-m1', 'config.json')}` });
     await expect(b.ensure('agenfk-m1', spec)).rejects.toThrow(/decider/);
     expect(killed).toEqual([4242]);
   });

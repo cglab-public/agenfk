@@ -844,6 +844,8 @@ const mountinfoPath = (p: string): string => p.replace(/\\/g, '\\134').replace(/
 
 const GUEST_RUN = '/run/agenfk';
 const GUEST_SESSIONS = `${GUEST_RUN}/sessions`;
+/** Root's marks of sessions reaped: one stays, so a leader that comes late runs nothing (SESSION_LEADER). */
+const GUEST_REAPED = `${GUEST_RUN}/reaped`;
 const GUEST_HIDE = `${GUEST_RUN}/hide`;
 /** bin/agenfk-airlock.mjs's MACHINE_MARKER. */
 const GUEST_MACHINE_MARKER = `${GUEST_RUN}/machine`;
@@ -886,9 +888,9 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
     // The session's uid is the host user's, which the image does not know: ssh refuses a user it cannot look up.
     `getent group ${gid} >/dev/null || echo ${quote(`agenfk:x:${gid}:`)} >> /etc/group`,
     `getent passwd ${uid} >/dev/null || echo ${quote(`agenfk:x:${uid}:${gid}:AgEnFK session:${pwHome}:/bin/sh`)} >> /etc/passwd`,
-    `mkdir -p ${GUEST_SESSIONS} ${GUEST_HIDE}`,
-    `chown 0:0 ${GUEST_RUN}`,
-    `chmod 755 ${GUEST_RUN}`,
+    `mkdir -p ${GUEST_SESSIONS} ${GUEST_HIDE} ${GUEST_REAPED}`,
+    `chown 0:0 ${GUEST_RUN} ${GUEST_REAPED}`,
+    `chmod 755 ${GUEST_RUN} ${GUEST_REAPED}`,
     `chown ${uid}:${gid} ${GUEST_SESSIONS}`,
     `chmod 700 ${GUEST_SESSIONS}`,
     // The machine's mark, which the agenfk adapters prove they run in a machine by (CGLAB-696
@@ -1008,7 +1010,27 @@ const throughGateway = (url: string): string => url.replace(/^(https?:\/\/)(?:12
 const PASSTHROUGH_ENV = ['TERM', 'COLORTERM', 'LANG', 'LC_ALL', 'LC_CTYPE'];
 
 /** Records its pid where a signal can find it, then becomes the command. */
-const SESSION_LEADER = 'echo $$ > "$0" && exec "$@"';
+export const SESSION_LEADER = 'R="${0%/sessions/*}/reaped/$(basename "$0" .pid)"; echo $$ > "$0" || exit 125; '
+  // Nothing runs before it is in its own cgroup (story review 2): the launcher, as root, moves it.
+  + 'i=0; until grep -q "^0::/agenfk/" /proc/self/cgroup; do [ $i -lt 100 ] || exit 125; sleep 0.1; i=$((i+1)); done; '
+  // Nor once its session was reaped, whenever that was (review): the reaper marks it, where only
+  // root writes, before anything else - and takes the pid file.
+  + '[ ! -e "$R" ] && [ "$(cat "$0" 2>/dev/null)" = "$$" ] || exit 125; '
+  + 'exec "$@"';
+
+/** A session's cgroup, made by root, which its processes cannot leave (a process group they can). */
+const cgroupOf = (id: string): string => `/sys/fs/cgroup/agenfk/${id}`;
+/**
+ * Root's: the session marked reaped ($2) and its pid file ($0) taken first - a leader still waiting
+ * to be contained, or not yet started, then runs nothing and is never moved - then everything in its
+ * cgroup ($1) killed and the cgroup removed. Fails unless the cgroup was emptied and removed
+ * (cgroup.events says when it is empty: cgroup.procs always reads as size 0).
+ */
+export const KILL_CGROUP = 'mkdir -p "${2%/*}" && : > "$2" || exit 1; rm -f "$0"; G="$1"; [ -d "$G" ] || exit 0; echo 1 > "$G/cgroup.kill" || exit 1; i=0; '
+  + 'until grep -q "^populated 0" "$G/cgroup.events"; do [ $i -lt 50 ] || exit 1; sleep 0.1; i=$((i+1)); done; rmdir "$G"';
+/** Root's: the session leader (pid read from $0) moved into its cgroup ($1), unless it was reaped ($2). */
+const INTO_CGROUP = '[ -e "$2" ] && exit 1; G="$1"; mkdir -p "$G" && echo "$pid" > "$G/cgroup.procs"';
+const reapedMark = (id: string): string => `${GUEST_REAPED}/${id}`;
 
 /**
  * How a command the server runs starts in the guest (CGLAB-696 task 5), as root: in a mount
@@ -1035,16 +1057,16 @@ export const COMMAND_IN_NAMESPACE = [
 export const WATCHDOG = 'cat >/dev/null; exec "$@"';
 
 /**
- * The compiled resolver beside this file (dist/airlock/guestDns.js; the desktop bundle carries it
- * beside its helper), or - run from the source tree, as the tests do - the build's.
- */
-/**
  * The hook scripts the installer puts in ~/.agenfk/bin, which the agenfk adapters run. The machine
  * gets the running CLI's own (review, task 9): ~/.agenfk/bin may hold an older install's, whose
  * gate cannot prove a machine and would refuse every call.
  */
 export const HOOK_SCRIPTS = ['agenfk-airlock.mjs', 'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs'];
 
+/**
+ * The compiled resolver beside this file (dist/airlock/guestDns.js; the desktop bundle carries it
+ * beside its helper), or - run from the source tree, as the tests do - the build's.
+ */
 function defaultResolverSource(): string {
   for (const f of [path.join(__dirname, 'guestDns.js'), path.resolve(__dirname, '..', '..', 'dist', 'airlock', 'guestDns.js')]) {
     try { return fs.readFileSync(f, 'utf8'); } catch { /* next */ }
@@ -1053,8 +1075,8 @@ function defaultResolverSource(): string {
 }
 
 /** Starts WATCHDOG over `args`, detached, its stdin held by this process; stop() ends it. */
-function startWatchdog(args: string[]): { stop(): void } {
-  const child = nodeSpawn('/bin/sh', ['-c', WATCHDOG, 'sh', ...args], { detached: true, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+function startWatchdog(args: string[], env?: NodeJS.ProcessEnv): { stop(): void } {
+  const child = nodeSpawn('/bin/sh', ['-c', WATCHDOG, 'sh', ...args], { detached: true, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true, ...(env ? { env } : {}) });
   child.on('error', () => undefined);
   child.stdin?.on('error', () => undefined);
   // Neither keeps this process alive: the pipe is only ever closed, by stop() or by the end of this process.
@@ -1084,13 +1106,17 @@ interface SmolvmRuntimeDeps {
   warn?: (message: string) => void;
   readGitConfig?: GitConfigReader;
   startInjector?: (o: KeyInjectorOptions) => Promise<KeyInjector>;
-  startWatchdog?: (args: string[]) => { stop(): void };
+  startWatchdog?: (args: string[], env?: NodeJS.ProcessEnv) => { stop(): void };
   /** The machine resolver's source (guestDns.js), written into the guest. */
   resolverSource?: () => string;
   /** The running CLI's own hook scripts (its install's bin/): the session's adapters run them. */
   hookScriptsDir?: string;
   /** How often a running session's copy of the host's policy state is checked against it (ms). */
   policyFollowMs?: number;
+  /** The CLI, as the watchdog runs it to reap a session whose launcher is gone (`airlock reap`). */
+  reaperCommand?: string[];
+  /** Electron's version when this runs in the desktop app (its binary then runs the reaper as Node). */
+  electron?: string;
 }
 
 function runCli(file: string): SmolvmRun {
@@ -1173,6 +1199,8 @@ export class SmolvmRuntime implements AirlockRuntime {
       resolverSource: deps.resolverSource ?? defaultResolverSource,
       hookScriptsDir: deps.hookScriptsDir ?? path.resolve(__dirname, '..', '..', '..', '..', 'bin'),
       policyFollowMs: deps.policyFollowMs ?? 1000,
+      reaperCommand: deps.reaperCommand ?? [process.execPath, process.argv[1]],
+      electron: deps.electron ?? process.versions.electron ?? '',
       warn: deps.warn ?? (() => undefined),
       image: deps.image,
       egress: deps.egress,
@@ -1717,6 +1745,10 @@ export class SmolvmRuntime implements AirlockRuntime {
     // Registered before anything starts, so a session beside this one never stops the machine under it.
     const sessionFile = path.join(this.machineDir(name), 'sessions', `${id}.json`);
 
+    // Watching from now (review): a launcher that dies anywhere from here on has its session reaped.
+    // Electron runs the reaper only as Node, and the desktop app's exec env no longer says so.
+    const watchdog = this.d.startWatchdog([...this.d.reaperCommand, 'airlock', 'reap', '--machine', name, '--session', id, '--workspace', workspace],
+      this.d.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : undefined);
     let unwatch: (() => void) | null = null;
     // Taken back once the session ends, or its launch fails: route files first, then the services.
     const undo: Array<() => void | Promise<void>> = [];
@@ -1753,15 +1785,14 @@ export class SmolvmRuntime implements AirlockRuntime {
       unwatch?.();
       await unroute();
       await this.release(name, sessionFile, workspace);
+      // Only once released (review): the launcher killed meanwhile still has its watchdog.
+      watchdog.stop();
       throw e;
     }
 
     // As the session's user, bounded: the pid file is the session's own.
     const inGuestArgs = (script: string) => ['machine', 'exec', '--name', name, '--timeout', SIGNAL_TIMEOUT, '-u', user, '--', 'sh', '-c', READ_PID + script, pidFile];
     const inGuest = (script: string) => this.cli(inGuestArgs(script)).catch(() => undefined);
-    const LEFTOVERS = 'kill -KILL -$pid 2>/dev/null; rm -f "$0"';
-    // This process killed outright never gets to finish(): the watchdog ends the command in the guest.
-    const watchdog = this.d.startWatchdog([this.d.smolvmPath, ...inGuestArgs(LEFTOVERS)]);
     const kill = (signal: NodeJS.Signals): boolean => {
       const sig = signal.replace(/^SIG/, '');
       if (!/^[A-Z0-9]+$/.test(sig)) return false;
@@ -1769,16 +1800,21 @@ export class SmolvmRuntime implements AirlockRuntime {
       return true;
     };
     let finishing: Promise<void> | null = null;
-    // Once, whichever of exit and error comes: what the command left running in its group ends
-    // with it, then the session is released. A release that fails (a stop smolvm did not
-    // confirm) rejects `exited`: the machine may still be running.
+    // Once, whichever of exit and error comes: everything in the session's cgroup ends with it,
+    // then the session is released. A release that fails (a stop smolvm did not confirm) rejects
+    // `exited`: the machine may still be running.
     const finish = () => finishing ??= (async () => {
-      await inGuest(LEFTOVERS);
-      // Only now: the launcher killed while the leftovers were being killed still has its watchdog.
-      watchdog.stop();
+      const ended = await this.killCgroup(name, id);
       await unroute();
       try {
+        if (!ended) {
+          // Its record and watchdog stay (review): once this process is gone, the reaper tries again.
+          this.d.warn(`Airlock could not end everything the session left running in the machine for ${workspace}; it is tried again when this process ends.`);
+          return;
+        }
         await this.release(name, sessionFile, workspace);
+        // Only now (review): the launcher killed while the session was released still has its watchdog.
+        watchdog.stop();
       } finally {
         // After the release: a last session's stop has the decider write its last decisions.
         unwatch?.();
@@ -1788,6 +1824,15 @@ export class SmolvmRuntime implements AirlockRuntime {
       child.once('exit', (code, signal) => { finish().then(() => resolve({ code, signal }), reject); });
       child.once('error', (e) => { finish().then(() => reject(e), reject); });
     });
+    // Into its cgroup, which its leader waits for (story review 2): one that cannot be contained never runs.
+    const moved = await this.cli(['machine', 'exec', '--name', name, '--timeout', SIGNAL_TIMEOUT, '-u', 'root', '--', 'sh', '-c', READ_PID + INTO_CGROUP, pidFile, cgroupOf(id), reapedMark(id)])
+      .catch((e) => ({ code: 1, stdout: '', stderr: String(e?.message ?? e) }));
+    if (moved.code !== 0) {
+      await inGuest('kill -KILL -$pid');
+      try { child.kill('SIGKILL'); } catch { /* gone */ }
+      await Promise.race([exited.catch(() => undefined), new Promise((r) => setTimeout(r, 10_000))]);
+      throw new Error(`Airlock could not put the session in a cgroup of its own in the machine (${said(moved) || `exit ${moved.code}`}), so nothing was run: what it started could outlive it.`);
+    }
     return { pid: child.pid, kill, exited };
   }
 
@@ -1837,6 +1882,35 @@ export class SmolvmRuntime implements AirlockRuntime {
   }
 
   /** Deletes the workspace's machine (`agenfk airlock reset`). Refused while a session is in it. */
+  /**
+   * Kills everything in the session's cgroup in the machine, as root. True once it is ended, or
+   * there is no running machine for anything to be left in.
+   */
+  private async killCgroup(name: string, id: string): Promise<boolean> {
+    const r = await this.cli(['machine', 'exec', '--name', name, '--timeout', SIGNAL_TIMEOUT, '-u', 'root', '--', 'sh', '-c', KILL_CGROUP, `${GUEST_SESSIONS}/${id}.pid`, cgroupOf(id), reapedMark(id)])
+      .catch((e) => ({ code: 1, stdout: '', stderr: String(e?.message ?? e) }));
+    if (r.code === 0) return true;
+    // Nothing is left only in a machine smolvm says is not running: one it could not say is (review).
+    try { return (await this.machine(name))?.state !== 'running'; } catch { return false; }
+  }
+
+  /**
+   * Reaps a session whose launcher is gone (story review 2), as its watchdog has it done: what the
+   * session left running is killed, its record dropped, and the machine stopped when no session is
+   * left in it - what the launcher's own finish would have done.
+   */
+  async reap(o: { machine: string; session: string; workspace: string }): Promise<void> {
+    if (!/^agenfk-[0-9a-f]{16}$/.test(o.machine)) throw new Error(`Not an Airlock machine: ${o.machine}`);
+    if (!/^[0-9a-f]{16}$/.test(o.session)) throw new Error(`Not an Airlock session: ${o.session}`);
+    // The workspace's own machine, and no other (review): nothing is touched before this holds.
+    if (machineNameOf(path.resolve(o.workspace)) !== o.machine) throw new Error(`The Airlock machine ${o.machine} is not the machine of ${o.workspace}.`);
+    if (!(await this.killCgroup(o.machine, o.session))) {
+      // Its record stays: a later reap, or the next launch, tries again.
+      throw new Error(`Airlock could not end what session ${o.session} left running in the machine ${o.machine}.`);
+    }
+    await this.release(o.machine, path.join(this.machineDir(o.machine), 'sessions', `${o.session}.json`), o.workspace);
+  }
+
   async reset(workspace: string): Promise<'deleted' | 'absent'> {
     const name = machineNameOf(path.resolve(workspace));
     return this.withLock(name, async () => {

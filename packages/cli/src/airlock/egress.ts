@@ -26,7 +26,7 @@ import fs from 'fs';
 import net from 'net';
 import os from 'os';
 import path from 'path';
-import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'child_process';
+import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
 import { matchHost } from '@agenfk/core';
 import type { SandboxSpec } from './spec';
 import type { ProxyDecision } from './runtime';
@@ -603,6 +603,12 @@ export function readRoutes(dir: string): Route[] {
   });
 }
 
+/** `ps`'s command line for `pid` (macOS and Linux), or null. */
+function commandLineOf(pid: number): string | null {
+  const r = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+}
+
 interface HelperEgressBrokerDeps {
   /** Where each machine's decider keeps its files (`<stateDir>/egress/<machine>`). */
   stateDir: string;
@@ -612,6 +618,8 @@ interface HelperEgressBrokerDeps {
   startHelper: (machine: string, configPath: string) => Promise<number>;
   pidAlive: (pid: number) => boolean;
   kill: (pid: number, signal: NodeJS.Signals) => void;
+  /** A process's command line, or null when there is none to read. */
+  commandLineOf?: (pid: number) => string | null;
   readyTimeoutMs?: number;
   stopTimeoutMs?: number;
   /** Where route sockets' directories are made (the temp dir). */
@@ -646,11 +654,21 @@ export class HelperEgressBroker implements EgressBroker {
     return path.join(this.d.stateDir, 'egress', machine);
   }
 
+  /**
+   * Is `pid` this machine's decider? Alive, and started with this machine's config (story review 2):
+   * after a crash or a reboot the recorded pid can be anyone's, never to be reused or signalled.
+   */
+  private isDecider(machine: string, pid: number): boolean {
+    if (!Number.isInteger(pid) || pid <= 0 || !this.d.pidAlive(pid)) return false;
+    const line = (this.d.commandLineOf ?? commandLineOf)(pid);
+    return !!line && line.includes(path.join(this.dir(machine), 'config.json'));
+  }
+
   private running(machine: string): { address: string; token: string; network: string } | null {
     try {
       const dir = this.dir(machine);
       const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
-      if (!Number.isInteger(pid) || pid <= 0 || !this.d.pidAlive(pid)) return null;
+      if (!this.isDecider(machine, pid)) return null;
       const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')) as EgressConfig;
       return { address: fs.readFileSync(cfg.addressPath, 'utf8').trim(), token: cfg.token, network: networkKey(cfg.network) };
     } catch {
@@ -753,7 +771,7 @@ export class HelperEgressBroker implements EgressBroker {
     const dir = this.dir(machine);
     let pid = NaN;
     try { pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8')); } catch { /* none */ }
-    if (Number.isInteger(pid) && pid > 0 && this.d.pidAlive(pid)) {
+    if (this.isDecider(machine, pid)) {
       const gone = async (signal: NodeJS.Signals, ms: number) => {
         this.d.kill(pid, signal);
         const deadline = Date.now() + ms;

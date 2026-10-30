@@ -34,6 +34,8 @@ import {
   GUEST_PLATFORM_ROOT,
   COMMAND_IN_NAMESPACE,
   WATCHDOG,
+  SESSION_LEADER,
+  KILL_CGROUP,
   DNS_RESOLVER_ADDRESS,
   DNS_UNPROTECTED_MARK,
   resolverDenyOf,
@@ -215,7 +217,7 @@ function runtime({ smolvm: givenSmolvm, egress: givenEgress, ...over }: Record<s
   const smolvm = (givenSmolvm as ReturnType<typeof fakeSmolvm>) ?? fakeSmolvm();
   const egress = (givenEgress as ReturnType<typeof fakeEgress>) ?? fakeEgress();
   const sp = fakeSpawn();
-  const watchdog = { stopped: 0, start: vi.fn((_args: string[]) => ({ stop: () => { watchdog.stopped++; } })) };
+  const watchdog = { stopped: 0, start: vi.fn((_args: string[], _env?: NodeJS.ProcessEnv) => ({ stop: () => { watchdog.stopped++; } })) };
   const rt = new SmolvmRuntime({
     image: IMAGE,
     smolvm: smolvm.run,
@@ -231,6 +233,7 @@ function runtime({ smolvm: givenSmolvm, egress: givenEgress, ...over }: Record<s
     hostEnv: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8', OPENAI_API_KEY: 'sk-fake-not-real', PATH: '/host/bin' },
     pidAlive: (pid: number) => pid === process.pid,
     startWatchdog: watchdog.start,
+    reaperCommand: ['/usr/bin/node', '/opt/agenfk/cli.js'],
     ...over,
   });
   return { rt, smolvm, egress, sp, watchdog };
@@ -590,12 +593,48 @@ describe('a session in the machine', () => {
     expect(flag(kill!, '-u', '--user')).toBe('503:20');
   });
 
+  // Story review 2 (LIFE-1): a process can leave its process group (setsid), never its cgroup.
+  it('contains the session in a cgroup of its own: root moves its leader in, and the leader waits for that before it runs anything', async () => {
+    const { rt, smolvm, sp } = runtime();
+    await rt.launch(specOf(), cmd());
+    const args = sp.spawn.mock.calls[0][1] as string[];
+    const id = path.basename(args.find((a) => a.startsWith('/run/agenfk/sessions/'))!, '.pid');
+    const move = smolvm.execs().find((a) => flag(a, '-u') === 'root' && a.join(' ').includes('cgroup.procs'));
+    expect(move?.join(' ')).toContain(`/sys/fs/cgroup/agenfk/${id}`);
+    expect(args.join(' ')).toContain('/proc/self/cgroup');
+  });
+
+  it('refuses to run a session it cannot contain', async () => {
+    let children: ReturnType<typeof fakeSpawn>['children'] = [];
+    const smolvm = fakeSmolvm({ execFails: (a) => {
+      // The guest's kill ends the session's exec, as smolvm's does.
+      if (a.join(' ').includes('kill -KILL')) children[0]?.finish(137);
+      return a.join(' ').includes('cgroup.procs') ? 'no cgroup' : null;
+    } });
+    const { rt, sp } = runtime({ smolvm });
+    children = sp.children;
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(/cgroup/);
+    // What started is ended: it never got past waiting.
+    expect(smolvm.execs().some((a) => a.join(' ').includes('kill -KILL'))).toBe(true);
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('a command the server runs is contained the same way', async () => {
+    const { rt, smolvm, sp } = runtime();
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined }));
+    await rt.launch(spec, { file: '/bin/sh', args: ['-c', 'npm test'], cwd: workspace, processGroup: false });
+    const args = sp.spawn.mock.calls[0][1] as string[];
+    const id = path.basename(args.find((a) => a.startsWith('/run/agenfk/sessions/'))!, '.pid');
+    expect(smolvm.execs().some((a) => flag(a, '-u') === 'root' && a.join(' ').includes(`/sys/fs/cgroup/agenfk/${id}`) && a.join(' ').includes('cgroup.procs'))).toBe(true);
+    expect(args.join(' ')).toContain('/proc/self/cgroup');
+  });
+
   it('ends what the command left running, then stops the machine and its interceptor when the last session leaves', async () => {
     const { rt, smolvm, sp, egress } = runtime();
     const launched = await rt.launch(specOf(), cmd());
     sp.children[0].finish(0);
     await launched.exited;
-    expect(smolvm.execs().some((a) => a.join(' ').includes('kill -KILL'))).toBe(true);
+    expect(smolvm.execs().some((a) => a.join(' ').includes('cgroup.kill'))).toBe(true);
     expect(smolvm.verbs()).toContain('stop');
     expect(egress.stop).toHaveBeenCalledWith(machineNameOf(workspace));
   });
@@ -2469,7 +2508,8 @@ describe('a command the server runs, in the workspace machine (CGLAB-696 task 5)
     const { name, smolvm } = inSession();
     const protections = fs.readFileSync(path.join(stateDir, 'machines', name, 'protections.json'), 'utf8');
     await runtime({ smolvm }).rt.launch(commandSpec(), npmTest());
-    expect(smolvm.execs().filter((a) => flag(a, '-u') === 'root')).toEqual([]);
+    // Root's only for the command's own cgroup (story review 2), never the machine's protections.
+    expect(smolvm.execs().filter((a) => flag(a, '-u') === 'root' && !/cgroup\.(procs|kill)/.test(a.join(' ')))).toEqual([]);
     expect(fs.readFileSync(path.join(stateDir, 'machines', name, 'protections.json'), 'utf8')).toBe(protections);
   });
 
@@ -2587,6 +2627,8 @@ describe.skipIf(process.platform === 'win32')('COMMAND_IN_NAMESPACE, run by sh',
       fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\necho "${tool} $*" >> ${JSON.stringify(log)}\nwhile [ "$1" != "--" ]; do shift; done; shift; exec "$@"\n`, { mode: 0o755 });
     }
     fs.writeFileSync(path.join(bin, 'setsid'), `#!/bin/sh\necho "setsid $*" >> ${JSON.stringify(log)}\nexec "$@"\n`, { mode: 0o755 });
+    // The leader waits to be in its cgroup, which only the machine's kernel says (story review 2).
+    fs.writeFileSync(path.join(bin, 'grep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   });
   const run = (setup: string, command: string[], pathDirs = [bin, '/usr/bin', '/bin']) => spawnSync('/bin/sh', [
     '-c', COMMAND_IN_NAMESPACE, setup, '503', '20', path.join(root, 'cmd.pid'), ...command,
@@ -2637,16 +2679,14 @@ describe.skipIf(process.platform === 'win32')('COMMAND_IN_NAMESPACE, run by sh',
  * A watchdog of its own, outside that group, ends the guest command when the launcher is gone.
  */
 describe('a launcher killed outright (review 01a18ca1)', () => {
-  it('starts a watchdog that, once this process is gone, kills the command\'s group in the guest through its pid file', async () => {
+  it('starts a watchdog that, once this process is gone, has the session reaped (story review 2)', async () => {
     const { rt, sp, watchdog } = runtime();
     await rt.launch(specOf(), cmd());
     expect(watchdog.start).toHaveBeenCalledTimes(1);
     const args = watchdog.start.mock.calls[0][0];
-    expect(args[1]).toBe('machine');
-    const pidFile = (sp.spawn.mock.calls[0][1] as string[]).find((a) => a.startsWith('/run/agenfk/sessions/'));
-    expect(args).toContain(pidFile);
-    expect(flag(args, '-u')).toBe('503:20');
-    expect(args.join(' ')).toMatch(/kill -KILL -\$pid/);
+    const pidFile = (sp.spawn.mock.calls[0][1] as string[]).find((a) => a.startsWith('/run/agenfk/sessions/'))!;
+    const id = path.basename(pidFile, '.pid');
+    expect(args).toEqual(['/usr/bin/node', '/opt/agenfk/cli.js', 'airlock', 'reap', '--machine', machineNameOf(workspace), '--session', id, '--workspace', workspace]);
   });
 
   it('stops the watchdog only once the leftovers in the guest are killed: the launcher may die meanwhile', async () => {
@@ -2655,7 +2695,7 @@ describe('a launcher killed outright (review 01a18ca1)', () => {
     const launched = await rt.launch(specOf(), cmd());
     let stoppedAtLeftovers: number | null = null;
     smolvm.run.mockImplementation(((orig) => async (args: string[], opts?: { env?: NodeJS.ProcessEnv }) => {
-      if (args.join(' ').includes('kill -KILL')) stoppedAtLeftovers = watchdog.stopped;
+      if (args.join(' ').includes('cgroup.kill')) stoppedAtLeftovers = watchdog.stopped;
       return orig(args, opts);
     })(smolvm.run.getMockImplementation()!) as any);
     sp.children[0].finish(0);
@@ -2664,10 +2704,132 @@ describe('a launcher killed outright (review 01a18ca1)', () => {
     expect(watchdog.stopped).toBe(1);
   });
 
-  it('starts none when the launch fails before anything runs', async () => {
+  // Story review 2 (LIFE-4): the reaper does what the dead launcher's finish would have.
+  it('reaps a dead launcher\'s session: kills its cgroup, drops its record, and stops the machine nobody else is in', async () => {
+    const smolvm = fakeSmolvm();
+    const egress = fakeEgress();
+    let alive = true;
+    const { rt, sp } = runtime({ smolvm, egress, pidAlive: (pid: number) => alive && pid === process.pid });
+    await rt.launch(specOf(), cmd());
+    const id = path.basename((sp.spawn.mock.calls[0][1] as string[]).find((a) => a.startsWith('/run/agenfk/sessions/'))!, '.pid');
+    alive = false;
+    const name = machineNameOf(workspace);
+    const reaper = runtime({ smolvm, egress, pidAlive: () => false });
+    await reaper.rt.reap({ machine: name, session: id, workspace });
+    const kill = smolvm.execs().find((a) => flag(a, '-u') === 'root' && a.join(' ').includes(`/sys/fs/cgroup/agenfk/${id}`) && a.join(' ').includes('cgroup.kill'));
+    // Marked reaped first, where only root writes: a leader that comes late runs nothing, nor is it moved.
+    expect(kill?.join(' ')).toContain('/run/agenfk/reaped');
+    expect(fs.existsSync(path.join(stateDir, 'machines', name, 'sessions', `${id}.json`))).toBe(false);
+    expect(smolvm.verbs()).toContain('stop');
+    expect(egress.stop).toHaveBeenCalledWith(name);
+  });
+
+  it('reaps a session but leaves the machine running for another live session', async () => {
+    const smolvm = fakeSmolvm();
+    const { rt, sp } = runtime({ smolvm, pidAlive: () => true });
+    await rt.launch(specOf(), cmd());
+    const id = path.basename((sp.spawn.mock.calls[0][1] as string[]).find((a) => a.startsWith('/run/agenfk/sessions/'))!, '.pid');
+    liveSession(machineNameOf(workspace));
+    const reaper = runtime({ smolvm, pidAlive: (pid: number) => pid === process.pid });
+    await reaper.rt.reap({ machine: machineNameOf(workspace), session: id, workspace });
+    expect(smolvm.verbs()).not.toContain('stop');
+  });
+
+  it('reaps nothing when the machine is not the workspace\'s', async () => {
+    const smolvm = fakeSmolvm();
+    const { rt, sp } = runtime({ smolvm, pidAlive: () => true });
+    await rt.launch(specOf(), cmd());
+    const id = path.basename((sp.spawn.mock.calls[0][1] as string[]).find((a) => a.startsWith('/run/agenfk/sessions/'))!, '.pid');
+    const before = smolvm.calls.length;
+    await expect(runtime({ smolvm }).rt.reap({ machine: machineNameOf(workspace), session: id, workspace: path.join(root, 'elsewhere') })).rejects.toThrow(/machine/);
+    expect(smolvm.calls.length).toBe(before);
+    expect(fs.existsSync(path.join(stateDir, 'machines', machineNameOf(workspace), 'sessions', `${id}.json`))).toBe(true);
+  });
+
+  it('keeps the session\'s record when what it left could not be killed: a later reap tries again', async () => {
+    const smolvm = fakeSmolvm();
+    const { rt, sp } = runtime({ smolvm, pidAlive: () => true });
+    await rt.launch(specOf(), cmd());
+    const id = path.basename((sp.spawn.mock.calls[0][1] as string[]).find((a) => a.startsWith('/run/agenfk/sessions/'))!, '.pid');
+    const failing = fakeSmolvm({ execFails: (a) => (a.join(' ').includes('cgroup.kill') ? 'still populated' : null) });
+    failing.machines.set(machineNameOf(workspace), smolvm.machines.get(machineNameOf(workspace))!);
+    await expect(runtime({ smolvm: failing, pidAlive: () => false }).rt.reap({ machine: machineNameOf(workspace), session: id, workspace })).rejects.toThrow(/could not end/);
+    expect(fs.existsSync(path.join(stateDir, 'machines', machineNameOf(workspace), 'sessions', `${id}.json`))).toBe(true);
+  });
+
+  it('reaps nothing it is not given by name: a session id or machine that is not one is refused', async () => {
+    const { rt } = runtime();
+    await expect(rt.reap({ machine: machineNameOf(workspace), session: '../x', workspace })).rejects.toThrow(/session/);
+    await expect(rt.reap({ machine: '../etc', session: 'abc', workspace })).rejects.toThrow(/machine/);
+  });
+
+  // Review (LIFE-4 fixes): the session is registered from the start of the launch, so the watchdog
+  // covers it from then until it is released, and stands down with a launch that fails.
+  it('watches from the start of the launch, and stands down when the launch fails', async () => {
     const { rt, watchdog } = runtime({ smolvm: fakeSmolvm({ startFails: 'no' }) });
     await expect(rt.launch(specOf(), cmd())).rejects.toThrow();
-    expect(watchdog.start).not.toHaveBeenCalled();
+    expect(watchdog.start).toHaveBeenCalledTimes(1);
+    expect(watchdog.stopped).toBe(1);
+  });
+
+  it('stops watching only once the session is released: the launcher may die while the machine stops', async () => {
+    const smolvm = fakeSmolvm();
+    const { rt, sp, watchdog } = runtime({ smolvm });
+    const launched = await rt.launch(specOf(), cmd());
+    let stoppedAtMachineStop: number | null = null;
+    smolvm.run.mockImplementation(((orig) => async (args: string[], opts?: { env?: NodeJS.ProcessEnv }) => {
+      if (args[1] === 'stop') stoppedAtMachineStop = watchdog.stopped;
+      return orig(args, opts);
+    })(smolvm.run.getMockImplementation()!) as any);
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(stoppedAtMachineStop).toBe(0);
+    expect(watchdog.stopped).toBe(1);
+  });
+
+  it('keeps watching, and the session\'s record, when what the session left could not be killed: the reaper tries again', async () => {
+    const warnings: string[] = [];
+    const smolvm = fakeSmolvm({ execFails: (a) => (a.join(' ').includes('cgroup.kill') ? 'still populated' : null) });
+    const { rt, sp, watchdog } = runtime({ smolvm, warn: (m: string) => warnings.push(m) });
+    const launched = await rt.launch(specOf(), cmd());
+    const id = path.basename((sp.spawn.mock.calls[0][1] as string[]).find((a) => a.startsWith('/run/agenfk/sessions/'))!, '.pid');
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(watchdog.stopped).toBe(0);
+    expect(warnings.join('\n')).toMatch(/could not end/);
+    expect(fs.existsSync(path.join(stateDir, 'machines', machineNameOf(workspace), 'sessions', `${id}.json`))).toBe(true);
+  });
+
+  it('takes a machine whose state could not be read for one still running: the kill is not taken as done', async () => {
+    const smolvm = fakeSmolvm();
+    const { rt, sp } = runtime({ smolvm, pidAlive: () => true });
+    await rt.launch(specOf(), cmd());
+    const id = path.basename((sp.spawn.mock.calls[0][1] as string[]).find((a) => a.startsWith('/run/agenfk/sessions/'))!, '.pid');
+    const blind = fakeSmolvm({ execFails: (a) => (a.join(' ').includes('cgroup.kill') ? 'no answer' : null) });
+    const run = blind.run;
+    const failing = vi.fn(async (args: string[], o?: { env?: NodeJS.ProcessEnv }) => (args[1] === 'ls' ? { code: 1, stdout: '', stderr: 'smolvm unreachable' } : run(args, o)));
+    await expect(runtime({ smolvm: { ...blind, run: failing }, pidAlive: () => false }).rt.reap({ machine: machineNameOf(workspace), session: id, workspace })).rejects.toThrow();
+    expect(fs.existsSync(path.join(stateDir, 'machines', machineNameOf(workspace), 'sessions', `${id}.json`))).toBe(true);
+  });
+
+  it('stands down from a failed launch only once its session is released', async () => {
+    const smolvm = fakeSmolvm({ startFails: 'no' });
+    const { rt, watchdog } = runtime({ smolvm });
+    const stoppedAtRelease: number[] = [];
+    smolvm.run.mockImplementation(((orig) => async (args: string[], opts?: { env?: NodeJS.ProcessEnv }) => {
+      if (args[1] === 'ls') stoppedAtRelease.push(watchdog.stopped);
+      return orig(args, opts);
+    })(smolvm.run.getMockImplementation()!) as any);
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow();
+    // The release (its look at the machine) came before the watchdog stood down.
+    expect(stoppedAtRelease.at(-1)).toBe(0);
+    expect(watchdog.stopped).toBe(1);
+  });
+
+  it('gives the watchdog Electron as Node when the launcher runs in the desktop app', async () => {
+    const { rt, watchdog } = runtime({ electron: '33.0.0' });
+    await rt.launch(specOf(), cmd());
+    expect(watchdog.start.mock.calls[0][1]?.ELECTRON_RUN_AS_NODE).toBe('1');
   });
 });
 
@@ -2675,6 +2837,56 @@ describe('a launcher killed outright (review 01a18ca1)', () => {
  * WATCHDOG, run by sh: it watches the launcher through its stdin, a pipe the launcher alone holds
  * open - closed however the launcher ends, before any reaping, whatever pid comes next.
  */
+describe.skipIf(process.platform === 'win32')('SESSION_LEADER, run by sh', () => {
+  // A grep stand-in answers for /proc/self/cgroup (the machine's kernel's) and plays the race.
+  const run = (grepScript: string) => {
+    const bin = path.join(root, 'leader-bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'grep'), `#!/bin/sh\n${grepScript}\n`, { mode: 0o755 });
+    fs.mkdirSync(path.join(root, 'sessions'), { recursive: true });
+    const pid = path.join(root, 'sessions', 's.pid');
+    const r = spawnSync('/bin/sh', ['-c', SESSION_LEADER, pid, 'sh', '-c', 'echo ran > ran.out'], { encoding: 'utf8', cwd: root, env: { PATH: `${bin}:/usr/bin:/bin` } });
+    return { status: r.status, ran: fs.existsSync(path.join(root, 'ran.out')) };
+  };
+
+  it('runs the command once it is in its cgroup', () => {
+    expect(run('exit 0')).toEqual({ status: 0, ran: true });
+  });
+
+  it('runs nothing when its session was reaped while it waited: its pid file is gone (review)', () => {
+    expect(run(`rm -f "${path.join(root, 'sessions', 's.pid')}"; exit 0`)).toEqual({ status: 125, ran: false });
+  });
+
+  it('runs nothing when its session was reaped before it even wrote its pid file: the reaper\'s mark stays (second pass)', () => {
+    fs.mkdirSync(path.join(root, 'reaped'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'reaped', 's'), '');
+    expect(run('exit 0')).toEqual({ status: 125, ran: false });
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('KILL_CGROUP, run by sh', () => {
+  it('marks the session reaped and takes its pid file before anything else, and is done when there is no cgroup', () => {
+    const pid = path.join(root, 'sessions', 'abc.pid');
+    const mark = path.join(root, 'reaped', 'abc');
+    fs.mkdirSync(path.dirname(pid), { recursive: true });
+    fs.writeFileSync(pid, '123\n');
+    const r = spawnSync('/bin/sh', ['-c', KILL_CGROUP, pid, path.join(root, 'no-cgroup'), mark], { encoding: 'utf8' });
+    expect(r.status).toBe(0);
+    expect(fs.existsSync(mark)).toBe(true);
+    expect(fs.existsSync(pid)).toBe(false);
+  });
+
+  it('fails when the cgroup could not be emptied', () => {
+    const g = path.join(root, 'cg');
+    fs.mkdirSync(g);
+    fs.writeFileSync(path.join(g, 'cgroup.kill'), '');
+    fs.writeFileSync(path.join(g, 'cgroup.events'), 'populated 1\n');
+    const r = spawnSync('/bin/sh', ['-c', KILL_CGROUP, path.join(root, 'x.pid'), g, path.join(root, 'reaped', 'x')], { encoding: 'utf8', timeout: 20_000 });
+    expect(r.status).not.toBe(0);
+    expect(fs.readFileSync(path.join(g, 'cgroup.kill'), 'utf8')).toBe('1\n');
+  }, 20_000);
+});
+
 describe.skipIf(process.platform === 'win32')('WATCHDOG, run by sh', () => {
   it('waits while its stdin is open, and runs its command once it closes', async () => {
     const { spawn } = await import('child_process');
@@ -2948,6 +3160,40 @@ except Exception: print("silent")' ${server} ${name}`;
 });
 
 describe.skipIf(!smolvmHere || !baseImageArchive)('SmolvmRuntime against the real smolvm (AGENFK_SMOLVM_TESTS=1, AGENFK_AIRLOCK_TEST_IMAGE)', () => {
+  // Story review 2 (LIFE-1): a child that left its process group (setsid) ends with the session.
+  it('ends what the session left running, a child that left its process group included', async () => {
+    const icpt = await allowAllInterceptor();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address: icpt.address, token: icpt.token }),
+      watch: () => () => undefined,
+      stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'),
+      addRoute: () => () => undefined,
+    };
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: {} });
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      // Holds the machine running after the first session ends.
+      const holder = await rt.launch(specOf(), { file: 'sh', args: ['-c', 'while [ ! -e done ]; do sleep 0.2; done'], cwd: workspace });
+      await new Promise((r) => setTimeout(r, 1500));
+      // Leaves its group and keeps writing the workspace, past the session's end.
+      const leaver = await rt.launch(specOf(), { file: 'sh', args: ['-c', 'setsid sh -c "while true; do date +%s%N >> escaped.out; sleep 0.2; done" </dev/null >/dev/null 2>&1 & sleep 1'], cwd: workspace });
+      expect((await leaver.exited).code).toBe(0);
+      await new Promise((r) => setTimeout(r, 1000));
+      const size = fs.statSync(path.join(workspace, 'escaped.out')).size;
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(fs.statSync(path.join(workspace, 'escaped.out')).size).toBe(size);
+      fs.writeFileSync(path.join(workspace, 'done'), '');
+      expect((await holder.exited).code).toBe(0);
+    } finally {
+      await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      icpt.close();
+      process.env.HOME = sandboxHome;
+    }
+  }, 600_000);
+
   it('runs a command in the workspace machine: exit code, writes, protections, hidden files', async () => {
     fs.mkdirSync(path.join(workspace, '.claude', 'commands', 'tool', '.agenfk'), { recursive: true });
     fs.mkdirSync(path.join(workspace, 'scripts'));
