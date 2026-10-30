@@ -34,7 +34,7 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
   const warnings: string[] = [];
   const { runtime } = fakeRuntime();
   return {
-    fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] })),
+    fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands', 'machine-image'] })),
     runtime,
     // enforce launches need it to mark the sandbox's requests to the server (SX-1)
     reportToken: () => 'airlock-report-token-0123456789abcdef',
@@ -57,6 +57,7 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
     isDirectory: () => false,
     platform: 'darwin',
     ensurePrivateDir: vi.fn(),
+    agenfkVersion: () => '2.1.0-test.1',
     stageAgentDir: vi.fn(() => ({ dir: '/tmp/t/agenfk-airlock-pi-0', cleanup: vi.fn() })),
     ...over,
     warnings,
@@ -65,6 +66,48 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
 
 const specOf = (d: LaunchDeps): SandboxSpec => (d.runtime.launch as any).mock.calls[0][0];
 const cmdOf = (d: LaunchDeps): SandboxCommand => (d.runtime.launch as any).mock.calls[0][1];
+
+describePosix('runAirlockLaunch: the machine image (CGLAB-696)', () => {
+  const REPO_FILE = '/work/repo/.agenfk/airlock.json';
+  const withImage = (machineImage?: string) => vi.fn(async () => ({
+    effective: { mode: 'enforce', hosts: { allow: [], deny: [] }, ...(machineImage ? { machineImage } : {}) },
+    source: 'hub', revision: 3, capabilities: ['sandboxed-commands', 'machine-image'],
+  }));
+
+  it('runs the AgEnFK base image of this version when nothing names another, and says so', async () => {
+    const d = deps({ fetchPolicy: withImage() });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).machineImage).toBe('ghcr.io/cglab-public/agenfk-airlock-base:2.1.0-test.1');
+    expect((d.log as any).mock.calls.flat().join('\n')).toMatch(/image ghcr\.io\/cglab-public\/agenfk-airlock-base:2\.1\.0-test\.1 \(AgEnFK base\)/);
+  });
+
+  it('never runs an image the repository names: .agenfk/airlock.json is not read (the image is root in the machine)', async () => {
+    const d = deps({ fetchPolicy: withImage(), projectRoot: () => '/work/repo' }, { [REPO_FILE]: { image: 'ghcr.io/acme/app-airlock:3' } });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).machineImage).toBe('ghcr.io/cglab-public/agenfk-airlock-base:2.1.0-test.1');
+  });
+
+  it('runs the policy\'s image', async () => {
+    const d = deps({ fetchPolicy: withImage('ghcr.io/acme/org-airlock:1') });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).machineImage).toBe('ghcr.io/acme/org-airlock:1');
+    expect((d.log as any).mock.calls.flat().join('\n')).toMatch(/image ghcr\.io\/acme\/org-airlock:1 \(the policy's\)/);
+  });
+
+  it('refuses an enforce launch through a server that drops the policy\'s machine image (review 8)', async () => {
+    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: [] } }, source: 'hub', revision: 3, capabilities: ['sandboxed-commands'] })) });
+    await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/machine image[\s\S]*agenfk restart/);
+    expect(d.runtime.launch).not.toHaveBeenCalled();
+  });
+
+  it('observes through such a server, and says the policy\'s image may not be the one running', async () => {
+    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'observe', hosts: { allow: [], deny: [] } }, source: 'hub', revision: 3, capabilities: ['sandboxed-commands'] })) });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(d.runtime.launch).toHaveBeenCalled();
+    expect(d.warnings.join('\n')).toMatch(/machine image/);
+  });
+
+});
 
 describePosix('runAirlockLaunch: pi', () => {
   it('launches pi inside the sandbox with the effective policy, its inference host, the marker and the masked key', async () => {
@@ -223,7 +266,7 @@ describe('runAirlockLaunch: hub and policy', () => {
     const d = deps({
       fetchPolicy: vi.fn(async () => ({
         effective: { mode: 'enforce', hosts: { allow: ['hub-only.example.com'], deny: [] } },
-        source: 'hub', revision: 9, hubManaged: true, capabilities: ['sandboxed-commands'],
+        source: 'hub', revision: 9, hubManaged: true, capabilities: ['sandboxed-commands', 'machine-image'],
         local: { policy: { mode: 'enforce', hosts: { allow: ['local-wide.example.com'], deny: [] } } },
       })),
     });
@@ -398,7 +441,7 @@ describePosix('nested .agenfk directories (review fix 3)', () => {
 
 describe('a denied inference host (review fixes 1 and 2)', () => {
   it('refuses the launch with a clear error', async () => {
-    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: ['*.openai.com'] } }, source: 'hub', revision: 2, capabilities: ['sandboxed-commands'] })) });
+    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: ['*.openai.com'] } }, source: 'hub', revision: 2, capabilities: ['sandboxed-commands', 'machine-image'] })) });
     await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/inference host.*denied/s);
     expect(d.runtime.launch).not.toHaveBeenCalled();
   });
@@ -490,7 +533,7 @@ describe('story review: the launcher records its project\'s root before its sand
     const order: string[] = [];
     const ensureProjectRoot = vi.fn(async () => { order.push('root'); });
     const d = deps({ projectId: () => 'p-api', projectRoot: () => '/work/api', ensureProjectRoot,
-      fetchPolicy: vi.fn(async () => { order.push('policy'); return { effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] }; }) } as any);
+      fetchPolicy: vi.fn(async () => { order.push('policy'); return { effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands', 'machine-image'] }; }) } as any);
     await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
     expect(ensureProjectRoot).toHaveBeenCalledWith('p-api', '/work/api');
     expect(order).toEqual(['root', 'policy']);

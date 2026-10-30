@@ -95,6 +95,13 @@ describe('the server says what its launches can rely on (BUG 1a7dd9d2)', () => {
       expect(res.body.capabilities, p).toEqual(expect.arrayContaining(['sandboxed-commands']));
     }
   });
+
+  it('both forms name machine-image: this server keeps the policy\'s machineImage, so a launcher can trust its absence (CGLAB-696)', async () => {
+    for (const p of ['/airlock/policy', '/airlock/policy?projectId=p-api']) {
+      const res = await request(app).get(p);
+      expect(res.body.capabilities, p).toEqual(expect.arrayContaining(['machine-image']));
+    }
+  });
 });
 
 describe('POST /airlock/evaluate: by the active card\'s project', () => {

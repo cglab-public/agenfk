@@ -75,6 +75,7 @@ interface OverrideDraft {
   deny: string;
   /** Only the rules the override sets; the rest are the policy's. */
   rules: Partial<AirlockPolicyDto['rules']>;
+  image: string;
 }
 
 interface Draft {
@@ -86,6 +87,7 @@ interface Draft {
   deny: string;
   rules: AirlockPolicyDto['rules'];
   overrides: OverrideDraft[];
+  image: string;
 }
 
 const overrideDraftOf = (key: string, o: AirlockProjectOverrideDto): OverrideDraft => ({
@@ -93,6 +95,7 @@ const overrideDraftOf = (key: string, o: AirlockProjectOverrideDto): OverrideDra
   allow: (o.hosts?.allow ?? []).join('\n'),
   deny: (o.hosts?.deny ?? []).join('\n'),
   rules: { ...o.rules },
+  image: o.machineImage ?? '',
 });
 
 /** The overrides as the policy holds them; undefined when there are none. */
@@ -103,9 +106,11 @@ const projectsOf = (overrides: OverrideDraft[]): Record<string, AirlockProjectOv
     const allow = lines(o.allow);
     const deny = lines(o.deny);
     const rules = { ...o.rules };
+    const image = o.image.trim();
     out[o.key.trim()] = {
       ...(allow.length || deny.length ? { hosts: { allow, deny } } : {}),
       ...(Object.keys(rules).length ? { rules } : {}),
+      ...(image ? { machineImage: image } : {}),
     };
   }
   return out;
@@ -131,11 +136,13 @@ const draftOf = (p: AirlockPolicyDto): Draft => ({
   deny: p.hosts.deny.join('\n'),
   rules: { ...DEFAULT_RULES, ...p.rules },
   overrides: Object.entries(p.projects ?? {}).map(([k, o]) => overrideDraftOf(k, o)),
+  image: p.machineImage ?? '',
 });
 
 /** The draft as a policy, on top of what it was made from (the IOC list is the hub's, never the board's). */
-const policyOf = (base: AirlockPolicyDto, d: Draft): AirlockPolicyDto => ({
+const policyOf = ({ machineImage: _image, ...base }: AirlockPolicyDto, d: Draft): AirlockPolicyDto => ({
   ...base,
+  ...(d.image.trim() ? { machineImage: d.image.trim() } : {}),
   mode: d.mode,
   models: d.models.map(m => ({ ...m })),
   appliesWhenModelUnknown: d.appliesWhenModelUnknown,
@@ -299,6 +306,10 @@ function OverrideRows({
               <textarea aria-label={`Allowed hosts, override ${n}`} placeholder="added allowed hosts" rows={2} value={o.allow} readOnly={readOnly} onChange={e => edit(i, { allow: e.target.value })} className={clsx(FIELD, 'font-mono')} />
               <textarea aria-label={`Denied hosts, override ${n}`} placeholder="added denied hosts" rows={2} value={o.deny} readOnly={readOnly} onChange={e => edit(i, { deny: e.target.value })} className={clsx(FIELD, 'font-mono')} />
             </div>
+            <input
+              aria-label={`Machine image, override ${n}`} placeholder="machine image (the policy's when empty)" value={o.image}
+              readOnly={readOnly} onChange={e => edit(i, { image: e.target.value })} className={clsx(FIELD, 'mt-2 font-mono')}
+            />
             <div className="mt-2 grid gap-2 sm:grid-cols-2">
               {RULES.map(rule => (
                 <label key={rule.key} className="flex items-center justify-between gap-2 text-[12px] text-ink-secondary">
@@ -320,7 +331,7 @@ function OverrideRows({
         );
       })}
       {!readOnly && (
-        <button type="button" className={clsx(SECONDARY_BUTTON, 'mt-2')} onClick={() => onChange([...overrides, { key: '', allow: '', deny: '', rules: {} }])}>
+        <button type="button" className={clsx(SECONDARY_BUTTON, 'mt-2')} onClick={() => onChange([...overrides, { key: '', allow: '', deny: '', rules: {}, image: '' }])}>
           Add a project override
         </button>
       )}
@@ -452,6 +463,18 @@ function PolicyForm({
             {`${view.effective.iocHosts.hosts.length} indicator-of-compromise hosts are denied as well (list revision ${view.effective.iocHosts.revision || 'unset'}).`}
           </p>
         )}
+      </div>
+
+      <div className={BLOCK}>
+        <label htmlFor="airlock-image" className={LABEL}>Machine image</label>
+        <p className={HELP}>
+          The image each Airlock session’s machine is made from; a project override can name its own. Empty: the AgEnFK
+          base image. Only the policy names an image, never a repository: the image is root in the machine.
+        </p>
+        <input
+          id="airlock-image" value={draft.image} readOnly={readOnly} onChange={e => set('image', e.target.value)}
+          placeholder="ghcr.io/cglab-public/agenfk-airlock-base:<version>" className={clsx(FIELD, 'mt-2 font-mono')}
+        />
       </div>
 
       <OverrideRows overrides={draft.overrides} readOnly={readOnly} onChange={overrides => set('overrides', overrides)} />

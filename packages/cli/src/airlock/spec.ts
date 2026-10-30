@@ -91,6 +91,8 @@ export interface SandboxSpec {
   workspace?: string;
   /** The user's home, at the same path inside a runtime that mounts. */
   home?: string;
+  /** The image a runtime that keeps a machine makes it from (CGLAB-696; image.ts): the launcher sets it. */
+  machineImage?: string;
   /** A client's relay to the AgEnFK server (SX-1), on the host loopback: a machine reaches it through its decider. */
   relayPort?: number;
   maskedEnv: Array<{ name: string; injectHosts: string[] }>;

@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { spawnSync } from 'child_process';
+import crypto from 'crypto';
 import net from 'net';
 import fs from 'fs';
 import os from 'os';
@@ -25,6 +26,12 @@ import {
   guestPlanOf,
   guestSetupScript,
   runAirlockReset,
+  platformBindLines,
+  platformInstallOf,
+  PLATFORM_INSTALL_SCRIPT,
+  INSTALL_TIMEOUT,
+  LOCK_TIMEOUT_MS,
+  GUEST_PLATFORM_ROOT,
   type EgressBroker,
   type SmolvmResult,
 } from '../airlock/smolvm';
@@ -42,7 +49,7 @@ const flag = (args: string[], ...names: string[]): string | undefined => {
 };
 
 /** The smolvm CLI, as far as the runtime uses it: machines, mounts, exec, version. */
-function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string; startFails?: string; missing?: boolean; stopTakesMs?: number; stopFails?: string } = {}) {
+function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string; startFails?: string; missing?: boolean; stopTakesMs?: number; stopFails?: string; execFails?: (args: string[]) => string | null } = {}) {
   const machines = new Map<string, Machine>(Object.entries(init.machines ?? {}));
   const mounts = new Map<string, Array<{ source: string; target: string; readOnly: boolean }>>();
   const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
@@ -96,8 +103,10 @@ function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string
           return ok();
         }
         return fail('unknown mount verb');
-      case 'exec':
-        return ok();
+      case 'exec': {
+        const failed = init.execFails?.(args);
+        return failed ? fail(failed) : ok();
+      }
       case 'update':
         if (!m) return fail('vm not found');
         if (m.state === 'running') return fail('machine must be stopped');
@@ -305,6 +314,8 @@ describe('the machine of a workspace', () => {
     expect(create).toContain('--trust-host-certs');
     expect(create).toContain(`agenfk.workspace=${workspace}`);
     expect(create).toContain(`agenfk.image=${IMAGE}`);
+    // An inert workload, not the image's own command: nothing runs as root before the protections.
+    expect(create.slice(-2)).toEqual(['--', 'true']);
     // Never smolvm's own escape hatches.
     for (const f of ['--allow-system-mounts', '--ssh-agent', '--docker-socket', '--nested', '--use-host-proxy']) expect(create).not.toContain(f);
     expect(sp.spawn).toHaveBeenCalledTimes(1);
@@ -1366,6 +1377,407 @@ describe('the AgEnFK server and the model key, from inside the machine', () => {
   });
 });
 
+describe('the image of the machine (CGLAB-696 task 4)', () => {
+  const OTHER = 'ghcr.io/acme/app-airlock:3';
+
+  it('is the spec\'s machineImage when it names one: created from it and labelled with it', async () => {
+    const { rt, smolvm } = runtime();
+    await rt.launch({ ...specOf(), machineImage: OTHER }, cmd());
+    const create = smolvm.calls.find((c) => c.args[1] === 'create')!.args;
+    expect(flag(create, '-I', '--image')).toBe(OTHER);
+    expect(create).toContain(`agenfk.image=${OTHER}`);
+  });
+
+  it('is the runtime\'s own when the spec names none', async () => {
+    const { rt, smolvm } = runtime();
+    await rt.launch(specOf(), cmd());
+    expect(flag(smolvm.calls.find((c) => c.args[1] === 'create')!.args, '-I', '--image')).toBe(IMAGE);
+  });
+
+  it('makes the machine again when the spec names another image than the one it was made from', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: { state: 'stopped', image: IMAGE, labels: { 'agenfk.workspace': workspace, 'agenfk.image': IMAGE } } } });
+    await runtime({ smolvm }).rt.launch({ ...specOf(), machineImage: OTHER }, cmd());
+    const v = smolvm.verbs();
+    expect(v.indexOf('delete')).toBeGreaterThanOrEqual(0);
+    expect(v.indexOf('delete')).toBeLessThan(v.indexOf('create'));
+    expect(smolvm.machines.get(name)?.labels['agenfk.image']).toBe(OTHER);
+  });
+});
+
+describe('guestPlanOf: the guest\'s own platform dirs (CGLAB-696 task 4)', () => {
+  const plan = () => guestPlanOf(specOf(), workspace);
+  const write = (rel: string, content = '{}') => {
+    fs.mkdirSync(path.dirname(path.join(workspace, rel)), { recursive: true });
+    fs.writeFileSync(path.join(workspace, rel), content);
+  };
+
+  it('binds no platform dir in a workspace with no package or Python project', () => {
+    expect(plan().platform).toEqual([]);
+  });
+
+  it('gives the workspace\'s node_modules a store on the machine\'s disk: the host\'s is never what the guest sees', () => {
+    write('package.json');
+    const p = plan().platform;
+    expect(p.map((x) => x.path)).toEqual([path.join(workspace, 'node_modules')]);
+    expect(p[0].store.startsWith(`${GUEST_PLATFORM_ROOT}/`)).toBe(true);
+    // Outside every mount: what the guest installs never lands on the host.
+    expect(plan().mounts.some((m) => p[0].store.startsWith(m.guest))).toBe(false);
+  });
+
+  it('gives every package below the workspace its own node_modules store, but looks inside no node_modules', () => {
+    write('package.json');
+    write('packages/a/package.json');
+    write('packages/b/package.json');
+    write('node_modules/dep/package.json');
+    const paths = plan().platform.map((x) => x.path).sort();
+    expect(paths).toEqual([
+      path.join(workspace, 'node_modules'),
+      path.join(workspace, 'packages', 'a', 'node_modules'),
+      path.join(workspace, 'packages', 'b', 'node_modules'),
+    ]);
+  });
+
+  it('takes npm\'s install destinations from package-lock.json too: a workspace in a dot-directory or deeper than the walk (review 2)', () => {
+    write('package.json');
+    write('.tools/lint/package.json');
+    const deep = 'a/b/c/d/e/f/g/h/i/j';
+    write(`${deep}/package.json`);
+    write('package-lock.json', JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        '': {}, 'node_modules/x': {}, 'node_modules/x/node_modules/y': {},
+        '.tools/lint/node_modules/z': {}, [`${deep}/node_modules/w`]: {},
+        // A workspace the lockfile names but the checkout does not have: nothing to bind onto.
+        'gone/pkg/node_modules/q': {},
+      },
+    }));
+    expect(plan().platform.map((x) => x.path).sort()).toEqual([
+      path.join(workspace, '.tools', 'lint', 'node_modules'),
+      path.join(workspace, deep, 'node_modules'),
+      path.join(workspace, 'node_modules'),
+    ].sort());
+  });
+
+  it('takes no install destination through a linked directory: root\'s bind would follow the link (second review 1)', () => {
+    write('package.json');
+    fs.mkdirSync(path.join(root, 'elsewhere', 'sub'), { recursive: true });
+    fs.symlinkSync(path.join(root, 'elsewhere'), path.join(workspace, 'lnk'));
+    write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'lnk/sub/node_modules/x': {} } }));
+    expect(plan().platform.map((x) => x.path)).toEqual([path.join(workspace, 'node_modules')]);
+  });
+
+  it('takes yarn\'s (and npm\'s) workspaces from package.json: a workspace in a dot-directory (second review 5)', () => {
+    write('package.json', JSON.stringify({ workspaces: ['.tools/*', 'libs/core'] }));
+    write('.tools/lint/package.json');
+    write('libs/core/package.json');
+    write('yarn.lock', '# yarn\n');
+    expect(plan().platform.map((x) => x.path).sort()).toEqual([
+      path.join(workspace, '.tools', 'lint', 'node_modules'),
+      path.join(workspace, 'libs', 'core', 'node_modules'),
+      path.join(workspace, 'node_modules'),
+    ].sort());
+  });
+
+  it('takes no destination inside another platform dir: its path would run through that dir\'s store, which the session fills (third review 1)', () => {
+    write('pyproject.toml', '[project]\nname = "x"\n');
+    write('package.json');
+    write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: { '': {}, '.venv/node_modules/x': {} } }));
+    // The host's .venv exists: the destination inside it passes every host-side check.
+    fs.mkdirSync(path.join(workspace, '.venv'));
+    expect(plan().platform.map((x) => x.path).sort()).toEqual([path.join(workspace, '.venv'), path.join(workspace, 'node_modules')].sort());
+  });
+
+  it('says it cannot place every install destination when a workspace pattern is beyond it: ** or a brace (third review 3)', () => {
+    write('package.json', JSON.stringify({ workspaces: ['.tools/**'] }));
+    expect(plan().platformIncomplete).toMatch(/\.tools\/\*\*/);
+    write('package.json', JSON.stringify({ workspaces: ['.tools/pkg-*'] }));
+    expect(plan().platformIncomplete).toMatch(/pkg-\*/);
+    write('package.json', JSON.stringify({ workspaces: ['libs/*'] }));
+    expect(plan().platformIncomplete).toBeUndefined();
+  });
+
+  it('reads workspaces in the {packages: [...]} form too', () => {
+    write('package.json', JSON.stringify({ workspaces: { packages: ['.tools/*'] } }));
+    write('.tools/lint/package.json');
+    expect(plan().platform.map((x) => x.path)).toContain(path.join(workspace, '.tools', 'lint', 'node_modules'));
+  });
+
+  it('takes pnpm\'s install destinations from its importers', () => {
+    write('package.json');
+    write('.config/tool/package.json');
+    write('pnpm-lock.yaml', "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies: {}\n\n  .config/tool:\n    dependencies: {}\n\npackages: {}\n");
+    expect(plan().platform.map((x) => x.path).sort()).toEqual([
+      path.join(workspace, '.config', 'tool', 'node_modules'),
+      path.join(workspace, 'node_modules'),
+    ].sort());
+  });
+
+  it('gives a Python project its own .venv', () => {
+    write('pyproject.toml', '[project]\nname = "x"\n');
+    expect(plan().platform.map((x) => x.path)).toEqual([path.join(workspace, '.venv')]);
+  });
+
+  it('keeps one store per directory, the same on every launch, none shared', () => {
+    write('package.json');
+    write('packages/a/package.json');
+    const first = plan().platform;
+    expect(plan().platform).toEqual(first);
+    expect(new Set(first.map((x) => x.store)).size).toBe(first.length);
+  });
+
+  it('holds a platform dir the host does not have yet with an empty directory, so the guest\'s store has somewhere to go', () => {
+    write('package.json');
+    write('packages/a/package.json');
+    fs.rmSync(path.join(workspace, 'node_modules'), { recursive: true, force: true });
+    const p = plan();
+    expect(p.placeholders).toEqual(expect.arrayContaining([
+      { path: path.join(workspace, 'node_modules'), kind: 'dir' },
+      { path: path.join(workspace, 'packages', 'a', 'node_modules'), kind: 'dir' },
+    ]));
+  });
+
+  it('does not hold a platform dir the host already has', () => {
+    write('package.json');
+    expect(plan().placeholders.map((x) => x.path)).not.toContain(path.join(workspace, 'node_modules'));
+  });
+
+  it('refuses a platform dir that is a symbolic link: the bind would land where it points', () => {
+    write('package.json');
+    fs.rmSync(path.join(workspace, 'node_modules'), { recursive: true, force: true });
+    fs.symlinkSync(home, path.join(workspace, 'node_modules'));
+    expect(() => plan()).toThrow(/node_modules.*symbolic link/);
+  });
+});
+
+describe('guestSetupScript: the platform dirs', () => {
+  it('binds a platform dir only where the guest resolves it to itself: root never binds through a link (third review 1)', () => {
+    // Run by sh, with mount and its helpers stubbed: one real dir, and one the session made a link to /usr/bin.
+    const real = path.join(workspace, 'node_modules');
+    const linked = path.join(workspace, 'pkg', 'node_modules');
+    fs.mkdirSync(path.dirname(linked));
+    fs.symlinkSync('/usr/bin', linked);
+    const log = path.join(root, 'mounts.log');
+    const lines = platformBindLines([{ path: real, store: '/var/lib/agenfk/platform/a' }, { path: linked, store: '/var/lib/agenfk/platform/b' }], 503, 20);
+    const stubs = `mkdir() { :; }; chown() { :; }; mounted() { return 1; }; mount() { echo "$@" >> '${log}'; }`;
+    const r = spawnSync('sh', ['-c', `set -e; ${stubs}; ${lines.join('; ')}`], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual([`--bind /var/lib/agenfk/platform/a ${real}`]);
+  });
+
+  it('binds each platform dir from its store, made and owned by the session user, once', () => {
+    fs.writeFileSync(path.join(workspace, 'package.json'), '{}');
+    const plan = guestPlanOf(specOf(), workspace);
+    const store = plan.platform[0].store;
+    const script = guestSetupScript(plan, 503, 20);
+    expect(script).toContain(`mkdir -p '${store}'`);
+    expect(script).toContain(`chown 503:20 '${store}'`);
+    expect(script).toMatch(new RegExp(`mounted '${path.join(workspace, 'node_modules')}' \\|\\| mount --bind '${store}' '${path.join(workspace, 'node_modules')}'`));
+  });
+});
+
+describe('guestSetupScript: the session user', () => {
+  it('gives the session\'s uid and gid a passwd and group entry when the image has none: ssh refuses a user it cannot look up', () => {
+    const script = guestSetupScript(guestPlanOf(specOf(), workspace), 503, 20, undefined, '/home/u');
+    expect(script).toContain("getent group 20 >/dev/null || echo 'agenfk:x:20:' >> /etc/group");
+    expect(script).toContain("getent passwd 503 >/dev/null || echo 'agenfk:x:503:20:AgEnFK session:/home/u:/bin/sh' >> /etc/passwd");
+  });
+
+  it('gives the session its HOME in that entry: the runtime passes the spec\'s', async () => {
+    const { rt, smolvm } = runtime();
+    await rt.launch({ ...specOf(), home: '/home/someone' }, cmd());
+    const setup = smolvm.calls.find((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root')!;
+    expect(setup.args.join(' ')).toContain(':AgEnFK session:/home/someone:/bin/sh');
+  });
+});
+
+describe('platformInstallOf: what installs the guest\'s dependencies', () => {
+  const write = (rel: string, content: string) => fs.writeFileSync(path.join(workspace, rel), content);
+  const sha = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
+
+  it('is nothing without a lockfile: no install that would rewrite one', () => {
+    write('package.json', '{}');
+    expect(platformInstallOf(workspace)).toBeNull();
+  });
+
+  it('is npm ci for package-lock.json, keyed by the lockfile\'s hash', () => {
+    write('package.json', '{}');
+    write('package-lock.json', '{"lockfileVersion":3}');
+    expect(platformInstallOf(workspace)).toEqual({ lockfile: path.join(workspace, 'package-lock.json'), hash: sha('{"lockfileVersion":3}'), command: ['npm', 'ci'] });
+  });
+
+  it('is a frozen pnpm install for pnpm-lock.yaml, and a frozen yarn install for yarn.lock', () => {
+    write('package.json', '{}');
+    write('pnpm-lock.yaml', 'lockfileVersion: 9\n');
+    expect(platformInstallOf(workspace)?.command).toEqual(['pnpm', 'install', '--frozen-lockfile']);
+    fs.rmSync(path.join(workspace, 'pnpm-lock.yaml'));
+    write('yarn.lock', '# yarn\n');
+    expect(platformInstallOf(workspace)?.command).toEqual(['yarn', 'install', '--frozen-lockfile']);
+  });
+});
+
+describe('PLATFORM_INSTALL_SCRIPT, run by sh', () => {
+  // The script as the guest runs it: sh -c SCRIPT <stamp> <hash> <command...>, in the workspace.
+  let bin: string;
+  let log: string;
+  let stamp: string;
+  beforeEach(() => {
+    bin = path.join(root, 'bin');
+    log = path.join(root, 'install.log');
+    stamp = path.join(root, 'stamps', 'install.hash');
+    fs.mkdirSync(bin);
+    fs.mkdirSync(path.dirname(stamp));
+    fs.writeFileSync(path.join(bin, 'fake-npm'), `#!/bin/sh\necho "$@" >> '${log}'\n[ -z "$FAIL" ]\n`, { mode: 0o755 });
+  });
+  const run = (hash: string, env: Record<string, string> = {}) => spawnSync('sh', ['-c', PLATFORM_INSTALL_SCRIPT, stamp, hash, 'fake-npm', 'ci'], {
+    cwd: workspace, env: { PATH: `${bin}:/usr/bin:/bin`, ...env }, encoding: 'utf8',
+  });
+  const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []);
+
+  it('installs on the first launch and records the lockfile\'s hash', () => {
+    expect(run('h1').status).toBe(0);
+    expect(calls()).toEqual(['ci']);
+    expect(fs.readFileSync(stamp, 'utf8').trim()).toBe('h1');
+  });
+
+  it('does not install again while the lockfile is unchanged', () => {
+    run('h1');
+    expect(run('h1').status).toBe(0);
+    expect(calls()).toEqual(['ci']);
+  });
+
+  it('installs again when the lockfile changed', () => {
+    run('h1');
+    expect(run('h2').status).toBe(0);
+    expect(calls()).toEqual(['ci', 'ci']);
+    expect(fs.readFileSync(stamp, 'utf8').trim()).toBe('h2');
+  });
+
+  it('forgets the last install when a reinstall fails: going back to that lockfile installs again (review 4)', () => {
+    run('h1');
+    expect(run('h2', { FAIL: '1' }).status).not.toBe(0);
+    expect(run('h1').status).toBe(0);
+    expect(calls()).toEqual(['ci', 'ci', 'ci']);
+  });
+
+  it('is not held up by a FIFO the session planted as the stamp: it installs and replaces it (review 7)', () => {
+    spawnSync('mkfifo', [stamp]);
+    const r = spawnSync('sh', ['-c', PLATFORM_INSTALL_SCRIPT, stamp, 'h1', 'fake-npm', 'ci'], {
+      cwd: workspace, env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: 'utf8', timeout: 5000,
+    });
+    expect(r.error).toBeUndefined();
+    expect(r.status).toBe(0);
+    expect(fs.lstatSync(stamp).isFile()).toBe(true);
+    expect(fs.readFileSync(stamp, 'utf8').trim()).toBe('h1');
+  });
+
+  it('fails, and records nothing, when the install fails: the next launch tries again', () => {
+    expect(run('h1', { FAIL: '1' }).status).not.toBe(0);
+    expect(fs.existsSync(stamp)).toBe(false);
+    run('h1');
+    expect(calls()).toEqual(['ci', 'ci']);
+  });
+});
+
+describe('a session in a machine with dependencies to install', () => {
+  const lock = '{"lockfileVersion":3}';
+  beforeEach(() => {
+    fs.writeFileSync(path.join(workspace, 'package.json'), '{}');
+    fs.writeFileSync(path.join(workspace, 'package-lock.json'), lock);
+  });
+  const installExec = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.calls.find((c) => c.args[1] === 'exec' && c.args.includes(PLATFORM_INSTALL_SCRIPT));
+
+  it('installs them in the guest as the session user, in the workspace, after the protections and before the session', async () => {
+    const { rt, smolvm, sp } = runtime();
+    await rt.launch(specOf(), cmd());
+    const install = installExec(smolvm);
+    expect(install).toBeTruthy();
+    expect(flag(install!.args, '-u', '--user')).toBe('503:20');
+    expect(flag(install!.args, '-w', '--workdir')).toBe(workspace);
+    const tail = install!.args.slice(install!.args.indexOf(PLATFORM_INSTALL_SCRIPT) + 2);
+    expect(tail).toEqual([crypto.createHash('sha256').update(lock).digest('hex'), 'npm', 'ci']);
+    const setup = smolvm.calls.find((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root')!;
+    const order = (c: { args: string[] }) => smolvm.run.mock.invocationCallOrder[smolvm.calls.indexOf(c as any)];
+    expect(order(setup)).toBeLessThan(order(install!));
+    expect(order(install!)).toBeLessThan(sp.spawn.mock.invocationCallOrder[0]);
+  });
+
+  it('bounds the install: a hung lifecycle script cannot hold the machine\'s lock forever (review 7)', async () => {
+    const { rt, smolvm } = runtime();
+    await rt.launch(specOf(), cmd());
+    expect(flag(installExec(smolvm)!.args, '--timeout')).toMatch(/^\d+s$/);
+  });
+
+  it('keeps the host\'s model keys out of the install', async () => {
+    const { rt, smolvm } = runtime();
+    await rt.launch(specOf(), cmd());
+    expect(installExec(smolvm)!.args.join(' ')).not.toContain('sk-fake-not-real');
+  });
+
+  it('starts the session anyway when the install fails, and says so with what the installer said', async () => {
+    const warnings: string[] = [];
+    const smolvm = fakeSmolvm({ execFails: (args) => (args.includes(PLATFORM_INSTALL_SCRIPT) ? 'npm ERR! 404 left-pad' : null) });
+    const { rt, sp } = runtime({ smolvm, warn: (m: string) => warnings.push(m) });
+    await rt.launch(specOf(), cmd());
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+    expect(warnings.join('\n')).toMatch(/npm ci.*failed[\s\S]*npm ERR! 404 left-pad/);
+  });
+
+  it('installs nothing, and says why, when it cannot place every install destination (third review 3)', async () => {
+    fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ workspaces: ['.tools/{lint,build}'] }));
+    const warnings: string[] = [];
+    const { rt, smolvm } = runtime({ warn: (m: string) => warnings.push(m) });
+    await rt.launch(specOf(), cmd());
+    expect(installExec(smolvm)).toBeUndefined();
+    expect(warnings.join('\n')).toMatch(/\.tools\/\{lint,build\}[\s\S]*not installed/);
+  });
+
+  it('installs nothing when the workspace has no lockfile', async () => {
+    fs.rmSync(path.join(workspace, 'package-lock.json'));
+    const { rt, smolvm } = runtime();
+    await rt.launch(specOf(), cmd());
+    expect(installExec(smolvm)).toBeUndefined();
+  });
+
+  it('joining a running machine, makes no platform bind and holds no platform dir: root would follow a link the session in it swapped in (review 3, second review 1)', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name);
+    fs.mkdirSync(path.join(workspace, 'packages', 'b'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, 'packages', 'b', 'package.json'), '{}');
+    fs.rmSync(path.join(workspace, 'node_modules'), { recursive: true, force: true });
+    await runtime({ smolvm }).rt.launch(specOf(), cmd());
+    expect(fs.existsSync(path.join(workspace, 'packages', 'b', 'node_modules'))).toBe(false);
+    expect(fs.existsSync(path.join(workspace, 'node_modules'))).toBe(false);
+    const setup = smolvm.calls.find((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root')!;
+    expect(setup.args.join(' ')).not.toContain('mount --bind \'/var/lib/agenfk/platform');
+  });
+
+  it('refuses to join a running machine made from another image than this launch needs: the policy\'s image would not run (second review 2)', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name);
+    const { rt, sp } = runtime({ smolvm });
+    await expect(rt.launch({ ...specOf(), machineImage: 'ghcr.io/acme/hardened:1' }, cmd())).rejects.toThrow(/another session[\s\S]*ghcr\.io\/acme\/hardened:1/i);
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('waits for another launcher\'s start longer than an install may take (second review 6)', () => {
+    expect(LOCK_TIMEOUT_MS / 1000).toBeGreaterThan(Number.parseInt(INSTALL_TIMEOUT, 10) + 60);
+  });
+
+  it('does not install under a session already in the machine: its dependencies would change beneath it', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name);
+    await runtime({ smolvm }).rt.launch(specOf(), cmd());
+    expect(installExec(smolvm)).toBeUndefined();
+  });
+});
+
 describe('airlock reset', () => {
   it('deletes the workspace\'s machine', async () => {
     const name = machineNameOf(workspace);
@@ -1456,6 +1868,68 @@ function allowAllInterceptor(): Promise<{ address: string; token: string; close(
     resolve({ address: `127.0.0.1:${port}`, token, close: () => server.close() });
   }));
 }
+
+/**
+ * The AgEnFK base image, built locally and saved: `docker build -f airlock-image/Dockerfile -t agenfk-airlock-base:dev .`
+ * then `docker save agenfk-airlock-base:dev -o <file>`, and AGENFK_AIRLOCK_TEST_IMAGE=<file>.
+ */
+const baseImageArchive = process.env.AGENFK_AIRLOCK_TEST_IMAGE;
+
+describe.skipIf(!smolvmHere || !baseImageArchive)('the AgEnFK base image in a real machine (AGENFK_AIRLOCK_TEST_IMAGE)', () => {
+  it('runs its tools as the session user, and installs the workspace\'s dependencies in the guest\'s own node_modules', async () => {
+    fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ name: 'w', version: '1.0.0', dependencies: { 'is-number': '7.0.0' } }));
+    fs.writeFileSync(path.join(workspace, 'package-lock.json'), JSON.stringify({
+      name: 'w', version: '1.0.0', lockfileVersion: 3, requires: true,
+      packages: {
+        '': { name: 'w', version: '1.0.0', dependencies: { 'is-number': '7.0.0' } },
+        'node_modules/is-number': {
+          version: '7.0.0', resolved: 'https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz',
+          integrity: 'sha512-41Cifkg6e8TylSpdtTpeLVMqvSBEVzTttHvERD741+pnZ8ANv0004MRL43QKPDlK9cGvNp6NZWZUBlbGXYxxng==',
+          engines: { node: '>=0.12.0' },
+        },
+      },
+    }));
+    // The host's own node_modules: the guest neither sees nor changes it.
+    fs.writeFileSync(path.join(workspace, 'node_modules', 'host-only'), 'host\n');
+    const icpt = await allowAllInterceptor();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address: icpt.address, token: icpt.token }),
+      watch: () => () => undefined,
+      stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'),
+      addRoute: () => () => undefined,
+    };
+    const warnings: string[] = [];
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: {}, warn: (m) => warnings.push(m) });
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      const out = path.join(workspace, 'probe.out');
+      const probe = [
+        'for c in node pi agenfk git psql mysql redis-cli mongosh python3 yarn pnpm; do command -v $c >/dev/null || echo "missing $c"; done',
+        'ssh -V 2>&1 | grep -q OpenSSH || echo "ssh: $(ssh -V 2>&1)"',
+        // The image's ENV reaches the session: pnpm and yarn run from the corepack home it prepared.
+        '[ "$COREPACK_HOME" = /usr/local/share/corepack ] || echo "COREPACK_HOME=$COREPACK_HOME"',
+        'pnpm --version >/dev/null 2>&1 || echo pnpm-failed',
+        'node -e "require(\'is-number\')" || echo is-number-missing',
+        'test -e node_modules/host-only && echo host-node_modules-visible',
+        'python3 -m venv /tmp/v >/dev/null || echo venv-failed',
+      ].join('; ');
+      // Enforce: the registry resolves in the guest only when the policy allows it.
+      const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['registry.npmjs.org'] } }), session());
+      const launched = await rt.launch(spec, { file: 'sh', args: ['-c', `(${probe}) > ${out} 2>&1`], cwd: workspace });
+      expect((await launched.exited).code).toBe(0);
+      expect(warnings).toEqual([]);
+      expect(fs.readFileSync(out, 'utf8')).toBe('');
+      expect(fs.readdirSync(path.join(workspace, 'node_modules'))).toEqual(['dep', 'host-only']);
+    } finally {
+      await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      icpt.close();
+      process.env.HOME = sandboxHome;
+    }
+  }, 600_000);
+});
 
 describe.skipIf(!smolvmHere)('SmolvmRuntime against the real smolvm (AGENFK_SMOLVM_TESTS=1)', () => {
   it('runs a command in the workspace machine: exit code, writes, protections, hidden files', async () => {

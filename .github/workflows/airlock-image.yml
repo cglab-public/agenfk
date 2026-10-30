@@ -1,0 +1,61 @@
+name: Airlock base image
+
+# CGLAB-696: the image an Airlock session's smolvm machine is made from, built
+# from this tag's checkout (the agenfk CLI in it is this version) and pushed,
+# for amd64 and arm64, to ghcr.io/<owner>/agenfk-airlock-base:<version> - the
+# tag `agenfk airlock` pulls (packages/cli/src/airlock/image.ts). No `latest`:
+# a launcher only ever asks for its own version.
+on:
+  push:
+    # Version tags only, as desktop-release.yml: not hub-v* or desktop-v*.
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build the image for (e.g. 2.1.0-beta.7), from the ref the workflow runs on'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # The version comes in via env, never ${{ }} inside the script: refnames can hold shell metacharacters.
+      - name: Resolve version
+        id: version
+        env:
+          INPUT: ${{ github.event.inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ -n "$INPUT" ]; then V="$INPUT"; elif [ "$REF_TYPE" = tag ]; then V="${REF_NAME#v}"; else echo "no version" >&2; exit 1; fi
+          # The whole value (bash =~, not grep, which matches line by line).
+          if [[ ! "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then echo "not a version: $V" >&2; exit 1; fi
+          # The image carries this checkout's CLI: its tag must be that CLI's version.
+          PKG=$(node -p "require('./packages/cli/package.json').version")
+          if [ "$V" != "$PKG" ]; then echo "version $V is not this checkout's ($PKG)" >&2; exit 1; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: airlock-image/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/agenfk-airlock-base:${{ steps.version.outputs.version }}

@@ -26,6 +26,7 @@ import type { AirlockRuntime } from './runtime';
 import { startServerRelay, type ServerRelay, type ServerRelayOptions } from './serverRelay';
 import { ProxyDecisionReporter, type ProxyReportBody } from './proxyReport';
 import type { StagedAgentDir } from './piAgentDir';
+import { machineImageFor, type MachineImageSource } from './image';
 
 export class AirlockLaunchError extends Error {
   constructor(message: string) {
@@ -69,6 +70,11 @@ export interface LaunchDeps {
   which(file: string): string | null;
   runtimePackageDir: string;
   installDirs: string[];
+  /**
+   * This agenfk's version: the AgEnFK base image the machine runs is the one built with it.
+   * Read only when a launch resolves its image (exec's bundled helper has no package.json).
+   */
+  agenfkVersion(): string;
   log(message: string): void;
   warn(message: string): void;
   /** Subscribe to a signal; returns the unsubscribe. */
@@ -314,6 +320,8 @@ export function projectAgenfkDirs(d: Pick<LaunchDeps, 'cwd' | 'home' | 'exists'>
 
 const SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
+const IMAGE_SOURCE: Record<MachineImageSource, string> = { policy: 'the policy\'s', base: 'AgEnFK base' };
+
 export async function runAirlockLaunch(client: AirlockClient, clientArgs: string[], opts: LaunchOptions, d: LaunchDeps): Promise<number> {
   const ready = await d.runtime.check();
   if (!ready.ok) throw new AirlockLaunchError(ready.reason);
@@ -356,6 +364,21 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     const older = 'The AgEnFK server running is older than this agenfk: it would run the commands of the cards this session works on (verify, the suite) outside the sandbox.';
     if (policy.mode === 'enforce') throw new AirlockLaunchError(`${older} Nothing was launched. Restart it on this version (agenfk restart), or upgrade it, and retry.`);
     d.warn(`Airlock: ${older} Restart it (agenfk restart) to sandbox them.`);
+  }
+
+  // An older server's policy drops machineImage: its absence there says nothing, and the
+  // repository's image (or the base) would run over the one the policy names.
+  if (!caps.includes('machine-image')) {
+    const older = 'The AgEnFK server running is older than this agenfk: the policy it gives drops the machine image your policy may name.';
+    if (policy.mode === 'enforce') throw new AirlockLaunchError(`${older} Nothing was launched. Restart it on this version (agenfk restart), or upgrade it, and retry.`);
+    d.warn(`Airlock: ${older} Restart it (agenfk restart) so the machine runs that image.`);
+  }
+
+  let machineImage: { image: string; source: MachineImageSource };
+  try {
+    machineImage = machineImageFor(policy, d.agenfkVersion());
+  } catch (e) {
+    throw new AirlockLaunchError(`${(e as Error).message} Nothing was launched.`);
   }
 
   const file = d.which(client);
@@ -485,6 +508,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
       // A denied inference host: the session could not reach its model.
       throw new AirlockLaunchError((e as Error).message);
     }
+    spec.machineImage = machineImage.image;
     const exposed = writeRootHolding(d.runtimePackageDir, spec);
     if (exposed) {
       throw new AirlockLaunchError(
@@ -494,6 +518,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     }
     for (const s of spec.skipped) d.warn(`Airlock: "${s.entry}" left out of the sandbox (${s.reason}).`);
     d.log(`Airlock: launching ${client} in the sandbox (${d.runtime.id}; policy ${policy.mode}, ${view.source ?? 'local'} revision ${view.revision ?? 0}; inference ${endpoint.host}).`);
+    d.log(`Airlock: machine image ${machineImage.image} (${IMAGE_SOURCE[machineImage.source]}).`);
 
     const post = d.postProxyDecisions;
     const token = post ? str(d.reportToken?.() ?? null) : null;

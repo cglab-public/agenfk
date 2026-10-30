@@ -33,6 +33,7 @@ import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } f
 import type { SandboxSpec } from './spec';
 import { allowListArgs, GATEWAY, type Route } from './egress';
 import { machineCa, placeholderFor, startKeyInjector, type KeyInjector, type KeyInjectorOptions, type MachineCa } from './keyInjector';
+import { readRegularFile } from './safeRead';
 import type { AirlockRuntime, LaunchHooks, LaunchedSandbox, ProxyDecision, RuntimeCheck, SandboxCommand, SandboxExit } from './runtime';
 
 /** Exactly the version AgEnFK installs (no range): a bump is a reviewed change. */
@@ -58,9 +59,11 @@ export interface EgressBroker {
   addRoute(machine: string, route: Route): () => void;
 }
 
+const hash16 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
+
 /** The machine of a workspace folder: one name per folder, stable across sessions. */
 export function machineNameOf(workspace: string): string {
-  return `agenfk-${crypto.createHash('sha256').update(path.resolve(workspace)).digest('hex').slice(0, 16)}`;
+  return `agenfk-${hash16(path.resolve(workspace))}`;
 }
 
 export type Placeholder = { path: string; kind: 'file'; content: string } | { path: string; kind: 'dir' };
@@ -80,6 +83,14 @@ export interface GuestPlan {
   hidden: Array<{ path: string; kind: 'file' | 'dir' }>;
   /** Protected paths that do not exist yet, held for the session so nothing can be planted there. */
   placeholders: Placeholder[];
+  /** Why not every install destination could be placed (a workspace pattern beyond Airlock): nothing is installed then. */
+  platformIncomplete?: string;
+  /**
+   * The guest's own platform dirs (node_modules, .venv), each bound over the host's from a store
+   * on the machine's disk: what the guest installs is Linux's and stays there, and the host's are
+   * never touched. One the host lacks is held by an empty directory to bind onto.
+   */
+  platform: Array<{ path: string; store: string }>;
 }
 
 /**
@@ -98,6 +109,20 @@ const NESTED_GIT_PROTECTED = ['hooks', 'config', 'commondir', 'config.worktree',
  * empty .vscode or .idea would be noticed by the IDE.
  */
 const WORKSPACE_PROTECTED = ['.gitmodules', '.vscode', '.idea', '.claude/commands', '.claude/agents', '.mcp.json'];
+
+/** Where the guest keeps its own platform dirs, on the machine's disk. */
+export const GUEST_PLATFORM_ROOT = '/var/lib/agenfk/platform';
+/** A directory holding one of the markers gets its own copy of `dir` in the guest. */
+const PLATFORM_DIRS: Array<{ markers: string[]; dir: string }> = [
+  { markers: ['package.json'], dir: 'node_modules' },
+  { markers: ['pyproject.toml', 'requirements.txt'], dir: '.venv' },
+];
+/** The lockfiles a workspace's dependencies are installed from in the guest, first found wins. */
+const INSTALLERS: Array<{ lockfile: string; command: string[] }> = [
+  { lockfile: 'package-lock.json', command: ['npm', 'ci'] },
+  { lockfile: 'pnpm-lock.yaml', command: ['pnpm', 'install', '--frozen-lockfile'] },
+  { lockfile: 'yarn.lock', command: ['yarn', 'install', '--frozen-lockfile'] },
+];
 
 /** Directories a `**` search below the workspace does not enter. */
 const SEARCH_SKIP = new Set(['node_modules', '.git']);
@@ -341,6 +366,111 @@ function nestedGitEntries(dir: string): string[] {
   return found;
 }
 
+/** The platform dirs of every package below `dir`, not looking inside node_modules or a dot-directory. */
+function platformDirsIn(dir: string, depth = 0): string[] {
+  if (depth > SEARCH_DEPTH) return [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files = new Set(entries.filter((e) => e.isFile()).map((e) => e.name));
+  const found = PLATFORM_DIRS.filter((d) => d.markers.some((m) => files.has(m))).map((d) => path.join(dir, d.dir));
+  for (const e of entries) {
+    if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') found.push(...platformDirsIn(path.join(dir, e.name), depth + 1));
+  }
+  return found;
+}
+
+/**
+ * Where the workspace's lockfile says its installer writes: npm's `packages` keys, pnpm's
+ * importers. These reach what the walk does not (a workspace in a dot-directory, or deeper).
+ * Only paths inside the workspace; the lockfile is the session's to write.
+ */
+function lockfileDestinations(workspace: string): { dests: string[]; incomplete?: string } {
+  const out: string[] = [];
+  let incomplete: string | undefined;
+  const add = (rel: string) => {
+    const p = path.resolve(workspace, rel);
+    if (inside(p, workspace) && p !== workspace) out.push(p);
+  };
+  const json = (name: string): unknown => {
+    try { return JSON.parse(readRegularFile(path.join(workspace, name), MAX_LOCKFILE)?.toString('utf8') ?? 'null'); } catch { return null; }
+  };
+  for (const name of ['package-lock.json', 'npm-shrinkwrap.json']) {
+    const lock = json(name);
+    const packages = (lock as { packages?: unknown } | null)?.packages;
+    if (!packages || typeof packages !== 'object') continue;
+    for (const key of Object.keys(packages)) {
+      const i = `/${key}`.indexOf('/node_modules/');
+      if (i >= 0) add(`${key.slice(0, i)}${i ? '/' : ''}node_modules`);
+    }
+  }
+  const yaml = readRegularFile(path.join(workspace, 'pnpm-lock.yaml'), MAX_LOCKFILE)?.toString('utf8') ?? '';
+  let importers = false;
+  for (const line of yaml.split('\n')) {
+    if (/^\S/.test(line)) importers = /^importers:\s*$/.test(line);
+    const m = importers ? /^ {2}(['"]?)([^'":\s][^'":]*)\1:\s*$/.exec(line) : null;
+    if (m) add(path.join(m[2], 'node_modules'));
+  }
+  // package.json workspaces (yarn's, and npm's): a literal path, or `*` for one directory level.
+  const manifest = json('package.json') as { workspaces?: unknown } | null;
+  const ws = manifest?.workspaces;
+  const patterns = Array.isArray(ws) ? ws : Array.isArray((ws as { packages?: unknown })?.packages) ? (ws as { packages: unknown[] }).packages : [];
+  for (const pattern of patterns) {
+    if (typeof pattern !== 'string') continue;
+    // `*` alone is one directory level; anything else with a wildcard (`**`, `pkg-*`, a brace) is beyond this.
+    if (pattern.split('/').some((seg) => seg !== '*' && /[*?[{]/.test(seg))) {
+      incomplete ??= `its workspace pattern "${pattern}" is one Airlock cannot follow`;
+      continue;
+    }
+    let dirs = [workspace];
+    for (const seg of pattern.split('/').filter((x) => x && x !== '.')) {
+      dirs = seg === '*'
+        ? dirs.flatMap((d) => { try { return fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => path.join(d, e.name)); } catch { return []; } })
+        : dirs.map((d) => path.join(d, seg));
+    }
+    for (const d of dirs) if (kindOfPath(path.join(d, 'package.json')) === 'file') add(path.relative(workspace, path.join(d, 'node_modules')));
+  }
+  return { dests: out, incomplete };
+}
+
+/** Is any directory from `dir` up to (not including) `top` a symbolic link? */
+function linkedBelow(dir: string, top: string): boolean {
+  for (let a = dir; a !== top && inside(a, top); a = path.dirname(a)) {
+    try { if (fs.lstatSync(a).isSymbolicLink()) return true; } catch { return true; }
+  }
+  return false;
+}
+
+/** What installs the workspace's dependencies in the guest, from which lockfile, or null when it has none. */
+export function platformInstallOf(workspace: string): { lockfile: string; hash: string; command: string[] } | null {
+  for (const i of INSTALLERS) {
+    const lockfile = path.join(workspace, i.lockfile);
+    const content = readRegularFile(lockfile, MAX_LOCKFILE);
+    if (!content) continue;
+    return { lockfile, hash: crypto.createHash('sha256').update(content).digest('hex'), command: i.command };
+  }
+  return null;
+}
+
+/**
+ * Run as `sh -c SCRIPT <stamp> <lockfile hash> <command...>` in the workspace: installs unless the
+ * stamp holds the hash. The stamp goes before the install (one that fails half way leaves none) and
+ * comes back, by rename, only once it succeeded. Only a regular file is read: the stamps dir is the
+ * session user's, and a FIFO planted there would block the read.
+ */
+export const PLATFORM_INSTALL_SCRIPT = 'stamp="$0"; hash="$1"; shift; '
+  + '[ -f "$stamp" ] && [ ! -L "$stamp" ] && [ "$(head -c 128 "$stamp")" = "$hash" ] && exit 0; '
+  + 'rm -f "$stamp"; "$@" || exit $?; '
+  + 'tmp=$(mktemp "$stamp.XXXXXX") && printf \'%s\\n\' "$hash" > "$tmp" && mv -f "$tmp" "$stamp"';
+
+/** How long the guest's install may take: it runs under the machine's lock. */
+export const INSTALL_TIMEOUT = '600s';
+/** The largest lockfile read: the session writes it, and the launcher reads it on the host. */
+const MAX_LOCKFILE = 64 * 1024 * 1024;
+
 export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: GitConfigReader = readGitConfig, holding: ReadonlySet<string> = new Set()): GuestPlan {
   // A placeholder the machine already holds is planned as what it stands for: missing. So a session
   // joining plans what the first one did.
@@ -472,7 +602,28 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     hidden.push({ path: p, kind });
   }
 
-  return { mounts: roots.map((r) => ({ host: r, guest: r, readOnly: false as const })), pinned, readOnly, hidden, placeholders };
+  const platform: GuestPlan['platform'] = [];
+  const fromLockfiles = lockfileDestinations(workspace);
+  const destinations = [...new Set([...platformDirsIn(workspace), ...fromLockfiles.dests])];
+  for (const p of destinations) {
+    // A destination whose package is not in the checkout has nothing to bind onto, and one reached
+    // through a link is not taken: root's bind in the guest would follow it. Nor one inside another:
+    // its path in the guest runs through that one's store, which the session fills.
+    if (!mounted(p) || kindOfPath(path.dirname(p)) !== 'dir' || linkedBelow(path.dirname(p), workspace)) continue;
+    if (destinations.some((q) => q !== p && inside(p, q))) continue;
+    const kind = kindOf(p);
+    if (kind && fs.lstatSync(p).isSymbolicLink()) {
+      throw new Error(`Airlock cannot give the guest its own ${p}: it is a symbolic link, and the guest's copy would be bound where it points. Nothing was launched.`);
+    }
+    if (kind === 'file') throw new Error(`Airlock cannot give the guest its own ${p}: it is a file, not a directory. Nothing was launched.`);
+    if (!kind) placeholders.push({ path: p, kind: 'dir' });
+    platform.push({ path: p, store: `${GUEST_PLATFORM_ROOT}/${hash16(p)}` });
+  }
+
+  return {
+    mounts: roots.map((r) => ({ host: r, guest: r, readOnly: false as const })), pinned, readOnly, hidden, placeholders, platform,
+    ...(fromLockfiles.incomplete ? { platformIncomplete: fromLockfiles.incomplete } : {}),
+  };
 }
 
 const quote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -482,6 +633,9 @@ const mountinfoPath = (p: string): string => p.replace(/\\/g, '\\134').replace(/
 const GUEST_RUN = '/run/agenfk';
 const GUEST_SESSIONS = `${GUEST_RUN}/sessions`;
 const GUEST_HIDE = `${GUEST_RUN}/hide`;
+/** The session user's: which lockfile each workspace was last installed from, and the package managers' caches. */
+const GUEST_PLATFORM_STAMPS = `${GUEST_PLATFORM_ROOT}/stamps`;
+const GUEST_PLATFORM_CACHE = `${GUEST_PLATFORM_ROOT}/cache`;
 
 /** The root script that applies the plan in the guest. Idempotent: a second session runs it again. */
 /** Where the guest finds the host's trusted roots and the machine's CA together. */
@@ -489,7 +643,19 @@ export const GUEST_CA_BUNDLE = '/run/agenfk/ca-bundle.pem';
 /** The env vars clients read a CA bundle from. */
 const CA_BUNDLE_ENV = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'];
 
-export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPem?: string): string {
+/**
+ * The root lines binding each platform dir from its store. Only where the guest resolves the path to
+ * itself: nothing runs in the guest yet, but a store keeps what the session left in it, and root's
+ * bind would follow a link there.
+ */
+export function platformBindLines(platform: GuestPlan['platform'], uid: number, gid: number): string[] {
+  return platform.map((d) => `mkdir -p ${quote(d.store)}; chown ${uid}:${gid} ${quote(d.store)}; `
+    + `if [ -d ${quote(d.path)} ] && [ "$(readlink -f ${quote(d.path)})" = ${quote(d.path)} ]; then mounted ${quote(mountinfoPath(d.path))} || mount --bind ${quote(d.store)} ${quote(d.path)}; fi`);
+}
+
+export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPem?: string, home = '/'): string {
+  // A home a passwd line cannot hold is left out of it (the session's HOME is set either way).
+  const pwHome = /^\/[^:\n]*$/.test(home) ? home : '/';
   const lines = [
     'set -e',
     `mounted() { P="$1" awk '$5 == ENVIRON["P"] { f = 1 } END { exit !f }' /proc/self/mountinfo; }`,
@@ -501,6 +667,9 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
     'ro() { mounted "$2" || mount --rbind "$1" "$1"; mount -o remount,bind,ro "$1"; }',
     `hide_file() { hidden "$2" || { mount --bind ${GUEST_HIDE}/empty "$1"; mount -o remount,bind,ro "$1"; }; }`,
     'hide_dir() { hidden "$2" || mount -t tmpfs -o ro,size=4k,mode=000 tmpfs "$1"; }',
+    // The session's uid is the host user's, which the image does not know: ssh refuses a user it cannot look up.
+    `getent group ${gid} >/dev/null || echo ${quote(`agenfk:x:${gid}:`)} >> /etc/group`,
+    `getent passwd ${uid} >/dev/null || echo ${quote(`agenfk:x:${uid}:${gid}:AgEnFK session:${pwHome}:/bin/sh`)} >> /etc/passwd`,
     `mkdir -p ${GUEST_SESSIONS} ${GUEST_HIDE}`,
     `chown ${uid}:${gid} ${GUEST_SESSIONS}`,
     `chmod 700 ${GUEST_SESSIONS}`,
@@ -513,6 +682,9 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
       `chmod 444 ${GUEST_CA_BUNDLE}.tmp`,
       `mv ${GUEST_CA_BUNDLE}.tmp ${GUEST_CA_BUNDLE}`,
     ] : []),
+    // The guest's own platform dirs, before the pins: a pin over a directory carries the binds inside it.
+    ...(plan.platform.length ? [`mkdir -p ${GUEST_PLATFORM_STAMPS} ${GUEST_PLATFORM_CACHE}`, `chown ${uid}:${gid} ${GUEST_PLATFORM_STAMPS} ${GUEST_PLATFORM_CACHE}`] : []),
+    ...platformBindLines(plan.platform, uid, gid),
     // Hidden first, then pins and read-only binds outer first.
     ...plan.hidden.map((h) => `hide_${h.kind} ${quote(h.path)} ${quote(mountinfoPath(h.path))}`),
     ...[...plan.pinned.map((p) => ['pin', p] as const), ...plan.readOnly.map((p) => ['ro', p] as const)]
@@ -520,6 +692,17 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
       .map(([op, p]) => `${op} ${quote(p)} ${quote(mountinfoPath(p))}`),
   ];
   return lines.join('\n');
+}
+
+/**
+ * A machine in use keeps the platform binds the launch that started it made, and gets no new
+ * ones: the session in it could swap a platform dir, or a directory above it, for a link between
+ * the plan and root's bind in the guest, which would follow it (onto /usr/bin, say). Nor is a
+ * platform dir held on the host for it: the session could steer that placeholder the same way.
+ */
+function withoutPlatform(plan: GuestPlan): GuestPlan {
+  const platform = new Set(plan.platform.map((d) => d.path));
+  return { ...plan, platform: [], placeholders: plan.placeholders.filter((h) => !platform.has(h.path)) };
 }
 
 /** The relay's URL as the guest reaches it: through the gateway, where the decider relays it. */
@@ -594,8 +777,8 @@ interface Prepared { plan: GuestPlan; ca: MachineCa; placeholders: Record<string
 
 type HeldPlaceholder = Placeholder & { dev: number; ino: number; parent: string };
 
-/** Creating a machine pulls its image, which can take a while. */
-const LOCK_TIMEOUT_MS = 300_000;
+/** Creating a machine pulls its image, and starting it may install the workspace's dependencies: both take a while. */
+export const LOCK_TIMEOUT_MS = 900_000;
 const LOCK_POLL_MS = 25;
 
 /** Bounds the host's signalling exec: the pid file is the session's, and could be a FIFO. */
@@ -813,24 +996,26 @@ export class SmolvmRuntime implements AirlockRuntime {
     }
   }
 
-  private async ensureMachine(name: string, workspace: string): Promise<MachineInfo> {
+  private async ensureMachine(name: string, workspace: string, image: string): Promise<MachineInfo> {
     const found = await this.machine(name);
     if (found) {
       const owner = found.labels?.['agenfk.workspace'];
       if (owner !== workspace) {
         throw new Error(`The smolvm machine ${name} belongs to ${owner ?? 'something else'}, not ${workspace}, so nothing was launched. Delete it with: smolvm machine delete --name ${name}`);
       }
-      if (found.labels?.['agenfk.image'] === this.d.image) return found;
+      if (found.labels?.['agenfk.image'] === image) return found;
       if (found.state === 'running') {
-        this.d.warn(`Airlock: the machine for ${workspace} runs an older image; it is rebuilt once no session is in it.`);
-        return found;
+        // Only another session keeps it running here (prepare stops one no session is in).
+        throw new Error(`Another session is in the Airlock machine for ${workspace}, which runs ${found.labels?.['agenfk.image'] ?? 'another image'}; this launch needs ${image}, so nothing was launched. Launch it once that session has ended.`);
       }
       await this.must(['machine', 'delete', '--name', name, '-f'], 'replace the machine of an older image');
     }
     await this.must([
-      'machine', 'create', '--name', name, '-I', this.d.image,
+      'machine', 'create', '--name', name, '-I', image,
       '--net', '--net-backend', 'virtio-net', '--trust-host-certs',
-      '--label', `agenfk.workspace=${workspace}`, '--label', `agenfk.image=${this.d.image}`,
+      '--label', `agenfk.workspace=${workspace}`, '--label', `agenfk.image=${image}`,
+      // An inert workload in place of the image's own command: nothing runs as root before the protections.
+      '--', 'true',
     ], `create the Airlock machine for ${workspace}`);
     return { name, state: 'stopped' };
   }
@@ -901,8 +1086,9 @@ export class SmolvmRuntime implements AirlockRuntime {
         else this.removePlaceholders(name);
       }
       // Planned only now: what the cleanup above removed is planned as missing.
-      const plan = guestPlanOf(spec, workspace, this.d.readGitConfig, new Set(this.readPlaceholders(name).map((p) => p.path)));
-      const machine = await this.ensureMachine(name, workspace);
+      let plan = guestPlanOf(spec, workspace, this.d.readGitConfig, new Set(this.readPlaceholders(name).map((p) => p.path)));
+      if (shared) plan = withoutPlatform(plan);
+      const machine = await this.ensureMachine(name, workspace, spec.machineImage ?? this.d.image);
       const network = path.join(this.machineDir(name), 'network.json');
       const protections = path.join(this.machineDir(name), 'protections.json');
       const applied = JSON.stringify({ pinned: plan.pinned, readOnly: plan.readOnly, hidden: plan.hidden });
@@ -934,9 +1120,45 @@ export class SmolvmRuntime implements AirlockRuntime {
       }
       await this.attachMounts(name, plan, workspace, shared);
       this.ensurePlaceholders(name, plan.placeholders);
-      await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid, ca.certPem)], 'protect the session\'s files in the machine');
+      await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid, ca.certPem, this.homeOf(spec))], 'protect the session\'s files in the machine');
+      // Not under a session already in the machine: its dependencies would change beneath it.
+      if (!shared && plan.platform.length) await this.installPlatform(name, workspace, spec, plan.platformIncomplete);
       return { plan, ca, placeholders };
     });
+  }
+
+  /** The session's HOME in the guest: the host user's path. */
+  private homeOf(spec: SandboxSpec): string {
+    return spec.home ?? this.d.hostEnv.HOME ?? '/root';
+  }
+
+  /**
+   * Installs the workspace's dependencies in the guest, as the session user, when its lockfile
+   * changed since the last install (or there was none). A failure is said, and the session starts
+   * with what the machine has: the next launch tries again.
+   */
+  private async installPlatform(name: string, workspace: string, spec: SandboxSpec, incomplete?: string): Promise<void> {
+    const install = platformInstallOf(workspace);
+    if (!install) return;
+    if (incomplete) {
+      this.d.warn(`Airlock: ${workspace}: ${incomplete}, so its dependencies are not installed in the machine (the install could write the host's own node_modules). Install them in the session if it needs them.`);
+      return;
+    }
+    const env = [
+      `HOME=${this.homeOf(spec)}`,
+      'TMPDIR=/tmp',
+      `npm_config_cache=${GUEST_PLATFORM_CACHE}/npm`,
+      `YARN_CACHE_FOLDER=${GUEST_PLATFORM_CACHE}/yarn`,
+      `XDG_CACHE_HOME=${GUEST_PLATFORM_CACHE}`,
+      ...CA_BUNDLE_ENV.map((k) => `${k}=${GUEST_CA_BUNDLE}`),
+    ];
+    const r = await this.cli([
+      'machine', 'exec', '--name', name, '--timeout', INSTALL_TIMEOUT, '-u', `${this.d.uid}:${this.d.gid}`, '-w', workspace, ...env.flatMap((e) => ['-e', e]),
+      '--', 'sh', '-c', PLATFORM_INSTALL_SCRIPT, `${GUEST_PLATFORM_STAMPS}/${hash16(workspace)}`, install.hash, ...install.command,
+    ]).catch((e) => ({ code: null, stdout: '', stderr: String((e as Error)?.message ?? e) }));
+    if (r.code !== 0) {
+      this.d.warn(`Airlock: \`${install.command.join(' ')}\` failed in the machine for ${workspace}, so the session starts with the dependencies the machine already has; it runs again on the next launch. A registry it needs must be on the policy's allowed hosts. It said: ${said(r) || `exit ${r.code}`}`);
+    }
   }
 
   /** The machine's placeholder for each key name: one per name, kept, so every session's injector swaps the same one. */
@@ -987,7 +1209,7 @@ export class SmolvmRuntime implements AirlockRuntime {
         ...Object.entries(spec.env).map(([k, v]) => `${k}=${k === 'AGENFK_API_URL' ? throughGateway(v) : v}`),
         ...keyEnv,
         ...CA_BUNDLE_ENV.map((k) => `${k}=${GUEST_CA_BUNDLE}`),
-        `HOME=${spec.home ?? this.d.hostEnv.HOME ?? '/root'}`,
+        `HOME=${this.homeOf(spec)}`,
         'TMPDIR=/tmp',
         ...PASSTHROUGH_ENV.filter((k) => this.d.hostEnv[k]).map((k) => `${k}=${this.d.hostEnv[k]}`),
       ];

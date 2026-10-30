@@ -556,8 +556,10 @@ async function verdictWithGrants(
  * commands it runs for a card a sandboxed session touched (verify, the suite, worktree
  * setup) run in the sandbox while the policy enforces (SX-3). A launcher refuses an
  * enforcing launch against a server that does not say so: an older one would run them on the host.
+ * `machine-image` (CGLAB-696) - the policy it serves keeps machineImage: an older one drops it, and
+ * the launcher would run the repository's image over the one the policy names.
  */
-export const AIRLOCK_SERVER_CAPABILITIES = Object.freeze(['sandboxed-commands']);
+export const AIRLOCK_SERVER_CAPABILITIES = Object.freeze(['sandboxed-commands', 'machine-image']);
 
 /**
  * The file-body keys the adapter (bin/agenfk-airlock.mjs CONTENT_KEYS) keeps out of the judged

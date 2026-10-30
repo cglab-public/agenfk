@@ -2,6 +2,7 @@ export * from './types';
 export { matchHost, isValidHostPattern } from './hosts';
 export { normalizeAirlockPolicy, airlockPolicyErrors, effectivePolicyFor } from './policy';
 export { airlockRepoKey } from './repoKey';
+export { isAirlockImageRef } from './image';
 export { capabilitiesOf, modelFromPi, modelFromOpenCode } from './capabilities';
 export { analyseCommand, type CommandAnalysis, type UploadFact } from './shell';
 export { evaluateAirlock, approvalKeyOf } from './evaluate';

@@ -185,6 +185,8 @@ export function defaultLaunchDeps(): LaunchDeps {
     runtimePackageDir: realpath(runtimePackageDir()),
     // The installed copy, and the package this CLI runs from (dist/commands -> package root).
     installDirs: [...new Set([path.join(home, '.agenfk-system'), realpath(path.resolve(__dirname, '..', '..'))])],
+    // The package this CLI runs from (dist/commands -> package root): its version tags the base image.
+    agenfkVersion: () => JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8')).version,
     log: (m) => console.error(chalk.gray(m)),
     warn: (m) => console.error(chalk.yellow(m)),
     listDir: (dir) => {
