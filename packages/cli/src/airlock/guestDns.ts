@@ -32,6 +32,8 @@ export interface ResolverConfig {
   upstreamSourcePort?: number;
   /** Name patterns: exact, `*.domain` (its subdomains), or `*` (every name). */
   deny: string[];
+  /** Enforce: the only names answered (same patterns); every name when absent (observe). */
+  allow?: string[];
   /** The user (and group) to run as once bound. */
   uid?: number;
   gid?: number;
@@ -126,7 +128,7 @@ function failureOf(query: Buffer): Buffer | null {
 async function answer(msg: Buffer, c: ResolverConfig, ask: (m: Buffer) => Promise<Buffer>): Promise<Buffer | null> {
   const name = questionName(msg);
   if (name === null) return failureOf(msg);
-  if (nameDenied(name, c.deny)) return refusalOf(msg);
+  if (nameDenied(name, c.deny) || (c.allow && !nameDenied(name, c.allow))) return refusalOf(msg);
   try {
     return await ask(msg);
   } catch {
@@ -229,9 +231,34 @@ export async function startResolver(c: ResolverConfig): Promise<Resolver> {
   };
 }
 
+/**
+ * Keeps `c`'s lists as its config file says (story review 2): the launcher rewrites it, whole, when
+ * the policy changes while sessions run. A file that cannot be read changes nothing. The stop.
+ */
+export function followConfig(configPath: string, c: ResolverConfig, intervalMs = 1000): () => void {
+  let last = '';
+  const timer = setInterval(() => {
+    let text: string;
+    try { text = fs.readFileSync(configPath, 'utf8'); } catch { return; }
+    if (text === last) return;
+    try {
+      const next = JSON.parse(text) as Partial<ResolverConfig>;
+      if (!Array.isArray(next.deny) || (next.allow !== undefined && !Array.isArray(next.allow))) return;
+      c.deny = next.deny;
+      c.allow = next.allow;
+      last = text;
+    } catch { /* half a file: read again next time */ }
+  }, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 async function main(configPath: string): Promise<void> {
   const c = JSON.parse(fs.readFileSync(configPath, 'utf8')) as ResolverConfig;
   await startResolver(c);
+  followConfig(configPath, c);
+  // Said while still root, beside its config: it follows it (a running one an older AgEnFK started does not).
+  fs.writeFileSync(`${configPath.replace(/[^/]*$/, '')}follows`, '');
   // Bound: now as the resolver's own user, whom alone the firewall lets ask smolvm's resolver.
   if (typeof c.gid === 'number') process.setgid?.(c.gid);
   if (typeof c.uid === 'number') process.setuid?.(c.uid);

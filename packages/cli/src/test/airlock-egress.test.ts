@@ -28,6 +28,7 @@ import {
   FLOW_MAGIC,
   GATEWAY,
   readRoutes,
+  followNetwork,
   type Flow,
   type Route,
 } from '../airlock/egress';
@@ -390,6 +391,14 @@ describe('EgressService: the decider on the host loopback', () => {
     expect(decisions.map((d) => [d.host, d.decision])).toEqual([['api.github.com', 'allow'], ['elsewhere.example.com', 'deny']]);
   });
 
+  // Story review 2 (LIFE-2): a policy changed while the machine runs reaches its decider.
+  it('decides by the network it is given while it runs', async () => {
+    const { address } = await start('enforce');
+    expect(await ask(address, frame({ payload: clientHello('api.github.com') }))).toBe(0);
+    svc!.setNetwork({ ...network('enforce'), allow: [] });
+    expect(await ask(address, frame({ payload: clientHello('api.github.com') }))).toBe(1);
+  });
+
   it('allows nothing on a wrong token: closes without an answer, and reports nothing', async () => {
     const { address, decisions } = await start('observe');
     expect(await ask(address, frame({ token: Buffer.alloc(32, 9), payload: clientHello('api.github.com') }))).toBe('closed');
@@ -634,6 +643,7 @@ describe('HelperEgressBroker: one decider per running machine, outliving the ses
         started.push({ machine, configPath });
         const dir = path.dirname(configPath);
         fs.writeFileSync(path.join(dir, 'address'), '127.0.0.1:47123');
+        fs.writeFileSync(path.join(dir, 'follows-network'), '');
         return 4242;
       },
       pidAlive: (pid) => pid === 4242 && !killed.includes(pid),
@@ -677,6 +687,46 @@ describe('HelperEgressBroker: one decider per running machine, outliving the ses
     expect(started).toHaveLength(2);
     await b.stop('agenfk-m1');
     expect(killed).toEqual([]);
+  });
+
+  it('hands the running decider a changed policy through its config, keeping its token and the file the user\'s alone', async () => {
+    const { b, started } = broker();
+    const r = await b.ensure('agenfk-m1', spec);
+    const changed = { ...network('enforce'), deny: ['evil.example'] };
+    await b.updateNetwork('agenfk-m1', changed);
+    const cfgPath = started[0].configPath;
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    expect(cfg.network).toEqual(changed);
+    expect(cfg.token).toBe(r.token);
+    expect((fs.statSync(cfgPath).mode & 0o777).toString(8)).toBe('600');
+    expect(started).toHaveLength(1);
+  });
+
+  it('refuses to hand a policy to a decider that cannot follow it (an older AgEnFK\'s)', async () => {
+    const { b, started } = broker();
+    await b.ensure('agenfk-m1', spec);
+    fs.rmSync(path.join(path.dirname(started[0].configPath), 'follows-network'));
+    await expect(b.updateNetwork('agenfk-m1', { ...network('enforce'), deny: ['evil.example'] })).rejects.toMatchObject({ cannotFollow: true });
+  });
+
+  it('the decider follows its config: a changed network is set, a broken file changes nothing', async () => {
+    const cfgPath = path.join(stateDir, 'follow.json');
+    const base = { token: 't', network: network('enforce'), auditPath: null, decisionsPath: 'd', addressPath: 'a', routesDir: 'r' };
+    fs.writeFileSync(cfgPath, JSON.stringify(base));
+    const set: unknown[] = [];
+    const stop = followNetwork(cfgPath, { setNetwork: (n: unknown) => set.push(n) }, 10);
+    try {
+      await new Promise((r) => setTimeout(r, 60));
+      expect(set).toEqual([]);
+      const changed = { ...network('enforce'), deny: ['evil.example'] };
+      fs.writeFileSync(cfgPath, JSON.stringify({ ...base, network: changed }));
+      await vi.waitFor(() => expect(set).toEqual([changed]));
+      fs.writeFileSync(cfgPath, '{"network": ');
+      await new Promise((r) => setTimeout(r, 60));
+      expect(set).toHaveLength(1);
+    } finally {
+      stop();
+    }
   });
 
   it('reuses a running decider for the same policy, whatever relay port a session has', async () => {

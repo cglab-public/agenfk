@@ -415,3 +415,22 @@ describePosix('runAirlockExec: a command in a subdirectory (CGLAB-696 task 7)', 
     expect(cmdOf(d).cwd).toBe('/work/repo/packages/a');
   });
 });
+
+/** Story review 2 (LIFE-2): a command the server runs follows the policy as a session does. */
+describe('runAirlockExec: a policy changed while the command runs', () => {
+  it('hands the running machine the policy it fetches', async () => {
+    let end: (e: SandboxExit) => void = () => undefined;
+    const applied: SandboxSpec[] = [];
+    const updateNetwork = vi.fn(async (_w: string, next: () => Promise<SandboxSpec | null>) => { const spec = await next(); if (spec) applied.push(spec); return spec ? 'applied' : 'unchanged'; });
+    let n = 0;
+    const d = deps({
+      policyPollMs: 10,
+      fetchPolicy: vi.fn(async () => ({ effective: normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['registry.npmjs.org'], deny: n++ === 0 ? [] : ['evil.example'] } }), source: 'local', revision: n, capabilities: CAPS })),
+      runtime: { ...deps().runtime, updateNetwork, launch: vi.fn(async () => ({ pid: 7, kill: vi.fn(() => true), exited: new Promise<SandboxExit>((r) => { end = r; }) })) } as any,
+    } as any);
+    const done = runAirlockExec('npm test', { cwd: CWD }, d);
+    await vi.waitFor(() => expect(applied.some((sp) => sp.network.deny.includes('evil.example'))).toBe(true), { timeout: 2000 });
+    end({ code: 0, signal: null });
+    expect(await done).toBe(0);
+  });
+});

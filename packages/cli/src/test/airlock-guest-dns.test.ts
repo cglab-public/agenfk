@@ -13,7 +13,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
-import { questionName, nameDenied, refusalOf, startResolver, type Resolver } from '../airlock/guestDns';
+import { questionName, nameDenied, refusalOf, startResolver, followConfig, type Resolver, type ResolverConfig } from '../airlock/guestDns';
 
 /** A DNS query for `name` (type A), as a stub resolver sends it. */
 function query(name: string, id = 0x1234): Buffer {
@@ -126,6 +126,43 @@ describe('the resolver, on real sockets', () => {
     const b = await tcpAsk(resolver.port, query('api.github.com', 8));
     expect(b.readUInt16BE(0)).toBe(8);
     expect(asked).toEqual(['api.github.com', 'api.github.com']);
+  });
+
+  // Story review 2 (LIFE-2): in enforce, the machine's resolver holds the allow list too, so a policy
+  // turned to enforce while a session runs is enforced for lookups as well.
+  it('in enforce, refuses a name off the allow list and passes one on it', async () => {
+    const up = await fakeUpstream();
+    resolver = await startResolver({ host: '127.0.0.1', port: 0, upstream: { host: '127.0.0.1', port: up }, deny: [], allow: ['api.github.com', '*.example.org'] });
+    expect(rcodeOf(await udpAsk(resolver.port, query('nextjs.org', 1)))).toBe(3);
+    expect(rcodeOf(await udpAsk(resolver.port, query('api.github.com', 2)))).toBe(0);
+    expect(rcodeOf(await udpAsk(resolver.port, query('x.example.org', 3)))).toBe(0);
+    expect(asked).toEqual(['api.github.com', 'x.example.org']);
+  });
+
+  it('follows its config file: lists changed while it runs apply to the next question, a broken file changes nothing', async () => {
+    const up = await fakeUpstream();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-dns-'));
+    const file = path.join(dir, 'config.json');
+    const c: ResolverConfig = { host: '127.0.0.1', port: 0, upstream: { host: '127.0.0.1', port: up }, deny: [] };
+    fs.writeFileSync(file, JSON.stringify(c));
+    resolver = await startResolver(c);
+    const stop = followConfig(file, c, 10);
+    try {
+      expect(rcodeOf(await udpAsk(resolver.port, query('api.github.com', 1)))).toBe(0);
+      fs.writeFileSync(file, JSON.stringify({ ...c, deny: ['api.github.com'] }));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(rcodeOf(await udpAsk(resolver.port, query('api.github.com', 2)))).toBe(3);
+      fs.writeFileSync(file, '{"deny": [');
+      await new Promise((r) => setTimeout(r, 100));
+      expect(rcodeOf(await udpAsk(resolver.port, query('api.github.com', 3)))).toBe(3);
+      fs.writeFileSync(file, JSON.stringify({ ...c, deny: [], allow: ['example.org'] }));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(rcodeOf(await udpAsk(resolver.port, query('api.github.com', 4)))).toBe(3);
+      expect(rcodeOf(await udpAsk(resolver.port, query('example.org', 5)))).toBe(0);
+    } finally {
+      stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('asks smolvm\'s resolver from the one source port it was given (the guest firewall lets only that port through), TCP questions too', async () => {

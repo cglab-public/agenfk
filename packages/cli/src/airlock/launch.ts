@@ -26,6 +26,7 @@ import type { AirlockRuntime } from './runtime';
 import { startServerRelay, type ServerRelay, type ServerRelayOptions } from './serverRelay';
 import { ProxyDecisionReporter, type ProxyReportBody } from './proxyReport';
 import { machineImageFor, type MachineImageSource } from './image';
+import { followPolicy } from './followPolicy';
 
 export class AirlockLaunchError extends Error {
   constructor(message: string) {
@@ -45,6 +46,10 @@ export interface PolicyView {
 export interface LaunchDeps {
   /** GET /airlock/policy: for a project (its overrides applied, PO-1), or the org's when null. */
   fetchPolicy(projectId?: string | null): Promise<PolicyView>;
+  /** How often the policy is asked for again while a session runs (ms). */
+  policyPollMs?: number;
+  /** How long a session the policy no longer admits has after SIGTERM before SIGKILL (ms). */
+  killGraceMs?: number;
   /** The AgEnFK project the workspace belongs to, or null outside one. */
   projectId?(): string | null;
   /** The directory holding that project's .agenfk, or null outside one. */
@@ -495,14 +500,14 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     // (no logins), so nothing is staged (a per-launch copy would keep sessions from sharing it).
     const agentDir = client === 'pi' ? piAgentDirOf(d) : null;
     const sharedTmp = sharedTempDir(d.platform, d.realpath);
-    let spec: SandboxSpec;
-    try {
-      spec = buildSandboxSpec(policy, {
+    // The session's sandbox under a policy: at launch, and again whenever the policy changes while it runs.
+    const specFor = (p: typeof policy, inferenceHosts = [endpoint.host]): SandboxSpec => {
+      const built = buildSandboxSpec(p, {
         client,
         home: d.home,
         workspace,
         tempDirs: sharedTmp && sharedTmp !== d.tmpDir ? [d.tmpDir, sharedTmp] : [d.tmpDir],
-        inferenceHosts: [endpoint.host],
+        inferenceHosts,
         serverPort: relay.port,
         serverUrl: `http://${relay.host}:${relay.port}`,
         directServerPort,
@@ -515,11 +520,16 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         runtimePackageDir: d.runtimePackageDir,
         ...(agentDir && agentDir !== path.join(d.home, '.pi', 'agent') ? { piAgentDir: agentDir } : {}),
       });
+      built.machineImage = machineImage.image;
+      return built;
+    };
+    let spec: SandboxSpec;
+    try {
+      spec = specFor(policy);
     } catch (e) {
       // A denied inference host: the session could not reach its model.
       throw new AirlockLaunchError((e as Error).message);
     }
-    spec.machineImage = machineImage.image;
     const exposed = writeRootHolding(d.runtimePackageDir, spec);
     if (exposed) {
       throw new AirlockLaunchError(
@@ -553,12 +563,20 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
       reporter ? { onProxyDecision: (decision) => reporter.report(decision) } : undefined,
     );
     const offs = SIGNALS.map((sig) => d.onSignal(sig, () => { launched.kill(sig); }));
+    const following = followPolicy(d, {
+      project: launchProject ?? null,
+      workspace,
+      specFor: (v) => specFor(normalizeAirlockPolicy(v?.effective)),
+      networkOnlyFor: (v) => specFor(normalizeAirlockPolicy(v?.effective), []),
+      session: launched,
+    });
     try {
       const exit = await launched.exited;
       if (exit.code !== null) return exit.code;
       return 128 + ((exit.signal && os.constants.signals[exit.signal]) || 1);
     } finally {
       offs.forEach((off) => off());
+      await following.stop();
       await d.runtime.dispose();
       // The proxy has stopped: the last batch, bounded by the report timeout.
       await reporter?.close();
@@ -567,3 +585,4 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     await relay.close();
   }
 }
+

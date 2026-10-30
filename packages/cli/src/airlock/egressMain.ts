@@ -6,7 +6,8 @@
  * does, appends each decision as a JSON line, and ends on SIGTERM.
  */
 import fs from 'fs';
-import { EgressService, readRoutes, type EgressConfig } from './egress';
+import path from 'path';
+import { EgressService, readRoutes, followNetwork, FOLLOWS_MARK, type EgressConfig } from './egress';
 
 /** The whole buffer, or a throw: a short write (a full disk) is a failure, never half a line. */
 export function writeAll(fd: number, buf: Buffer, write: typeof fs.writeSync = fs.writeSync): void {
@@ -30,6 +31,9 @@ async function main(configPath: string): Promise<void> {
     routes: () => readRoutes(config.routesDir),
   });
   const address = await service.listen();
+  // The policy can change while the machine runs (story review 2).
+  followNetwork(configPath, service, 500, config.network);
+  fs.writeFileSync(path.join(path.dirname(configPath), FOLLOWS_MARK), '', { mode: 0o600 });
   // Written whole, so the broker never reads half an address.
   fs.writeFileSync(`${config.addressPath}.tmp`, address, { mode: 0o600 });
   fs.renameSync(`${config.addressPath}.tmp`, config.addressPath);

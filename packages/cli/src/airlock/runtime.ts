@@ -45,4 +45,12 @@ export interface AirlockRuntime {
   launch(spec: SandboxSpec, command: SandboxCommand, hooks?: LaunchHooks): Promise<LaunchedSandbox>;
   /** Let go of what the runtime holds for this process (its decision watchers). */
   dispose(): Promise<void>;
+  /**
+   * The session's machine follows the policy (story review 2): `next` - which asks the server and
+   * builds the spec, or says there is nothing to apply - is run holding the machine's lock, and what
+   * it gives applied before the lock is let go. So answers are applied in the order they were
+   * fetched, whichever launcher fetched them. Throws an error with `cannotFollow` when the machine
+   * can follow no change (one an older AgEnFK started).
+   */
+  updateNetwork?(workspace: string, next: () => Promise<SandboxSpec | null>): Promise<'applied' | 'unchanged'>;
 }

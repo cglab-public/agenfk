@@ -39,6 +39,7 @@ import {
   DNS_RESOLVER_ADDRESS,
   DNS_UNPROTECTED_MARK,
   resolverDenyOf,
+  resolverAllowOf,
   guestDnsScript,
   type EgressBroker,
   type SmolvmResult,
@@ -130,7 +131,7 @@ function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string
   return { run, calls, machines, mounts, verbs, execs };
 }
 
-function fakeEgress(): EgressBroker & { ensure: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; watch: ReturnType<typeof vi.fn>; addRoute: ReturnType<typeof vi.fn>; emit(d: ProxyDecision): void; unwatched: number; routes: Route[] } {
+function fakeEgress(): EgressBroker & { ensure: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; updateNetwork: ReturnType<typeof vi.fn>; watch: ReturnType<typeof vi.fn>; addRoute: ReturnType<typeof vi.fn>; emit(d: ProxyDecision): void; unwatched: number; routes: Route[] } {
   const listeners = new Set<(d: ProxyDecision) => void>();
   // Short: route sockets are Unix socket paths.
   const sockets = fs.mkdtempSync(path.join('/tmp', 'agenfk-rs-'));
@@ -145,6 +146,7 @@ function fakeEgress(): EgressBroker & { ensure: ReturnType<typeof vi.fn>; stop: 
     }),
     ensure: vi.fn(async () => ({ address: '127.0.0.1:47001', token: 'a'.repeat(64) })),
     stop: vi.fn(async () => undefined),
+    updateNetwork: vi.fn(async () => undefined),
     watch: vi.fn((_machine: string, fn: (d: ProxyDecision) => void) => {
       listeners.add(fn);
       return () => { listeners.delete(fn); broker.unwatched++; };
@@ -1026,6 +1028,106 @@ describe('the agenfk adapters in the machine (CGLAB-696 task 9)', () => {
       session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined }));
     await rt.launch(spec, { file: '/bin/sh', args: ['-c', 'true'], cwd: workspace, processGroup: false });
     expect(copies(smolvm)).toEqual([]);
+  });
+});
+
+/** Story review 2 (LIFE-2): a policy changed while a session runs reaches its machine. */
+describe('a network policy changed while the session runs (story review 2)', () => {
+  const policySpec = (hosts: { allow?: string[]; deny?: string[] }, mode: 'enforce' | 'observe' = 'enforce') =>
+    buildSandboxSpec(normalizeAirlockPolicy({ mode, hosts: { allow: hosts.allow ?? ['api.github.com'], deny: hosts.deny ?? [] } }), session());
+  const rootScripts = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.execs().filter((a) => flag(a, '-u') === 'root').map((a) => a[a.length - 1]);
+
+  it('the machine\'s resolver holds the allow list in enforce: names only, no port, no address, no loopback', () => {
+    const net = { allow: ['api.github.com', 'registry.npmjs.org:443', '1.2.3.4', '10.0.0.0/8', '127.0.0.1:3000', 'localhost:3000', '*.example.org'], deny: [], denyResolved: [], mode: 'enforce' as const };
+    expect(resolverAllowOf(net)).toEqual(['api.github.com', 'registry.npmjs.org', '*.example.org']);
+    expect(resolverAllowOf({ ...net, mode: 'observe' })).toBeUndefined();
+    expect(guestDnsScript(net, 'x', 503, resolverAllowOf(net))).toContain('"allow":["api.github.com","registry.npmjs.org","*.example.org"]');
+    expect(guestDnsScript(net, 'x', 503)).not.toContain('"allow"');
+    // Written whole: the running resolver re-reads it.
+    expect(guestDnsScript(net, 'x', 503)).toMatch(/config\.json\.tmp[\s\S]*mv -f [^\n]*config\.json\.tmp [^\n]*config\.json/);
+  });
+
+  it('applies a changed policy to the running machine: its decider, its resolver and the policy joiners compare with', async () => {
+    const { rt, smolvm, egress } = runtime();
+    await rt.launch(policySpec({}), cmd());
+    const name = machineNameOf(workspace);
+    const before = rootScripts(smolvm).length;
+    const changed = policySpec({ deny: ['evil.example'] });
+    expect(await rt.updateNetwork(workspace, async () => changed)).toBe('applied');
+    expect(egress.updateNetwork).toHaveBeenCalledWith(name, changed.network);
+    expect(fs.readFileSync(path.join(stateDir, 'machines', name, 'network.json'), 'utf8')).toBe(networkKey(changed.network));
+    expect(rootScripts(smolvm).slice(before).some((x) => x.includes('evil.example') && x.includes('resolver.js'))).toBe(true);
+  });
+
+  it('holds the resolver to the allow list only where smolvm\'s own (set at the start) is behind the policy', async () => {
+    const { rt, smolvm } = runtime();
+    await rt.launch(policySpec({}), cmd());
+    const resolverScripts = () => rootScripts(smolvm).filter((x) => x.includes('resolver.js'));
+    // At the start smolvm's list is the policy's: it refuses, and reports, names off it.
+    expect(resolverScripts().at(-1)).not.toContain('"allow"');
+    // api.github.com taken off the allow list (the session's inference host stays on it).
+    await rt.updateNetwork(workspace, async () => policySpec({ allow: [] }));
+    const allow = /"allow":(\[[^\]]*\])/.exec(resolverScripts().at(-1) ?? '')?.[1];
+    expect(allow && JSON.parse(allow)).toEqual(['api.openai.com']);
+  });
+
+  it('says a host newly allowed resolves in the machine only from its next start', async () => {
+    const warnings: string[] = [];
+    const { rt } = runtime({ warn: (m: string) => warnings.push(m) });
+    await rt.launch(policySpec({}), cmd());
+    await rt.updateNetwork(workspace, async () => policySpec({ allow: ['api.github.com', 'new.example.com'] }));
+    expect(warnings.join('\n')).toMatch(/new\.example\.com[\s\S]*next/);
+  });
+
+  // Fourth pass: no clock or revision can order the server's answers; fetched and applied under the
+  // machine's lock, they are applied in the order they were fetched, the last fetched last.
+  it('fetches and applies under the machine\'s lock: two launchers\' updates never interleave', async () => {
+    const { rt } = runtime({ pidAlive: () => true });
+    await rt.launch(policySpec({}), cmd());
+    const events: string[] = [];
+    const slow = rt.updateNetwork(workspace, async () => { events.push('a fetch'); await new Promise((r) => setTimeout(r, 50)); events.push('a fetched'); return policySpec({ deny: ['a.example'] }); });
+    await new Promise((r) => setTimeout(r, 5));
+    const fast = rt.updateNetwork(workspace, async () => { events.push('b fetch'); return policySpec({ deny: ['b.example'] }); });
+    expect(await slow).toBe('applied');
+    expect(await fast).toBe('applied');
+    expect(events).toEqual(['a fetch', 'a fetched', 'b fetch']);
+    expect(fs.readFileSync(path.join(stateDir, 'machines', machineNameOf(workspace), 'network.json'), 'utf8')).toContain('b.example');
+  });
+
+  it('applies nothing when there is nothing to apply (the server not answering, the policy off)', async () => {
+    const { rt, egress } = runtime();
+    await rt.launch(policySpec({}), cmd());
+    expect(await rt.updateNetwork(workspace, async () => null)).toBe('unchanged');
+    expect(egress.updateNetwork).not.toHaveBeenCalled();
+  });
+
+  it('leaves the machine\'s network to the client session in it: a command beside one does not follow (second pass)', async () => {
+    const { rt, egress } = runtime({ pidAlive: () => true });
+    await rt.launch(policySpec({}), cmd());
+    const command = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'], deny: ['evil.example'] } }),
+      session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined }));
+    expect(await rt.updateNetwork(workspace, async () => command)).toBe('unchanged');
+    expect(egress.updateNetwork).not.toHaveBeenCalled();
+  });
+
+  it('holds the resolver to the allow list when it cannot tell what smolvm\'s own list was set to (a machine an older AgEnFK started)', async () => {
+    const { rt, smolvm } = runtime();
+    await rt.launch(policySpec({}), cmd());
+    fs.rmSync(path.join(stateDir, 'machines', machineNameOf(workspace), 'smolvm-network.json'));
+    await rt.updateNetwork(workspace, async () => policySpec({ deny: ['evil.example'] }));
+    expect(rootScripts(smolvm).filter((x) => x.includes('resolver.js')).at(-1)).toContain('"allow"');
+  });
+
+  it('replaces a running resolver that cannot follow its config (an older AgEnFK\'s)', () => {
+    const net = { allow: ['api.github.com'], deny: [], denyResolved: [], mode: 'enforce' as const };
+    expect(guestDnsScript(net, 'x', 503)).toContain('/run/agenfk/dns/follows');
+  });
+
+  it('does nothing for a policy the machine already has', async () => {
+    const { rt, egress } = runtime();
+    await rt.launch(policySpec({}), cmd());
+    await rt.updateNetwork(workspace, async () => policySpec({}));
+    expect(egress.updateNetwork).not.toHaveBeenCalled();
   });
 });
 

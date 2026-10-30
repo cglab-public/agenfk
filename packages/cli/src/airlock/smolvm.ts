@@ -57,6 +57,8 @@ export interface EgressBroker {
   routeSocket(machine: string): string;
   /** Adds a session's route (its relay, its key injector) for the machine's decider; the returned function takes it away. */
   addRoute(machine: string, route: Route): () => void;
+  /** The machine's running decider decides by `network` from now on (story review 2). */
+  updateNetwork(machine: string, network: SandboxSpec['network']): Promise<void>;
 }
 
 const hash16 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
@@ -940,6 +942,20 @@ export function resolverDenyOf(network: SandboxSpec['network']): string[] {
 }
 
 /**
+ * The names the resolver alone answers, in enforce (story review 2): the allow list's names, without
+ * a port; addresses and ranges are the decider's, loopback names never leave the machine. None in
+ * observe, where every name not denied is answered. Given to the resolver only when smolvm's own
+ * list (set at the machine's start) is behind the policy: smolvm's refusals are reported, the
+ * resolver's are not.
+ */
+export function resolverAllowOf(network: SandboxSpec['network']): string[] | undefined {
+  if (network.mode === 'observe') return undefined;
+  const names = network.allow.map((a) => (a.startsWith('[') ? a : a.replace(/:\d+$/, '')).trim().toLowerCase())
+    .filter((h) => h && !net.isIP(h.replace(/^\[|\]$/g, '')) && !h.includes('/') && h !== 'localhost' && !h.endsWith('.localhost'));
+  return [...new Set(names)];
+}
+
+/**
  * The root script that runs the machine's resolver (CGLAB-696 task 8): it records smolvm's
  * resolver, starts ours as its own user (bound, then dropped), and only then redirects every
  * port-53 question the machine sends - to whichever server - to it, the resolver's own (from its
@@ -949,12 +965,12 @@ export function resolverDenyOf(network: SandboxSpec['network']): string[] {
  * none of it: the script prints DNS_UNPROTECTED_MARK with what is missing, and the runtime refuses
  * (enforce) or warns. Idempotent: rules are added once, a running resolver is kept.
  */
-export function guestDnsScript(network: SandboxSpec['network'], resolverSource: string, sessionUid: number): string {
+export function guestDnsScript(network: SandboxSpec['network'], resolverSource: string, sessionUid: number, allow?: string[]): string {
   // The session could signal a resolver running under its own uid (review 01a18ddc).
   const uid = sessionUid === DNS_UID ? DNS_UID_ALT : DNS_UID;
   const config = JSON.stringify({
     host: DNS_RESOLVER_ADDRESS, port: 53, upstream: { host: '__UPSTREAM__', port: 53 }, upstreamSourcePort: DNS_UPSTREAM_SOURCE_PORT,
-    deny: resolverDenyOf(network), uid, gid: uid,
+    deny: resolverDenyOf(network), ...(allow ? { allow } : {}), uid, gid: uid,
   });
   return [
     'set -e',
@@ -969,10 +985,14 @@ export function guestDnsScript(network: SandboxSpec['network'], resolverSource: 
       + `case "$up" in ""|${DNS_RESOLVER_ADDRESS}) echo "no resolver of smolvm's in /etc/resolv.conf" >&2; exit 1;; esac; echo "$up" > ${GUEST_DNS}/upstream; fi`,
     'up=$(cat ' + `${GUEST_DNS}/upstream)`,
     `printf '%s' ${quote(resolverSource)} > ${GUEST_DNS}/resolver.js`,
-    `printf '%s' ${quote(config)} | sed "s/__UPSTREAM__/$up/" > ${GUEST_DNS}/config.json`,
-    `chmod 444 ${GUEST_DNS}/resolver.js ${GUEST_DNS}/config.json ${GUEST_DNS}/upstream`,
-    // Running already (another session's): kept. A pid file, not pgrep -f, which would find this script.
-    `if ! { [ -s ${GUEST_DNS}/pid ] && kill -0 "$(cat ${GUEST_DNS}/pid)" 2>/dev/null; }; then `
+    // Whole: a running resolver follows it (the policy can change while sessions run).
+    `printf '%s' ${quote(config)} | sed "s/__UPSTREAM__/$up/" > ${GUEST_DNS}/config.json.tmp`,
+    `chmod 444 ${GUEST_DNS}/resolver.js ${GUEST_DNS}/config.json.tmp ${GUEST_DNS}/upstream`,
+    `mv -f ${GUEST_DNS}/config.json.tmp ${GUEST_DNS}/config.json`,
+    // Running already (another session's): kept, if it follows its config - one an older AgEnFK
+    // started does not, and is replaced (review). A pid file, not pgrep -f, which would find this script.
+    `if [ -s ${GUEST_DNS}/pid ] && [ ! -e ${GUEST_DNS}/follows ]; then kill "$(cat ${GUEST_DNS}/pid)" 2>/dev/null; rm -f ${GUEST_DNS}/pid; sleep 0.2; fi`,
+    `if ! { [ -s ${GUEST_DNS}/pid ] && kill -0 "$(cat ${GUEST_DNS}/pid)" 2>/dev/null; }; then rm -f ${GUEST_DNS}/follows ${GUEST_DNS}/log; `
       + `setsid node ${GUEST_DNS}/resolver.js ${GUEST_DNS}/config.json > ${GUEST_DNS}/log 2>&1 < /dev/null & echo $! > ${GUEST_DNS}/pid; `
       + `i=0; until grep -q ready ${GUEST_DNS}/log 2>/dev/null; do i=$((i+1)); [ $i -lt 100 ] || { echo "the resolver did not start: $(tail -c 300 ${GUEST_DNS}/log)" >&2; exit 1; }; sleep 0.1; done; fi`,
     'rule() { t="$1"; tb="$2"; shift 2; "$t" -t "$tb" -C OUTPUT "$@" 2>/dev/null || "$t" -t "$tb" -A OUTPUT "$@"; }',
@@ -1281,6 +1301,14 @@ export class SmolvmRuntime implements AirlockRuntime {
     });
   }
 
+  /** The live sessions' records: what each is (a record from before purposes were kept counts as a client). */
+  private liveSessionRecords(name: string): Array<{ purpose: string }> {
+    const dir = path.join(this.machineDir(name), 'sessions');
+    return this.liveSessions(name).flatMap((f) => {
+      try { return [{ purpose: String(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).purpose ?? 'client') }]; } catch { return []; }
+    });
+  }
+
   /** Makes the plan's placeholders, each recorded (with its identity) as soon as it exists. */
   private ensurePlaceholders(name: string, placeholders: Placeholder[]): void {
     const record = path.join(this.machineDir(name), 'placeholders.json');
@@ -1501,7 +1529,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       const ca = machineCa(path.join(this.machineDir(name), 'ca'));
       const placeholders = this.placeholdersOf(name, spec.maskedEnv.map((m) => m.name));
       fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
-      fs.writeFileSync(sessionFile, JSON.stringify({ pid: process.pid, workspace }));
+      fs.writeFileSync(sessionFile, JSON.stringify({ pid: process.pid, workspace, purpose: spec.purpose ?? 'client' }));
       const shared = this.liveSessions(name).length > 1;
       if (!shared) {
         // No session but this one. A machine still running was left so by a session that is gone,
@@ -1556,6 +1584,8 @@ export class SmolvmRuntime implements AirlockRuntime {
         fs.writeFileSync(injection, injecting);
         // smolvm's own allow list (enforce: only allowed names resolve), set while it is stopped.
         await this.must(['machine', 'update', '--name', name, ...allowListArgs(spec.network)], `set the network policy of the machine for ${workspace}`);
+        // What smolvm's own list says until the machine stops: a later policy is held to it by the resolver.
+        fs.writeFileSync(path.join(this.machineDir(name), 'smolvm-network.json'), JSON.stringify(spec.network));
         const icpt = await this.d.egress.ensure(name, spec);
         await this.must(['machine', 'start', '--name', name, '--mediated-egress', '--egress-interceptor', icpt.address],
           `start the machine for ${workspace}`, { SMOLVM_INTERCEPTOR_TOKEN: icpt.token });
@@ -1582,7 +1612,14 @@ export class SmolvmRuntime implements AirlockRuntime {
    * them leaves DNS lookups of denied names leaving the machine: enforce refuses, observe warns.
    */
   private async startResolver(name: string, workspace: string, spec: SandboxSpec): Promise<void> {
-    const r = await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestDnsScript(spec.network, this.d.resolverSource(), this.d.uid)], 'start the machine\'s resolver');
+    // smolvm refuses (and reports) a name off the allow list it was started with; the resolver
+    // refuses names only when the policy has changed since (story review 2).
+    let started: SandboxSpec['network'] | null = null;
+    try { started = JSON.parse(fs.readFileSync(path.join(this.machineDir(name), 'smolvm-network.json'), 'utf8')) as SandboxSpec['network']; } catch { /* none */ }
+    const allow = resolverAllowOf(spec.network);
+    // Not knowing what smolvm's list was set to (a machine an older AgEnFK started): taken as behind (review).
+    const behind = !!allow && (!started || started.mode !== 'enforce' || JSON.stringify([...(resolverAllowOf(started) ?? [])].sort()) !== JSON.stringify([...allow].sort()));
+    const r = await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestDnsScript(spec.network, this.d.resolverSource(), this.d.uid, behind ? allow : undefined)], 'start the machine\'s resolver');
     const mark = r.stdout.split('\n').find((l) => l.startsWith(DNS_UNPROTECTED_MARK));
     if (!mark) return;
     const missing = mark.slice(DNS_UNPROTECTED_MARK.length).trim();
@@ -1882,6 +1919,37 @@ export class SmolvmRuntime implements AirlockRuntime {
   }
 
   /** Deletes the workspace's machine (`agenfk airlock reset`). Refused while a session is in it. */
+  /**
+   * The policy changed while the session runs (story review 2): the machine's decider and resolver
+   * follow the new network, and joiners compare with it. smolvm's own allow list changes only while
+   * the machine is stopped, so a newly allowed name resolves from the machine's next start.
+   */
+  async updateNetwork(workspaceDir: string, next: () => Promise<SandboxSpec | null>): Promise<'applied' | 'unchanged'> {
+    const workspace = path.resolve(workspaceDir);
+    const name = machineNameOf(workspace);
+    return this.withLock(name, async () => {
+      // Asked for holding the lock (fourth pass): no clock or revision orders the server's answers,
+      // so what is applied last is what was fetched last.
+      const spec = await next();
+      if (!spec) return 'unchanged';
+      // A client session in the machine owns its network (second pass): a command's, built without
+      // the client's inference host, would take it away.
+      if (spec.purpose === 'command' && this.liveSessionRecords(name).some((r) => r.purpose !== 'command')) return 'unchanged';
+      const file = path.join(this.machineDir(name), 'network.json');
+      let before: SandboxSpec['network'] | null = null;
+      try { before = JSON.parse(fs.readFileSync(file, 'utf8')) as SandboxSpec['network']; } catch { /* none */ }
+      if (before && networkKey(before) === networkKey(spec.network)) return 'unchanged';
+      if ((await this.machine(name))?.state !== 'running') return 'unchanged';
+      await this.d.egress.updateNetwork(name, spec.network);
+      await this.startResolver(name, workspace, spec);
+      fs.writeFileSync(file, networkKey(spec.network));
+      const had = new Set(before ? resolverAllowOf(before) ?? [] : []);
+      const added = before?.mode === 'enforce' ? (resolverAllowOf(spec.network) ?? []).filter((h) => !had.has(h)) : [];
+      if (added.length) this.d.warn(`Airlock: the policy now allows ${added.join(', ')}; in the machine for ${workspace} that resolves from its next start (end every session in it, and launch again).`);
+      return 'applied';
+    });
+  }
+
   /**
    * Kills everything in the session's cgroup in the machine, as root. True once it is ended, or
    * there is no running machine for anything to be left in.

@@ -29,13 +29,18 @@ import { normalizeAirlockPolicy, airlockPolicyErrors, type AirlockPolicy } from 
 import { buildSandboxSpec, type SandboxSpec, sharedTempDir } from './spec';
 import type { AirlockRuntime } from './runtime';
 import { machineImageFor } from './image';
-import { findAgenfkDirs, projectAgenfkDirs, workspaceGitDir, workspaceOf, AGENFK_SCAN_LIMIT, type LaunchDeps } from './launch';
+import { findAgenfkDirs, projectAgenfkDirs, workspaceGitDir, workspaceOf, AGENFK_SCAN_LIMIT, type LaunchDeps, type PolicyView } from './launch';
+import { followPolicy } from './followPolicy';
 
 /** The exit when the command could not be sandboxed, so never ran (like a shell's "cannot execute"). */
 export const EXEC_CANNOT_SANDBOX = 125;
 
 export interface ExecDeps {
   fetchPolicy: LaunchDeps['fetchPolicy'];
+  /** How often the policy is asked for again while the command runs (ms). */
+  policyPollMs?: number;
+  /** How long a command the policy no longer admits has after SIGTERM before SIGKILL (ms). */
+  killGraceMs?: number;
   runtime: AirlockRuntime;
   home: string;
   tmpDir: string;
@@ -137,6 +142,7 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
   };
   const cwd = path.resolve(opts.cwd);
   let spec: SandboxSpec;
+  let commandSpecFor: ((p: AirlockPolicy) => SandboxSpec) | null = null;
   try {
     // The card's project (--project-id, the server passes it): its overrides apply (PO-1).
     const view = await d.fetchPolicy(opts.projectId ?? null);
@@ -155,7 +161,9 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
     }
     // The report token's directory must exist for the sandbox to hide it (Linux masks what exists at launch).
     d.ensurePrivateDir(path.join(d.home, '.agenfk', 'airlock'));
-    spec = buildSandboxSpec(policy, {
+    // The command's sandbox under a policy: at launch, and again when it changes while it runs.
+    commandSpecFor = (p) => {
+      const built = buildSandboxSpec(p, {
       client: 'pi',
       purpose: 'command',
       home: d.home,
@@ -168,10 +176,13 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
       projectAgenfkDirs: [...projectAgenfkDirs({ cwd, home: d.home, exists: d.exists }), ...nested.dirs],
       gitDir: workspaceGitDir(workspace, d),
       runtimePackageDir: d.runtimePackageDir,
-    });
-    spec.machineImage = image;
-    // What the spec sets wins: the sandbox marker, NO_PROXY.
-    spec.env = { ...guestCommandEnv(d.env), ...spec.env };
+      });
+      built.machineImage = image;
+      // What the spec sets wins: the sandbox marker, NO_PROXY.
+      built.env = { ...guestCommandEnv(d.env), ...built.env };
+      return built;
+    };
+    spec = commandSpecFor(policy);
   } catch (e) {
     return cannot(`Could not build the Airlock sandbox for this command from the policy (${(e as Error)?.message ?? e}).`);
   }
@@ -184,12 +195,16 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
     return cannot((e as Error)?.message ?? String(e));
   }
   const offs = SIGNALS.map((sig) => d.onSignal(sig, () => { launched.kill(sig); }));
+  // As a session does (story review 2): a long suite is held to a policy changed while it runs.
+  const toSpec = (v: PolicyView) => commandSpecFor!(effectivePolicyOf(v));
+  const following = followPolicy({ ...d, warn: d.error }, { project: opts.projectId ?? null, workspace: spec.workspace ?? cwd, specFor: toSpec, networkOnlyFor: toSpec, session: launched });
   try {
     const exit = await launched.exited;
     if (exit.code !== null) return exit.code;
     return 128 + ((exit.signal && os.constants.signals[exit.signal]) || 1);
   } finally {
     offs.forEach((off) => off());
+    await following.stop();
     await d.runtime.dispose();
   }
 }

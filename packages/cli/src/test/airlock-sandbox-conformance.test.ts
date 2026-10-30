@@ -193,6 +193,32 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
     expect(relayRequests.some((q) => q.headers['x-agenfk-internal'] === 'tok-task9'), seen).toBe(true);
   }, TIMEOUT);
 
+  // Story review 2 (LIFE-2): a policy changed while the session runs holds for that session.
+  it('a policy changed while the session runs: the host it now denies is refused to the same session, by connection and by lookup', async () => {
+    const rt = new SmolvmRuntime({ image: IMAGE!, smolvmPath: SMOLVM, egress: realBroker(path.join(stateDir, 'airlock')), stateDir, isTTY: false, hostEnv: {} });
+    const outFile = path.join(ws, `live-${Date.now()}.txt`);
+    const go = path.join(ws, 'go');
+    fs.rmSync(go, { force: true });
+    try {
+      const before = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }), session());
+      const script = [curl('before', 'https://api.github.com/zen'), 'while [ ! -e go ]; do sleep 0.2; done',
+        curl('after', 'https://api.github.com/zen'), 'echo "lookup $(getent hosts api.github.com >/dev/null && echo resolved || echo refused)"'].join('; ');
+      const launched = await rt.launch(before, { file: 'sh', args: ['-c', `(${script}) > ${outFile} 2>&1`], cwd: ws });
+      for (let i = 0; i < 150 && !(fs.existsSync(outFile) && fs.readFileSync(outFile, 'utf8').includes('before ')); i++) await new Promise((r) => setTimeout(r, 200));
+      await rt.updateNetwork(ws, async () => buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'], deny: ['api.github.com'] } }), session()));
+      // The decider and the resolver read their configs again on their own clocks.
+      await new Promise((r) => setTimeout(r, 2500));
+      fs.writeFileSync(go, '');
+      await launched.exited;
+      const out = fs.readFileSync(outFile, 'utf8').split('\n').filter(Boolean);
+      expect(line(out, 'before')).toMatch(/^before 200 rc=0$/);
+      expect(line(out, 'after')).toMatch(/^after 000 rc=[1-9]/);
+      expect(line(out, 'lookup')).toBe('lookup refused');
+    } finally {
+      await rt.dispose();
+    }
+  }, TIMEOUT);
+
   it('a command the server runs: no relay to the server, the policy\'s allow list only', async () => {
     relaySeen = 0;
     const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }),

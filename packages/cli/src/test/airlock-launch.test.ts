@@ -608,3 +608,91 @@ describePosix('runAirlockLaunch: pi\'s agent dir in the machine (CGLAB-696 story
     expect(specOf(d).filesystem.allowWrite).toContain('/home/u/.pi/agent');
   });
 });
+
+/** Story review 2 (LIFE-2): the policy is followed while the session runs, not only read at launch. */
+describe('runAirlockLaunch: a policy changed while the session runs (story review 2)', () => {
+  const view = (hosts: { allow: string[]; deny: string[] }, mode = 'enforce', revision = 3) =>
+    ({ effective: { mode, hosts }, source: 'local', revision, capabilities: ['sandboxed-commands', 'machine-image'] });
+  /** A runtime whose session runs until told to end, and that can take a new network. */
+  /** The machine's update as the runtime does it: the fetch (`next`) inside it, its spec applied. */
+  const machineUpdate = (applied: SandboxSpec[]) => vi.fn(async (_workspace: string, next: () => Promise<SandboxSpec | null>) => {
+    const spec = await next();
+    if (spec) applied.push(spec);
+    return spec ? 'applied' : 'unchanged';
+  });
+  function liveRuntime() {
+    let end: (e: SandboxExit) => void = () => undefined;
+    const launched = { pid: 99, kill: vi.fn((_s: NodeJS.Signals) => { end({ code: null, signal: 'SIGTERM' }); return true; }), exited: new Promise<SandboxExit>((r) => { end = r; }) };
+    const applied: SandboxSpec[] = [];
+    const runtime = {
+      id: 'fake', check: vi.fn(async () => ({ ok: true, warnings: [] })),
+      launch: vi.fn(async () => launched), dispose: vi.fn(async () => undefined),
+      updateNetwork: machineUpdate(applied),
+    };
+    return { runtime, launched, applied, end: (e: SandboxExit) => end(e) };
+  }
+
+  it('fetches the policy inside the machine\'s update, which applies what it fetched (fourth pass)', async () => {
+    const live = liveRuntime();
+    let inside = false;
+    const views = [view({ allow: ['api.github.com'], deny: [] }), view({ allow: ['api.github.com'], deny: ['evil.example'] }, 'enforce', 5)];
+    let n = 0;
+    const fetchedInside: boolean[] = [];
+    const update = live.runtime.updateNetwork.getMockImplementation()!;
+    live.runtime.updateNetwork.mockImplementation(async (w: string, next: () => Promise<SandboxSpec | null>) => { inside = true; try { return await update(w, next); } finally { inside = false; } });
+    const d = deps({ runtime: live.runtime as any, policyPollMs: 10, fetchPolicy: vi.fn(async () => { if (n > 0) fetchedInside.push(inside); return views[Math.min(n++, views.length - 1)]; }) } as any);
+    const done = runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    await vi.waitFor(() => expect(live.applied.length).toBeGreaterThan(0), { timeout: 2000 });
+    expect(live.applied.at(-1)!.network.deny).toContain('evil.example');
+    expect(live.runtime.updateNetwork.mock.calls.at(-1)![0]).toBe(CWD);
+    expect(fetchedInside.length).toBeGreaterThan(0);
+    expect(fetchedInside.every(Boolean)).toBe(true);
+    live.end({ code: 0, signal: null });
+    await done;
+    const calls = (d.fetchPolicy as any).mock.calls.length;
+    await new Promise((r) => setTimeout(r, 60));
+    expect((d.fetchPolicy as any).mock.calls.length).toBe(calls);
+  });
+
+  it('ends the session when the policy comes to deny its inference host: the machine is held to it first, and a session that ignores SIGTERM is killed', async () => {
+    let end: (e: SandboxExit) => void = () => undefined;
+    const signals: string[] = [];
+    const launched = { pid: 99, exited: new Promise<SandboxExit>((r) => { end = r; }), kill: vi.fn((s: NodeJS.Signals) => { signals.push(s); if (s === 'SIGKILL') end({ code: null, signal: 'SIGKILL' }); return true; }) };
+    const applied: SandboxSpec[] = [];
+    const runtime = { id: 'fake', check: vi.fn(async () => ({ ok: true, warnings: [] })), launch: vi.fn(async () => launched), dispose: vi.fn(async () => undefined), updateNetwork: machineUpdate(applied) };
+    let n = 0;
+    const d = deps({ runtime: runtime as any, policyPollMs: 10, killGraceMs: 50, fetchPolicy: vi.fn(async () => (n++ === 0 ? view({ allow: ['api.github.com'], deny: [] }) : view({ allow: ['api.github.com'], deny: ['api.openai.com'] }, 'enforce', 4))) } as any);
+    const code = await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(applied[0].network.deny).toContain('api.openai.com');
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(code).not.toBe(0);
+    expect(d.warnings.join('\n')).toMatch(/api\.openai\.com/);
+  });
+
+  it('ends the session when its machine cannot follow the policy (started by an older AgEnFK)', async () => {
+    const live = liveRuntime();
+    live.runtime.updateNetwork.mockImplementation(async () => { throw Object.assign(new Error('the machine was started by an older AgEnFK'), { cannotFollow: true }); });
+    let n = 0;
+    const d = deps({ runtime: live.runtime as any, policyPollMs: 10, killGraceMs: 50, fetchPolicy: vi.fn(async () => (n++ === 0 ? view({ allow: ['api.github.com'], deny: [] }) : view({ allow: ['api.github.com'], deny: ['evil.example'] }, 'enforce', 4))) } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(live.launched.kill).toHaveBeenCalled();
+    expect(d.warnings.join('\n')).toMatch(/older AgEnFK/);
+  });
+
+  it('keeps the session as it is when the server cannot be asked, or turns the policy off', async () => {
+    const live = liveRuntime();
+    let n = 0;
+    const d = deps({ runtime: live.runtime as any, policyPollMs: 10, fetchPolicy: vi.fn(async () => {
+      n++;
+      if (n === 1) return view({ allow: ['api.github.com'], deny: [] });
+      if (n % 2 === 0) throw new Error('ECONNREFUSED');
+      return view({ allow: [], deny: [] }, 'off', 9);
+    }) } as any);
+    const done = runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    await vi.waitFor(() => expect(n).toBeGreaterThan(4), { timeout: 2000 });
+    expect(live.applied).toEqual([]);
+    expect(live.launched.kill).not.toHaveBeenCalled();
+    live.end({ code: 0, signal: null });
+    await done;
+  });
+});

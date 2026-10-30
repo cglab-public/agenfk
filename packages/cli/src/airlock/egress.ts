@@ -429,7 +429,16 @@ export class EgressService {
   private audit: LineTail | null = null;
   private readonly sockets = new Set<net.Socket>();
 
+  /** The network it decides by: the machine's policy, which can change while it runs (story review 2). */
+  private network: Network;
+
+  /** From now on, flows are decided by `network`. */
+  setNetwork(network: Network): void {
+    this.network = network;
+  }
+
   constructor(private readonly o: EgressServiceOptions) {
+    this.network = o.network;
     this.token = Buffer.from(o.token, 'hex');
     if (this.token.length !== 32) throw new Error('The egress token must be 64 hex digits.');
     this.names = new DnsNames(o.resolve ?? resolveAll);
@@ -468,11 +477,11 @@ export class EgressService {
     const names = confirmed ? [claimed as string, ...known.filter((n) => n !== claimed)] : [...known];
     // A port-restricted allowed host at this address names the flow too, so its ports hold whatever
     // the flow claims.
-    for (const e of this.o.network.allow) {
+    for (const e of this.network.allow) {
       const { host, port } = entryOf(e);
       if (port !== null && !isIp(host) && !names.includes(host) && (await this.names.resolvesTo(host, flow.ip))) names.push(host);
     }
-    return decideFlow({ names, claimed, ip: flow.ip, port: flow.port }, this.o.network);
+    return decideFlow({ names, claimed, ip: flow.ip, port: flow.port }, this.network);
   }
 
   private handle(sock: net.Socket): void {
@@ -592,6 +601,30 @@ export interface EgressConfig {
   addressPath: string;
   /** Where sessions put their routes, one JSON file each. */
   routesDir: string;
+}
+
+/** Left beside its config by a decider that follows it (followNetwork). */
+export const FOLLOWS_MARK = 'follows-network';
+
+/**
+ * Keeps the decider's network as its config says (story review 2): the broker rewrites the file
+ * whole when the policy changes. A file that cannot be read changes nothing. The stop.
+ */
+export function followNetwork(configPath: string, service: { setNetwork(n: Network): void }, intervalMs = 500, startedWith?: Network): () => void {
+  // What the decider started with, so a change made before the first read is not taken for it.
+  let last: string | null = startedWith ? JSON.stringify(startedWith) : null;
+  const timer = setInterval(() => {
+    let network: string;
+    try {
+      const n = (JSON.parse(fs.readFileSync(configPath, 'utf8')) as EgressConfig).network;
+      if (!n || !Array.isArray(n.allow) || !Array.isArray(n.deny)) return;
+      network = JSON.stringify(n);
+    } catch { return; }
+    if (last !== null && network !== last) service.setNetwork(JSON.parse(network) as Network);
+    last = network;
+  }, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 /** The routes in `dir`, as sessions wrote them; anything unreadable is no route. */
@@ -767,6 +800,22 @@ export class HelperEgressBroker implements EgressBroker {
    * read as it closes) are written. Its decisions file is kept for sessions still reading it; the
    * rest goes. The next start begins from a clean directory.
    */
+  /**
+   * Hands the machine's running decider a changed network (story review 2): its config, rewritten
+   * whole, which it follows (followNetwork). Its token and everything else are kept.
+   */
+  async updateNetwork(machine: string, network: Network): Promise<void> {
+    // A decider an older AgEnFK started reads its config once (story review 2): no change reaches it.
+    if (!fs.existsSync(path.join(this.dir(machine), FOLLOWS_MARK))) {
+      throw Object.assign(new Error('its machine was started by an older AgEnFK, whose egress decider'), { cannotFollow: true });
+    }
+    const configPath = path.join(this.dir(machine), 'config.json');
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as EgressConfig;
+    fs.writeFileSync(`${configPath}.tmp`, JSON.stringify({ ...config, network }), { mode: 0o600 });
+    fs.chmodSync(`${configPath}.tmp`, 0o600);
+    fs.renameSync(`${configPath}.tmp`, configPath);
+  }
+
   async stop(machine: string): Promise<void> {
     const dir = this.dir(machine);
     let pid = NaN;
@@ -783,7 +832,7 @@ export class HelperEgressBroker implements EgressBroker {
         throw new Error(`Airlock's egress decider for ${machine} (pid ${pid}) did not end.`);
       }
     }
-    for (const f of ['pid', 'config.json', 'address', 'routes']) fs.rmSync(path.join(dir, f), { recursive: true, force: true });
+    for (const f of ['pid', 'config.json', 'address', 'routes', FOLLOWS_MARK]) fs.rmSync(path.join(dir, f), { recursive: true, force: true });
   }
 }
 
