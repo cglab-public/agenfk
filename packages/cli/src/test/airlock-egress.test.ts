@@ -12,6 +12,7 @@ import net from 'net';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { realBroker, smolvmTestsEnabled } from './fixtures/smolvm-real';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSession, type SandboxSpec } from '../airlock/spec';
 import type { ProxyDecision } from '../airlock/runtime';
@@ -25,7 +26,10 @@ import {
   EgressService,
   HelperEgressBroker,
   FLOW_MAGIC,
+  GATEWAY,
+  readRoutes,
   type Flow,
+  type Route,
 } from '../airlock/egress';
 import { writeAll } from '../airlock/egressMain';
 
@@ -205,6 +209,11 @@ describe('allowListArgs: what smolvm is given', () => {
     expect(pairs).toContainEqual(['--allow-host-pattern', '*.npmjs.org']);
     expect(pairs).toContainEqual(['--allow-cidr', '10.1.2.3/32']);
     expect(pairs.some(([f]) => f === '--allow-host')).toBe(false);
+  });
+
+  it('enforce: lets the guest reach the gateway, where the decider relays to the launcher alone', () => {
+    const args = allowListArgs(network('enforce'));
+    expect(args.join(' ')).toContain(`--allow-cidr ${GATEWAY}/32`);
   });
 
   it('enforce: never an empty list, which smolvm reads as every host', () => {
@@ -466,9 +475,126 @@ describe('EgressService: the decider on the host loopback', () => {
     expect(decisions.map((d) => d.host)).toContain('last.example.com');
   });
 
+  describe('routes: redirecting a flow to a service of the launcher', () => {
+    let upstream: net.Server;
+    let sock: string;
+    let got: Buffer;
+    const upstreamPort = 41123;
+    beforeEach(async () => {
+      got = Buffer.alloc(0);
+      sock = path.join(dir, 'r.sock');
+      upstream = net.createServer((s) => {
+        s.on('data', (d) => {
+          got = Buffer.concat([got, d]);
+          if (got.toString().includes('PING')) s.write('PONG');
+        });
+      });
+      await new Promise<void>((r) => upstream.listen(sock, () => r()));
+    });
+    afterEach(async () => { await new Promise<void>((r) => upstream.close(() => r())); });
+
+    /** A flow whose answer is 2: the connection then carries the guest's stream. */
+    function redirected(address: string, buf: Buffer, more: string): Promise<{ answer: number; reply: string }> {
+      const [host, port] = address.split(':');
+      return new Promise((resolve) => {
+        let answer = -1;
+        let reply = '';
+        const s = net.connect(Number(port), host, () => s.write(buf));
+        s.on('data', (d) => {
+          if (answer < 0) {
+            answer = d[0];
+            reply += d.subarray(1).toString();
+            if (answer === 2) s.write(more);
+            else { s.destroy(); resolve({ answer, reply }); }
+          } else reply += d.toString();
+          if (reply.includes('PONG')) { s.destroy(); resolve({ answer, reply }); }
+        });
+        s.on('close', () => resolve({ answer, reply }));
+        s.on('error', () => resolve({ answer, reply }));
+      });
+    }
+    const gw = GATEWAY.split('.').map(Number);
+
+    it('relays a flow to the gateway on a relay port to that port on the host loopback, first bytes first', async () => {
+      const routes: Route[] = [{ kind: 'relay', port: upstreamPort, socket: sock }];
+      const { address, decisions } = await start('enforce', { routes: () => routes });
+      const r = await redirected(address, frame({ ip: gw, port: upstreamPort, payload: Buffer.from('GET /items ') }), 'PING');
+      expect(r.answer).toBe(2);
+      expect(r.reply).toBe('PONG');
+      expect(got.toString()).toBe('GET /items PING');
+      // Plumbing, not the agent's network: not reported.
+      expect(decisions).toEqual([]);
+    });
+
+    it('refuses the gateway on any port no session relays, and reports it', async () => {
+      const { address, decisions } = await start('observe', { routes: () => [{ kind: 'relay', port: upstreamPort, socket: sock }] });
+      expect(await ask(address, frame({ ip: gw, port: 3000 }))).toBe(1);
+      expect(decisions).toEqual([{ host: GATEWAY, port: 3000, decision: 'deny', rule: 'host-not-relayed' }]);
+    });
+
+    it('redirects a TLS flow to an inference host to the key injector, and reports it allowed', async () => {
+      const routes: Route[] = [{ kind: 'inject', host: 'api.github.com', port: 443, socket: sock }];
+      const { address, decisions } = await start('enforce', { routes: () => routes });
+      const hello = clientHello('api.github.com');
+      const r = await redirected(address, frame({ port: 443, payload: hello }), 'PING');
+      expect(r.answer).toBe(2);
+      expect(got.subarray(0, hello.length).equals(hello)).toBe(true);
+      expect(decisions[0]).toMatchObject({ host: 'api.github.com', port: 443, decision: 'allow' });
+    });
+
+    it('does not redirect a flow the policy refuses, even to an inference host', async () => {
+      const routes: Route[] = [{ kind: 'inject', host: 'evil.example.net', port: 443, socket: sock }];
+      const { address } = await start('enforce', { routes: () => routes });
+      expect(await ask(address, frame({ port: 443, payload: clientHello('evil.example.net') }))).toBe(1);
+      expect(got.length).toBe(0);
+    });
+
+    it('refuses a flow whose route\'s launcher is gone: its socket is dead, and nothing else can be there', async () => {
+      const dead = path.join(dir, 'dead.sock');
+      const routes: Route[] = [{ kind: 'relay', port: 41200, socket: dead }];
+      const { address } = await start('enforce', { routes: () => routes });
+      const r = await redirected(address, frame({ ip: gw, port: 41200 }), 'PING');
+      expect(r.answer).not.toBe(2);
+    });
+
+    it('passes over a route whose launcher is gone to one that is live', async () => {
+      const dead = path.join(dir, 'dead.sock');
+      const routes: Route[] = [
+        { kind: 'inject', host: 'api.github.com', port: 443, socket: dead },
+        { kind: 'inject', host: 'api.github.com', port: 443, socket: sock },
+      ];
+      const { address } = await start('enforce', { routes: () => routes });
+      const r = await redirected(address, frame({ port: 443, payload: clientHello('api.github.com') }), 'PING');
+      expect(r.answer).toBe(2);
+      expect(r.reply).toBe('PONG');
+    });
+
+    it('does not redirect an inference host on another port', async () => {
+      const routes: Route[] = [{ kind: 'inject', host: 'api.github.com', port: 443, socket: sock }];
+      const { address } = await start('enforce', { routes: () => routes });
+      expect(await ask(address, frame({ port: 8443, payload: clientHello('api.github.com') }))).toBe(0);
+      expect(got.length).toBe(0);
+    });
+  });
+
   it('a decision hook that throws changes no answer', async () => {
     const { address } = await start('enforce', { onDecision: () => { throw new Error('boom'); } });
     expect(await ask(address, frame({ payload: clientHello('api.github.com') }))).toBe(0);
+  });
+});
+
+describe('readRoutes', () => {
+  it('reads only routes to a Unix socket path, nothing else in the dir', () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-routes-'));
+    try {
+      fs.writeFileSync(path.join(d, 'a.json'), JSON.stringify({ kind: 'relay', port: 41000, socket: '/tmp/x.sock' }));
+      fs.writeFileSync(path.join(d, 'b.json'), JSON.stringify({ kind: 'relay', port: 41001 }));
+      fs.writeFileSync(path.join(d, 'c.json'), JSON.stringify({ kind: 'inject', host: 'a.example', port: 443, socket: 'relative.sock' }));
+      fs.writeFileSync(path.join(d, 'd.json'), 'nonsense');
+      expect(readRoutes(d)).toEqual([{ kind: 'relay', port: 41000, socket: '/tmp/x.sock' }]);
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
   });
 });
 
@@ -488,7 +614,8 @@ describe('writeAll: the decision log line, whole or a failure', () => {
 
 describe('HelperEgressBroker: one decider per running machine, outliving the session that started it', () => {
   let stateDir: string;
-  beforeEach(() => { stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-broker-')); });
+  // /tmp, not os.tmpdir(): macOS's is long, and route sockets are Unix socket paths (at most ~100 bytes).
+  beforeEach(() => { stateDir = fs.mkdtempSync(path.join('/tmp', 'agenfk-broker-')); });
   afterEach(() => { fs.rmSync(stateDir, { recursive: true, force: true }); });
 
   function broker(over: Record<string, unknown> = {}) {
@@ -582,6 +709,23 @@ describe('HelperEgressBroker: one decider per running machine, outliving the ses
     expect(fs.existsSync(path.join(stateDir, 'egress', 'agenfk-m2', 'pid'))).toBe(true);
   });
 
+  it('adds a route for the decider to read, and takes it away again', async () => {
+    const { b } = broker();
+    await b.ensure('agenfk-m1', spec);
+    const routesDir = JSON.parse(fs.readFileSync(path.join(stateDir, 'egress', 'agenfk-m1', 'config.json'), 'utf8')).routesDir;
+    const socket = b.routeSocket('agenfk-m1');
+    // A directory of its own, only the user's, and a path short enough for a Unix socket.
+    expect((fs.statSync(path.dirname(socket)).mode & 0o777).toString(8)).toBe('700');
+    expect(Buffer.byteLength(socket)).toBeLessThanOrEqual(100);
+    const remove = b.addRoute('agenfk-m1', { kind: 'relay', port: 41000, socket });
+    const files = fs.readdirSync(routesDir).filter((f) => f.endsWith('.json'));
+    expect(files).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(path.join(routesDir, files[0]), 'utf8'))).toEqual({ kind: 'relay', port: 41000, socket });
+    remove();
+    expect(fs.readdirSync(routesDir).filter((f) => f.endsWith('.json'))).toEqual([]);
+    expect(fs.existsSync(path.dirname(socket))).toBe(false);
+  });
+
   it('refuses when the decider does not come up, and leaves nothing running', async () => {
     const { b, killed } = broker({ startHelper: async () => 4242, readyTimeoutMs: 100 });
     await expect(b.ensure('agenfk-m1', spec)).rejects.toThrow(/decider/);
@@ -590,13 +734,11 @@ describe('HelperEgressBroker: one decider per running machine, outliving the ses
 });
 
 // The real smolvm and the real decider process (the built egressMain.js), where they can run.
-const distHelper = path.resolve(__dirname, '..', '..', 'dist', 'airlock', 'egressMain.js');
-const smolvmHere = process.env.AGENFK_SMOLVM_TESTS === '1' && fs.existsSync(distHelper);
+const smolvmHere = smolvmTestsEnabled();
 
 describe.skipIf(!smolvmHere)('egress against the real smolvm (AGENFK_SMOLVM_TESTS=1, after npm run build)', () => {
   it('enforce: an allowed name works, an unlisted name does not resolve, an address is dropped, and each is reported', async () => {
     const { SmolvmRuntime } = await import('../airlock/smolvm');
-    const { spawnSync, spawn } = await import('child_process');
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-egress-vm-')));
     const home = path.join(root, 'home');
     const workspace = path.join(root, 'repo');
@@ -606,20 +748,7 @@ describe.skipIf(!smolvmHere)('egress against the real smolvm (AGENFK_SMOLVM_TEST
     const sandboxHome = process.env.HOME;
     process.env.HOME = os.userInfo().homedir;
     const stateDir = path.join(root, 'state');
-    const broker = new HelperEgressBroker({
-      stateDir,
-      auditPathOf: async (machine) => {
-        const r = spawnSync('smolvm', ['machine', 'data-dir', '--name', machine], { encoding: 'utf8' });
-        return r.status === 0 ? path.join(r.stdout.trim(), 'egress-decisions.jsonl') : null;
-      },
-      startHelper: async (_m, configPath) => {
-        const child = spawn(process.execPath, [distHelper, configPath], { detached: true, stdio: 'ignore' });
-        child.unref();
-        return child.pid as number;
-      },
-      pidAlive: (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } },
-      kill: (pid) => { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } },
-    });
+    const broker = realBroker(stateDir);
     const rt = new SmolvmRuntime({ image: 'alpine', egress: broker, stateDir, isTTY: false, hostEnv: {} });
     const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['nextjs.org'] } }), {
       client: 'pi', home, workspace, tempDirs: [], inferenceHosts: ['api.openai.com'], serverPort: 3123, installDirs: [],

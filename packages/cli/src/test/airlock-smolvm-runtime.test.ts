@@ -17,7 +17,7 @@ import path from 'path';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSession, type SandboxSpec } from '../airlock/spec';
 import type { ProxyDecision } from '../airlock/runtime';
-import { allowListArgs } from '../airlock/egress';
+import { allowListArgs, GATEWAY, type Route } from '../airlock/egress';
 import {
   SmolvmRuntime,
   SMOLVM_VERSION,
@@ -111,10 +111,19 @@ function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string
   return { run, calls, machines, mounts, verbs, execs };
 }
 
-function fakeEgress(): EgressBroker & { ensure: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; watch: ReturnType<typeof vi.fn>; emit(d: ProxyDecision): void; unwatched: number } {
+function fakeEgress(): EgressBroker & { ensure: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; watch: ReturnType<typeof vi.fn>; addRoute: ReturnType<typeof vi.fn>; emit(d: ProxyDecision): void; unwatched: number; routes: Route[] } {
   const listeners = new Set<(d: ProxyDecision) => void>();
+  // Short: route sockets are Unix socket paths.
+  const sockets = fs.mkdtempSync(path.join('/tmp', 'agenfk-rs-'));
+  let n = 0;
   const broker = {
     unwatched: 0,
+    routes: [] as Route[],
+    routeSocket: vi.fn(() => path.join(sockets, `${n++}.sock`)),
+    addRoute: vi.fn((_machine: string, route: Route) => {
+      broker.routes.push(route);
+      return () => { broker.routes = broker.routes.filter((r) => r !== route); };
+    }),
     ensure: vi.fn(async () => ({ address: '127.0.0.1:47001', token: 'a'.repeat(64) })),
     stop: vi.fn(async () => undefined),
     watch: vi.fn((_machine: string, fn: (d: ProxyDecision) => void) => {
@@ -219,6 +228,7 @@ function liveSession(name: string, id = 'other', network: SandboxSpec['network']
   fs.writeFileSync(path.join(stateDir, 'machines', name, 'network.json'), JSON.stringify(network));
   const plan = guestPlanOf(specOf(), workspace);
   fs.writeFileSync(path.join(stateDir, 'machines', name, 'protections.json'), JSON.stringify({ pinned: plan.pinned, readOnly: plan.readOnly, hidden: plan.hidden }));
+  fs.writeFileSync(path.join(stateDir, 'machines', name, 'injection.json'), JSON.stringify(specOf().maskedEnv.map((m) => [m.name, [...m.injectHosts].sort()]).sort()));
 }
 /** The mounts this session's plan makes, as `mount ls` lists them. */
 const sameMounts = () => guestPlanOf(specOf(), workspace).mounts.map((m) => ({ source: m.host, target: m.guest, readOnly: false }));
@@ -1221,6 +1231,141 @@ describe('signalling through a pid file the session owns', () => {
   });
 });
 
+describe('the AgEnFK server and the model key, from inside the machine', () => {
+  const keySession = (over: Partial<SandboxSession> = {}) => specOf({ serverUrl: 'http://127.0.0.1:3123', maskedEnv: ['OPENAI_API_KEY'], ...over });
+
+  type Started = { routes: unknown; secrets: Array<{ placeholder: string; value: string }>; ca: { certPem: string }; socketPath?: string };
+  function injectorDeps() {
+    const started: Started[] = [];
+    const closed: number[] = [];
+    const startInjector = vi.fn(async (o: Started) => {
+      started.push(o);
+      const n = started.length;
+      return { port: 0, socket: o.socketPath, close: async () => { closed.push(n); } };
+    });
+    return { started, closed, startInjector };
+  }
+
+  it('relays the session\'s AgEnFK server through the gateway: a route to a socket that reaches its relay, AGENFK_API_URL pointing there', async () => {
+    let got = '';
+    const relay = net.createServer((c) => c.on('data', (d) => { got += d; }));
+    await new Promise<void>((r) => relay.listen(0, '127.0.0.1', () => r()));
+    const relayPort = (relay.address() as net.AddressInfo).port;
+    try {
+      const egress = fakeEgress();
+      const { rt, sp } = runtime({ egress, ...injectorDeps() });
+      const launched = await rt.launch(keySession({ serverPort: relayPort, serverUrl: `http://127.0.0.1:${relayPort}` }), cmd());
+      const route = egress.routes.find((r) => r.kind === 'relay') as Extract<Route, { kind: 'relay' }>;
+      expect(route).toMatchObject({ kind: 'relay', port: relayPort });
+      // What the decider sends to the route's socket arrives at the relay.
+      await new Promise<void>((r) => { const c = net.connect(route.socket, () => { c.end('GET /health'); r(); }); });
+      await vi.waitFor(() => expect(got).toBe('GET /health'));
+      const args = (sp.spawn.mock.calls[0] as unknown as [string, string[]])[1];
+      expect(args).toContain(`AGENFK_API_URL=http://${GATEWAY}:${relayPort}`);
+      sp.children[0].finish(0);
+      await launched.exited;
+      expect(egress.routes).toEqual([]);
+      // Its socket is gone with it.
+      await expect(new Promise((res, rej) => { const c = net.connect(route.socket, () => { c.end(); res(true); }); c.on('error', rej); })).rejects.toThrow();
+    } finally {
+      await new Promise<void>((r) => relay.close(() => r()));
+    }
+  });
+
+  it('gives the guest a placeholder for the key, and the injector the real one: the key is on no command line', async () => {
+    const egress = fakeEgress();
+    const inj = injectorDeps();
+    const { rt, sp, smolvm } = runtime({ egress, ...inj });
+    const launched = await rt.launch(keySession(), cmd());
+    const args = (sp.spawn.mock.calls[0] as unknown as [string, string[]])[1];
+    const env = args.flatMap((a, i) => (args[i - 1] === '-e' ? [a] : []));
+    const placeholder = env.find((e) => e.startsWith('OPENAI_API_KEY='))!.slice('OPENAI_API_KEY='.length);
+    expect(placeholder).not.toBe('sk-fake-not-real');
+    expect(inj.started[0].secrets).toEqual([{ placeholder, value: 'sk-fake-not-real' }]);
+    expect(inj.started[0].routes).toEqual([{ host: 'api.openai.com', port: 443 }]);
+    expect(egress.routes).toContainEqual({ kind: 'inject', host: 'api.openai.com', port: 443, socket: inj.started[0].socketPath });
+    const everyArg = [...smolvm.calls.map((c) => c.args), args].flat().join(' ');
+    expect(everyArg).not.toContain('sk-fake-not-real');
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(inj.closed).toEqual([1]);
+    expect(egress.routes).toEqual([]);
+  });
+
+  it('has the guest trust the machine\'s CA beside the host\'s, for every client that reads a bundle', async () => {
+    const inj = injectorDeps();
+    const { rt, sp, smolvm } = runtime({ ...inj });
+    await rt.launch(keySession(), cmd());
+    const args = (sp.spawn.mock.calls[0] as unknown as [string, string[]])[1];
+    for (const v of ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE']) expect(args).toContain(`${v}=/run/agenfk/ca-bundle.pem`);
+    const setup = smolvm.calls.find((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root')!.args.at(-1) as string;
+    expect(setup).toContain('/etc/smolvm-host-trust/ca-bundle.pem');
+    expect(setup).toContain(inj.started[0].ca.certPem.trim().split('\n')[1]);
+    expect(setup).not.toContain('PRIVATE KEY');
+  });
+
+  it('ends its session though a connection through its relay is still open', async () => {
+    const relay = net.createServer(() => undefined);
+    await new Promise<void>((r) => relay.listen(0, '127.0.0.1', () => r()));
+    const relayPort = (relay.address() as net.AddressInfo).port;
+    try {
+      const egress = fakeEgress();
+      const { rt, sp } = runtime({ egress, ...injectorDeps() });
+      const launched = await rt.launch(keySession({ serverPort: relayPort, serverUrl: `http://127.0.0.1:${relayPort}` }), cmd());
+      const route = egress.routes.find((r) => r.kind === 'relay') as Extract<Route, { kind: 'relay' }>;
+      // Another session in the machine holds a connection to it open.
+      const held = net.connect(route.socket);
+      held.on('error', () => undefined);
+      await new Promise((r) => held.once('connect', r));
+      sp.children[0].finish(0);
+      const ended = await Promise.race([launched.exited.then(() => 'ended'), new Promise((r) => setTimeout(() => r('hung'), 3000))]);
+      expect(ended).toBe('ended');
+      held.destroy();
+    } finally {
+      relay.closeAllConnections?.();
+      await new Promise<void>((r) => relay.close(() => r()));
+    }
+  });
+
+  it('gives every session in a machine the same placeholder for a key, so either injector can swap it', async () => {
+    const smolvm = fakeSmolvm();
+    const egress = fakeEgress();
+    const a = runtime({ smolvm, egress, pidAlive: () => true, ...injectorDeps() });
+    const b = runtime({ smolvm, egress, pidAlive: () => true, ...injectorDeps() });
+    await a.rt.launch(keySession(), cmd());
+    await b.rt.launch(keySession(), cmd());
+    const keyOf = (r: { sp: ReturnType<typeof fakeSpawn> }) => ((r.sp.spawn.mock.calls[0] as unknown as [string, string[]])[1]).find((x) => x.startsWith('OPENAI_API_KEY='));
+    expect(keyOf(b)).toBe(keyOf(a));
+  });
+
+  it('refuses to join a machine whose sessions inject other keys or hosts', async () => {
+    const smolvm = fakeSmolvm();
+    const egress = fakeEgress();
+    const a = runtime({ smolvm, egress, pidAlive: () => true, ...injectorDeps() });
+    const b = runtime({ smolvm, egress, pidAlive: () => true, ...injectorDeps() });
+    await a.rt.launch(keySession(), cmd());
+    await expect(b.rt.launch(keySession({ maskedEnv: ['OTHER_KEY'] }), cmd())).rejects.toThrow(/other model keys/);
+  });
+
+  it('injects nothing for a key the host does not have set', async () => {
+    const inj = injectorDeps();
+    const egress = fakeEgress();
+    const { rt, sp } = runtime({ egress, ...inj, hostEnv: {} });
+    await rt.launch(keySession(), cmd());
+    expect(inj.startInjector).not.toHaveBeenCalled();
+    expect(egress.routes.filter((r) => r.kind === 'inject')).toEqual([]);
+    const args = (sp.spawn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(args.some((a) => a.startsWith('OPENAI_API_KEY='))).toBe(false);
+  });
+
+  it('keeps the inference endpoint\'s own port', async () => {
+    const inj = injectorDeps();
+    const { rt } = runtime({ ...inj });
+    await rt.launch(keySession({ inferenceHosts: ['llm.example.com:8443'] }), cmd());
+    expect(inj.started[0].routes).toEqual([{ host: 'llm.example.com', port: 8443 }]);
+  });
+});
+
 describe('airlock reset', () => {
   it('deletes the workspace\'s machine', async () => {
     const name = machineNameOf(workspace);
@@ -1268,6 +1413,11 @@ describe('buildSandboxSpec, for a runtime that mounts', () => {
     expect(spec.workspace).toBe(workspace);
     expect(spec.home).toBe(home);
     expect(spec.filesystem.privateTemp).toEqual([tmpDir]);
+  });
+
+  it('names the relay port for a client session, and none for a command', () => {
+    expect(specOf({ serverPort: 3123 }).relayPort).toBe(3123);
+    expect(specOf({ purpose: 'command' }).relayPort).toBeUndefined();
   });
 
   it('lists pi\'s staged agent dir as a write root of its own', () => {
@@ -1318,6 +1468,8 @@ describe.skipIf(!smolvmHere)('SmolvmRuntime against the real smolvm (AGENFK_SMOL
       ensure: async () => ({ address: icpt.address, token: icpt.token }),
       watch: () => () => undefined,
       stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'),
+      addRoute: () => () => undefined,
     };
     const rt = new SmolvmRuntime({ image: 'alpine', egress, stateDir, isTTY: false, hostEnv: {} });
     // smolvm keeps its sockets under HOME, and a vitest worker's sandbox HOME is past the 103-byte socket path limit.

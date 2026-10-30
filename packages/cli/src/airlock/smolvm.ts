@@ -26,11 +26,13 @@
  */
 import crypto from 'crypto';
 import fs from 'fs';
+import net from 'net';
 import os from 'os';
 import path from 'path';
 import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
 import type { SandboxSpec } from './spec';
-import { allowListArgs } from './egress';
+import { allowListArgs, GATEWAY, type Route } from './egress';
+import { machineCa, placeholderFor, startKeyInjector, type KeyInjector, type KeyInjectorOptions, type MachineCa } from './keyInjector';
 import type { AirlockRuntime, LaunchHooks, LaunchedSandbox, ProxyDecision, RuntimeCheck, SandboxCommand, SandboxExit } from './runtime';
 
 /** Exactly the version AgEnFK installs (no range): a bump is a reviewed change. */
@@ -50,6 +52,10 @@ export interface EgressBroker {
   watch(machine: string, onDecision: (decision: ProxyDecision) => void): () => void;
   /** The machine stopped: its interceptor ends. */
   stop(machine: string): Promise<void>;
+  /** A new Unix socket path, private to the user, for a session's route. */
+  routeSocket(machine: string): string;
+  /** Adds a session's route (its relay, its key injector) for the machine's decider; the returned function takes it away. */
+  addRoute(machine: string, route: Route): () => void;
 }
 
 /** The machine of a workspace folder: one name per folder, stable across sessions. */
@@ -478,7 +484,12 @@ const GUEST_SESSIONS = `${GUEST_RUN}/sessions`;
 const GUEST_HIDE = `${GUEST_RUN}/hide`;
 
 /** The root script that applies the plan in the guest. Idempotent: a second session runs it again. */
-export function guestSetupScript(plan: GuestPlan, uid: number, gid: number): string {
+/** Where the guest finds the host's trusted roots and the machine's CA together. */
+export const GUEST_CA_BUNDLE = '/run/agenfk/ca-bundle.pem';
+/** The env vars clients read a CA bundle from. */
+const CA_BUNDLE_ENV = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'];
+
+export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPem?: string): string {
   const lines = [
     'set -e',
     `mounted() { P="$1" awk '$5 == ENVIRON["P"] { f = 1 } END { exit !f }' /proc/self/mountinfo; }`,
@@ -495,6 +506,13 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number): str
     `chmod 700 ${GUEST_SESSIONS}`,
     // The empty file hidden files are bound to, on a tmpfs of its own.
     `hidden ${GUEST_HIDE} || { mount -t tmpfs -o size=4k,mode=0755 tmpfs ${GUEST_HIDE}; : > ${GUEST_HIDE}/empty; chmod 444 ${GUEST_HIDE}/empty; mount -o remount,ro ${GUEST_HIDE}; }`,
+    // The host's trusted roots (smolvm's --trust-host-certs bundle, else the image's), and the
+    // machine's CA, whose certificates the key injector presents. Public: no key is in it.
+    ...(caPem ? [
+      `{ cat /etc/smolvm-host-trust/ca-bundle.pem 2>/dev/null || cat /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; printf '%s\\n' ${quote(caPem.trim())}; } > ${GUEST_CA_BUNDLE}.tmp`,
+      `chmod 444 ${GUEST_CA_BUNDLE}.tmp`,
+      `mv ${GUEST_CA_BUNDLE}.tmp ${GUEST_CA_BUNDLE}`,
+    ] : []),
     // Hidden first, then pins and read-only binds outer first.
     ...plan.hidden.map((h) => `hide_${h.kind} ${quote(h.path)} ${quote(mountinfoPath(h.path))}`),
     ...[...plan.pinned.map((p) => ['pin', p] as const), ...plan.readOnly.map((p) => ['ro', p] as const)]
@@ -503,6 +521,9 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number): str
   ];
   return lines.join('\n');
 }
+
+/** The relay's URL as the guest reaches it: through the gateway, where the decider relays it. */
+const throughGateway = (url: string): string => url.replace(/^(https?:\/\/)(?:127\.0\.0\.1|localhost|\[::1\])(?=[:/]|$)/, `$1${GATEWAY}`);
 
 /** The host's terminal settings a TUI needs; nothing else of the host's environment goes in. */
 const PASSTHROUGH_ENV = ['TERM', 'COLORTERM', 'LANG', 'LC_ALL', 'LC_CTYPE'];
@@ -530,6 +551,7 @@ interface SmolvmRuntimeDeps {
   pidAlive?: (pid: number) => boolean;
   warn?: (message: string) => void;
   readGitConfig?: GitConfigReader;
+  startInjector?: (o: KeyInjectorOptions) => Promise<KeyInjector>;
 }
 
 function runCli(file: string): SmolvmRun {
@@ -567,6 +589,9 @@ const said = (r: SmolvmResult): string => (r.stderr.trim() || r.stdout.trim()).s
 
 interface MachineInfo { name: string; state: string; labels?: Record<string, string> }
 
+/** What a session's machine was readied with. */
+interface Prepared { plan: GuestPlan; ca: MachineCa; placeholders: Record<string, string> }
+
 type HeldPlaceholder = Placeholder & { dev: number; ino: number; parent: string };
 
 /** Creating a machine pulls its image, which can take a while. */
@@ -601,6 +626,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       hostEnv: deps.hostEnv ?? process.env,
       pidAlive: deps.pidAlive ?? defaultPidAlive,
       readGitConfig: deps.readGitConfig ?? readGitConfig,
+      startInjector: deps.startInjector ?? startKeyInjector,
       warn: deps.warn ?? (() => undefined),
       image: deps.image,
       egress: deps.egress,
@@ -857,8 +883,12 @@ export class SmolvmRuntime implements AirlockRuntime {
   }
 
   /** Starts the session's machine and readies it, holding the machine's lock. Returns the plan applied. */
-  private async prepare(name: string, workspace: string, spec: SandboxSpec, sessionFile: string): Promise<GuestPlan> {
+  private async prepare(name: string, workspace: string, spec: SandboxSpec, sessionFile: string): Promise<Prepared> {
     return this.withLock(name, async () => {
+      // The CA and the placeholders are the machine's, made under its lock: two launchers at once
+      // would each make their own.
+      const ca = machineCa(path.join(this.machineDir(name), 'ca'));
+      const placeholders = this.placeholdersOf(name, spec.maskedEnv.map((m) => m.name));
       fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
       fs.writeFileSync(sessionFile, JSON.stringify({ pid: process.pid, workspace }));
       const shared = this.liveSessions(name).length > 1;
@@ -881,6 +911,13 @@ export class SmolvmRuntime implements AirlockRuntime {
         // One interceptor decides for the whole machine: a session under another network policy waits its turn.
         throw new Error(`Another session is in the Airlock machine for ${workspace} under a different network policy, so nothing was launched. Launch it once that session has ended.`);
       }
+      // Key injection: every session's injector must know the same placeholders for the same hosts,
+      // whichever of them the decider sends a flow to.
+      const injection = path.join(this.machineDir(name), 'injection.json');
+      const injecting = JSON.stringify(spec.maskedEnv.map((m) => [m.name, [...m.injectHosts].sort()]).sort());
+      if (shared && recorded(injection) !== injecting) {
+        throw new Error(`Another session is in the Airlock machine for ${workspace} with other model keys or inference hosts, so nothing was launched. Launch it once that session has ended.`);
+      }
       if (shared && recorded(protections) !== applied) {
         // One file system: protections added now would not reach what the session in it already holds open.
         throw new Error(`Another session is in the Airlock machine for ${workspace} with different file protections, so nothing was launched. Launch it once that session has ended.`);
@@ -888,6 +925,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       if (machine.state !== 'running') {
         fs.writeFileSync(network, JSON.stringify(spec.network));
         fs.writeFileSync(protections, applied);
+        fs.writeFileSync(injection, injecting);
         // smolvm's own allow list (enforce: only allowed names resolve), set while it is stopped.
         await this.must(['machine', 'update', '--name', name, ...allowListArgs(spec.network)], `set the network policy of the machine for ${workspace}`);
         const icpt = await this.d.egress.ensure(name, spec);
@@ -896,9 +934,25 @@ export class SmolvmRuntime implements AirlockRuntime {
       }
       await this.attachMounts(name, plan, workspace, shared);
       this.ensurePlaceholders(name, plan.placeholders);
-      await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid)], 'protect the session\'s files in the machine');
-      return plan;
+      await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid, ca.certPem)], 'protect the session\'s files in the machine');
+      return { plan, ca, placeholders };
     });
+  }
+
+  /** The machine's placeholder for each key name: one per name, kept, so every session's injector swaps the same one. */
+  private placeholdersOf(name: string, keys: string[]): Record<string, string> {
+    const file = path.join(this.machineDir(name), 'placeholders.keys.json');
+    let held: Record<string, string> = {};
+    try { held = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* none yet */ }
+    let changed = false;
+    for (const k of keys) {
+      if (typeof held[k] !== 'string') { held[k] = placeholderFor(k); changed = true; }
+    }
+    if (changed) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(held), { mode: 0o600 });
+    }
+    return Object.fromEntries(keys.map((k) => [k, held[k]]));
   }
 
   async launch(spec: SandboxSpec, command: SandboxCommand, hooks: LaunchHooks = {}): Promise<LaunchedSandbox> {
@@ -913,9 +967,15 @@ export class SmolvmRuntime implements AirlockRuntime {
     const sessionFile = path.join(this.machineDir(name), 'sessions', `${id}.json`);
 
     let unwatch: (() => void) | null = null;
+    // Taken back once the session ends, or its launch fails: route files first, then the services.
+    const undo: Array<() => void | Promise<void>> = [];
+    const unroute = async () => {
+      for (const u of undo.splice(0).reverse()) { try { await u(); } catch { /* gone */ } }
+    };
     let child: ChildProcess;
     try {
-      await this.prepare(name, workspace, spec, sessionFile);
+      const { ca, placeholders } = await this.prepare(name, workspace, spec, sessionFile);
+      const keyEnv = await this.routeSession(name, spec, ca, placeholders, undo);
       const tell = hooks.onProxyDecision;
       if (tell) {
         const off = this.d.egress.watch(name, (decision) => { try { tell(decision); } catch { /* the report never decides anything */ } });
@@ -924,7 +984,9 @@ export class SmolvmRuntime implements AirlockRuntime {
       }
       const tty = this.d.isTTY && spec.allowPty;
       const env = [
-        ...Object.entries(spec.env).map(([k, v]) => `${k}=${v}`),
+        ...Object.entries(spec.env).map(([k, v]) => `${k}=${k === 'AGENFK_API_URL' ? throughGateway(v) : v}`),
+        ...keyEnv,
+        ...CA_BUNDLE_ENV.map((k) => `${k}=${GUEST_CA_BUNDLE}`),
         `HOME=${spec.home ?? this.d.hostEnv.HOME ?? '/root'}`,
         'TMPDIR=/tmp',
         ...PASSTHROUGH_ENV.filter((k) => this.d.hostEnv[k]).map((k) => `${k}=${this.d.hostEnv[k]}`),
@@ -937,6 +999,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       child = this.d.spawn(this.d.smolvmPath, args, { cwd: command.cwd, stdio: 'inherit' });
     } catch (e) {
       unwatch?.();
+      await unroute();
       await this.release(name, sessionFile, workspace);
       throw e;
     }
@@ -955,6 +1018,7 @@ export class SmolvmRuntime implements AirlockRuntime {
     // confirm) rejects `exited`: the machine may still be running.
     const finish = () => finishing ??= (async () => {
       await inGuest('kill -KILL -$pid 2>/dev/null; rm -f "$0"');
+      await unroute();
       try {
         await this.release(name, sessionFile, workspace);
       } finally {
@@ -967,6 +1031,51 @@ export class SmolvmRuntime implements AirlockRuntime {
       child.once('error', (e) => { finish().then(() => reject(e), reject); });
     });
     return { pid: child.pid, kill, exited };
+  }
+
+  /**
+   * The session's routes through the machine's decider: its relay to the AgEnFK server, and, for
+   * each model key the host holds, the key injector on the inference hosts. Each listens on its own
+   * Unix socket. The env the guest gets for the keys: the machine's placeholders, never the keys.
+   */
+  private async routeSession(name: string, spec: SandboxSpec, ca: MachineCa, placeholders: Record<string, string>,
+    undo: Array<() => void | Promise<void>>): Promise<string[]> {
+    if (spec.relayPort) {
+      const relayPort = spec.relayPort;
+      const socket = this.d.egress.routeSocket(name);
+      // The relay itself listens on the loopback (the launcher's, SX-1): carried to it from its socket.
+      const open = new Set<net.Socket>();
+      const forwarder = net.createServer((c) => {
+        const t = net.connect(relayPort, '127.0.0.1');
+        for (const x of [c, t]) { open.add(x); x.on('close', () => open.delete(x)); }
+        c.on('error', () => t.destroy());
+        t.on('error', () => c.destroy());
+        c.on('close', () => t.destroy());
+        t.on('close', () => c.destroy());
+        c.pipe(t);
+        t.pipe(c);
+      });
+      await new Promise<void>((resolve, reject) => { forwarder.once('error', reject); forwarder.listen(socket, () => resolve()); });
+      // Cut what is still open (another session may hold a connection to it): close() waits for it otherwise.
+      undo.push(() => new Promise<void>((r) => { for (const x of open) x.destroy(); forwarder.close(() => r()); }));
+      undo.push(this.d.egress.addRoute(name, { kind: 'relay', port: relayPort, socket }));
+    }
+    const secrets = spec.maskedEnv.flatMap((m) => {
+      const value = this.d.hostEnv[m.name];
+      return value ? [{ name: m.name, placeholder: placeholders[m.name], value, hosts: m.injectHosts }] : [];
+    });
+    if (!secrets.length) return [];
+    // An inference endpoint on its own port keeps it (the spec's allow entry `host:port`).
+    const portOf = (host: string) => {
+      const e = spec.network.allow.find((a) => a.startsWith(`${host}:`));
+      return e ? Number(e.slice(host.length + 1)) : 443;
+    };
+    const routes = [...new Set(secrets.flatMap((s) => s.hosts))].map((host) => ({ host, port: portOf(host) }));
+    const socket = this.d.egress.routeSocket(name);
+    const injector = await this.d.startInjector({ ca, routes, secrets: secrets.map(({ placeholder, value }) => ({ placeholder, value })), socketPath: socket });
+    undo.push(() => injector.close());
+    for (const r of routes) undo.push(this.d.egress.addRoute(name, { kind: 'inject', host: r.host, port: r.port, socket }));
+    return secrets.map((s) => `${s.name}=${s.placeholder}`);
   }
 
   /** Deletes the workspace's machine (`agenfk airlock reset`). Refused while a session is in it. */

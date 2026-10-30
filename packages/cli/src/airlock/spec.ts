@@ -91,6 +91,8 @@ export interface SandboxSpec {
   workspace?: string;
   /** The user's home, at the same path inside a runtime that mounts. */
   home?: string;
+  /** A client's relay to the AgEnFK server (SX-1), on the host loopback: a machine reaches it through its decider. */
+  relayPort?: number;
   maskedEnv: Array<{ name: string; injectHosts: string[] }>;
   /** Set for the sandboxed process, over the runtime's own. */
   env: Record<string, string>;
@@ -309,6 +311,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     filesystem: { denyRead, allowWrite, denyWrite, privateTemp: uniq(session.tempDirs) },
     workspace: session.workspace,
     home,
+    ...(command ? {} : { relayPort: session.serverPort }),
     maskedEnv,
     env: {
       [AIRLOCK_SANDBOX_MARKER]: command ? 'command' : session.client,

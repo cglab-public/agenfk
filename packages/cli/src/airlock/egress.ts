@@ -33,6 +33,35 @@ import type { ProxyDecision } from './runtime';
 import type { EgressBroker } from './smolvm';
 
 export const FLOW_MAGIC = 'SMOLMEG2';
+/**
+ * The machine's gateway (smolvm's default guest link, 100.96.0.0/30; `host.smolvm.internal`). A
+ * connection to it reaches the decider and nothing else: the decider relays a session's relay port
+ * to the host loopback (reply 2) and refuses every other port.
+ */
+export const GATEWAY = '100.96.0.1';
+
+/**
+ * A service of a launcher a flow may be redirected to: the session's relay to the AgEnFK server
+ * (a flow to the gateway on that port), or the key injector (a flow to an inference host). Each
+ * listens on a Unix socket in the machine's private routes dir, never a TCP port: a launcher that
+ * crashed leaves a dead socket (refused), and no other process can take its place there.
+ */
+export type Route =
+  | { kind: 'relay'; port: number; socket: string }
+  | { kind: 'inject'; host: string; port: number; socket: string };
+
+/** A route as read back from a file: anything else is no route. */
+export function asRoute(v: unknown): Route | null {
+  const r = v as Partial<Record<string, unknown>>;
+  const port = (p: unknown) => Number.isInteger(p) && (p as number) > 0 && (p as number) < 65536;
+  const socket = typeof r?.socket === 'string' && path.isAbsolute(r.socket) ? r.socket : null;
+  if (!socket) return null;
+  if (r?.kind === 'relay' && port(r.port)) return { kind: 'relay', port: r.port as number, socket };
+  if (r?.kind === 'inject' && typeof r.host === 'string' && asHostname(r.host) === r.host && port(r.port)) {
+    return { kind: 'inject', host: r.host, port: r.port as number, socket };
+  }
+  return null;
+}
 /** magic, token, machine id, parent id, family, port. */
 const FIXED = 8 + 32 + 16 + 16 + 1 + 2;
 const MAX_PAYLOAD = 65_535;
@@ -194,7 +223,8 @@ const NOTHING = '192.0.2.1/32';
 export function allowListArgs(network: Network): string[] {
   const args = ['--reset-allow-list'];
   if (network.mode === 'observe') return args;
-  const entries = new Set<string>();
+  // The gateway, where the decider relays a session to its launcher.
+  const entries = new Set<string>([`--allow-cidr\0${GATEWAY}/32`]);
   for (const raw of network.allow) {
     const { host } = entryOf(raw);
     if (matchHost(host, LOOPBACK)) continue;
@@ -202,6 +232,7 @@ export function allowListArgs(network: Network): string[] {
     else if (net.isIPv6(host)) entries.add(`--allow-cidr\0${host}/128`);
     else entries.add(`--allow-host-pattern\0${host}`);
   }
+  // (Never empty: the gateway entry is always there; an empty list is every host to smolvm.)
   if (!entries.size) entries.add(`--allow-cidr\0${NOTHING}`);
   for (const e of entries) args.push(...e.split('\0'));
   return args;
@@ -369,6 +400,8 @@ export interface EgressServiceOptions {
    */
   record?: (decision: ProxyDecision) => void;
   resolve?: (name: string) => Promise<string[]>;
+  /** The launchers' services a flow may be redirected to, read for each flow. */
+  routes?: () => Route[];
   headerTimeoutMs?: number;
   auditPollMs?: number;
 }
@@ -446,12 +479,61 @@ export class EgressService {
       done = true;
       clearTimeout(timer);
       if (r.kind === 'invalid' || !crypto.timingSafeEqual(r.flow.token, this.token)) { sock.destroy(); return; }
-      this.decide(r.flow).then((d) => {
-        let sent = d;
-        try { this.o.record?.(d); } catch { sent = { ...d, decision: 'deny', rule: 'not-recorded' }; }
-        this.report(sent);
-        sock.end(Buffer.from([sent.decision === 'allow' ? 0 : 1]));
+      const flow = r.flow;
+      const routes = this.o.routes?.() ?? [];
+      if (flow.ip === GATEWAY) {
+        // The gateway is the launchers' alone: a session's relay port, or nothing.
+        const relays = routes.filter((x) => x.kind === 'relay' && x.port === flow.port).map((x) => x.socket);
+        if (relays.length) { this.redirect(sock, flow, relays); return; }
+        this.answer(sock, { host: GATEWAY, port: flow.port, decision: 'deny', rule: 'host-not-relayed' });
+        return;
+      }
+      this.decide(flow).then((d) => {
+        // answer() redirects only what it allows. Every session's injector swaps the machine's
+        // placeholders: any live one will do.
+        const injectors = routes.filter((x) => x.kind === 'inject' && x.port === flow.port && x.host === d.host).map((x) => x.socket);
+        this.answer(sock, d, injectors.length ? () => this.redirect(sock, flow, injectors) : undefined);
       }, () => sock.destroy());
+    });
+  }
+
+  /** Records and reports `d`, then answers it (or, allowed and redirected, hands the flow on). */
+  private answer(sock: net.Socket, d: ProxyDecision, redirect?: () => void): void {
+    let sent = d;
+    try { this.o.record?.(d); } catch { sent = { ...d, decision: 'deny', rule: 'not-recorded' }; }
+    this.report(sent);
+    if (sent.decision === 'allow' && redirect) redirect();
+    else sock.end(Buffer.from([sent.decision === 'allow' ? 0 : 1]));
+  }
+
+  /**
+   * Reply 2: this connection becomes the guest's stream. It is carried to the first of `sockets`
+   * that takes a connection, the flow's first bytes first (smolvm does not send them again). A
+   * socket nothing listens on (its launcher gone) is passed over; none left refuses the flow: no 2
+   * is sent before a connection is made.
+   */
+  private redirect(sock: net.Socket, flow: Flow, sockets: string[]): void {
+    const [socket, ...rest] = sockets;
+    if (!socket) { sock.destroy(); return; }
+    if (sock.destroyed) return;
+    const up = net.connect(socket);
+    let connected = false;
+    up.on('error', () => {
+      up.destroy();
+      if (!connected) { this.redirect(sock, flow, rest); return; }
+      sock.destroy();
+    });
+    up.once('connect', () => {
+      connected = true;
+      // Tied to the guest only once connected: an attempt that failed leaves nothing on it.
+      if (sock.destroyed) { up.destroy(); return; }
+      sock.on('error', () => up.destroy());
+      sock.on('close', () => up.destroy());
+      up.on('close', () => sock.destroy());
+      sock.write(Buffer.from([2]));
+      up.write(flow.payload);
+      sock.pipe(up);
+      up.pipe(sock);
     });
   }
 
@@ -493,6 +575,17 @@ export interface EgressConfig {
   decisionsPath: string;
   /** Where the decider writes its address once it listens. */
   addressPath: string;
+  /** Where sessions put their routes, one JSON file each. */
+  routesDir: string;
+}
+
+/** The routes in `dir`, as sessions wrote them; anything unreadable is no route. */
+export function readRoutes(dir: string): Route[] {
+  let files: string[];
+  try { files = fs.readdirSync(dir); } catch { return []; }
+  return files.filter((f) => f.endsWith('.json')).flatMap((f) => {
+    try { const r = asRoute(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))); return r ? [r] : []; } catch { return []; }
+  });
 }
 
 interface HelperEgressBrokerDeps {
@@ -506,6 +599,8 @@ interface HelperEgressBrokerDeps {
   kill: (pid: number, signal: NodeJS.Signals) => void;
   readyTimeoutMs?: number;
   stopTimeoutMs?: number;
+  /** Where route sockets' directories are made (the temp dir). */
+  socketDir?: string;
 }
 
 /** The decider process: the compiled egressMain.js beside this file. */
@@ -549,7 +644,9 @@ export class HelperEgressBroker implements EgressBroker {
       auditPath: await this.d.auditPathOf(machine),
       decisionsPath: path.join(dir, 'decisions.jsonl'),
       addressPath: path.join(dir, 'address'),
+      routesDir: path.join(dir, 'routes'),
     };
+    fs.mkdirSync(config.routesDir, { recursive: true, mode: 0o700 });
     const configPath = path.join(dir, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
     fs.chmodSync(configPath, 0o600);
@@ -568,6 +665,36 @@ export class HelperEgressBroker implements EgressBroker {
       }
       await new Promise((r) => setTimeout(r, 25));
     }
+  }
+
+  /**
+   * A new Unix socket path for a session's route, in a fresh directory of its own that only the
+   * user can open. Under the temp dir, not the state dir: a socket path is short (104 bytes on
+   * macOS, 108 on Linux), and a long home would put the state dir's past it.
+   */
+  routeSocket(_machine: string): string {
+    const dir = fs.mkdtempSync(path.join(this.d.socketDir ?? os.tmpdir(), 'agenfk-r-'));
+    fs.chmodSync(dir, 0o700);
+    const p = path.join(dir, 's.sock');
+    if (Buffer.byteLength(p) > 100) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      throw new Error(`Airlock's route socket path is too long for a Unix socket (${p}), so nothing was launched.`);
+    }
+    return p;
+  }
+
+  /** Adds a session's route for the machine's decider; the returned function takes it away. */
+  addRoute(machine: string, route: Route): () => void {
+    const dir = path.join(this.dir(machine), 'routes');
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = path.join(dir, `${crypto.randomBytes(8).toString('hex')}.json`);
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify(route), { mode: 0o600 });
+    fs.renameSync(`${file}.tmp`, file);
+    return () => {
+      fs.rmSync(file, { force: true });
+      // The socket's own directory, made by routeSocket.
+      if (path.basename(path.dirname(route.socket)).startsWith('agenfk-r-')) fs.rmSync(path.dirname(route.socket), { recursive: true, force: true });
+    };
   }
 
   watch(machine: string, onDecision: (decision: ProxyDecision) => void, opts: { pollMs?: number } = {}): () => void {
@@ -610,7 +737,7 @@ export class HelperEgressBroker implements EgressBroker {
         throw new Error(`Airlock's egress decider for ${machine} (pid ${pid}) did not end.`);
       }
     }
-    for (const f of ['pid', 'config.json', 'address']) fs.rmSync(path.join(dir, f), { force: true });
+    for (const f of ['pid', 'config.json', 'address', 'routes']) fs.rmSync(path.join(dir, f), { recursive: true, force: true });
   }
 }
 
