@@ -105,6 +105,20 @@ describe('agenfk airlock install / reset', () => {
     expect(install).toHaveBeenCalledWith({ ifEnabled: true });
   });
 
+  it('reset from a folder inside a repository deletes the repository\'s machine, as a launch from there uses it (story review)', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-reset-')));
+    try {
+      for (const d of ['.git/objects', '.git/refs', 'packages/a']) fs.mkdirSync(path.join(root, d), { recursive: true });
+      fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      const reset = vi.fn(async () => 0);
+      const { p } = program({ reset });
+      await p.parseAsync(['node', 'agenfk', 'airlock', 'reset', '--cwd', path.join(root, 'packages', 'a')]);
+      expect(reset).toHaveBeenCalledWith(root);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reset deletes the machine of the folder it is run in, or of --cwd, and exits with its code', async () => {
     const reset = vi.fn(async () => 1);
     const { p, exit } = program({ reset });

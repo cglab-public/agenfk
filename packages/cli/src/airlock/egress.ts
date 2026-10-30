@@ -220,6 +220,14 @@ const NOTHING = '192.0.2.1/32';
  * each allowed name as an exact pattern (`--allow-host` would also admit its subdomains), each
  * allowed address as a single-address CIDR; loopback is the relay's (task 3), not smolvm's.
  */
+/**
+ * A machine's network policy, as sessions sharing it must agree on it: the spec's, without the
+ * loopback entries that name each session's own relay to the AgEnFK server (story review).
+ */
+export function networkKey(network: Network): string {
+  return JSON.stringify({ ...network, allow: network.allow.filter((a) => !matchHost(entryOf(a).host, LOOPBACK)) });
+}
+
 export function allowListArgs(network: Network): string[] {
   const args = ['--reset-allow-list'];
   // Every host, said explicitly: smolvm refuses to empty a list a machine had (enforce set one) without it.
@@ -632,13 +640,13 @@ export class HelperEgressBroker implements EgressBroker {
     return path.join(this.d.stateDir, 'egress', machine);
   }
 
-  private running(machine: string): { address: string; token: string } | null {
+  private running(machine: string): { address: string; token: string; network: string } | null {
     try {
       const dir = this.dir(machine);
       const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
       if (!Number.isInteger(pid) || pid <= 0 || !this.d.pidAlive(pid)) return null;
       const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')) as EgressConfig;
-      return { address: fs.readFileSync(cfg.addressPath, 'utf8').trim(), token: cfg.token };
+      return { address: fs.readFileSync(cfg.addressPath, 'utf8').trim(), token: cfg.token, network: networkKey(cfg.network) };
     } catch {
       return null;
     }
@@ -646,7 +654,8 @@ export class HelperEgressBroker implements EgressBroker {
 
   async ensure(machine: string, spec: SandboxSpec): Promise<{ address: string; token: string }> {
     const up = this.running(machine);
-    if (up) return up;
+    // Only for this policy: one a crash left running (before its machine started) may decide by another.
+    if (up && up.network === networkKey(spec.network)) return { address: up.address, token: up.token };
     await this.stop(machine);
     const dir = this.dir(machine);
     fs.rmSync(dir, { recursive: true, force: true });

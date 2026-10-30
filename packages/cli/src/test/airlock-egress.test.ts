@@ -653,6 +653,23 @@ describe('HelperEgressBroker: one decider per running machine, outliving the ses
     expect(cfg.auditPath).toBe(path.join(stateDir, 'agenfk-m1-audit.jsonl'));
   });
 
+  it('does not reuse a running decider made for another policy (one a crash left before its machine started): it starts one for this (story review)', async () => {
+    const { b, started, killed } = broker();
+    await b.ensure('agenfk-m1', spec);
+    const other = { network: { ...network('enforce'), allow: ['example.org'] } } as SandboxSpec;
+    await b.ensure('agenfk-m1', other);
+    expect(started).toHaveLength(2);
+    expect(killed).toEqual([4242]);
+    expect(JSON.parse(fs.readFileSync(started[1].configPath, 'utf8')).network).toEqual(other.network);
+  });
+
+  it('reuses a running decider for the same policy, whatever relay port a session has', async () => {
+    const { b, started } = broker();
+    await b.ensure('agenfk-m1', { network: { ...network('enforce'), allow: ['api.github.com', '127.0.0.1:4000', 'localhost:4000'] } } as SandboxSpec);
+    await b.ensure('agenfk-m1', { network: { ...network('enforce'), allow: ['api.github.com', '127.0.0.1:5000', 'localhost:5000'] } } as SandboxSpec);
+    expect(started).toHaveLength(1);
+  });
+
   it('gives each start a new token', async () => {
     const { b } = broker();
     const a = await b.ensure('agenfk-m1', spec);

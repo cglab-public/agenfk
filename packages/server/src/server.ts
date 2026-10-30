@@ -3057,18 +3057,20 @@ app.get("/items/:id/diff", limitExpensive, asyncHandler(async (req: any, res: an
   // A whole generated file can be megabytes; the reader wants the shape, not
   // the payload. Truncated rather than refused, and SAID rather than silently.
   const MAX = 400_000;
-  const run = (args: string[]): string => execFileSync('git', ['-C', root, ...args], {
+  // No program the worktree's config names runs here: the worktree may be one an Airlock session
+  // wrote (CGLAB-696 story review) - no fsmonitor, external diff or textconv.
+  const run = (args: string[]): string => execFileSync('git', ['-C', root, '-c', 'core.fsmonitor=false', ...args], {
     encoding: 'utf8', maxBuffer: MAX * 2, stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
 
   try {
-    let diff = run(['diff', ...(staged ? ['--cached'] : []), '--', rel]);
+    let diff = run(['diff', '--no-ext-diff', '--no-textconv', ...(staged ? ['--cached'] : []), '--', rel]);
     if (!diff && !staged && fs.existsSync(safe)) {
       // UNTRACKED: `git diff` ignores it, so show the whole file as added.
       // --no-index exits 1 when there is a difference, so the output arrives
       // on the throw.
-      try { diff = run(['diff', '--no-index', '--', '/dev/null', rel]); }
+      try { diff = run(['diff', '--no-ext-diff', '--no-textconv', '--no-index', '--', '/dev/null', rel]); }
       catch (e: any) { diff = e?.stdout ?? ''; }
     }
     if (diff.length > MAX) diff = `${diff.slice(0, MAX)}\n… diff truncated\n`;

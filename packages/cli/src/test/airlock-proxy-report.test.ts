@@ -217,7 +217,6 @@ function launchDeps(over: Partial<LaunchDeps> = {}) {
     platform: 'darwin',
     ensurePrivateDir: vi.fn(),
     agenfkVersion: () => '2.1.0-test.1',
-    stageAgentDir: vi.fn(() => ({ dir: '/tmp/t/agenfk-airlock-pi-0', cleanup: vi.fn() })),
     ...over,
   };
   return { d, runtime, hooks: () => hooks, exit: () => release() };

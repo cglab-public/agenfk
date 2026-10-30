@@ -25,7 +25,6 @@ import { buildSandboxSpec, writeRootHolding, sharedTempDir, ENV_NAME, type Sandb
 import type { AirlockRuntime } from './runtime';
 import { startServerRelay, type ServerRelay, type ServerRelayOptions } from './serverRelay';
 import { ProxyDecisionReporter, type ProxyReportBody } from './proxyReport';
-import type { StagedAgentDir } from './piAgentDir';
 import { machineImageFor, type MachineImageSource } from './image';
 
 export class AirlockLaunchError extends Error {
@@ -110,12 +109,6 @@ export interface LaunchDeps {
    * exists at launch, and the server may create the directory later.
    */
   ensurePrivateDir: (dir: string) => void;
-  /**
-   * Stage the agent dir pi runs on inside (BUG ff9969f5, piAgentDir.ts): every entry of
-   * `realDir` but auth.json, which the sandbox denies and pi reads as "no key" when it
-   * cannot open it. Throws when it cannot.
-   */
-  stageAgentDir: (realDir: string) => StagedAgentDir;
 }
 
 export interface LaunchOptions {
@@ -499,16 +492,10 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     },
     requireMarker: enforce,
   });
-  let staged: StagedAgentDir | null = null;
   try {
+    // pi runs on its own agent dir in the machine: its auth.json is hidden there and reads as {}
+    // (no logins), so nothing is staged (a per-launch copy would keep sessions from sharing it).
     const agentDir = client === 'pi' ? piAgentDirOf(d) : null;
-    if (agentDir) {
-      try {
-        staged = d.stageAgentDir(agentDir);
-      } catch (e) {
-        throw new AirlockLaunchError(`Could not stage pi's agent dir (${agentDir}) for the sandbox: ${(e as Error)?.message ?? e}. Nothing was launched.`);
-      }
-    }
     const sharedTmp = sharedTempDir(d.platform, d.realpath);
     let spec: SandboxSpec;
     try {
@@ -530,7 +517,6 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         runtimePackageDir: d.runtimePackageDir,
         hostNetns: d.platform === 'linux' ? d.hostNetns ?? null : null,
         ...(agentDir && agentDir !== path.join(d.home, '.pi', 'agent') ? { piAgentDir: agentDir } : {}),
-        ...(staged ? { piStagedAgentDir: staged.dir } : {}),
       });
     } catch (e) {
       // A denied inference host: the session could not reach its model.
@@ -581,7 +567,6 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
       await reporter?.close();
     }
   } finally {
-    staged?.cleanup();
     await relay.close();
   }
 }

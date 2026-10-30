@@ -150,7 +150,7 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
     const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session());
     const r = await inMachine(spec, [
       `test -e ${path.join(home, '.ssh', 'id_fake')} && echo ssh-visible`,
-      `test -s ${path.join(home, '.pi', 'agent', 'auth.json')} && echo auth-readable`,
+      `grep -q not-a-key ${path.join(home, '.pi', 'agent', 'auth.json')} && echo auth-readable`,
       `{ echo x > ${path.join(ws, '.agenfk', 'planted')}; } 2>/dev/null && echo agenfk-writable`,
       `{ echo x > ${path.join(ws, '.git', 'hooks', 'pre-commit')}; } 2>/dev/null && echo hooks-writable`,
       `{ echo x > ${path.join(ws, '.git', 'config')}; } 2>/dev/null && echo git-config-writable`,

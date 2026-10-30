@@ -10,13 +10,12 @@ import { pipeline } from 'stream/promises';
 import { getApiUrl } from '@agenfk/telemetry';
 import { resolveProjectIdentity, linkedWorktreeOf } from '@agenfk/core';
 import { resolveDashboardUrl } from '../uiUrl.js';
-import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
+import { runAirlockLaunch, AirlockLaunchError, workspaceOf, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
 import { runAirlockExec, scopedCommandEnv, EXEC_CANNOT_SANDBOX, type ExecDeps } from '../airlock/exec.js';
 import { SmolvmRuntime, runAirlockReset } from '../airlock/smolvm.js';
 import { smolvmBinary, installSmolvm, runAirlockInstall } from '../airlock/smolvmInstall.js';
 import { defaultEgressBroker } from '../airlock/egress.js';
 import { baseImageFor, AIRLOCK_BASE_IMAGE } from '../airlock/image.js';
-import { stagePiAgentDir } from '../airlock/piAgentDir.js';
 import { PROXY_REPORT_TIMEOUT_MS } from '../airlock/proxyReport.js';
 import { runLearnImport, defaultPiSessionsDir } from '../airlock/learnImport.js';
 import { runDatasetImport, defaultOpenCodeDb, DatasetImportError } from '../airlock/datasetImport.js';
@@ -193,7 +192,6 @@ export function defaultLaunchDeps(): LaunchDeps {
     runtime: smolvmRuntime(smolvmPath, agenfkVersion),
     // A launch installs the pinned smolvm when it is missing; a bundled one is the app's to ship.
     ensureRuntime: smolvmPath === smolvmBinary(home) ? async () => { await installSmolvm(installDeps(home)); } : undefined,
-    stageAgentDir: (realDir) => stagePiAgentDir(realDir, realpath(os.tmpdir())),
     env: process.env,
     home,
     cwd: realpath(process.cwd()),
@@ -474,7 +472,9 @@ export function registerAirlockCommands(
     .description('Delete the Airlock machine of a workspace (its installed dependencies with it); the next session starts a fresh one. Refused while a session runs in it.')
     .option('--cwd <dir>', 'the workspace (default: this folder)')
     .action(async (options: { cwd?: string }) => {
-      exit(await reset(path.resolve(options.cwd ?? process.cwd())));
+      // The machine a launch from here uses: the repository's (story review).
+      const from = realpath(path.resolve(options.cwd ?? process.cwd()));
+      exit(await reset(workspaceOf(from, { home: realpath(os.homedir()), exists: (p) => fs.existsSync(p), isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } } })));
     });
 
   for (const client of ['pi', 'opencode'] as const) {

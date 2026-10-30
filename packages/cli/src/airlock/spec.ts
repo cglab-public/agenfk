@@ -62,8 +62,6 @@ export interface SandboxSession {
    * auth.json is denied and its extensions are unwritable, as ~/.pi/agent's are.
    */
   piAgentDir?: string;
-  /** pi: the staged agent dir pi is pointed at inside (BUG ff9969f5; piAgentDir.ts). */
-  piStagedAgentDir?: string;
 }
 
 export interface SandboxSpec {
@@ -284,9 +282,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   const clientState = command ? [] : session.client === 'pi'
     ? [session.piAgentDir ?? j(home, '.pi', 'agent')]
     : [j(home, '.local', 'share', 'opencode'), j(home, '.local', 'state', 'opencode'), j(home, '.cache', 'opencode'), j(home, '.config', 'opencode')];
-  // pi's staged agent dir sits in a temp dir: listed on its own, so a runtime that does not share the temp dirs still mounts it.
-  const staged = !command && session.client === 'pi' && session.piStagedAgentDir ? [session.piStagedAgentDir] : [];
-  const allowWrite = uniq([session.workspace, ...session.tempDirs, ...clientState, ...staged]);
+  const allowWrite = uniq([session.workspace, ...session.tempDirs, ...clientState]);
 
   const denyWrite = uniq([
     j(home, '.agenfk'),
@@ -331,8 +327,8 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
       ...(session.hostNetns ? { AGENFK_AIRLOCK_HOST_NETNS: session.hostNetns } : {}),
       // Every agenfk client inside (CLI, hooks, the pi and OpenCode adapters) reads it first.
       ...(session.serverUrl ? { AGENFK_API_URL: session.serverUrl } : {}),
-      // pi reads its config through the staged dir, whose auth.json it can open (BUG ff9969f5).
-      ...(!command && session.client === 'pi' && session.piStagedAgentDir ? { PI_CODING_AGENT_DIR: session.piStagedAgentDir } : {}),
+      // The agent dir the user chose, by its resolved path (the machine does not see the host's env).
+      ...(!command && session.client === 'pi' && session.piAgentDir ? { PI_CODING_AGENT_DIR: session.piAgentDir } : {}),
     },
     // A TUI needs raw mode on its terminal: EPERM without it (measured, macOS).
     allowPty: true,

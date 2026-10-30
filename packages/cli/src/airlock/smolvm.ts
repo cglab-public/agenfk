@@ -31,7 +31,7 @@ import os from 'os';
 import path from 'path';
 import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
 import type { SandboxSpec } from './spec';
-import { allowListArgs, GATEWAY, type Route } from './egress';
+import { allowListArgs, GATEWAY, networkKey, type Route } from './egress';
 import { machineCa, placeholderFor, startKeyInjector, type KeyInjector, type KeyInjectorOptions, type MachineCa } from './keyInjector';
 import { readRegularFile } from './safeRead';
 import type { AirlockRuntime, LaunchHooks, LaunchedSandbox, ProxyDecision, RuntimeCheck, SandboxCommand, SandboxExit } from './runtime';
@@ -302,19 +302,48 @@ export interface GitConfig {
 }
 /**
  * Host git's effective config for `dir`, or null where there is no git or no repository (git
- * finds one above `dir` itself). Reading config runs no hook.
+ * finds one above `dir` itself); throws when a repository's config cannot be read in full.
+ * Reading config runs no hook.
  */
 export type GitConfigReader = (dir: string) => GitConfig | null;
 const readGitConfig: GitConfigReader = (dir) => {
-  const git = (...args: string[]) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', timeout: 10_000, windowsHide: true });
+  // In English whatever the user's locale: "not a git repository" is matched below.
+  const git = (...args: string[]) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', timeout: 10_000, windowsHide: true, env: { ...process.env, LC_ALL: 'C', LANGUAGE: '' } });
   const top = git('rev-parse', '--show-toplevel');
-  if (top.status !== 0) return null;
+  // A repository whose config cannot be read in full is refused, never protected less (story review).
+  const unread = (what: string) => new Error(`Airlock could not read git's config for ${dir} (${what}), so it cannot protect what that config runs. Nothing was launched.`);
+  // Null only for no git, or no repository; anything else (a broken config git reads first) refuses.
+  if (top.error && (top.error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+  if (top.status !== 0) {
+    if (/not a git repository/i.test(top.stderr ?? '')) return null;
+    throw unread((top.stderr || top.error?.message || 'git failed').trim());
+  }
   // git expands the paths (`--type=path`); --get-regexp exits 1 when nothing matches.
   const list = git('config', '-z', '--show-origin', '--type=path', '--get-regexp', '^(include\\.path|includeif\\..*\\.path)$');
   const hooks = git('config', '-z', '--show-origin', '--includes', '--type=path', '--get-regexp', '^core\\.hookspath$');
   const included = git('config', '--list', '--show-origin', '--includes', '-z');
-  if (![0, 1].includes(list.status ?? -1) || ![0, 1].includes(hooks.status ?? -1) || included.status !== 0) return null;
-  return { list: list.stdout, included: included.stdout, hooks: hooks.stdout, top: top.stdout.trim() || null };
+  if (![0, 1].includes(list.status ?? -1) || ![0, 1].includes(hooks.status ?? -1) || included.status !== 0) throw unread((list.stderr || hooks.stderr || included.stderr || 'git failed').trim());
+  // Every file an include names, in effect now or not (an includeIf can come into effect during a
+  // session: onbranch), and the includes inside those: their entries, and their includes (story review).
+  let lists = list.stdout;
+  let entries = included.stdout;
+  const seen = new Set<string>();
+  const queue = configEntries(list.stdout).map((e) => ({ origin: e.origin, value: e.value }));
+  while (queue.length && seen.size < 64) {
+    const e = queue.shift()!;
+    const from = e.origin.startsWith('file:') ? path.dirname(path.resolve(dir, e.origin.slice(5))) : dir;
+    const file = path.resolve(from, e.value);
+    if (!e.value || seen.has(file) || kindOfPath(file) !== 'file') continue;
+    seen.add(file);
+    const own = git('config', '--file', file, '--list', '--show-origin', '-z');
+    const nested = git('config', '--file', file, '-z', '--show-origin', '--type=path', '--get-regexp', '^(include\\.path|includeif\\..*\\.path)$');
+    if (own.status !== 0 || ![0, 1].includes(nested.status ?? -1)) throw unread(`${file}: ${(own.stderr || nested.stderr || 'git failed').trim()}`);
+    entries += own.stdout;
+    lists += nested.stdout;
+    queue.push(...configEntries(nested.stdout).map((n) => ({ origin: n.origin, value: n.value })));
+  }
+  if (queue.length) throw unread('over 64 included files');
+  return { list: lists, included: entries, hooks: hooks.stdout, top: top.stdout.trim() || null };
 };
 
 /** `origin NUL key NEWLINE value NUL` entries of `git config --list --show-origin -z`. */
@@ -334,31 +363,116 @@ function configEntries(out: string): Array<{ origin: string; key: string; value:
 
 
 /**
- * What git's own config makes part of what host git runs in `dir`: the files config was read from,
- * every file an include names (active or not, holding anything or not), and the hooks directory
- * core.hooksPath names. Paths, absolute.
+ * Config keys whose value is a command line host git runs: the ones git documents, and any key named
+ * like one (a driver's command, helper, program...) - wider than needed rather than one short.
  */
-function gitConfigDependencies(dir: string, read: GitConfigReader): { files: string[]; includes: string[]; hooksPaths: string[] } {
+const GIT_PROGRAM_KEY = /^(core\.(fsmonitor|sshcommand|gitproxy|pager|editor|askpass|alternaterefscommand)|diff\.external|sequence\.editor|interactive\.difffilter|uploadpack\.packobjectshook|(pager|alias)\..+|.+\.(textconv|command|cmd|driver|clean|smudge|process|helper|program|uploadpack|receivepack))$/;
+
+/**
+ * The words of a shell command line, quotes and escapes removed, split at operators too; an
+ * assignment (`FOO=tools/x`) stands for its value.
+ */
+function shellWords(line: string): string[] {
+  const words: string[] = [];
+  let cur = '';
+  let any = false;
+  let quote: string | null = null;
+  const push = () => {
+    if (any) {
+      const assigned = /^[A-Za-z_][A-Za-z0-9_]*=(.*)$/.exec(cur);
+      words.push(assigned ? assigned[1] : cur);
+    }
+    cur = '';
+    any = false;
+  };
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      else if (c === '\\' && quote === '"' && i + 1 < line.length) cur += line[++i];
+      else cur += c;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+      any = true;
+    } else if (c === '\\' && i + 1 < line.length) {
+      cur += line[++i];
+      any = true;
+    } else if (/[\s;&|()<>`!]/.test(c)) push();
+    else {
+      cur += c;
+      any = true;
+    }
+  }
+  push();
+  return words;
+}
+
+/**
+ * What a command-valued config entry may run from the working tree, failing closed: every word of it
+ * that names a path (relative ones from the top of the working tree, where git runs them) - one
+ * holding a slash whether or not it exists, a bare word when a file by that name is there. Words
+ * holding an expansion (`$`, backquotes) are passed over, and what the programs read in turn is not
+ * followed: both accepted limits (user decision 2026-10-30).
+ */
+function gitProgramPaths(value: string, top: string): string[] {
+  const paths: string[] = [];
+  for (const w of shellWords(value)) {
+    if (!w || w.startsWith('-') || /^[a-z][a-z0-9+.-]*:\/\//i.test(w)) continue;
+    const p = path.resolve(top, w.replace(/^~(?=\/|$)/, os.homedir()));
+    // A quoted word with spaces in it: a path when there is one by that name, else a command line
+    // of its own (`sh -c '...'`), whose words are taken in turn.
+    if (/[\s;&|()<>]/.test(w) && !kindOfPath(p)) paths.push(...gitProgramPaths(w, top));
+    // An expansion names nothing a scan can know: computed commands are an accepted limit (user
+    // decision 2026-10-30, story review).
+    else if (/[$`]/.test(w)) continue;
+    else if (w.includes('/') || kindOfPath(p) === 'file') paths.push(p);
+  }
+  return paths;
+}
+
+/**
+ * What git's own config makes part of what host git runs in `dir`: the files config was read from,
+ * every file an include names (active or not, holding anything or not), the hooks directory
+ * core.hooksPath names, and the programs config entries name by path (fsmonitor, textconv,
+ * credential helpers, `!` aliases...: story review). Paths, absolute.
+ */
+function gitConfigDependencies(dir: string, read: GitConfigReader): { files: string[]; includes: string[]; hooksPaths: string[]; programs: Array<{ key: string; path: string }> } {
   const cfg = read(dir);
-  if (!cfg) return { files: [], includes: [], hooksPaths: [] };
+  if (!cfg) return { files: [], includes: [], hooksPaths: [], programs: [] };
   const files: string[] = [];
   const includes: string[] = [];
   const hooksPaths: string[] = [];
+  const programs: Array<{ key: string; path: string }> = [];
   const originFile = (origin: string) => (origin.startsWith('file:') ? path.resolve(dir, origin.slice(5)) : null);
   for (const e of configEntries(cfg.included)) {
     const f = originFile(e.origin);
     if (f) files.push(f);
+    // An alias is a program only when it is a shell command (`!`); else it is a git subcommand,
+    // whose `-c key=value` options can name one all the same.
+    const top = cfg.top ?? dir;
+    const add = (key: string, value: string) => programs.push(...gitProgramPaths(value, top).map((p) => ({ key, path: p })));
+    if (e.key.startsWith('alias.') && !e.value.trim().startsWith('!')) {
+      const words = shellWords(e.value);
+      for (let i = 0; i < words.length - 1; i++) {
+        const set = words[i] === '-c' ? /^([^=]+)=(.*)$/s.exec(words[i + 1]) : null;
+        if (set && GIT_PROGRAM_KEY.test(set[1].toLowerCase())) add(`${e.key} -c ${set[1]}`, set[2]);
+      }
+    } else if (GIT_PROGRAM_KEY.test(e.key)) add(e.key, e.value);
   }
   // Paths come expanded by git (`~`, `~user`); one still relative is read as git reads it: a hooks
   // path from the top of the working tree, an include from the directory of the file naming it.
   for (const e of configEntries(cfg.hooks)) {
     if (e.key === 'core.hookspath' && e.value) hooksPaths.push(path.resolve(cfg.top ?? dir, e.value));
   }
+  // And one an include not in effect now sets (unexpanded there: `~` is expanded here).
+  for (const e of configEntries(cfg.included)) {
+    if (e.key === 'core.hookspath' && e.value) hooksPaths.push(path.resolve(cfg.top ?? dir, e.value.replace(/^~(?=\/|$)/, os.homedir())));
+  }
   for (const e of configEntries(cfg.list)) {
     const f = originFile(e.origin);
     if (f && e.value && (e.key === 'include.path' || /^includeif\..*\.path$/.test(e.key))) includes.push(path.resolve(path.dirname(f), e.value));
   }
-  return { files: [...new Set(files)], includes: [...new Set(includes)], hooksPaths: [...new Set(hooksPaths)] };
+  return { files: [...new Set(files)], includes: [...new Set(includes)], hooksPaths: [...new Set(hooksPaths)], programs };
 }
 
 /** Every entry named `.git` below `dir` (not `dir`'s own), skipping SEARCH_SKIP and the insides of git dirs. */
@@ -623,7 +737,12 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
         throw new Error(`Airlock cannot protect ${p}: git's config (core.hooksPath or an include) names it, it does not exist, and the session could create it. Nothing was launched.`);
       }
     }
-    held.push(...[...git.files, ...git.includes, ...git.hooksPaths].filter((f) => mounted(f)));
+    for (const prog of git.programs) {
+      if (mounted(prog.path) && !kindOfPath(prog.path)) {
+        throw new Error(`Airlock cannot protect ${prog.path}: git's config (${prog.key}) names it as a program to run, it does not exist, and the session could create it. Nothing was launched.`);
+      }
+    }
+    held.push(...[...git.files, ...git.includes, ...git.hooksPaths, ...git.programs.map((prog) => prog.path)].filter((f) => mounted(f)));
   }
   const existing = WORKSPACE_PROTECTED.map((p) => path.join(workspace, p));
   for (const p of [...new Set([...held, ...existing].flatMap(expand).map((x) => path.resolve(x)))]) {
@@ -766,8 +885,9 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
     `mkdir -p ${GUEST_SESSIONS} ${GUEST_HIDE}`,
     `chown ${uid}:${gid} ${GUEST_SESSIONS}`,
     `chmod 700 ${GUEST_SESSIONS}`,
-    // The empty file hidden files are bound to, on a tmpfs of its own.
-    `hidden ${GUEST_HIDE} || { mount -t tmpfs -o size=4k,mode=0755 tmpfs ${GUEST_HIDE}; : > ${GUEST_HIDE}/empty; chmod 444 ${GUEST_HIDE}/empty; mount -o remount,ro ${GUEST_HIDE}; }`,
+    // The file hidden files are bound to, on a tmpfs of its own: {} - an empty JSON object, which a
+    // client reads as no logins where an empty file could be a broken one (pi's auth.json).
+    `hidden ${GUEST_HIDE} || { mount -t tmpfs -o size=4k,mode=0755 tmpfs ${GUEST_HIDE}; printf '{}\\n' > ${GUEST_HIDE}/empty; chmod 444 ${GUEST_HIDE}/empty; mount -o remount,ro ${GUEST_HIDE}; }`,
     // The host's trusted roots (smolvm's --trust-host-certs bundle, else the image's), and the
     // machine's CA, whose certificates the key injector presents. Public: no key is in it.
     ...(caPem ? [
@@ -1037,6 +1157,10 @@ export class SmolvmRuntime implements AirlockRuntime {
 
   async check(): Promise<RuntimeCheck> {
     const { platform, arch } = this.d;
+    // Root in the guest could undo every bind that protects the host's files (story review).
+    if (this.d.uid === 0) {
+      return { ok: false, reason: 'Airlock will not run sessions as root: root in the machine could undo every protection Airlock applies. Launch it as your own user.' };
+    }
     if (platform === 'win32') {
       return { ok: false, reason: 'Windows is not supported by Airlock: its sessions run in a smolvm machine, whose networking Airlock relies on runs on macOS and Linux only.' };
     }
@@ -1150,34 +1274,58 @@ export class SmolvmRuntime implements AirlockRuntime {
     fs.rmSync(path.join(this.machineDir(name), 'placeholders.json'), { force: true });
   }
 
+  /** A lock left by a launcher that is gone, or naming none (an older launcher's) and a minute old. */
+  private lockStale(lock: string): boolean {
+    const st = fs.statSync(lock);
+    const holder = Number(fs.readFileSync(lock, 'utf8').split(' ')[0]);
+    return Number.isInteger(holder) && holder > 0 ? !this.d.pidAlive(holder) : Date.now() - st.mtimeMs > 60_000;
+  }
+
   /**
-   * Removes a lock whose holder is gone. Launchers doing so take turns on a
-   * second lock, and each checks again under it that the lock is still that
-   * same file and its holder still gone: a live owner's lock is never touched.
-   * Returns false when another launcher holds the turn.
+   * Takes `lock` for `owner`, published whole: the owner written to a file of its own, linked into
+   * place (a link onto an existing name fails) - a lock is never seen without its owner. False when
+   * it is held.
+   */
+  private static takeLock(lock: string, owner: string): boolean {
+    const tmp = `${lock}.${crypto.randomBytes(8).toString('hex')}`;
+    fs.writeFileSync(tmp, owner, { flag: 'wx' });
+    try {
+      fs.linkSync(tmp, lock);
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      return false;
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
+  }
+
+  /**
+   * Removes a stale lock. Launchers doing so take turns on a second lock, and
+   * each checks again under it that the lock is still that same file and still
+   * stale: a live owner's lock is never touched. True only when it removed it;
+   * false when another launcher holds the turn, or the lock is no longer stale.
    */
   private breakStaleLock(lock: string, ino: number): boolean {
     const turn = `${lock}.break`;
     const mine = `${process.pid} ${crypto.randomBytes(8).toString('hex')}`;
-    try {
-      fs.writeFileSync(turn, mine, { flag: 'wx' });
-    } catch {
-      // Held for an instant; one left by a launcher that is gone is cleared - by its owner's
-      // liveness, never its age, and only if it is still that same turn.
+    if (!SmolvmRuntime.takeLock(turn, mine)) {
+      // Held for an instant; one left by a launcher that is gone is cleared (an older launcher's
+      // naming none, once a minute old: story review), and only if it is still that same turn.
       try {
         const held = fs.readFileSync(turn, 'utf8');
-        const owner = Number(held.split(' ')[0]);
-        if (Number.isInteger(owner) && owner > 0 && !this.d.pidAlive(owner) && fs.readFileSync(turn, 'utf8') === held) fs.rmSync(turn);
+        if (this.lockStale(turn) && fs.readFileSync(turn, 'utf8') === held) fs.rmSync(turn);
       } catch { /* gone */ }
       return false;
     }
+    let removed = false;
     try {
-      const holder = Number(fs.readFileSync(lock, 'utf8').split(' ')[0]);
-      if (fs.statSync(lock).ino === ino && Number.isInteger(holder) && holder > 0 && !this.d.pidAlive(holder)) fs.rmSync(lock);
+      // Judged again under the turn, by the same rule the caller used (story review).
+      if (fs.statSync(lock).ino === ino && this.lockStale(lock)) { fs.rmSync(lock); removed = true; }
     } catch { /* released meanwhile */ } finally {
       try { if (fs.readFileSync(turn, 'utf8') === mine) fs.rmSync(turn); } catch { /* not ours any more */ }
     }
-    return true;
+    return removed;
   }
 
   /**
@@ -1192,19 +1340,12 @@ export class SmolvmRuntime implements AirlockRuntime {
     const mine = `${process.pid} ${crypto.randomBytes(8).toString('hex')}`;
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
     for (;;) {
-      try {
-        fs.writeFileSync(lock, mine, { flag: 'wx' });
-        break;
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-      }
-      let seen: { holder: number; ino: number } | null = null;
-      try {
-        const ino = fs.statSync(lock).ino;
-        seen = { holder: Number(fs.readFileSync(lock, 'utf8').split(' ')[0]), ino };
-      } catch { /* released meanwhile */ }
-      // An empty lock is being written; only a holder seen to be gone is taken over.
-      if (seen && Number.isInteger(seen.holder) && seen.holder > 0 && !this.d.pidAlive(seen.holder) && this.breakStaleLock(lock, seen.ino)) continue;
+      if (SmolvmRuntime.takeLock(lock, mine)) break;
+      // A holder seen to be gone is taken over; so is a lock naming none (left by an older launcher) once it is a minute old.
+      let ino: number | null = null;
+      try { if (this.lockStale(lock)) ino = fs.statSync(lock).ino; } catch { /* released meanwhile */ }
+      // Always yield before trying again: a retry that cannot succeed must never spin.
+      if (ino !== null && this.breakStaleLock(lock, ino)) { await new Promise((r) => setImmediate(r)); continue; }
       if (Date.now() > deadline) throw new Error(`Airlock waited ${LOCK_TIMEOUT_MS / 1000}s for another session to finish starting or stopping the machine ${name}; nothing was launched.`);
       await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
     }
@@ -1334,7 +1475,8 @@ export class SmolvmRuntime implements AirlockRuntime {
       const protections = path.join(this.machineDir(name), 'protections.json');
       const applied = JSON.stringify({ pinned: plan.pinned, writable: plan.writable, readOnly: plan.readOnly, hidden: plan.hidden });
       const recorded = (file: string): string | null => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } };
-      if (shared && !joining && recorded(network) !== JSON.stringify(spec.network)) {
+      // The machine's policy, not the session's relay port (each launch has its own): story review.
+      if (shared && !joining && recorded(network) !== networkKey(spec.network)) {
         // One interceptor decides for the whole machine: a session under another network policy waits its turn.
         throw new Error(`Another session is in the Airlock machine for ${workspace} under a different network policy, so nothing was launched. Launch it once that session has ended.`);
       }
@@ -1350,7 +1492,7 @@ export class SmolvmRuntime implements AirlockRuntime {
         throw new Error(`Another session is in the Airlock machine for ${workspace} with different file protections, so nothing was launched. Launch it once that session has ended.`);
       }
       if (machine.state !== 'running') {
-        fs.writeFileSync(network, JSON.stringify(spec.network));
+        fs.writeFileSync(network, networkKey(spec.network));
         fs.writeFileSync(protections, applied);
         fs.writeFileSync(injection, injecting);
         // smolvm's own allow list (enforce: only allowed names resolve), set while it is stopped.

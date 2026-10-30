@@ -18,7 +18,7 @@ import path from 'path';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSession, type SandboxSpec } from '../airlock/spec';
 import type { ProxyDecision } from '../airlock/runtime';
-import { allowListArgs, GATEWAY, type Route } from '../airlock/egress';
+import { allowListArgs, GATEWAY, networkKey, type Route } from '../airlock/egress';
 import {
   SmolvmRuntime,
   SMOLVM_VERSION,
@@ -184,7 +184,6 @@ function session(over: Partial<SandboxSession> = {}): SandboxSession {
     installDirs: [path.join(home, '.agenfk-system')],
     gitDir: path.join(workspace, '.git'),
     piAgentDir: agentDir,
-    piStagedAgentDir: stagedDir,
     ...over,
   };
 }
@@ -242,7 +241,7 @@ function liveSession(name: string, id = 'other', network: SandboxSpec['network']
   fs.mkdirSync(sessions, { recursive: true });
   fs.writeFileSync(path.join(sessions, `${id}.json`), JSON.stringify({ pid: process.pid }));
   // The network policy and file protections the machine was started under, as the session that started it records them.
-  fs.writeFileSync(path.join(stateDir, 'machines', name, 'network.json'), JSON.stringify(network));
+  fs.writeFileSync(path.join(stateDir, 'machines', name, 'network.json'), networkKey(network));
   const plan = guestPlanOf(specOf(), workspace);
   fs.writeFileSync(path.join(stateDir, 'machines', name, 'protections.json'), JSON.stringify({ pinned: plan.pinned, writable: plan.writable, readOnly: plan.readOnly, hidden: plan.hidden }));
   fs.writeFileSync(path.join(stateDir, 'machines', name, 'injection.json'), JSON.stringify(specOf().maskedEnv.map((m) => [m.name, [...m.injectHosts].sort()]).sort()));
@@ -254,6 +253,12 @@ const running = (name: string): Machine => ({ state: 'running', image: IMAGE, la
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
 describe('SmolvmRuntime.check', () => {
+  it('refuses to run sessions as root: root in the guest undoes every protection (story review)', async () => {
+    const r = await runtime({ uid: 0 }).rt.check();
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/root/);
+  });
+
   it('a missing smolvm: says how AgEnFK installs it (CGLAB-696 task 6)', async () => {
     const r = await runtime({ smolvm: fakeSmolvm({ missing: true }) }).rt.check();
     expect(r.ok).toBe(false);
@@ -426,8 +431,8 @@ describe('guestPlanOf: what the guest sees', () => {
     expect(targets.some((t) => t === '/tmp' || t === '/private/tmp')).toBe(false);
   });
 
-  it('mounts the staged pi agent dir on its own though it sits in a host temp dir', () => {
-    expect(plan().mounts.map((m) => m.host)).toContain(stagedDir);
+  it('mounts a pi agent dir on its own though it sits in a host temp dir', () => {
+    expect(plan({ piAgentDir: stagedDir }).mounts.map((m) => m.host)).toContain(stagedDir);
   });
 
   it('mounts a write root inside another one once, through the outer one', () => {
@@ -787,6 +792,43 @@ describe.skipIf(process.platform === 'win32')('guestPlanOf: a linked git worktre
  * session on it, set up by root before the session. An image without what they need (iptables,
  * node) cannot have them: enforce refuses, observe warns.
  */
+/** Story review: what several sessions of one repository share, and what a crash leaves. */
+describe('sessions sharing a machine, and crashes (CGLAB-696 story review)', () => {
+  it('a second session under the same policy joins, though its relay to the server has another port', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name, 'other', specOf({ serverPort: 4000 }).network);
+    const { rt, sp } = runtime({ smolvm });
+    await rt.launch(specOf({ serverPort: 5000 }), cmd());
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('a session under another policy still waits its turn', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name, 'other', buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['example.org'] } }), session()).network);
+    await expect(runtime({ smolvm }).rt.launch(specOf(), cmd())).rejects.toThrow(/different network policy/);
+  });
+
+  it('hidden files read as {}: a client takes its hidden auth.json for no logins, not a broken file', () => {
+    expect(guestSetupScript(guestPlanOf(specOf(), workspace), 503, 20)).toMatch(/printf '\{\}\\n' > \/run\/agenfk\/hide\/empty/);
+  });
+
+  it('a machine lock with no owner in it (a launcher killed while taking it) does not block the next launch', async () => {
+    const name = machineNameOf(workspace);
+    const lock = path.join(stateDir, 'machines', name, 'lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, '');
+    const old = new Date(Date.now() - 120_000);
+    fs.utimesSync(lock, old, old);
+    const { rt, sp } = runtime();
+    await rt.launch(specOf(), cmd());
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('the machine\'s resolver (CGLAB-696 task 8)', () => {
   const rootScripts = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.execs().filter((a) => flag(a, '-u') === 'root').map((a) => a[a.length - 1]);
 
@@ -993,6 +1035,133 @@ describe('guestPlanOf: what the session cannot move aside or plant', () => {
   it('refuses a core.hooksPath inside the mounts that does not exist: the session could create it', () => {
     const hooks = `file:${path.join(workspace, '.git', 'config')}\0core.hookspath\n.husky/_\0`;
     expect(() => guestPlanOf(specOf(), workspace, () => ({ list: '', included: hooks, hooks, top: workspace }))).toThrow(/core\.hooksPath/);
+  });
+
+  // Story review fix (task 10): host git runs these programs from the host (the server's git status
+  // and diff, the user's own git); the session must not be able to rewrite one the config names.
+  it('protects the programs git\'s config names inside the mounts: fsmonitor, textconv, helpers, aliases', () => {
+    for (const f of ['tools/fsmon.sh', 'scripts/tc.sh', 'bin/cred', 'tools/a.sh', 'tools/space dir/x.sh']) {
+      fs.mkdirSync(path.dirname(path.join(workspace, f)), { recursive: true });
+      fs.writeFileSync(path.join(workspace, f), '#!/bin/sh\n');
+    }
+    const cfg = `file:${path.join(workspace, '.git', 'config')}`;
+    const included = [
+      cfg, 'core.fsmonitor\ntools/fsmon.sh',
+      cfg, 'diff.mine.textconv\nscripts/tc.sh --flag',
+      cfg, 'credential.https://example.com.helper\n!./bin/cred get',
+      cfg, 'alias.go\n!tools/a.sh "$@"',
+      cfg, 'filter.lfs.smudge\n"tools/space dir/x.sh" %f',
+      // Not programs in the mounts: a boolean, a name git finds on PATH, a path outside.
+      cfg, 'core.fsmonitor\ntrue',
+      cfg, 'credential.helper\nosxkeychain',
+      cfg, 'core.pager\n/usr/bin/less -R',
+    ].join('\0') + '\0';
+    const p = guestPlanOf(specOf(), workspace, () => ({ list: '', included, hooks: '', top: workspace }));
+    for (const f of ['tools/fsmon.sh', 'scripts/tc.sh', 'bin/cred', 'tools/a.sh', 'tools/space dir/x.sh']) {
+      expect(p.readOnly, f).toContain(path.join(workspace, f));
+    }
+    expect(p.readOnly).not.toContain(path.join(workspace, 'true'));
+    expect(p.readOnly).not.toContain('/usr/bin/less');
+  });
+
+  it('refuses a program git\'s config names inside the mounts that does not exist: the session could create it', () => {
+    const included = `file:${path.join(workspace, '.git', 'config')}\0core.fsmonitor\ntools/fsmon.sh\0`;
+    expect(() => guestPlanOf(specOf(), workspace, () => ({ list: '', included, hooks: '', top: workspace }))).toThrow(/core\.fsmonitor/);
+  });
+
+  // Second review pass: a command line is more than its first word.
+  it('protects every path a configured command line names: env assignments, interpreters, sh -c bodies, proxies', () => {
+    const files = ['tools/cred.sh', 'tools/env.sh', 'tools/body.sh', 'tools/proxy.sh', 'bare.sh', 'tools/via-var.sh'];
+    for (const f of files) {
+      fs.mkdirSync(path.dirname(path.join(workspace, f)), { recursive: true });
+      fs.writeFileSync(path.join(workspace, f), '#!/bin/sh\n');
+    }
+    const cfg = `file:${path.join(workspace, '.git', 'config')}`;
+    const included = [
+      cfg, 'credential.helper\n!sh tools/cred.sh',
+      cfg, 'credential.https://a.example.helper\n!FOO=1 tools/env.sh get',
+      cfg, 'alias.x\n!sh -c \'cd . && tools/body.sh "$1"\' -',
+      cfg, 'core.gitproxy\ntools/proxy.sh for example.com',
+      cfg, 'trailer.sign.cmd\nbare.sh',
+      cfg, 'diff.external\nHOOK=tools/via-var.sh /usr/bin/env',
+    ].join('\0') + '\0';
+    const p = guestPlanOf(specOf(), workspace, () => ({ list: '', included, hooks: '', top: workspace }));
+    for (const f of files) expect(p.readOnly, f).toContain(path.join(workspace, f));
+  });
+
+  it('refuses a missing path any word of a configured command line names inside the mounts', () => {
+    const included = `file:${path.join(workspace, '.git', 'config')}\0credential.helper\n!sh tools/missing.sh\0`;
+    expect(() => guestPlanOf(specOf(), workspace, () => ({ list: '', included, hooks: '', top: workspace }))).toThrow(/credential\.helper/);
+  });
+
+  it('protects the programs an include names that is not in effect now (includeIf onbranch), from the real git config', () => {
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true });
+    const git = (...a: string[]) => spawnSync('git', ['-C', workspace, ...a], { encoding: 'utf8' });
+    expect(git('init', '-q').status).toBe(0);
+    fs.mkdirSync(path.join(workspace, 'tools'));
+    fs.writeFileSync(path.join(workspace, 'tools', 'cred.sh'), '#!/bin/sh\n');
+    fs.writeFileSync(path.join(workspace, 'tools', 'nested.sh'), '#!/bin/sh\n');
+    fs.writeFileSync(path.join(workspace, 'release.gitconfig'), '[credential]\n\thelper = !./tools/cred.sh\n[include]\n\tpath = nested.gitconfig\n');
+    fs.mkdirSync(path.join(workspace, '.release-hooks'));
+    fs.writeFileSync(path.join(workspace, 'nested.gitconfig'), '[core]\n\tfsmonitor = tools/nested.sh\n\thooksPath = .release-hooks\n');
+    expect(git('config', 'includeIf.onbranch:release.path', path.join(workspace, 'release.gitconfig')).status).toBe(0);
+    const p = guestPlanOf(specOf(), workspace);
+    expect(p.readOnly).toContain(path.join(workspace, 'tools', 'cred.sh'));
+    expect(p.readOnly).toContain(path.join(workspace, 'nested.gitconfig'));
+    expect(p.readOnly).toContain(path.join(workspace, 'tools', 'nested.sh'));
+    expect(p.readOnly).toContain(path.join(workspace, '.release-hooks'));
+  });
+
+  // Third review pass: what is not a program is left alone, and an unreadable config refuses.
+  it('takes no word of a plain alias, a refspec or an expansion for a program, and no bare directory name', () => {
+    fs.mkdirSync(path.join(workspace, 'src'));
+    fs.mkdirSync(path.join(workspace, 'auth'));
+    const cfg = `file:${path.join(workspace, '.git', 'config')}`;
+    const included = [
+      cfg, 'alias.publish\npush origin HEAD:refs/heads/main',
+      cfg, 'alias.history\nlog -- src/',
+      cfg, 'credential.helper\n!"${PWD}/tools/cred.sh" get',
+      cfg, 'credential.https://b.example.helper\n!gh auth git-credential',
+    ].join('\0') + '\0';
+    const p = guestPlanOf(specOf(), workspace, () => ({ list: '', included, hooks: '', top: workspace }));
+    expect(p.readOnly).not.toContain(path.join(workspace, 'src'));
+    expect(p.readOnly).not.toContain(path.join(workspace, 'auth'));
+  });
+
+  it('refuses the launch when an include git\'s config names cannot be read, rather than protecting less', () => {
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true });
+    const git = (...a: string[]) => spawnSync('git', ['-C', workspace, ...a], { encoding: 'utf8' });
+    expect(git('init', '-q').status).toBe(0);
+    fs.writeFileSync(path.join(workspace, 'broken.gitconfig'), '[core\n\tthis is not config\n');
+    expect(git('config', 'includeIf.onbranch:release.path', path.join(workspace, 'broken.gitconfig')).status).toBe(0);
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/could not read git's config/);
+  });
+
+  it('refuses the launch when the config in effect cannot be read (a broken active include), rather than finding no repository', () => {
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true });
+    const git = (...a: string[]) => spawnSync('git', ['-C', workspace, ...a], { encoding: 'utf8' });
+    expect(git('init', '-q').status).toBe(0);
+    fs.writeFileSync(path.join(workspace, 'broken.gitconfig'), '[core\n\tthis is not config\n');
+    expect(git('config', 'include.path', path.join(workspace, 'broken.gitconfig')).status).toBe(0);
+    expect(() => guestPlanOf(specOf(), workspace)).toThrow(/could not read git's config/);
+  });
+
+  it('protects a program a plain alias sets with -c', () => {
+    fs.mkdirSync(path.join(workspace, 'tools'));
+    fs.writeFileSync(path.join(workspace, 'tools', 'monitor.sh'), '#!/bin/sh\n');
+    const included = `file:${path.join(workspace, '.git', 'config')}\0alias.scan\n-c core.fsmonitor=./tools/monitor.sh status -- src/\0`;
+    const p = guestPlanOf(specOf(), workspace, () => ({ list: '', included, hooks: '', top: workspace }));
+    expect(p.readOnly).toContain(path.join(workspace, 'tools', 'monitor.sh'));
+  });
+
+  it('reads the programs git\'s config names from the real git config', () => {
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true });
+    const git = (...a: string[]) => spawnSync('git', ['-C', workspace, ...a], { encoding: 'utf8' });
+    expect(git('init', '-q').status).toBe(0);
+    fs.mkdirSync(path.join(workspace, 'tools'));
+    fs.writeFileSync(path.join(workspace, 'tools', 'fsmon.sh'), '#!/bin/sh\n');
+    expect(git('config', 'core.fsmonitor', 'tools/fsmon.sh').status).toBe(0);
+    expect(guestPlanOf(specOf(), workspace).readOnly).toContain(path.join(workspace, 'tools', 'fsmon.sh'));
   });
 
   it('reads core.hooksPath from the real git config', () => {
@@ -1393,6 +1562,20 @@ describe('sessions starting and leaving at once', () => {
     expect(fs.existsSync(`${lock}.break`)).toBe(false);
   });
 
+  it('clears a breaking turn with no owner in it (a launcher killed while taking it) once it is old, and goes on', async () => {
+    const name = machineNameOf(workspace);
+    const lock = path.join(stateDir, 'machines', name, 'lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, '999999 gone');
+    fs.writeFileSync(`${lock}.break`, '');
+    const old = new Date(Date.now() - 120_000);
+    fs.utimesSync(`${lock}.break`, old, old);
+    const { rt, sp } = runtime();
+    await rt.launch(specOf(), cmd());
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(`${lock}.break`)).toBe(false);
+  });
+
   it('never breaks a lock a live owner took after the stale one was seen', () => {
     const name = machineNameOf(workspace);
     const lock = path.join(stateDir, 'machines', name, 'lock');
@@ -1403,7 +1586,9 @@ describe('sessions starting and leaving at once', () => {
     fs.rmSync(lock);
     fs.writeFileSync(lock, `${process.pid} live`);
     const { rt } = runtime();
-    expect((rt as unknown as { breakStaleLock(l: string, ino: number): boolean }).breakStaleLock(lock, staleIno)).toBe(true);
+    // Nothing removed, and it says so: a true here sent the caller round again at once, which spun
+    // on a lock it could never take (story review: an ownerless lock pinned the CPU).
+    expect((rt as unknown as { breakStaleLock(l: string, ino: number): boolean }).breakStaleLock(lock, staleIno)).toBe(false);
     expect(fs.readFileSync(lock, 'utf8')).toBe(`${process.pid} live`);
   });
 
@@ -2031,10 +2216,6 @@ describe('buildSandboxSpec, for a runtime that mounts', () => {
     expect(specOf({ serverPort: 3123 }).relayPort).toBe(3123);
     expect(specOf({ purpose: 'command' }).relayPort).toBeUndefined();
   });
-
-  it('lists pi\'s staged agent dir as a write root of its own', () => {
-    expect(specOf().filesystem.allowWrite).toContain(stagedDir);
-  });
 });
 
 /**
@@ -2049,7 +2230,7 @@ describe('buildSandboxSpec, for a runtime that mounts', () => {
 describe('a command the server runs, in the workspace machine (CGLAB-696 task 5)', () => {
   const commandSpec = (): SandboxSpec => buildSandboxSpec(
     normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['registry.npmjs.org'] } }),
-    session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined, piStagedAgentDir: undefined }),
+    session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined }),
   );
   const npmTest = () => ({ file: '/bin/sh', args: ['-c', 'npm test'], cwd: workspace, processGroup: false });
   const spawnArgs = (sp: ReturnType<typeof fakeSpawn>) => sp.spawn.mock.calls[0][1] as string[];
@@ -2093,10 +2274,9 @@ describe('a command the server runs, in the workspace machine (CGLAB-696 task 5)
     expect(flag(args, '-w')).toBe(workspace);
     expect(args).toContain(COMMAND_IN_NAMESPACE);
     const setup = nsSetup(args);
-    // pi's state and its staged dir are the session's: hidden at their paths in the command's
-    // namespace (not a boundary: /proc/<pid>/root shows the session's view - accepted limit).
+    // pi's state is the session's: hidden at its path in the command's namespace (not a
+    // boundary: /proc/<pid>/root shows the session's view - accepted limit).
     expect(setup).toContain(`hide_dir '${agentDir}'`);
-    expect(setup).toContain(`hide_dir '${stagedDir}'`);
     // The command's own protections, inside the workspace.
     expect(setup).toContain(`ro '${path.join(workspace, '.agenfk')}'`);
     expect(setup).toContain(`ro '${path.join(workspace, '.git', 'hooks')}'`);
@@ -2426,7 +2606,7 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('the AgEnFK base image in a re
       const pi = await rt.launch(piSpec, { file: 'sh', args: ['-c', `while [ ! -e done ]; do sleep 0.2; done; ls ${agentDir} | grep -qx sessions && echo pi-sees-its-state > pi.out`], cwd: workspace });
       await new Promise((r) => setTimeout(r, 1500));
       const commandSpec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }),
-        session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined, piStagedAgentDir: undefined }));
+        session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined }));
       const out = path.join(workspace, 'command.out');
       const probe = [
         'echo made > made-by-command',
@@ -2583,7 +2763,7 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('SmolvmRuntime against the rea
         'echo made > made-by-guest',
         `{ echo x > ${path.join(workspace, '.agenfk', 'planted')}; } 2>/dev/null && echo agenfk-writable`,
         `{ echo x > ${path.join(workspace, '.git', 'hooks', 'pre-commit')}; } 2>/dev/null && echo hooks-writable`,
-        `test -s ${path.join(agentDir, 'auth.json')} && echo auth-readable`,
+        `grep -q fake ${path.join(agentDir, 'auth.json')} && echo auth-readable`,
         `test -e ${path.join(home, '.ssh', 'id_fake')} && echo ssh-visible`,
         // Moving .git aside to plant a fresh one around its read-only hooks.
         '{ mv .git .git-moved; } 2>/dev/null && echo git-renamed',
