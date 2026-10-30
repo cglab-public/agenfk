@@ -30,6 +30,7 @@ import os from 'os';
 import path from 'path';
 import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
 import type { SandboxSpec } from './spec';
+import { allowListArgs } from './egress';
 import type { AirlockRuntime, LaunchHooks, LaunchedSandbox, ProxyDecision, RuntimeCheck, SandboxCommand, SandboxExit } from './runtime';
 
 /** Exactly the version AgEnFK installs (no range): a bump is a reviewed change. */
@@ -887,6 +888,8 @@ export class SmolvmRuntime implements AirlockRuntime {
       if (machine.state !== 'running') {
         fs.writeFileSync(network, JSON.stringify(spec.network));
         fs.writeFileSync(protections, applied);
+        // smolvm's own allow list (enforce: only allowed names resolve), set while it is stopped.
+        await this.must(['machine', 'update', '--name', name, ...allowListArgs(spec.network)], `set the network policy of the machine for ${workspace}`);
         const icpt = await this.d.egress.ensure(name, spec);
         await this.must(['machine', 'start', '--name', name, '--mediated-egress', '--egress-interceptor', icpt.address],
           `start the machine for ${workspace}`, { SMOLVM_INTERCEPTOR_TOKEN: icpt.token });
@@ -952,8 +955,12 @@ export class SmolvmRuntime implements AirlockRuntime {
     // confirm) rejects `exited`: the machine may still be running.
     const finish = () => finishing ??= (async () => {
       await inGuest('kill -KILL -$pid 2>/dev/null; rm -f "$0"');
-      unwatch?.();
-      await this.release(name, sessionFile, workspace);
+      try {
+        await this.release(name, sessionFile, workspace);
+      } finally {
+        // After the release: a last session's stop has the decider write its last decisions.
+        unwatch?.();
+      }
     })();
     const exited = new Promise<SandboxExit>((resolve, reject) => {
       child.once('exit', (code, signal) => { finish().then(() => resolve({ code, signal }), reject); });

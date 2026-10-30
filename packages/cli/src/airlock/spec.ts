@@ -74,6 +74,11 @@ export interface SandboxSpec {
     deny: string[];
     /** Address ranges an allowed name may not resolve to. */
     denyResolved: string[];
+    /**
+     * The policy's mode, for a runtime that decides each connection (smolvm): observe allows and
+     * reports what enforce would refuse; the deny side holds in both.
+     */
+    mode?: 'observe' | 'enforce';
   };
   filesystem: {
     denyRead: string[];
@@ -300,7 +305,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   });
 
   return {
-    network: { allow: uniq(allow), deny: uniq(deny), denyResolved: uniq(denyResolved) },
+    network: { allow: uniq(allow), deny: uniq(deny), denyResolved: uniq(denyResolved), mode: policy.mode === 'observe' ? 'observe' : 'enforce' },
     filesystem: { denyRead, allowWrite, denyWrite, privateTemp: uniq(session.tempDirs) },
     workspace: session.workspace,
     home,

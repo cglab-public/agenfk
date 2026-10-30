@@ -17,6 +17,7 @@ import path from 'path';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSession, type SandboxSpec } from '../airlock/spec';
 import type { ProxyDecision } from '../airlock/runtime';
+import { allowListArgs } from '../airlock/egress';
 import {
   SmolvmRuntime,
   SMOLVM_VERSION,
@@ -96,6 +97,10 @@ function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string
         }
         return fail('unknown mount verb');
       case 'exec':
+        return ok();
+      case 'update':
+        if (!m) return fail('vm not found');
+        if (m.state === 'running') return fail('machine must be stopped');
         return ok();
       default:
         return fail(`unknown verb ${args[1]}`);
@@ -304,6 +309,16 @@ describe('the machine of a workspace', () => {
     expect(start.env?.SMOLVM_INTERCEPTOR_TOKEN).toBe('a'.repeat(64));
     expect(start.args.join(' ')).not.toContain('a'.repeat(64));
     expect(egress.ensure).toHaveBeenCalledWith(machineNameOf(workspace), expect.objectContaining({ network: expect.any(Object) }));
+  });
+
+  it('is given the policy\'s allow list before it starts, from an empty one', async () => {
+    const { rt, smolvm } = runtime();
+    const spec = specOf();
+    await rt.launch(spec, cmd());
+    const update = smolvm.calls.find((c) => c.args[1] === 'update')!.args;
+    expect(update).toEqual(['machine', 'update', '--name', machineNameOf(workspace), ...allowListArgs(spec.network)]);
+    const v = smolvm.verbs();
+    expect(v.indexOf('update')).toBeLessThan(v.indexOf('start'));
   });
 
   it('is reused when it exists with the same image: started, not created again', async () => {
@@ -567,6 +582,17 @@ describe('a session in the machine', () => {
     sp.children[0].finish(0);
     await launched.exited;
     expect(smolvm.verbs()).toContain('stop');
+  });
+
+  it('still hands over the decisions the interceptor writes as the machine stops', async () => {
+    const egress = fakeEgress();
+    egress.stop.mockImplementation(async () => { egress.emit({ host: 'last.example.com', port: null, decision: 'deny', rule: 'not-on-allow-list' }); });
+    const { rt, sp } = runtime({ egress });
+    const seen: string[] = [];
+    const launched = await rt.launch(specOf(), cmd(), { onProxyDecision: (d) => seen.push(d.host) });
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(seen).toContain('last.example.com');
   });
 
   it('hands the interceptor\'s decisions to the hook while it runs; a hook that throws changes nothing', async () => {
