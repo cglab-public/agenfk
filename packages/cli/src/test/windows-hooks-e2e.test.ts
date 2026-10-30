@@ -111,7 +111,7 @@ describe('the hooks the installer registers for Claude Code', () => {
   });
 
   it('the gatekeeper blocks an edit inside a project when no task is active', async () => {
-    items = [{ id: 'i-1', status: 'TODO' }];
+    items = [{ id: 'i-1', projectId: 'p-1', status: 'TODO' }];
     const r = await runHook(commands['agenfk-gatekeeper'], { tool_name: 'Edit', tool_input: { file_path: path.join(project, 'src', 'a.ts') } });
     expect(r.status, r.stderr).toBe(0);
     expect(JSON.parse(r.stdout)).toMatchObject({ decision: 'block' });
@@ -119,7 +119,7 @@ describe('the hooks the installer registers for Claude Code', () => {
   });
 
   it('and lets it through once one is (so the block above came from the check, not a broken hook)', async () => {
-    items = [{ id: 'i-1', status: 'IN_PROGRESS' }];
+    items = [{ id: 'i-1', projectId: 'p-1', status: 'IN_PROGRESS' }];
     const r = await runHook(commands['agenfk-gatekeeper'], { tool_name: 'Edit', tool_input: { file_path: path.join(project, 'src', 'a.ts') } });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).not.toMatch(/"decision"\s*:\s*"block"/);

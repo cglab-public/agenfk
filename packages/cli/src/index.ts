@@ -1844,25 +1844,38 @@ function findProjectId(startDir: string): string | null {
 }
 
 /**
+ * Why `dir` cannot be used as a project on this machine, or null when it can (or
+ * lies in no project at all): a linked worktree of a checkout not linked here, or
+ * a project whose local.json names no id. Shared by requireCwdProject and
+ * `agenfk gatekeeper`, so the two refuse in the same words.
+ */
+function unlinkedProjectMessage(found: ReturnType<typeof cwdProject>, dir: string): string | null {
+  if (found?.projectId) return null;
+  const worktree = linkedWorktreeOf(dir);
+  if (worktree) {
+    // Never `init` here: it would write local.json (and maybe .gitignore) into a card's tree.
+    return `this is a git worktree of ${worktree.main}, which is not linked to an AgEnFK project on this machine. Link the main checkout (cd ${inMainCheckout(worktree, dir)} && agenfk init --project <id>), or pass --project <id> where the command takes one.`;
+  }
+  if (found) {
+    return `${found.root} is an AgEnFK project not linked on this machine: its .agenfk/local.json is missing or names no projectId. Link it with agenfk init --project <id> (agenfk list-projects lists them), or create a project with agenfk init <name>.`;
+  }
+  return null;
+}
+
+/**
  * The current project, or null after saying why on stderr and exiting 1: for
  * commands that cannot run without one.
  */
 function requireCwdProject(): { projectId: string; root: string } | null {
   const found = cwdProject(process.cwd());
-  const worktree = !found?.projectId ? linkedWorktreeOf(process.cwd()) : null;
-  if (worktree) {
-    // Never `init` here: it would write local.json (and maybe .gitignore) into a card's tree.
-    console.error(chalk.red(`Error: this is a git worktree of ${worktree.main}, which is not linked to an AgEnFK project on this machine. Link the main checkout (cd ${inMainCheckout(worktree, process.cwd())} && agenfk init --project <id>), or pass --project <id> where the command takes one.`));
+  const unlinked = unlinkedProjectMessage(found, process.cwd());
+  if (unlinked) {
+    console.error(chalk.red(`Error: ${unlinked}`));
     process.exit(1);
     return null;
   }
-  if (!found) {
+  if (!found?.projectId) {
     console.error(chalk.red('Error: No AgEnFK project found. No .agenfk/local.json or .agenfk/project.json exists in this directory or any parent — run agenfk init to initialize one, or cd into an initialized project.'));
-    process.exit(1);
-    return null;
-  }
-  if (!found.projectId) {
-    console.error(chalk.red(`Error: ${found.root} is an AgEnFK project not linked on this machine: its .agenfk/local.json is missing or names no projectId. Link it with agenfk init --project <id> (agenfk list-projects lists them), or create a project with agenfk init <name>.`));
     process.exit(1);
     return null;
   }
@@ -4285,8 +4298,20 @@ program
   .option('--session <id>', 'Harness session id to key the active-work note on (defaults to AGENFK_SESSION_ID, then CLAUDE_CODE_SESSION_ID, then AGENFK_PI_SESSION_ID)')
   .action(async (options) => {
     try {
+      const here = cwdProject(process.cwd());
+      if (here && !here.projectId) {
+        const msg = `❌ WORKFLOW BREACH: ${unlinkedProjectMessage(here, process.cwd())}`;
+        if (options.json) {
+          console.log(JSON.stringify({ authorized: false, notLinked: true, message: msg, task: null }));
+        } else {
+          console.log(chalk.red(msg));
+        }
+        process.exit(1);
+        return;
+      }
+
       const { data: items } = await axios.get(`${API_URL}/items`);
-      const projectId = findProjectId(process.cwd());
+      const projectId = here?.projectId ?? null;
       const projectItems = projectId ? items.filter((i: any) => i.projectId === projectId) : items;
 
       // Cross-project diagnostic: if an explicit --item-id resolves ONLY to an
