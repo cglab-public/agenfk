@@ -64,6 +64,8 @@ describe('the bundled Airlock exec helper', () => {
     expect(fs.existsSync(path.join(built, 'dist', 'agenfk-airlock-exec.mjs'))).toBe(true);
     // startEgressHelper runs egressMain.js from the helper's own directory.
     expect(fs.existsSync(path.join(built, 'dist', 'egressMain.js'))).toBe(true);
+    // The machine's resolver, whose source the runtime writes into the guest (CGLAB-696 task 8).
+    expect(fs.existsSync(path.join(built, 'dist', 'guestDns.js'))).toBe(true);
     // electron-builder leaves node_modules out of a resource: nothing may depend on one
     expect(fs.existsSync(path.join(built, 'node_modules'))).toBe(false);
     // The Sandbox Runtime is gone, its vendored helpers with it.
@@ -106,7 +108,7 @@ describe('the bundled Airlock exec helper', () => {
   });
 
   it('carries everything it needs instead of requiring it', () => {
-    for (const file of ['agenfk-airlock-exec.mjs', 'egressMain.js']) {
+    for (const file of ['agenfk-airlock-exec.mjs', 'egressMain.js', 'guestDns.js']) {
       const source = fs.readFileSync(path.join(built, 'dist', file), 'utf8');
       for (const dep of ['commander', 'axios', 'chalk', '@agenfk/core', 'zod', 'node-forge']) {
         expect(source.includes(`require("${dep}")`) || source.includes(`from "${dep}"`), `${file}: ${dep}`).toBe(false);

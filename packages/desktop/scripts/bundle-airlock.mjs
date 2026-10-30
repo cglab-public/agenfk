@@ -13,7 +13,8 @@
  *    resource whatever the filter says - measured). The CLI code is CommonJS;
  *    the banner gives it require, __dirname and __filename in the module.
  *  - dist/egressMain.js: the egress decider a machine is started with, which the
- *    helper spawns from its own directory (startEgressHelper).
+ *    helper spawns from its own directory (startEgressHelper); and dist/guestDns.js,
+ *    the machine's resolver, whose source the runtime writes into the guest.
  * And build/airlock-smolvm/<os>-<arch>: the pinned smolvm release for each
  * architecture packaged for this OS, checked against the sha256 the CLI records
  * (smolvmInstall.ts); electron-builder puts the artifact's own beside the helper
@@ -35,13 +36,14 @@ const require = createRequire(import.meta.url);
 
 const entry = path.join(repoRoot, 'packages/cli/dist/airlock/execMain.js');
 const egressEntry = path.join(repoRoot, 'packages/cli/dist/airlock/egressMain.js');
+const guestDnsEntry = path.join(repoRoot, 'packages/cli/dist/airlock/guestDns.js');
 const outdir = path.join(desktopDir, 'build/airlock');
 const outfile = path.join(outdir, 'dist', 'agenfk-airlock-exec.mjs');
 // Downloads are kept between runs (verified again every time): the release is ~40 MB.
 const cacheDir = path.join(desktopDir, 'build/airlock-cache');
 const smolvmOut = path.join(desktopDir, 'build/airlock-smolvm');
 
-for (const f of [entry, egressEntry]) {
+for (const f of [entry, egressEntry, guestDnsEntry]) {
   if (!fs.existsSync(f)) {
     console.error(`[bundle-airlock] ${f} not found - run \`npm run build\` at the repo root first.`);
     process.exit(1);
@@ -86,6 +88,8 @@ const result = await build({
 });
 // CommonJS, as the CLI builds it: it runs itself when it is the main module.
 const egress = await build({ ...common, entryPoints: [egressEntry], outfile: path.join(outdir, 'dist', 'egressMain.js'), format: 'cjs' });
+// The machine's resolver: the runtime writes its source into the guest, and the guest runs it alone.
+await build({ ...common, entryPoints: [guestDnsEntry], outfile: path.join(outdir, 'dist', 'guestDns.js'), format: 'cjs' });
 
 // The pinned smolvm, one directory per architecture electron-builder packages for this OS
 // (build/airlock-smolvm/${os}-${arch}, picked per artifact by electron-builder.config.cjs).

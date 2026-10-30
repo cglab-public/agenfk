@@ -787,6 +787,78 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
   return lines.join('\n');
 }
 
+/** Where the machine's resolver answers (guestDns.ts): the guest's resolv.conf names it. */
+export const DNS_RESOLVER_ADDRESS = '127.0.0.53';
+/** What the DNS setup prints, with what is missing, when the image cannot run the resolver. */
+export const DNS_UNPROTECTED_MARK = 'AGENFK_DNS_UNPROTECTED';
+/** The resolver's own user, once it has bound: never the session's (whose uid is the host user's). */
+const DNS_UID = 997;
+const DNS_UID_ALT = 996;
+/**
+ * The privileged source port the resolver asks smolvm's resolver from, bound while it is root: the
+ * guest firewall lets port-53 traffic out from it alone (the guest kernel has no owner match).
+ */
+const DNS_UPSTREAM_SOURCE_PORT = 54;
+const GUEST_DNS = `${GUEST_RUN}/dns`;
+
+/** The deny entries the resolver applies: names only - addresses and ranges are the decider's. */
+export function resolverDenyOf(network: SandboxSpec['network']): string[] {
+  return network.deny.filter((d) => d.trim() === '*' || (!net.isIP(d.replace(/^\[|\]$/g, '')) && !d.includes('/')));
+}
+
+/**
+ * The root script that runs the machine's resolver (CGLAB-696 task 8): it records smolvm's
+ * resolver, starts ours as its own user (bound, then dropped), and only then redirects every
+ * port-53 question the machine sends - to whichever server - to it, the resolver's own (from its
+ * privileged source port) excepted, refusing what the redirect does not take and all DNS over
+ * IPv6. smolvm supplies resolv.conf to each exec, so repointing it would not hold; the redirect
+ * holds whatever resolver is asked. An image without node, iptables, ip6tables or setsid gets
+ * none of it: the script prints DNS_UNPROTECTED_MARK with what is missing, and the runtime refuses
+ * (enforce) or warns. Idempotent: rules are added once, a running resolver is kept.
+ */
+export function guestDnsScript(network: SandboxSpec['network'], resolverSource: string, sessionUid: number): string {
+  // The session could signal a resolver running under its own uid (review 01a18ddc).
+  const uid = sessionUid === DNS_UID ? DNS_UID_ALT : DNS_UID;
+  const config = JSON.stringify({
+    host: DNS_RESOLVER_ADDRESS, port: 53, upstream: { host: '__UPSTREAM__', port: 53 }, upstreamSourcePort: DNS_UPSTREAM_SOURCE_PORT,
+    deny: resolverDenyOf(network), uid, gid: uid,
+  });
+  return [
+    'set -e',
+    'missing=""',
+    'for t in node iptables ip6tables setsid; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done',
+    `if [ -n "$missing" ]; then echo "${DNS_UNPROTECTED_MARK}$missing"; exit 0; fi`,
+    `mkdir -p ${GUEST_DNS} && chmod 755 ${GUEST_DNS}`,
+    `getent group ${uid} >/dev/null || echo 'agenfk-dns:x:${uid}:' >> /etc/group`,
+    `getent passwd ${uid} >/dev/null || echo 'agenfk-dns:x:${uid}:${uid}:AgEnFK resolver:/:/usr/sbin/nologin' >> /etc/passwd`,
+    // smolvm's resolver, as resolv.conf names it to the guest: where allowed questions go.
+    `if [ ! -s ${GUEST_DNS}/upstream ]; then up=$(awk '$1 == "nameserver" { print $2; exit }' /etc/resolv.conf); `
+      + `case "$up" in ""|${DNS_RESOLVER_ADDRESS}) echo "no resolver of smolvm's in /etc/resolv.conf" >&2; exit 1;; esac; echo "$up" > ${GUEST_DNS}/upstream; fi`,
+    'up=$(cat ' + `${GUEST_DNS}/upstream)`,
+    `printf '%s' ${quote(resolverSource)} > ${GUEST_DNS}/resolver.js`,
+    `printf '%s' ${quote(config)} | sed "s/__UPSTREAM__/$up/" > ${GUEST_DNS}/config.json`,
+    `chmod 444 ${GUEST_DNS}/resolver.js ${GUEST_DNS}/config.json ${GUEST_DNS}/upstream`,
+    // Running already (another session's): kept. A pid file, not pgrep -f, which would find this script.
+    `if ! { [ -s ${GUEST_DNS}/pid ] && kill -0 "$(cat ${GUEST_DNS}/pid)" 2>/dev/null; }; then `
+      + `setsid node ${GUEST_DNS}/resolver.js ${GUEST_DNS}/config.json > ${GUEST_DNS}/log 2>&1 < /dev/null & echo $! > ${GUEST_DNS}/pid; `
+      + `i=0; until grep -q ready ${GUEST_DNS}/log 2>/dev/null; do i=$((i+1)); [ $i -lt 100 ] || { echo "the resolver did not start: $(tail -c 300 ${GUEST_DNS}/log)" >&2; exit 1; }; sleep 0.1; done; fi`,
+    'rule() { t="$1"; tb="$2"; shift 2; "$t" -t "$tb" -C OUTPUT "$@" 2>/dev/null || "$t" -t "$tb" -A OUTPUT "$@"; }',
+    // Only root binds below it: the resolver's source port stays the resolver's.
+    'echo 1024 > /proc/sys/net/ipv4/ip_unprivileged_port_start',
+    // Every DNS question the machine sends, to whichever resolver, is the machine resolver's (smolvm
+    // supplies resolv.conf to each exec, so pointing it here would not hold); its own go on.
+    `rule iptables nat -p udp --dport 53 ! -d ${DNS_RESOLVER_ADDRESS} -m udp ! --sport ${DNS_UPSTREAM_SOURCE_PORT} -j DNAT --to-destination ${DNS_RESOLVER_ADDRESS}:53`,
+    `rule iptables nat -p tcp --dport 53 ! -d ${DNS_RESOLVER_ADDRESS} -j DNAT --to-destination ${DNS_RESOLVER_ADDRESS}:53`,
+    // And nothing else leaves on port 53: what the redirect does not take is refused.
+    `rule iptables filter -p udp --sport ${DNS_UPSTREAM_SOURCE_PORT} --dport 53 -j ACCEPT`,
+    'for p in udp tcp; do',
+    `  rule iptables filter -p "$p" --dport 53 -d ${DNS_RESOLVER_ADDRESS} -j ACCEPT`,
+    '  rule iptables filter -p "$p" --dport 53 -j REJECT',
+    '  rule ip6tables filter -p "$p" --dport 53 -j REJECT',
+    'done',
+  ].join('\n');
+}
+
 /**
  * A machine in use keeps the platform binds the launch that started it made, and gets no new
  * ones: the session in it could swap a platform dir, or a directory above it, for a link between
@@ -831,6 +903,17 @@ export const COMMAND_IN_NAMESPACE = [
  */
 export const WATCHDOG = 'cat >/dev/null; exec "$@"';
 
+/**
+ * The compiled resolver beside this file (dist/airlock/guestDns.js; the desktop bundle carries it
+ * beside its helper), or - run from the source tree, as the tests do - the build's.
+ */
+function defaultResolverSource(): string {
+  for (const f of [path.join(__dirname, 'guestDns.js'), path.resolve(__dirname, '..', '..', 'dist', 'airlock', 'guestDns.js')]) {
+    try { return fs.readFileSync(f, 'utf8'); } catch { /* next */ }
+  }
+  throw new Error('Airlock cannot find its machine resolver (guestDns.js): run `npm run build`. Nothing was launched.');
+}
+
 /** Starts WATCHDOG over `args`, detached, its stdin held by this process; stop() ends it. */
 function startWatchdog(args: string[]): { stop(): void } {
   const child = nodeSpawn('/bin/sh', ['-c', WATCHDOG, 'sh', ...args], { detached: true, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
@@ -864,6 +947,8 @@ interface SmolvmRuntimeDeps {
   readGitConfig?: GitConfigReader;
   startInjector?: (o: KeyInjectorOptions) => Promise<KeyInjector>;
   startWatchdog?: (args: string[]) => { stop(): void };
+  /** The machine resolver's source (guestDns.js), written into the guest. */
+  resolverSource?: () => string;
 }
 
 function runCli(file: string): SmolvmRun {
@@ -943,6 +1028,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       readGitConfig: deps.readGitConfig ?? readGitConfig,
       startInjector: deps.startInjector ?? startKeyInjector,
       startWatchdog: deps.startWatchdog ?? startWatchdog,
+      resolverSource: deps.resolverSource ?? defaultResolverSource,
       warn: deps.warn ?? (() => undefined),
       image: deps.image,
       egress: deps.egress,
@@ -1277,6 +1363,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       this.ensurePlaceholders(name, plan.placeholders);
       if (!joining) {
         await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid, ca.certPem, this.homeOf(spec))], 'protect the session\'s files in the machine');
+        await this.startResolver(name, workspace, spec);
       }
       // Not under a session already in the machine: its dependencies would change beneath it.
       if (!shared && plan.platform.length) await this.installPlatform(name, workspace, spec, plan.platformIncomplete);
@@ -1286,6 +1373,20 @@ export class SmolvmRuntime implements AirlockRuntime {
         : undefined;
       return { plan, ca, placeholders, commandSetup };
     });
+  }
+
+  /**
+   * The machine's resolver and the firewall around it (guestDnsScript). An image that cannot run
+   * them leaves DNS lookups of denied names leaving the machine: enforce refuses, observe warns.
+   */
+  private async startResolver(name: string, workspace: string, spec: SandboxSpec): Promise<void> {
+    const r = await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestDnsScript(spec.network, this.d.resolverSource(), this.d.uid)], 'start the machine\'s resolver');
+    const mark = r.stdout.split('\n').find((l) => l.startsWith(DNS_UNPROTECTED_MARK));
+    if (!mark) return;
+    const missing = mark.slice(DNS_UNPROTECTED_MARK.length).trim();
+    const why = `DNS lookups of denied names cannot be refused in the machine for ${workspace}, whose image has no ${missing}: they would leave the machine`;
+    if (spec.network.mode !== 'observe') throw new Error(`Airlock cannot enforce here: ${why}. Use an image with them (the AgEnFK base image has them). Nothing was launched.`);
+    this.d.warn(`Airlock: ${why}.`);
   }
 
   /** The session's HOME in the guest: the host user's path. */

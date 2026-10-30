@@ -737,8 +737,10 @@ describe('HelperEgressBroker: one decider per running machine, outliving the ses
 
 // The real smolvm and the real decider process (the built egressMain.js), where they can run.
 const smolvmHere = smolvmTestsEnabled();
+/** The AgEnFK base image (docker save), which enforce needs since CGLAB-696 task 8: node and iptables for the machine's resolver. */
+const baseImage = process.env.AGENFK_AIRLOCK_TEST_IMAGE;
 
-describe.skipIf(!smolvmHere)('egress against the real smolvm (AGENFK_SMOLVM_TESTS=1, after npm run build)', () => {
+describe.skipIf(!smolvmHere || !baseImage)('egress against the real smolvm (AGENFK_SMOLVM_TESTS=1, AGENFK_AIRLOCK_TEST_IMAGE, after npm run build)', () => {
   it('enforce: an allowed name works, an unlisted name does not resolve, an address is dropped, and each is reported', async () => {
     const { SmolvmRuntime } = await import('../airlock/smolvm');
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-egress-vm-')));
@@ -751,7 +753,7 @@ describe.skipIf(!smolvmHere)('egress against the real smolvm (AGENFK_SMOLVM_TEST
     process.env.HOME = os.userInfo().homedir;
     const stateDir = path.join(root, 'state');
     const broker = realBroker(stateDir);
-    const rt = new SmolvmRuntime({ image: 'alpine', egress: broker, stateDir, isTTY: false, hostEnv: {} });
+    const rt = new SmolvmRuntime({ image: baseImage!, egress: broker, stateDir, isTTY: false, hostEnv: {} });
     const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['nextjs.org'] } }), {
       client: 'pi', home, workspace, tempDirs: [], inferenceHosts: ['api.openai.com'], serverPort: 3123, installDirs: [],
     });
@@ -759,9 +761,9 @@ describe.skipIf(!smolvmHere)('egress against the real smolvm (AGENFK_SMOLVM_TEST
     try {
       const out = path.join(workspace, 'probe.out');
       const probe = [
-        'wget -q -T 15 -O /dev/null https://nextjs.org && echo allowed-ok || echo allowed-failed',
-        'nslookup github.com >/dev/null 2>&1 && echo unlisted-resolved || echo unlisted-refused',
-        'nc -w 5 -z 1.1.1.1 443 && echo literal-open || echo literal-refused',
+        'curl -s -o /dev/null --max-time 15 https://nextjs.org && echo allowed-ok || echo allowed-failed',
+        'getent hosts github.com >/dev/null 2>&1 && echo unlisted-resolved || echo unlisted-refused',
+        'curl -sk -o /dev/null --max-time 10 https://1.1.1.1/ && echo literal-open || echo literal-refused',
       ].join('; ');
       const launched = await rt.launch(spec, { file: 'sh', args: ['-c', `(${probe}) > ${out} 2>&1`], cwd: workspace }, { onProxyDecision: (d) => seen.push(d) });
       expect((await launched.exited).code).toBe(0);

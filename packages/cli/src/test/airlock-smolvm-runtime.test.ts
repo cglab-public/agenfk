@@ -34,6 +34,10 @@ import {
   GUEST_PLATFORM_ROOT,
   COMMAND_IN_NAMESPACE,
   WATCHDOG,
+  DNS_RESOLVER_ADDRESS,
+  DNS_UNPROTECTED_MARK,
+  resolverDenyOf,
+  guestDnsScript,
   type EgressBroker,
   type SmolvmResult,
 } from '../airlock/smolvm';
@@ -51,7 +55,7 @@ const flag = (args: string[], ...names: string[]): string | undefined => {
 };
 
 /** The smolvm CLI, as far as the runtime uses it: machines, mounts, exec, version. */
-function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string; startFails?: string; missing?: boolean; stopTakesMs?: number; stopFails?: string; execFails?: (args: string[]) => string | null } = {}) {
+function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string; startFails?: string; missing?: boolean; stopTakesMs?: number; stopFails?: string; execFails?: (args: string[]) => string | null; execStdout?: (args: string[]) => string } = {}) {
   const machines = new Map<string, Machine>(Object.entries(init.machines ?? {}));
   const mounts = new Map<string, Array<{ source: string; target: string; readOnly: boolean }>>();
   const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
@@ -107,7 +111,7 @@ function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string
         return fail('unknown mount verb');
       case 'exec': {
         const failed = init.execFails?.(args);
-        return failed ? fail(failed) : ok();
+        return failed ? fail(failed) : ok(init.execStdout?.(args) ?? '');
       }
       case 'update':
         if (!m) return fail('vm not found');
@@ -778,6 +782,54 @@ describe.skipIf(process.platform === 'win32')('guestPlanOf: a linked git worktre
   });
 });
 
+/**
+ * CGLAB-696 task 8: the machine's resolver (guestDns.ts) and the guest firewall that keeps the
+ * session on it, set up by root before the session. An image without what they need (iptables,
+ * node) cannot have them: enforce refuses, observe warns.
+ */
+describe('the machine\'s resolver (CGLAB-696 task 8)', () => {
+  const rootScripts = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.execs().filter((a) => flag(a, '-u') === 'root').map((a) => a[a.length - 1]);
+
+  it('is set up by root, with the policy\'s denied names, before the session starts', async () => {
+    const { rt, smolvm, sp } = runtime();
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'observe', hosts: { allow: [], deny: ['evil.example'] } }), session());
+    await rt.launch(spec, cmd());
+    const setup = rootScripts(smolvm).join('\n');
+    expect(setup).toContain(DNS_RESOLVER_ADDRESS);
+    expect(setup).toContain('evil.example');
+    const at = smolvm.run.mock.invocationCallOrder[smolvm.calls.findIndex((c) => c.args[1] === 'exec' && c.args.join(' ').includes(DNS_RESOLVER_ADDRESS))];
+    expect(at).toBeLessThan(sp.spawn.mock.invocationCallOrder[0]);
+  });
+
+  it('enforce: an image that cannot run it refuses the launch, saying why; nothing runs', async () => {
+    const smolvm = fakeSmolvm({ execStdout: (a) => (a.join(' ').includes(DNS_RESOLVER_ADDRESS) ? `${DNS_UNPROTECTED_MARK} iptables\n` : '') });
+    const { rt, sp } = runtime({ smolvm });
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(/DNS.*iptables/s);
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('observe: it warns, and the session runs', async () => {
+    const warnings: string[] = [];
+    const smolvm = fakeSmolvm({ execStdout: (a) => (a.join(' ').includes(DNS_RESOLVER_ADDRESS) ? `${DNS_UNPROTECTED_MARK} node\n` : '') });
+    const { rt, sp } = runtime({ smolvm, warn: (m: string) => warnings.push(m) });
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'observe' }), session());
+    await rt.launch(spec, cmd());
+    expect(sp.spawn).toHaveBeenCalled();
+    expect(warnings.join('\n')).toMatch(/DNS.*node/s);
+  });
+
+  it('runs as a user the session is not: another uid when the host user\'s is the usual one (review 01a18ddc)', () => {
+    const net = { allow: [], deny: [], denyResolved: [], mode: 'enforce' as const };
+    expect(guestDnsScript(net, '', 503)).toContain('"uid":997');
+    expect(guestDnsScript(net, '', 997)).not.toContain('"uid":997');
+    expect(guestDnsScript(net, '', 997)).toContain('"uid":996');
+  });
+
+  it('only names go to it: addresses and ranges are the decider\'s', () => {
+    expect(resolverDenyOf({ allow: [], deny: ['evil.example', '*.ioc.test', '10.0.0.1', '*'], denyResolved: ['10.0.0.0/8'], mode: 'enforce' })).toEqual(['evil.example', '*.ioc.test', '*']);
+  });
+});
+
 describe('guestPlanOf: what the session cannot move aside or plant', () => {
   it('pins the workspace .git, so it cannot be renamed and replaced around its read-only hooks and config', () => {
     const p = guestPlanOf(specOf(), workspace);
@@ -1152,7 +1204,8 @@ describe('placeholders are taken back only as they were made', () => {
     for (const f of fs.readdirSync(sessions)) fs.writeFileSync(path.join(sessions, f), JSON.stringify({ pid: 999999 }));
     const next = runtime({ smolvm });
     const launched = await next.rt.launch(specOf(), cmd());
-    const setup = smolvm.calls.filter((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root').at(-1)!.args.at(-1) as string;
+    // The protections' setup: the root script before the resolver's (CGLAB-696 task 8).
+    const setup = smolvm.calls.filter((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root' && !c.args.join(' ').includes(DNS_RESOLVER_ADDRESS)).at(-1)!.args.at(-1) as string;
     expect(setup).toContain(`ro '${commondir}'`);
     expect(fs.readFileSync(commondir, 'utf8')).toBe('.\n');
     next.sp.children[0].finish(0);
@@ -2451,7 +2504,62 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('a linked git worktree in a re
   }, 600_000);
 });
 
-describe.skipIf(!smolvmHere)('SmolvmRuntime against the real smolvm (AGENFK_SMOLVM_TESTS=1)', () => {
+describe.skipIf(!smolvmHere || !baseImageArchive)('the machine\'s resolver in a real machine (CGLAB-696 task 8)', () => {
+  const inMachine = async (policy: Parameters<typeof normalizeAirlockPolicy>[0], probe: string) => {
+    const icpt = await allowAllInterceptor();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address: icpt.address, token: icpt.token }), watch: () => () => undefined, stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'), addRoute: () => () => undefined,
+    };
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: {} });
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      const out = path.join(workspace, `dns-${Date.now()}.out`);
+      const spec = buildSandboxSpec(normalizeAirlockPolicy(policy), session({ inferenceHosts: [] }));
+      const launched = await rt.launch(spec, { file: 'sh', args: ['-c', `(${probe}; true) > ${out} 2>&1`], cwd: workspace });
+      expect((await launched.exited).code).toBe(0);
+      return fs.readFileSync(out, 'utf8');
+    } finally {
+      await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      icpt.close();
+      process.env.HOME = sandboxHome;
+    }
+  };
+  /** A raw DNS question to `server` (python3 in the image): `rcode <n>` of the answer, or `silent`. */
+  const raw = (server: string, name: string) => `python3 -c 'import socket,sys
+q=bytes([0x12,0x34,1,0,0,1,0,0,0,0,0,0])+b"".join(bytes([len(l)])+l.encode() for l in sys.argv[2].split("."))+bytes([0,0,1,0,1])
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(3)
+try:
+  s.sendto(q,(sys.argv[1],53));print("rcode",s.recv(512)[3]&15)
+except Exception: print("silent")' ${server} ${name}`;
+
+  it('observe: a denied name does not resolve, whichever resolver is asked; an allowed one resolves; the session cannot stop it', async () => {
+    const out = await inMachine({ mode: 'observe', hosts: { allow: [], deny: ['example.org'] } }, [
+      'getent hosts example.org >/dev/null && echo denied-resolved',
+      'getent hosts nextjs.org >/dev/null || echo allowed-failed',
+      // Every port-53 question is the machine's resolver's, wherever it was sent.
+      `echo "smolvm's $(${raw("$(cat /run/agenfk/dns/upstream)", 'example.org')})"`,
+      `echo "another $(${raw('1.1.1.1', 'example.org')})"`,
+      `echo "allowed $(${raw("$(cat /run/agenfk/dns/upstream)", 'nextjs.org')})"`,
+      // The resolver runs as its own user (997): the session's kill is refused. (Not pkill -f: it would match this very probe.)
+      'kill $(pgrep -u 997) 2>/dev/null && echo resolver-killable',
+      '{ echo 2000 > /proc/sys/net/ipv4/ip_unprivileged_port_start; } 2>/dev/null && echo port-threshold-writable',
+    ].join('; '));
+    expect(out.split('\n').filter(Boolean)).toEqual(["smolvm's rcode 3", 'another rcode 3', 'allowed rcode 0']);
+  }, 600_000);
+
+  it('enforce: a denied name under an allowed wildcard does not resolve; its allowed siblings do', async () => {
+    const out = await inMachine({ mode: 'enforce', hosts: { allow: ['*.github.com'], deny: ['gist.github.com'] } }, [
+      'getent hosts gist.github.com >/dev/null && echo denied-resolved',
+      'getent hosts api.github.com >/dev/null || echo allowed-failed',
+    ].join('; '));
+    expect(out).toBe('');
+  }, 600_000);
+});
+
+describe.skipIf(!smolvmHere || !baseImageArchive)('SmolvmRuntime against the real smolvm (AGENFK_SMOLVM_TESTS=1, AGENFK_AIRLOCK_TEST_IMAGE)', () => {
   it('runs a command in the workspace machine: exit code, writes, protections, hidden files', async () => {
     fs.mkdirSync(path.join(workspace, '.claude', 'commands', 'tool', '.agenfk'), { recursive: true });
     fs.mkdirSync(path.join(workspace, 'scripts'));
@@ -2465,7 +2573,8 @@ describe.skipIf(!smolvmHere)('SmolvmRuntime against the real smolvm (AGENFK_SMOL
       routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'),
       addRoute: () => () => undefined,
     };
-    const rt = new SmolvmRuntime({ image: 'alpine', egress, stateDir, isTTY: false, hostEnv: {} });
+    // The AgEnFK base image: enforce needs node and iptables in it since CGLAB-696 task 8 (the machine's resolver).
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: {} });
     // smolvm keeps its sockets under HOME, and a vitest worker's sandbox HOME is past the 103-byte socket path limit.
     const sandboxHome = process.env.HOME;
     process.env.HOME = os.userInfo().homedir;

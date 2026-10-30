@@ -44,7 +44,7 @@ RUN apt-get update \
       ca-certificates curl git openssh-client \
       postgresql-client default-mysql-client redis-tools \
       python3 python3-venv python3-pip \
-      procps util-linux mount \
+      procps util-linux mount iptables \
  && rm -rf /var/lib/apt/lists/*
 
 # pnpm and yarn through corepack, fetched now into a shared home: the session's
