@@ -186,7 +186,9 @@ export function defaultLaunchDeps(): LaunchDeps {
     // The installed copy, and the package this CLI runs from (dist/commands -> package root).
     installDirs: [...new Set([path.join(home, '.agenfk-system'), realpath(path.resolve(__dirname, '..', '..'))])],
     // The package this CLI runs from (dist/commands -> package root): its version tags the base image.
-    agenfkVersion: () => JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8')).version,
+    // The desktop app's bundled exec helper has none: its bundler sets the version.
+    agenfkVersion: () => (typeof __AGENFK_VERSION__ === 'string' ? __AGENFK_VERSION__
+      : JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8')).version),
     log: (m) => console.error(chalk.gray(m)),
     warn: (m) => console.error(chalk.yellow(m)),
     listDir: (dir) => {
@@ -213,6 +215,9 @@ export function defaultLaunchDeps(): LaunchDeps {
   };
 }
 
+/** Set by the desktop app's bundler (packages/desktop/scripts/bundle-airlock.mjs); undeclared elsewhere. */
+declare const __AGENFK_VERSION__: string | undefined;
+
 type Launch = (client: 'pi' | 'opencode', args: string[], opts: LaunchOptions) => Promise<number>;
 type Exec = (command: string, opts: { cwd: string; processGroup: boolean; projectId?: string }) => Promise<number>;
 
@@ -235,7 +240,9 @@ export function defaultExecDeps(apiUrl: string, get: (url: string, opts: object)
     runtime: l.runtime, home: l.home, tmpDir: l.tmpDir, installDirs: l.installDirs,
     runtimePackageDir: l.runtimePackageDir, directServerPort, listDir: l.listDir, realpath: l.realpath,
     isDirectory: l.isDirectory, exists: l.exists, platform: l.platform, ensurePrivateDir: l.ensurePrivateDir,
-    onSignal: l.onSignal, error: (m) => console.error(m),
+    onSignal: l.onSignal, error: (m) => console.error(m), agenfkVersion: l.agenfkVersion,
+    // Scoped by the exec command before the run (registerAirlockCommands).
+    env: process.env,
   };
 }
 

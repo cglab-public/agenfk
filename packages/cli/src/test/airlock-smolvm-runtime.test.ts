@@ -32,6 +32,8 @@ import {
   INSTALL_TIMEOUT,
   LOCK_TIMEOUT_MS,
   GUEST_PLATFORM_ROOT,
+  COMMAND_IN_NAMESPACE,
+  WATCHDOG,
   type EgressBroker,
   type SmolvmResult,
 } from '../airlock/smolvm';
@@ -208,6 +210,7 @@ function runtime({ smolvm: givenSmolvm, egress: givenEgress, ...over }: Record<s
   const smolvm = (givenSmolvm as ReturnType<typeof fakeSmolvm>) ?? fakeSmolvm();
   const egress = (givenEgress as ReturnType<typeof fakeEgress>) ?? fakeEgress();
   const sp = fakeSpawn();
+  const watchdog = { stopped: 0, start: vi.fn((_args: string[]) => ({ stop: () => { watchdog.stopped++; } })) };
   const rt = new SmolvmRuntime({
     image: IMAGE,
     smolvm: smolvm.run,
@@ -222,9 +225,10 @@ function runtime({ smolvm: givenSmolvm, egress: givenEgress, ...over }: Record<s
     isTTY: false,
     hostEnv: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8', OPENAI_API_KEY: 'sk-fake-not-real', PATH: '/host/bin' },
     pidAlive: (pid: number) => pid === process.pid,
+    startWatchdog: watchdog.start,
     ...over,
   });
-  return { rt, smolvm, egress, sp };
+  return { rt, smolvm, egress, sp, watchdog };
 }
 
 const cmd = () => ({ file: 'pi', args: ['--approve'], cwd: workspace });
@@ -1837,6 +1841,284 @@ describe('buildSandboxSpec, for a runtime that mounts', () => {
   });
 });
 
+/**
+ * CGLAB-696 task 5: a command the AgEnFK server runs (verify, the suite) runs in the workspace's
+ * machine - its image, its dependencies. Most often a pi session is in it: pi calls agenfk verify.
+ * The command joins it, in a mount namespace of its own made as root, which applies the command's
+ * protections and hides the session's other mounts (pi's state) at their paths, then becomes the
+ * host user. The machine's network is the one decider's: it stays what it is. ACCEPTED LIMIT (user
+ * decision 2026-10-30): not a boundary - through the session's /proc view the command reaches what
+ * the session does, its relay to the AgEnFK server included.
+ */
+describe('a command the server runs, in the workspace machine (CGLAB-696 task 5)', () => {
+  const commandSpec = (): SandboxSpec => buildSandboxSpec(
+    normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['registry.npmjs.org'] } }),
+    session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined, piStagedAgentDir: undefined }),
+  );
+  const npmTest = () => ({ file: '/bin/sh', args: ['-c', 'npm test'], cwd: workspace, processGroup: false });
+  const spawnArgs = (sp: ReturnType<typeof fakeSpawn>) => sp.spawn.mock.calls[0][1] as string[];
+  /** The script root runs in the command's namespace before it becomes the user. */
+  const nsSetup = (args: string[]) => args[args.indexOf(COMMAND_IN_NAMESPACE) + 1];
+  const inSession = () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name);
+    return { name, smolvm };
+  };
+
+  it('joins the machine a pi session is in, though its network, keys, mounts and protections differ', async () => {
+    const { smolvm } = inSession();
+    const { rt, sp, egress } = runtime({ smolvm });
+    await rt.launch(commandSpec(), npmTest());
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+    expect(smolvm.verbs()).not.toContain('start');
+    expect(smolvm.verbs()).not.toContain('update');
+    expect(smolvm.calls.filter((c) => c.args[1] === 'mount' && c.args[2] === 'add')).toEqual([]);
+    // No route of its own to the server or an injector. The session's stay, and the command can
+    // use them (accepted limit, user decision 2026-10-30): this checks only that it adds none.
+    expect(egress.addRoute).not.toHaveBeenCalled();
+  });
+
+  it('leaves what the session in the machine holds as it is: no setup across the whole machine', async () => {
+    const { name, smolvm } = inSession();
+    const protections = fs.readFileSync(path.join(stateDir, 'machines', name, 'protections.json'), 'utf8');
+    await runtime({ smolvm }).rt.launch(commandSpec(), npmTest());
+    expect(smolvm.execs().filter((a) => flag(a, '-u') === 'root')).toEqual([]);
+    expect(fs.readFileSync(path.join(stateDir, 'machines', name, 'protections.json'), 'utf8')).toBe(protections);
+  });
+
+  it('runs as root in a namespace of its own that hides the session\'s other mounts and applies the command\'s protections, then becomes the host user', async () => {
+    const { smolvm } = inSession();
+    const { rt, sp } = runtime({ smolvm });
+    await rt.launch(commandSpec(), npmTest());
+    const args = spawnArgs(sp);
+    expect(flag(args, '-u')).toBe('root');
+    expect(flag(args, '-w')).toBe(workspace);
+    expect(args).toContain(COMMAND_IN_NAMESPACE);
+    const setup = nsSetup(args);
+    // pi's state and its staged dir are the session's: hidden at their paths in the command's
+    // namespace (not a boundary: /proc/<pid>/root shows the session's view - accepted limit).
+    expect(setup).toContain(`hide_dir '${agentDir}'`);
+    expect(setup).toContain(`hide_dir '${stagedDir}'`);
+    // The command's own protections, inside the workspace.
+    expect(setup).toContain(`ro '${path.join(workspace, '.agenfk')}'`);
+    expect(setup).toContain(`ro '${path.join(workspace, '.git', 'hooks')}'`);
+    // Then the user, the session's pid file, and the command - as given.
+    const after = args.slice(args.indexOf(COMMAND_IN_NAMESPACE) + 2);
+    expect(after.slice(0, 2)).toEqual(['503', '20']);
+    expect(after[2]).toMatch(/^\/run\/agenfk\/sessions\/[0-9a-f]{16}\.pid$/);
+    expect(after.slice(3)).toEqual(['/bin/sh', '-c', 'npm test']);
+  });
+
+  it('a signal reaches the command through the same pid file, as the host user', async () => {
+    const { smolvm } = inSession();
+    const { rt, sp } = runtime({ smolvm });
+    const launched = await rt.launch(commandSpec(), npmTest());
+    const pidFile = spawnArgs(sp)[spawnArgs(sp).indexOf(COMMAND_IN_NAMESPACE) + 4];
+    expect(launched.kill('SIGTERM')).toBe(true);
+    await settle();
+    const kill = smolvm.execs().find((a) => a.join(' ').includes('kill -TERM'));
+    expect(flag(kill!, '-u')).toBe('503:20');
+    expect(kill).toContain(pidFile);
+  });
+
+  it('is refused when it needs a mount the machine does not hold: the session may not see it', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    // A session elsewhere holds only pi's state: the workspace would have to be mounted under it.
+    smolvm.mounts.set(name, [{ source: agentDir, target: agentDir, readOnly: false }]);
+    liveSession(name);
+    const { rt, sp } = runtime({ smolvm });
+    await expect(rt.launch(commandSpec(), npmTest())).rejects.toThrow(/Another session is in the Airlock machine.*mount/s);
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('is refused when the session holds a mount above the workspace: hiding it would hide the workspace', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, [...sameMounts(), { source: path.dirname(workspace), target: path.dirname(workspace), readOnly: false }]);
+    liveSession(name);
+    const { rt, sp } = runtime({ smolvm });
+    await expect(rt.launch(commandSpec(), npmTest())).rejects.toThrow(/nothing was launched/i);
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the machine running for the session when it ends, and the session\'s for it', async () => {
+    const { name, smolvm } = inSession();
+    const { rt, sp } = runtime({ smolvm });
+    const launched = await rt.launch(commandSpec(), npmTest());
+    sp.children[0].finish(0);
+    expect(await launched.exited).toEqual({ code: 0, signal: null });
+    expect(smolvm.verbs()).not.toContain('stop');
+    expect(smolvm.machines.get(name)!.state).toBe('running');
+  });
+
+  it('a client session still may not join a machine on other terms: only a command does', async () => {
+    const name = machineNameOf(workspace);
+    const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
+    smolvm.mounts.set(name, sameMounts());
+    liveSession(name, 'other', commandSpec().network);
+    await expect(runtime({ smolvm }).rt.launch(specOf(), cmd())).rejects.toThrow(/different network policy/);
+  });
+
+  it('alone, it starts the machine under the command\'s network, with no relay, and still runs in its own namespace', async () => {
+    const { rt, smolvm, sp, egress } = runtime();
+    const spec = commandSpec();
+    await rt.launch(spec, npmTest());
+    const update = smolvm.calls.find((c) => c.args[1] === 'update')!;
+    expect(update.args.slice(4)).toEqual(allowListArgs(spec.network));
+    expect(smolvm.verbs()).toContain('start');
+    expect(egress.addRoute).not.toHaveBeenCalled();
+    expect(spawnArgs(sp)).toContain(COMMAND_IN_NAMESPACE);
+    // Nothing of the session's to hide: nothing is mounted but the workspace.
+    expect(nsSetup(spawnArgs(sp))).not.toContain(agentDir);
+  });
+
+  it('gets the spec\'s env and HOME, never the host\'s PATH', async () => {
+    const { smolvm } = inSession();
+    const { rt, sp } = runtime({ smolvm });
+    const spec = commandSpec();
+    spec.env.CI = '1';
+    await rt.launch(spec, npmTest());
+    const env = spawnArgs(sp).flatMap((a, i, all) => (all[i - 1] === '-e' ? [a] : []));
+    expect(env).toEqual(expect.arrayContaining(['CI=1', `HOME=${home}`, 'TMPDIR=/tmp', 'AGENFK_AIRLOCK_SANDBOX=command']));
+    expect(env.some((e) => e.startsWith('PATH='))).toBe(false);
+  });
+});
+
+/**
+ * COMMAND_IN_NAMESPACE, run by a real sh with stand-ins for util-linux's unshare, setpriv and
+ * setsid that record how they were called and run what they are given.
+ */
+describe.skipIf(process.platform === 'win32')('COMMAND_IN_NAMESPACE, run by sh', () => {
+  let bin: string;
+  let log: string;
+  beforeEach(() => {
+    bin = path.join(root, 'bin');
+    log = path.join(root, 'calls.log');
+    fs.mkdirSync(bin);
+    // Each logs its arguments, drops its own options up to --, and runs the rest.
+    for (const tool of ['unshare', 'setpriv']) {
+      fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\necho "${tool} $*" >> ${JSON.stringify(log)}\nwhile [ "$1" != "--" ]; do shift; done; shift; exec "$@"\n`, { mode: 0o755 });
+    }
+    fs.writeFileSync(path.join(bin, 'setsid'), `#!/bin/sh\necho "setsid $*" >> ${JSON.stringify(log)}\nexec "$@"\n`, { mode: 0o755 });
+  });
+  const run = (setup: string, command: string[], pathDirs = [bin, '/usr/bin', '/bin']) => spawnSync('/bin/sh', [
+    '-c', COMMAND_IN_NAMESPACE, setup, '503', '20', path.join(root, 'cmd.pid'), ...command,
+  ], { encoding: 'utf8', cwd: root, env: { PATH: pathDirs.join(':') } });
+
+  it('applies the setup in a private mount namespace, becomes the user, and runs the command as a session leader with its exit code', () => {
+    const r = run('echo setup-ran > setup.out', ['sh', '-c', 'echo "$1" > ran.out; exit 4', 'sh', 'an arg']);
+    expect(r.status).toBe(4);
+    expect(fs.readFileSync(path.join(root, 'setup.out'), 'utf8')).toBe('setup-ran\n');
+    expect(fs.readFileSync(path.join(root, 'ran.out'), 'utf8')).toBe('an arg\n');
+    const calls = fs.readFileSync(log, 'utf8');
+    expect(calls).toMatch(/^unshare .*--mount.*--propagation private/m);
+    expect(calls).toMatch(/^setpriv .*--reuid=503 --regid=20 --clear-groups/m);
+    expect(calls).toMatch(/^setsid /m);
+    // The pid file holds the command's pid, for a signal to find.
+    expect(fs.readFileSync(path.join(root, 'cmd.pid'), 'utf8')).toMatch(/^\d+\n$/);
+  });
+
+  it('a setup that fails: the command never runs, 125 with the reason', () => {
+    const r = run('exit 3', ['sh', '-c', 'echo ran > ran.out']);
+    expect(r.status).toBe(125);
+    expect(r.stderr).toMatch(/could not apply the command's protections/);
+    expect(fs.existsSync(path.join(root, 'ran.out'))).toBe(false);
+    expect(fs.readFileSync(log, 'utf8')).not.toMatch(/^setpriv/m);
+  });
+
+  it('an image without util-linux\'s unshare, setpriv or setsid: the command never runs, 125 with the reason', () => {
+    for (const missing of ['unshare', 'setpriv', 'setsid']) {
+      fs.rmSync(log, { force: true });
+      const partial = path.join(root, `bin-no-${missing}`);
+      fs.mkdirSync(partial);
+      for (const t of ['unshare', 'setpriv', 'setsid'].filter((x) => x !== missing)) fs.copyFileSync(path.join(bin, t), path.join(partial, t));
+      for (const t of fs.readdirSync(partial)) fs.chmodSync(path.join(partial, t), 0o755);
+      // Only sh beside the stand-ins: a real util-linux in /bin or /usr/bin (Linux) must not stand in for the missing one.
+      fs.symlinkSync('/bin/sh', path.join(partial, 'sh'));
+      const r = run('echo setup-ran > setup.out', ['sh', '-c', 'echo ran > ran.out'], [partial]);
+      expect(r.status, missing).toBe(125);
+      expect(r.stderr, missing).toMatch(new RegExp(`${missing}.*util-linux|util-linux.*${missing}`));
+      expect(fs.existsSync(path.join(root, 'ran.out')), missing).toBe(false);
+      expect(fs.existsSync(path.join(root, 'setup.out')), missing).toBe(false);
+    }
+  });
+});
+
+/**
+ * Review 01a18ca1: the server kills a command's host process group with SIGKILL on a timeout, and
+ * a host-side `smolvm machine exec` that dies leaves its command running in the guest (measured).
+ * A watchdog of its own, outside that group, ends the guest command when the launcher is gone.
+ */
+describe('a launcher killed outright (review 01a18ca1)', () => {
+  it('starts a watchdog that, once this process is gone, kills the command\'s group in the guest through its pid file', async () => {
+    const { rt, sp, watchdog } = runtime();
+    await rt.launch(specOf(), cmd());
+    expect(watchdog.start).toHaveBeenCalledTimes(1);
+    const args = watchdog.start.mock.calls[0][0];
+    expect(args[1]).toBe('machine');
+    const pidFile = (sp.spawn.mock.calls[0][1] as string[]).find((a) => a.startsWith('/run/agenfk/sessions/'));
+    expect(args).toContain(pidFile);
+    expect(flag(args, '-u')).toBe('503:20');
+    expect(args.join(' ')).toMatch(/kill -KILL -\$pid/);
+  });
+
+  it('stops the watchdog only once the leftovers in the guest are killed: the launcher may die meanwhile', async () => {
+    const smolvm = fakeSmolvm();
+    const { rt, sp, watchdog } = runtime({ smolvm });
+    const launched = await rt.launch(specOf(), cmd());
+    let stoppedAtLeftovers: number | null = null;
+    smolvm.run.mockImplementation(((orig) => async (args: string[], opts?: { env?: NodeJS.ProcessEnv }) => {
+      if (args.join(' ').includes('kill -KILL')) stoppedAtLeftovers = watchdog.stopped;
+      return orig(args, opts);
+    })(smolvm.run.getMockImplementation()!) as any);
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(stoppedAtLeftovers).toBe(0);
+    expect(watchdog.stopped).toBe(1);
+  });
+
+  it('starts none when the launch fails before anything runs', async () => {
+    const { rt, watchdog } = runtime({ smolvm: fakeSmolvm({ startFails: 'no' }) });
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow();
+    expect(watchdog.start).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WATCHDOG, run by sh: it watches the launcher through its stdin, a pipe the launcher alone holds
+ * open - closed however the launcher ends, before any reaping, whatever pid comes next.
+ */
+describe.skipIf(process.platform === 'win32')('WATCHDOG, run by sh', () => {
+  it('waits while its stdin is open, and runs its command once it closes', async () => {
+    const { spawn } = await import('child_process');
+    const out = path.join(root, 'fired');
+    const dog = spawn('/bin/sh', ['-c', WATCHDOG, 'sh', '/bin/sh', '-c', `echo fired > ${out}`], { stdio: ['pipe', 'ignore', 'ignore'] });
+    await new Promise((r) => setTimeout(r, 800));
+    expect(fs.existsSync(out)).toBe(false);
+    dog.stdin!.end();
+    await new Promise((r) => dog.once('exit', r));
+    expect(fs.readFileSync(out, 'utf8')).toBe('fired\n');
+  }, 15_000);
+
+  it('fires when the Node process holding the pipe is SIGKILLed', async () => {
+    const { spawn } = await import('child_process');
+    const out = path.join(root, 'fired');
+    // A launcher stand-in: starts the watchdog as the runtime does (detached, stdin a pipe it holds), then waits.
+    const script = `const c = require('child_process').spawn('/bin/sh', ['-c', ${JSON.stringify(WATCHDOG)}, 'sh', '/bin/sh', '-c', 'echo fired > ' + ${JSON.stringify(out)}], { detached: true, stdio: ['pipe', 'ignore', 'ignore'] });`
+      + ' c.unref(); console.log("up"); setInterval(() => {}, 1000);';
+    const holder = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'ignore'] });
+    await new Promise((r) => holder.stdout!.once('data', r));
+    await new Promise((r) => setTimeout(r, 500));
+    expect(fs.existsSync(out)).toBe(false);
+    holder.kill('SIGKILL');
+    for (let i = 0; i < 50 && !fs.existsSync(out); i++) await new Promise((r) => setTimeout(r, 100));
+    expect(fs.readFileSync(out, 'utf8')).toBe('fired\n');
+  }, 15_000);
+});
+
 // The real smolvm, where it is installed and can run here (Apple Silicon, or Linux with KVM).
 const smolvmHere = (() => {
   if (process.env.AGENFK_SMOLVM_TESTS !== '1') return false;
@@ -1922,6 +2204,49 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('the AgEnFK base image in a re
       expect(warnings).toEqual([]);
       expect(fs.readFileSync(out, 'utf8')).toBe('');
       expect(fs.readdirSync(path.join(workspace, 'node_modules'))).toEqual(['dep', 'host-only']);
+    } finally {
+      await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      icpt.close();
+      process.env.HOME = sandboxHome;
+    }
+  }, 600_000);
+
+  it('runs a command the server gives beside a session in the machine: the workspace, pi\'s state hidden at its path, and its exit code', async () => {
+    const icpt = await allowAllInterceptor();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address: icpt.address, token: icpt.token }),
+      watch: () => () => undefined,
+      stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'),
+      addRoute: () => () => undefined,
+    };
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: {} });
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      // pi's stand-in: a session that stays in the machine until the command is done.
+      const piSpec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }), session({ inferenceHosts: [] }));
+      const pi = await rt.launch(piSpec, { file: 'sh', args: ['-c', `while [ ! -e done ]; do sleep 0.2; done; ls ${agentDir} | grep -qx sessions && echo pi-sees-its-state > pi.out`], cwd: workspace });
+      await new Promise((r) => setTimeout(r, 1500));
+      const commandSpec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }),
+        session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined, piStagedAgentDir: undefined }));
+      const out = path.join(workspace, 'command.out');
+      const probe = [
+        'echo made > made-by-command',
+        `ls ${agentDir} 2>/dev/null | grep -q . && echo pi-state-visible`,
+        `{ echo x > ${path.join(workspace, '.agenfk', 'planted')}; } 2>/dev/null && echo agenfk-writable`,
+        '[ "$(id -u)" = "' + os.userInfo().uid + '" ] || echo "uid $(id -u)"',
+        'exit 5',
+      ].join('; ');
+      const command = await rt.launch(commandSpec, { file: '/bin/sh', args: ['-c', `(${probe}) > ${out} 2>&1`], cwd: workspace, processGroup: false });
+      expect((await command.exited).code).toBe(5);
+      expect(fs.readFileSync(out, 'utf8')).toBe('');
+      expect(fs.readFileSync(path.join(workspace, 'made-by-command'), 'utf8')).toBe('made\n');
+      // The session in the machine still sees its own state: the command's namespace was its own.
+      fs.writeFileSync(path.join(workspace, 'done'), '');
+      expect((await pi.exited).code).toBe(0);
+      expect(fs.readFileSync(path.join(workspace, 'pi.out'), 'utf8')).toBe('pi-sees-its-state\n');
     } finally {
       await rt.reset(workspace).catch(() => undefined);
       await rt.dispose();

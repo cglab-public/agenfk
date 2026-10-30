@@ -9,20 +9,26 @@
  * stores and the report token are unreadable; AgEnFK's own files are unwritable;
  * egress goes only to the policy's allow list - no AgEnFK server, no inference
  * host. Loopback is the command's own, so test servers run (user decision
- * 2026-10-28): on Linux the host's loopback stays out of reach (a network
- * namespace); macOS has none, so there a command can reach local services.
+ * 2026-10-28).
  *
- * It fails closed: a policy it cannot read, or a sandbox that cannot start,
+ * CGLAB-696 task 5: it runs in the workspace's machine, made from the image the
+ * policy names (else the AgEnFK base image of this version), so the command sees
+ * the dependencies the session installed there. ACCEPTED LIMIT (user decision
+ * 2026-10-30): beside a session already in that machine the command runs on the
+ * session's terms - its network, the relay to the AgEnFK server included, and
+ * through /proc what the session sees. The command policy above holds when no
+ * session is in the machine (smolvm.ts, prepare).
+ *
+ * It fails closed: a policy it cannot read, or a machine that cannot start,
  * means the command never runs and the exit is 125. It sandboxes whatever the
  * mode: the server only calls it when the policy enforces.
- *
- * One process per run: ASRT's SandboxManager holds one configuration per process.
  */
 import os from 'os';
 import path from 'path';
 import { normalizeAirlockPolicy, airlockPolicyErrors, type AirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSpec, sharedTempDir } from './spec';
 import type { AirlockRuntime } from './runtime';
+import { machineImageFor } from './image';
 import { findAgenfkDirs, projectAgenfkDirs, workspaceGitDir, AGENFK_SCAN_LIMIT, type LaunchDeps } from './launch';
 
 /** The exit when the command could not be sandboxed, so never ran (like a shell's "cannot execute"). */
@@ -46,6 +52,10 @@ export interface ExecDeps {
   onSignal: LaunchDeps['onSignal'];
   /** Where the reason goes when the command cannot run (the server shows the command's stderr). */
   error: (message: string) => void;
+  /** This agenfk's version: the base image's tag. */
+  agenfkVersion: LaunchDeps['agenfkVersion'];
+  /** The environment the command's comes from (scopedCommandEnv, then guestCommandEnv). */
+  env: NodeJS.ProcessEnv;
 }
 
 /**
@@ -74,6 +84,24 @@ export function scopedCommandEnv(env: NodeJS.ProcessEnv): Record<string, string>
     out[name] = value;
   }
   return out;
+}
+
+/**
+ * Names among scopedCommandEnv's that hold host paths: the guest has its own (its PATH, its HOME
+ * at the host user's path, its own /tmp), and a host path there names nothing or the wrong thing.
+ */
+const HOST_PATH_NAMES = new Set([
+  'PATH', 'HOME', 'SHELL', 'PWD', 'USER', 'LOGNAME', 'TMPDIR', 'TEMP', 'TMP', 'NODE_PATH', 'JAVA_HOME', 'GOPATH', 'GOROOT',
+  'CARGO_HOME', 'RUSTUP_HOME', 'VIRTUAL_ENV', 'PYTHONPATH', 'NVM_DIR', 'PNPM_HOME', 'BUN_INSTALL', 'DENO_DIR', 'EDITOR', 'PAGER',
+]);
+
+/** An absolute path in a value (`--require=/x`, `--require="/x"`, `/x:/y`, `/x`): a host path, wherever it sits. */
+const HOST_PATH_IN_VALUE = /(?:^|[\s=:,'"])\//;
+
+/** What of the server's environment a command gets in the machine: scopedCommandEnv's, but no host path, by name or in a value. */
+export function guestCommandEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(Object.entries(scopedCommandEnv(env))
+    .filter(([name, value]) => !HOST_PATH_NAMES.has(name) && !name.startsWith('XDG_') && !HOST_PATH_IN_VALUE.test(value)));
 }
 
 /**
@@ -111,7 +139,14 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
   let spec: SandboxSpec;
   try {
     // The card's project (--project-id, the server passes it): its overrides apply (PO-1).
-    const policy = effectivePolicyOf(await d.fetchPolicy(opts.projectId ?? null));
+    const view = await d.fetchPolicy(opts.projectId ?? null);
+    const policy = effectivePolicyOf(view);
+    // An older server's policy drops machineImage: the base image would run over the one the policy names.
+    const caps = Array.isArray(view?.capabilities) ? (view.capabilities as unknown[]) : [];
+    if (!caps.includes('machine-image')) {
+      return cannot('The AgEnFK server running is older than this agenfk: the policy it gives drops the machine image your policy may name. Restart it on this version (agenfk restart).');
+    }
+    const image = machineImageFor(policy, d.agenfkVersion()).image;
     const nested = findAgenfkDirs(cwd, d);
     if (!nested.complete && d.platform === 'linux') {
       return cannot(`Could not list every .agenfk directory under ${cwd} (more than ${AGENFK_SCAN_LIMIT}, or one could not be read); on Linux each must be protected by name.`);
@@ -132,6 +167,9 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
       gitDir: workspaceGitDir(cwd, d),
       runtimePackageDir: d.runtimePackageDir,
     });
+    spec.machineImage = image;
+    // What the spec sets wins: the sandbox marker, NO_PROXY.
+    spec.env = { ...guestCommandEnv(d.env), ...spec.env };
   } catch (e) {
     return cannot(`Could not build the Airlock sandbox for this command from the policy (${(e as Error)?.message ?? e}).`);
   }

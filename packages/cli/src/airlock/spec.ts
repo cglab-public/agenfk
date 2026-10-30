@@ -103,6 +103,8 @@ export interface SandboxSpec {
   skipped: Array<{ entry: string; reason: string }>;
   /** A command's sandbox (SX-2): it may bind loopback ports, so its test servers run. */
   allowLocalBinding?: boolean;
+  /** What the sandbox runs (SandboxSession.purpose): a runtime that keeps a machine runs a command beside a client. */
+  purpose?: 'client' | 'command';
 }
 
 type Entry = { kind: 'host' | 'cidr'; value: string; reason?: undefined } | { kind: 'bad'; reason: string; value?: undefined };
@@ -336,6 +338,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     allowPty: true,
     skipped,
     ...(command ? { allowLocalBinding: true } : {}),
+    purpose: command ? 'command' : 'client',
   };
 }
 

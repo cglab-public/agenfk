@@ -714,6 +714,41 @@ const PASSTHROUGH_ENV = ['TERM', 'COLORTERM', 'LANG', 'LC_ALL', 'LC_CTYPE'];
 /** Records its pid where a signal can find it, then becomes the command. */
 const SESSION_LEADER = 'echo $$ > "$0" && exec "$@"';
 
+/**
+ * How a command the server runs starts in the guest (CGLAB-696 task 5), as root: in a mount
+ * namespace of its own it applies its setup ($0), then becomes the user ($1:$2) and runs the rest
+ * as a session leader that records its pid in $3. What the machine holds for the session in it is
+ * left as it is. A step that fails exits 125, and the command never ran.
+ */
+export const COMMAND_IN_NAMESPACE = [
+  'for t in unshare setpriv setsid; do command -v "$t" >/dev/null 2>&1 || { echo "[agenfk airlock] The machine image has no $t (util-linux), so the command cannot run under its own protections." >&2; exit 125; }; done',
+  `exec unshare --mount --propagation private -- sh -c ${quote([
+    'sh -c "$0" || { echo "[agenfk airlock] Airlock could not apply the command\'s protections in the machine." >&2; exit 125; }',
+    'u="$1"; g="$2"; shift 2',
+    `exec setpriv --reuid="$u" --regid="$g" --clear-groups -- setsid sh -c ${quote(SESSION_LEADER)} "$@"`,
+  ].join('; '))} "$0" "$@"`,
+].join('; ');
+
+/**
+ * Waits for its stdin to close, then runs its arguments (review 01a18ca1): the server kills a
+ * command's host process group with SIGKILL, which ends `smolvm machine exec` on the host but not
+ * the command in the guest. Started outside that group, it kills the command there. Its stdin is a
+ * pipe only the launcher holds: closed however the launcher ends, before any reaping, whatever pid
+ * comes next.
+ */
+export const WATCHDOG = 'cat >/dev/null; exec "$@"';
+
+/** Starts WATCHDOG over `args`, detached, its stdin held by this process; stop() ends it. */
+function startWatchdog(args: string[]): { stop(): void } {
+  const child = nodeSpawn('/bin/sh', ['-c', WATCHDOG, 'sh', ...args], { detached: true, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+  child.on('error', () => undefined);
+  child.stdin?.on('error', () => undefined);
+  // Neither keeps this process alive: the pipe is only ever closed, by stop() or by the end of this process.
+  child.unref();
+  (child.stdin as unknown as { unref?: () => void } | null)?.unref?.();
+  return { stop: () => { try { child.kill('SIGKILL'); } catch { /* gone */ } } };
+}
+
 interface SmolvmRuntimeDeps {
   /** The guest image (the AgEnFK base image, or the project's own). */
   image: string;
@@ -735,6 +770,7 @@ interface SmolvmRuntimeDeps {
   warn?: (message: string) => void;
   readGitConfig?: GitConfigReader;
   startInjector?: (o: KeyInjectorOptions) => Promise<KeyInjector>;
+  startWatchdog?: (args: string[]) => { stop(): void };
 }
 
 function runCli(file: string): SmolvmRun {
@@ -772,8 +808,11 @@ const said = (r: SmolvmResult): string => (r.stderr.trim() || r.stdout.trim()).s
 
 interface MachineInfo { name: string; state: string; labels?: Record<string, string> }
 
-/** What a session's machine was readied with. */
-interface Prepared { plan: GuestPlan; ca: MachineCa; placeholders: Record<string, string> }
+/**
+ * What a session's machine was readied with. `commandSetup`: a command's, the script root runs in
+ * its own namespace before it starts (COMMAND_IN_NAMESPACE).
+ */
+interface Prepared { plan: GuestPlan; ca: MachineCa; placeholders: Record<string, string>; commandSetup?: string }
 
 type HeldPlaceholder = Placeholder & { dev: number; ino: number; parent: string };
 
@@ -810,6 +849,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       pidAlive: deps.pidAlive ?? defaultPidAlive,
       readGitConfig: deps.readGitConfig ?? readGitConfig,
       startInjector: deps.startInjector ?? startKeyInjector,
+      startWatchdog: deps.startWatchdog ?? startWatchdog,
       warn: deps.warn ?? (() => undefined),
       image: deps.image,
       egress: deps.egress,
@@ -1023,9 +1063,11 @@ export class SmolvmRuntime implements AirlockRuntime {
   /**
    * Attaches the plan's mounts. The guest is one file system, so while another
    * session is in the machine its mounts must be exactly this session's: a
-   * mount either one lacks would be seen by the session not allowed it.
+   * mount either one lacks would be seen by the session not allowed it. A command
+   * joining (`joining`) takes the machine's mounts as they are, and is given back
+   * those it may not see, to hide in its own namespace.
    */
-  private async attachMounts(name: string, plan: GuestPlan, workspace: string, shared: boolean): Promise<void> {
+  private async attachMounts(name: string, plan: GuestPlan, workspace: string, shared: boolean, joining = false): Promise<string[]> {
     const r = await this.must(['machine', 'mount', 'ls', '--name', name, '--json'], 'list the machine\'s mounts');
     const have = JSON.parse(r.stdout || '[]') as Array<{ source: string; target: string }>;
     const key = (source: string, target: string) => `${source}\0${target}`;
@@ -1033,6 +1075,17 @@ export class SmolvmRuntime implements AirlockRuntime {
     const held = new Set(have.map((h) => key(h.source, h.target)));
     const foreign = have.filter((h) => !want.has(key(h.source, h.target))).map((h) => h.source);
     const extra = shared ? plan.mounts.filter((m) => !held.has(key(m.host, m.guest))).map((m) => m.host) : [];
+    if (joining) {
+      // Hiding a mount above one the command needs would hide that one too.
+      const over = foreign.find((f) => plan.mounts.some((m) => inside(m.guest, f)));
+      if (extra.length || over) {
+        const why = extra.length
+          ? `would have to mount ${extra.join(', ')}, which the session already in it may not see`
+          : `cannot hide ${over}, which the session in it has mounted, without hiding what the command needs`;
+        throw new Error(`Another session is in the Airlock machine for ${workspace}, and this command ${why}, so nothing was launched. Run it once that session has ended.`);
+      }
+      return foreign;
+    }
     if (foreign.length || extra.length) {
       const why = foreign.length
         ? `has ${foreign.join(', ')} mounted, which this session may not see`
@@ -1043,6 +1096,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       if (held.has(key(m.host, m.guest))) continue;
       await this.must(['machine', 'mount', 'add', '--name', name, '-v', `${m.host}:${m.guest}`], `mount ${m.host} in the machine`);
     }
+    return [];
   }
 
   /** Stops the machine and its interceptor, and takes the placeholders back. Called holding the lock. */
@@ -1088,12 +1142,20 @@ export class SmolvmRuntime implements AirlockRuntime {
       // Planned only now: what the cleanup above removed is planned as missing.
       let plan = guestPlanOf(spec, workspace, this.d.readGitConfig, new Set(this.readPlaceholders(name).map((p) => p.path)));
       if (shared) plan = withoutPlatform(plan);
+      // A command the server runs joins the session in the machine on the session's terms: its
+      // network (one decider per machine cannot tell their flows apart), its mounts and
+      // protections, plus its own in a namespace of its own. ACCEPTED LIMIT (user decision
+      // 2026-10-30, review 01a18ca1): beside a session the command reaches what the session does.
+      // It shares the session's uid and pids, so /proc/<pid>/root and /environ show the session's
+      // view - pi's state, the relay's address - and the relay reaches the AgEnFK server. Hiding
+      // pi's state in the command's namespace is no boundary: the command is the session's code.
+      const joining = shared && spec.purpose === 'command';
       const machine = await this.ensureMachine(name, workspace, spec.machineImage ?? this.d.image);
       const network = path.join(this.machineDir(name), 'network.json');
       const protections = path.join(this.machineDir(name), 'protections.json');
       const applied = JSON.stringify({ pinned: plan.pinned, readOnly: plan.readOnly, hidden: plan.hidden });
       const recorded = (file: string): string | null => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } };
-      if (shared && recorded(network) !== JSON.stringify(spec.network)) {
+      if (shared && !joining && recorded(network) !== JSON.stringify(spec.network)) {
         // One interceptor decides for the whole machine: a session under another network policy waits its turn.
         throw new Error(`Another session is in the Airlock machine for ${workspace} under a different network policy, so nothing was launched. Launch it once that session has ended.`);
       }
@@ -1101,10 +1163,10 @@ export class SmolvmRuntime implements AirlockRuntime {
       // whichever of them the decider sends a flow to.
       const injection = path.join(this.machineDir(name), 'injection.json');
       const injecting = JSON.stringify(spec.maskedEnv.map((m) => [m.name, [...m.injectHosts].sort()]).sort());
-      if (shared && recorded(injection) !== injecting) {
+      if (shared && !joining && recorded(injection) !== injecting) {
         throw new Error(`Another session is in the Airlock machine for ${workspace} with other model keys or inference hosts, so nothing was launched. Launch it once that session has ended.`);
       }
-      if (shared && recorded(protections) !== applied) {
+      if (shared && !joining && recorded(protections) !== applied) {
         // One file system: protections added now would not reach what the session in it already holds open.
         throw new Error(`Another session is in the Airlock machine for ${workspace} with different file protections, so nothing was launched. Launch it once that session has ended.`);
       }
@@ -1118,12 +1180,18 @@ export class SmolvmRuntime implements AirlockRuntime {
         await this.must(['machine', 'start', '--name', name, '--mediated-egress', '--egress-interceptor', icpt.address],
           `start the machine for ${workspace}`, { SMOLVM_INTERCEPTOR_TOKEN: icpt.token });
       }
-      await this.attachMounts(name, plan, workspace, shared);
+      const unseen = await this.attachMounts(name, plan, workspace, shared, joining);
       this.ensurePlaceholders(name, plan.placeholders);
-      await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid, ca.certPem, this.homeOf(spec))], 'protect the session\'s files in the machine');
+      if (!joining) {
+        await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid, ca.certPem, this.homeOf(spec))], 'protect the session\'s files in the machine');
+      }
       // Not under a session already in the machine: its dependencies would change beneath it.
       if (!shared && plan.platform.length) await this.installPlatform(name, workspace, spec, plan.platformIncomplete);
-      return { plan, ca, placeholders };
+      // The platform binds and the CA bundle are the machine's, made above or by the session in it.
+      const commandSetup = spec.purpose === 'command'
+        ? guestSetupScript({ ...plan, platform: [], hidden: [...plan.hidden, ...unseen.map((p) => ({ path: p, kind: 'dir' as const }))] }, this.d.uid, this.d.gid, undefined, this.homeOf(spec))
+        : undefined;
+      return { plan, ca, placeholders, commandSetup };
     });
   }
 
@@ -1196,7 +1264,7 @@ export class SmolvmRuntime implements AirlockRuntime {
     };
     let child: ChildProcess;
     try {
-      const { ca, placeholders } = await this.prepare(name, workspace, spec, sessionFile);
+      const { ca, placeholders, commandSetup } = await this.prepare(name, workspace, spec, sessionFile);
       const keyEnv = await this.routeSession(name, spec, ca, placeholders, undo);
       const tell = hooks.onProxyDecision;
       if (tell) {
@@ -1213,11 +1281,11 @@ export class SmolvmRuntime implements AirlockRuntime {
         'TMPDIR=/tmp',
         ...PASSTHROUGH_ENV.filter((k) => this.d.hostEnv[k]).map((k) => `${k}=${this.d.hostEnv[k]}`),
       ];
-      const args = [
-        'machine', 'exec', '--name', name, '-i', ...(tty ? ['-t'] : []), '-u', user, '-w', command.cwd,
-        ...env.flatMap((e) => ['-e', e]),
-        '--', 'setsid', ...(tty ? ['-c'] : []), 'sh', '-c', SESSION_LEADER, pidFile, command.file, ...command.args,
-      ];
+      const exec = (as: string, ...rest: string[]) => ['machine', 'exec', '--name', name, '-i', ...rest, '-u', as, '-w', command.cwd, ...env.flatMap((e) => ['-e', e]), '--'];
+      const args = commandSetup !== undefined
+        // A command: root first, for its namespace, then the user (no terminal: the server runs it).
+        ? [...exec('root'), 'sh', '-c', COMMAND_IN_NAMESPACE, commandSetup, String(this.d.uid), String(this.d.gid), pidFile, command.file, ...command.args]
+        : [...exec(user, ...(tty ? ['-t'] : [])), 'setsid', ...(tty ? ['-c'] : []), 'sh', '-c', SESSION_LEADER, pidFile, command.file, ...command.args];
       child = this.d.spawn(this.d.smolvmPath, args, { cwd: command.cwd, stdio: 'inherit' });
     } catch (e) {
       unwatch?.();
@@ -1227,7 +1295,11 @@ export class SmolvmRuntime implements AirlockRuntime {
     }
 
     // As the session's user, bounded: the pid file is the session's own.
-    const inGuest = (script: string) => this.cli(['machine', 'exec', '--name', name, '--timeout', SIGNAL_TIMEOUT, '-u', user, '--', 'sh', '-c', READ_PID + script, pidFile]).catch(() => undefined);
+    const inGuestArgs = (script: string) => ['machine', 'exec', '--name', name, '--timeout', SIGNAL_TIMEOUT, '-u', user, '--', 'sh', '-c', READ_PID + script, pidFile];
+    const inGuest = (script: string) => this.cli(inGuestArgs(script)).catch(() => undefined);
+    const LEFTOVERS = 'kill -KILL -$pid 2>/dev/null; rm -f "$0"';
+    // This process killed outright never gets to finish(): the watchdog ends the command in the guest.
+    const watchdog = this.d.startWatchdog([this.d.smolvmPath, ...inGuestArgs(LEFTOVERS)]);
     const kill = (signal: NodeJS.Signals): boolean => {
       const sig = signal.replace(/^SIG/, '');
       if (!/^[A-Z0-9]+$/.test(sig)) return false;
@@ -1239,7 +1311,9 @@ export class SmolvmRuntime implements AirlockRuntime {
     // with it, then the session is released. A release that fails (a stop smolvm did not
     // confirm) rejects `exited`: the machine may still be running.
     const finish = () => finishing ??= (async () => {
-      await inGuest('kill -KILL -$pid 2>/dev/null; rm -f "$0"');
+      await inGuest(LEFTOVERS);
+      // Only now: the launcher killed while the leftovers were being killed still has its watchdog.
+      watchdog.stop();
       await unroute();
       try {
         await this.release(name, sessionFile, workspace);

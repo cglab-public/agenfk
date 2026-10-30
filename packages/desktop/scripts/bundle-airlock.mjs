@@ -51,6 +51,8 @@ const result = await build({
   format: 'esm',
   packages: 'bundle',
   external: ['electron'],
+  // The helper has no package.json beside it: its version names the base image of its machine.
+  define: { __AGENFK_VERSION__: JSON.stringify(JSON.parse(fs.readFileSync(path.join(repoRoot, 'packages/cli/package.json'), 'utf8')).version) },
   banner: {
     js: [
       "import { createRequire as __agenfkCreateRequire } from 'module';",

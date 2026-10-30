@@ -31,7 +31,7 @@ beforeAll(async () => {
   fs.cpSync(built, path.join(isolated, 'airlock'), { recursive: true });
   // A stand-in for the server: the whole effective policy, as GET /airlock/policy serves it.
   const { normalizeAirlockPolicy } = await import('@agenfk/core');
-  policy = http.createServer((_q, r) => { r.setHeader('content-type', 'application/json'); r.end(JSON.stringify({ effective: normalizeAirlockPolicy({ mode: 'enforce' }), source: 'local', revision: 1 })); });
+  policy = http.createServer((_q, r) => { r.setHeader('content-type', 'application/json'); r.end(JSON.stringify({ effective: normalizeAirlockPolicy({ mode: 'enforce' }), source: 'local', revision: 1, capabilities: ['sandboxed-commands', 'machine-image'] })); });
   await new Promise<void>((r) => policy.listen(0, '127.0.0.1', () => r()));
   policyUrl = `http://127.0.0.1:${(policy.address() as any).port}`;
 }, 180_000);
