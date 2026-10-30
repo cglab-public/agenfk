@@ -36,6 +36,7 @@ import {
   WATCHDOG,
   SESSION_LEADER,
   KILL_CGROUP,
+  ROOTDIR_FN,
   DNS_RESOLVER_ADDRESS,
   DNS_UNPROTECTED_MARK,
   resolverDenyOf,
@@ -1028,6 +1029,63 @@ describe('the agenfk adapters in the machine (CGLAB-696 task 9)', () => {
       session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined }));
     await rt.launch(spec, { file: '/bin/sh', args: ['-c', 'true'], cwd: workspace, processGroup: false });
     expect(copies(smolvm)).toEqual([]);
+  });
+});
+
+/**
+ * Story review 2 (DEL-1): OpenCode's config runs AgEnFK's MCP from the host's install, which the
+ * machine does not have: the bundled MCP is put where that config says.
+ */
+describe('AgEnFK\'s MCP for an OpenCode session in the machine (story review 2)', () => {
+  const installServer = () => path.join(root, 'install', 'packages', 'server', 'dist', 'index.js');
+  const bundle = () => path.join(root, 'bundle', 'mcp-bundle.js');
+  const writeConfig = (command: unknown) => {
+    fs.mkdirSync(path.join(home, '.config', 'opencode'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.config', 'opencode', 'opencode.json'), JSON.stringify({ mcp: { agenfk: { type: 'local', enabled: true, command } } }));
+  };
+  const opencodeSpec = () => buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }), session({ client: 'opencode', piAgentDir: undefined }));
+  const copiesTo = (smolvm: ReturnType<typeof fakeSmolvm>, to: string) => smolvm.calls.filter((c) => c.args[1] === 'cp' && c.args[c.args.length - 1].endsWith(`:${to}`)).map((c) => c.args);
+  beforeEach(() => {
+    fs.mkdirSync(path.dirname(bundle()), { recursive: true });
+    fs.writeFileSync(bundle(), '// mcp\n');
+  });
+
+  it('puts the bundled MCP where OpenCode\'s config runs it from, on a directory root owns', async () => {
+    writeConfig(['node', installServer()]);
+    const { rt, smolvm } = runtime({ mcpBundle: bundle() });
+    await rt.launch(opencodeSpec(), cmd());
+    const cp = copiesTo(smolvm, installServer());
+    expect(cp).toHaveLength(1);
+    expect(cp[0][cp[0].length - 2]).toBe(bundle());
+    expect(flag(cp[0], '--mode')).toBe('444');
+    expect(smolvm.execs().some((a) => flag(a, '-u') === 'root' && a.join(' ').includes('mount -t tmpfs') && a.join(' ').includes(path.dirname(installServer())))).toBe(true);
+  });
+
+  it('does nothing for pi, for a config that runs no AgEnFK MCP, or one that runs it from the mounts', async () => {
+    writeConfig(['node', installServer()]);
+    const a = runtime({ mcpBundle: bundle() });
+    const la = await a.rt.launch(specOf(), cmd());
+    expect(copiesTo(a.smolvm, installServer())).toEqual([]);
+    a.sp.children[0].finish(0);
+    await la.exited;
+    // Another runtime at the very path: the bundle is Node's.
+    for (const command of [['npx', 'some-other-mcp'], ['bun', installServer()], ['node', path.join(workspace, 'packages', 'server', 'dist', 'index.js')], 'node x']) {
+      writeConfig(command);
+      const b = runtime({ mcpBundle: bundle() });
+      const lb = await b.rt.launch(opencodeSpec(), cmd());
+      expect(b.smolvm.calls.filter((c) => c.args[1] === 'cp' && c.args[c.args.length - 2] === bundle()), JSON.stringify(command)).toEqual([]);
+      b.sp.children[0].finish(0);
+      await lb.exited;
+    }
+  });
+
+  it('says so, and launches all the same, when this install has no bundled MCP', async () => {
+    writeConfig(['node', installServer()]);
+    const warnings: string[] = [];
+    const { rt, sp } = runtime({ mcpBundle: path.join(root, 'nowhere.js'), warn: (m: string) => warnings.push(m) });
+    await rt.launch(opencodeSpec(), cmd());
+    expect(warnings.join('\n')).toMatch(/MCP/);
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -2963,6 +3021,30 @@ describe.skipIf(process.platform === 'win32')('SESSION_LEADER, run by sh', () =>
     fs.mkdirSync(path.join(root, 'reaped'), { recursive: true });
     fs.writeFileSync(path.join(root, 'reaped', 's'), '');
     expect(run('exit 0')).toEqual({ status: 125, ran: false });
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('ROOTDIR_FN, run by sh', () => {
+  // A stat stand-in answers as the guest's root-owned tree would (GNU stat -c); mkdir is real.
+  const run = (dir: string, owner = '0', mode = '755') => {
+    const bin = path.join(root, 'rootdir-bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'stat'), `#!/bin/sh\ncase "$2" in %u) echo ${owner};; %a) echo ${mode};; esac\n`, { mode: 0o755 });
+    return spawnSync('/bin/sh', ['-c', `${ROOTDIR_FN}; rootdir "$1"`, 'sh', dir], { encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin` } });
+  };
+
+  it('makes a path with spaces and glob characters in it as it is (review)', () => {
+    const dir = path.join(root, 'Daniel Smith', '*', 'agenfk');
+    expect(run(dir).status).toBe(0);
+    expect(fs.statSync(dir).isDirectory()).toBe(true);
+    expect(fs.existsSync(path.join(root, 'Daniel'))).toBe(false);
+  });
+
+  it('refuses a part that is not root\'s alone, or a link', () => {
+    expect(run(path.join(root, 'x'), '503').status).not.toBe(0);
+    expect(run(path.join(root, 'y'), '0', '775').status).not.toBe(0);
+    fs.symlinkSync('/tmp', path.join(root, 'link'));
+    expect(run(path.join(root, 'link', 'z')).status).not.toBe(0);
   });
 });
 

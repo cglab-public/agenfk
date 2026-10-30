@@ -30,7 +30,7 @@ import net from 'net';
 import os from 'os';
 import path from 'path';
 import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
-import type { SandboxSpec } from './spec';
+import { AIRLOCK_SANDBOX_MARKER, type SandboxSpec } from './spec';
 import { allowListArgs, GATEWAY, networkKey, type Route } from './egress';
 import { machineCa, placeholderFor, startKeyInjector, type KeyInjector, type KeyInjectorOptions, type MachineCa } from './keyInjector';
 import { readRegularFile } from './safeRead';
@@ -839,6 +839,17 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
 }
 
 const quote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+/**
+ * `rootdir <dir>`: makes `dir` where only root can change it, or fails (review, DEL-1): every part
+ * of it that exists must be a directory root owns that nobody else may write - not a link - and the
+ * parts missing are made by root. Nothing on its path can then be swapped while root works in it.
+ * Split on "/" alone, globbing off: a name with spaces or `*` in it is that name.
+ */
+export const ROOTDIR_FN = 'rootdir() ( set -f; IFS=/; P=""; for c in $1; do [ -n "$c" ] || continue; P="$P/$c"; '
+  + 'if [ -L "$P" ]; then echo "$P is a link" >&2; exit 1; fi; '
+  + 'if [ -e "$P" ]; then [ -d "$P" ] && [ "$(stat -c %u "$P")" = 0 ] && [ $(( 0$(stat -c %a "$P") & 022 )) -eq 0 ] || { echo "$P is not root\'s alone" >&2; exit 1; }; '
+  + 'else mkdir -m 755 "$P"; fi; done )';
+
 /** `mounted <mountinfo path>`: is something mounted there? (sh, for root's scripts in the guest) */
 const MOUNTED_FN = `mounted() { P="$1" awk '$5 == ENVIRON["P"] { f = 1 } END { exit !f }' /proc/self/mountinfo; }`;
 /** How /proc/self/mountinfo spells a path. */
@@ -1137,6 +1148,8 @@ interface SmolvmRuntimeDeps {
   reaperCommand?: string[];
   /** Electron's version when this runs in the desktop app (its binary then runs the reaper as Node). */
   electron?: string;
+  /** AgEnFK's MCP client, bundled (packages/server/dist/mcp-bundle.js): what an OpenCode session runs. */
+  mcpBundle?: string;
 }
 
 function runCli(file: string): SmolvmRun {
@@ -1221,6 +1234,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       policyFollowMs: deps.policyFollowMs ?? 1000,
       reaperCommand: deps.reaperCommand ?? [process.execPath, process.argv[1]],
       electron: deps.electron ?? process.versions.electron ?? '',
+      mcpBundle: deps.mcpBundle ?? path.resolve(__dirname, '..', '..', '..', 'server', 'dist', 'mcp-bundle.js'),
       warn: deps.warn ?? (() => undefined),
       image: deps.image,
       egress: deps.egress,
@@ -1596,6 +1610,7 @@ export class SmolvmRuntime implements AirlockRuntime {
         await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid, ca.certPem, this.homeOf(spec))], 'protect the session\'s files in the machine');
         await this.startResolver(name, workspace, spec);
         if (spec.purpose !== 'command') await this.provisionAgenfk(name, spec);
+        if (spec.env[AIRLOCK_SANDBOX_MARKER] === 'opencode') await this.provisionMcp(name, spec);
       }
       // Not under a session already in the machine: its dependencies would change beneath it.
       if (!shared && plan.platform.length) await this.installPlatform(name, workspace, spec, plan.platformIncomplete);
@@ -1642,11 +1657,10 @@ export class SmolvmRuntime implements AirlockRuntime {
     await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', [
       'set -e',
       MOUNTED_FN,
+      ROOTDIR_FN,
       `D=${quote(dir)}`,
       `if ! mounted ${quote(mountinfoPath(dir))}; then`,
-      '  if [ -L "$D" ]; then rm -f "$D"; fi',
-      '  mkdir -p "$D"',
-      '  [ "$(readlink -f "$D")" = "$D" ] || { echo "$D resolves elsewhere in the machine" >&2; exit 1; }',
+      '  rootdir "$D"',
       '  mount -t tmpfs -o size=4m,mode=0755 tmpfs "$D"',
       'fi',
       'mkdir -p "$D/bin"',
@@ -1719,6 +1733,43 @@ export class SmolvmRuntime implements AirlockRuntime {
     fs.writeFileSync(`${file}.tmp`, s, { mode: 0o600 });
     fs.renameSync(`${file}.tmp`, file);
     return s;
+  }
+
+  /**
+   * AgEnFK's MCP for an OpenCode session (story review 2): the installer has OpenCode run it as
+   * `node <install>/packages/server/dist/index.js`, an install the machine does not have. The bundled
+   * MCP is put at that path, on a tmpfs root owns over its directory - only a path outside the mounts
+   * (a path in them is the host's own, and none of root's to cover). It reaches the server through
+   * the relay, as everything in the machine does (AGENFK_API_URL).
+   */
+  private async provisionMcp(name: string, spec: SandboxSpec): Promise<void> {
+    let command: unknown;
+    try { command = JSON.parse(fs.readFileSync(path.join(this.homeOf(spec), '.config', 'opencode', 'opencode.json'), 'utf8'))?.mcp?.agenfk?.command; } catch { return; }
+    if (!Array.isArray(command) || command.length !== 2 || command[0] !== 'node' || typeof command[1] !== 'string') return;
+    const target = command[1];
+    if (!path.isAbsolute(target) || path.normalize(target) !== target || !target.endsWith('/packages/server/dist/index.js')) return;
+    if (spec.filesystem.allowWrite.some((r) => inside(target, path.resolve(r)))) return;
+    let bundled = false;
+    try { bundled = fs.lstatSync(this.d.mcpBundle).isFile(); } catch { /* none */ }
+    if (!bundled) {
+      this.d.warn(`Airlock: this install has no bundled MCP (${this.d.mcpBundle}), so OpenCode's AgEnFK MCP does not run in the machine; the agenfk CLI does. Rebuild or reinstall AgEnFK.`);
+      return;
+    }
+    const dir = path.dirname(target);
+    // The path comes from a config the session can write: root works only where nothing on it is the session's.
+    const made = await this.cli(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', [
+      'set -e',
+      MOUNTED_FN,
+      ROOTDIR_FN,
+      `D=${quote(dir)}`,
+      `if ! mounted ${quote(mountinfoPath(dir))}; then`,
+      '  rootdir "$D"',
+      '  mount -t tmpfs -o size=16m,mode=0755 tmpfs "$D"',
+      'fi',
+    ].join('\n')]).catch((e) => ({ code: 1, stdout: '', stderr: String(e?.message ?? e) }));
+    const copied = made.code === 0 ? await this.cli(['machine', 'cp', '--mode', '444', this.d.mcpBundle, `${name}:${target}`]).catch((e) => ({ code: 1, stdout: '', stderr: String(e?.message ?? e) })) : made;
+    // Optional: the session runs without it (the agenfk CLI is there), said so.
+    if (copied.code !== 0) this.d.warn(`Airlock: OpenCode's AgEnFK MCP was not put in the machine at ${target} (${said(copied)}); the agenfk CLI is there.`);
   }
 
   /** The session's HOME in the guest: the host user's path. */

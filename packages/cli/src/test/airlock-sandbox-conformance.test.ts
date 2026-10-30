@@ -219,6 +219,35 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
     }
   }, TIMEOUT);
 
+  // Story review 2 (DEL-1): OpenCode's config runs AgEnFK's MCP from the host's install; in the
+  // machine the bundled MCP is there, and its tool calls reach the server through the relay.
+  it('an OpenCode session runs AgEnFK\'s MCP from where its config says, and a tool call reaches the server', async () => {
+    const mcp = path.join(root, 'install', 'packages', 'server', 'dist', 'index.js');
+    fs.mkdirSync(path.join(home, '.config', 'opencode'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.config', 'opencode', 'opencode.json'), JSON.stringify({ mcp: { agenfk: { type: 'local', enabled: true, command: ['node', mcp] } } }));
+    relayRequests.length = 0;
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ client: 'opencode', piAgentDir: undefined }));
+    const msgs = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'list_projects', arguments: {} } },
+    ].map((m) => `'${JSON.stringify(m)}'`).join(' ');
+    const r = await inMachine(spec, `(printf '%s\\n' ${msgs}; sleep 8) | timeout 20 node ${mcp} 2>/dev/null | grep -c '"id":3' | sed 's/^/answered /'`);
+    expect(line(r.out, 'answered')).toBe('answered 1');
+    expect(relayRequests.some((q) => q.url.startsWith('/projects'))).toBe(true);
+  }, TIMEOUT);
+
+  // Review (DEL-1): the config is the session's to write. A path through a directory the session
+  // owns (its sessions dir here) is refused: root never mounts where the session could redirect it.
+  it('never mounts AgEnFK\'s MCP where the session could redirect it, and still launches', async () => {
+    const owned = '/run/agenfk/sessions/payload/packages/server/dist/index.js';
+    fs.mkdirSync(path.join(home, '.config', 'opencode'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.config', 'opencode', 'opencode.json'), JSON.stringify({ mcp: { agenfk: { type: 'local', enabled: true, command: ['node', owned] } } }));
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ client: 'opencode', piAgentDir: undefined }));
+    const r = await inMachine(spec, `test -e ${owned} && echo placed; grep -q ' /run/agenfk/sessions/payload' /proc/self/mountinfo && echo mounted; echo ran`);
+    expect(r.out).toEqual(['ran']);
+  }, TIMEOUT);
+
   it('a command the server runs: no relay to the server, the policy\'s allow list only', async () => {
     relaySeen = 0;
     const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }),
