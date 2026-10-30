@@ -29,7 +29,7 @@ import { normalizeAirlockPolicy, airlockPolicyErrors, type AirlockPolicy } from 
 import { buildSandboxSpec, type SandboxSpec, sharedTempDir } from './spec';
 import type { AirlockRuntime } from './runtime';
 import { machineImageFor } from './image';
-import { findAgenfkDirs, projectAgenfkDirs, workspaceGitDir, AGENFK_SCAN_LIMIT, type LaunchDeps } from './launch';
+import { findAgenfkDirs, projectAgenfkDirs, workspaceGitDir, workspaceOf, AGENFK_SCAN_LIMIT, type LaunchDeps } from './launch';
 
 /** The exit when the command could not be sandboxed, so never ran (like a shell's "cannot execute"). */
 export const EXEC_CANNOT_SANDBOX = 125;
@@ -147,9 +147,11 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
       return cannot('The AgEnFK server running is older than this agenfk: the policy it gives drops the machine image your policy may name. Restart it on this version (agenfk restart).');
     }
     const image = machineImageFor(policy, d.agenfkVersion()).image;
-    const nested = findAgenfkDirs(cwd, d);
+    // The repository's machine, as a launch from here would use (CGLAB-696 task 7).
+    const workspace = workspaceOf(cwd, d);
+    const nested = findAgenfkDirs(workspace, d);
     if (!nested.complete && d.platform === 'linux') {
-      return cannot(`Could not list every .agenfk directory under ${cwd} (more than ${AGENFK_SCAN_LIMIT}, or one could not be read); on Linux each must be protected by name.`);
+      return cannot(`Could not list every .agenfk directory under ${workspace} (more than ${AGENFK_SCAN_LIMIT}, or one could not be read); on Linux each must be protected by name.`);
     }
     // The report token's directory must exist for the sandbox to hide it (Linux masks what exists at launch).
     d.ensurePrivateDir(path.join(d.home, '.agenfk', 'airlock'));
@@ -157,14 +159,14 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
       client: 'pi',
       purpose: 'command',
       home: d.home,
-      workspace: cwd,
+      workspace,
       tempDirs: [...new Set([d.tmpDir, sharedTempDir(d.platform, d.realpath) ?? d.tmpDir])],
       inferenceHosts: [],
       serverPort: 0,
       directServerPort: d.directServerPort,
       installDirs: d.installDirs,
       projectAgenfkDirs: [...projectAgenfkDirs({ cwd, home: d.home, exists: d.exists }), ...nested.dirs],
-      gitDir: workspaceGitDir(cwd, d),
+      gitDir: workspaceGitDir(workspace, d),
       runtimePackageDir: d.runtimePackageDir,
     });
     spec.machineImage = image;

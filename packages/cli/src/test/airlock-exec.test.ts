@@ -405,3 +405,13 @@ describePosix('a command in the workspace machine (CGLAB-696 task 5)', () => {
     expect(d.env).toBe(process.env);
   });
 });
+
+/** CGLAB-696 task 7: a command runs in the machine of its repository, in the folder it was given. */
+describePosix('runAirlockExec: a command in a subdirectory (CGLAB-696 task 7)', () => {
+  it('uses the repository top as the workspace, and runs the command in its folder', async () => {
+    const d = deps({ exists: (p: string) => ['/work/repo/.git', '/work/repo/.git/HEAD', '/work/repo/.git/objects', '/work/repo/.git/refs'].includes(p), isDirectory: (p: string) => p === '/work/repo/.git' });
+    await runAirlockExec('npm test', { cwd: '/work/repo/packages/a' }, d);
+    expect(specOf(d).workspace).toBe('/work/repo');
+    expect(cmdOf(d).cwd).toBe('/work/repo/packages/a');
+  });
+});

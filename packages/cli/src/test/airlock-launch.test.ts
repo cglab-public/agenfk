@@ -595,3 +595,38 @@ describePosix('runAirlockLaunch: the runtime installed first (CGLAB-696 task 6)'
     expect(d.runtime.launch).not.toHaveBeenCalled();
   });
 });
+
+/** CGLAB-696 task 7: the machine is the repository's - a launch from a subdirectory uses the repository top. */
+describePosix('runAirlockLaunch: launched from a subdirectory (CGLAB-696 task 7)', () => {
+  it('uses the repository top as the workspace, and runs the client in the subdirectory', async () => {
+    const d = deps({ cwd: '/work/repo/packages/a', isDirectory: (p: string) => p === '/work/repo/.git' }, { '/work/repo/.git': {}, '/work/repo/.git/HEAD': {}, '/work/repo/.git/objects': {}, '/work/repo/.git/refs': {} });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).workspace).toBe('/work/repo');
+    expect(specOf(d).filesystem.allowWrite).toContain('/work/repo');
+    expect(cmdOf(d).cwd).toBe('/work/repo/packages/a');
+  });
+
+  it('a linked worktree\'s top is its own folder (its .git is a file)', async () => {
+    const d = deps({ cwd: '/work/wt/src' }, { '/work/wt/.git': 'gitdir: /work/repo/.git/worktrees/wt' });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).workspace).toBe('/work/wt');
+  });
+
+  it('an empty .git above is no repository: the workspace is not widened to it (review 01a18d52)', async () => {
+    const d = deps({ cwd: '/work/notes', isDirectory: (p: string) => p === '/work/.git' }, { '/work/.git': {} });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).workspace).toBe('/work/notes');
+  });
+
+  it('a .git above with only a HEAD is no repository either (review 01a18d52, pass 2)', async () => {
+    const d = deps({ cwd: '/work/notes', isDirectory: (p: string) => p === '/work/.git' }, { '/work/.git': {}, '/work/.git/HEAD': {} });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).workspace).toBe('/work/notes');
+  });
+
+  it('outside a repository the folder it is launched from is the workspace', async () => {
+    const d = deps({ cwd: '/work/notes' });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).workspace).toBe('/work/notes');
+  });
+});

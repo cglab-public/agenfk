@@ -302,6 +302,24 @@ export function findAgenfkDirs(
 /** `.agenfk` directories in the workspace and above it (not the home one, handled apart). */
 /** Project `.agenfk` directories from `cwd` up (the home one aside): never writable from the sandbox. */
 /** The workspace's `.git` when it is a directory (not a linked worktree's `.git` file): BUG 4639c6a4. */
+/**
+ * The workspace of a launch from `cwd` (CGLAB-696 task 7): the repository's top - the nearest
+ * folder above with a .git (a directory, or a linked worktree's file) - so a machine is the
+ * repository's and git in it sees the whole repository; `cwd` itself outside one. Never the home
+ * folder or above: a home kept in git would put all of it in the machine.
+ */
+export function workspaceOf(cwd: string, d: Pick<LaunchDeps, 'home' | 'exists' | 'isDirectory'>): string {
+  const home = path.resolve(d.home);
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    if (dir === home || path.dirname(dir) === dir) return path.resolve(cwd);
+    const dotGit = path.join(dir, '.git');
+    if (!d.exists(dotGit)) continue;
+    // A repository git would find (review 01a18d52): a .git directory with HEAD, objects and refs, or a .git file
+    // (a linked worktree's, which the machine's plan checks strictly). An empty .git widens nothing.
+    if (!d.isDirectory(dotGit) || ['HEAD', 'objects', 'refs'].every((n) => d.exists(path.join(dotGit, n)))) return dir;
+  }
+}
+
 export function workspaceGitDir(workspace: string, d: Pick<LaunchDeps, 'isDirectory'>): string | null {
   const dotGit = path.join(workspace, '.git');
   return d.isDirectory(dotGit) ? dotGit : null;
@@ -438,9 +456,10 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     throw new AirlockLaunchError(`The AgEnFK server address ${d.apiUrl} is not a URL.`);
   }
 
-  const nested = findAgenfkDirs(path.resolve(d.cwd), d);
+  const workspace = workspaceOf(d.cwd, d);
+  const nested = findAgenfkDirs(workspace, d);
   if (!nested.complete) {
-    const why = `Could not list every .agenfk directory under ${d.cwd} (a directory or symlink could not be read, or there were more than ${AGENFK_SCAN_LIMIT} to search)`;
+    const why = `Could not list every .agenfk directory under ${workspace} (a directory or symlink could not be read, or there were more than ${AGENFK_SCAN_LIMIT} to search)`;
     if (d.platform === 'linux') {
       throw new AirlockLaunchError(`${why}. On Linux each one has to be protected by name, so nothing was launched. Launch from a smaller workspace.`);
     }
@@ -496,7 +515,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
       spec = buildSandboxSpec(policy, {
         client,
         home: d.home,
-        workspace: path.resolve(d.cwd),
+        workspace,
         tempDirs: sharedTmp && sharedTmp !== d.tmpDir ? [d.tmpDir, sharedTmp] : [d.tmpDir],
         inferenceHosts: [endpoint.host],
         serverPort: relay.port,
@@ -506,7 +525,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         // A .agenfk made after launch is not a registered project; those that
         // exist now are, whatever the platform does with patterns.
         projectAgenfkDirs: [...projectAgenfkDirs(d), ...nested.dirs],
-        gitDir: workspaceGitDir(path.resolve(d.cwd), d),
+        gitDir: workspaceGitDir(workspace, d),
         maskedEnv,
         runtimePackageDir: d.runtimePackageDir,
         hostNetns: d.platform === 'linux' ? d.hostNetns ?? null : null,

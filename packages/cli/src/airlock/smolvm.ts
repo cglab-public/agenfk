@@ -77,6 +77,11 @@ export interface GuestPlan {
    * and replaced (the workspace's .git: its objects and refs stay writable).
    */
   pinned: string[];
+  /**
+   * Paths inside a read-only one bound writable again (a linked worktree's own git dir, under the
+   * read-only worktrees dir): a bind made below a read-only one is read-only itself (measured).
+   */
+  writable: string[];
   /** Paths inside the mounts bound read-only in the guest. */
   readOnly: string[];
   /** Paths inside the mounts the guest cannot read. */
@@ -218,8 +223,19 @@ function hardLinkedIn(p: string): string | null {
  * any later hop of the chain, or a linked directory in a hop's path, inside the mounts and outside
  * every read-only path. Null when the whole way is fixed.
  */
-function replaceableLinkOn(start: string, mounted: (p: string) => boolean, readOnly: string[]): string | null {
-  const fixed = (q: string) => !mounted(q) || readOnly.some((r) => inside(q, r));
+/**
+ * Whether `q` ends up read-only in the guest: the deepest read-only or writable bind holding it
+ * decides (a writable one below a read-only one gives it back, review 01a18d52).
+ */
+function underReadOnly(q: string, readOnly: string[], writable: string[]): boolean {
+  let best: { len: number; ro: boolean } | null = null;
+  for (const r of readOnly) if (inside(q, r) && (!best || r.length > best.len)) best = { len: r.length, ro: true };
+  for (const w of writable) if (inside(q, w) && (!best || w.length > best.len)) best = { len: w.length, ro: false };
+  return !!best?.ro;
+}
+
+function replaceableLinkOn(start: string, mounted: (p: string) => boolean, readOnly: string[], writable: string[]): string | null {
+  const fixed = (q: string) => !mounted(q) || underReadOnly(q, readOnly, writable);
   let cur = start;
   for (let hops = 0; hops < 40; hops++) {
     const next = path.resolve(path.dirname(cur), fs.readlinkSync(cur));
@@ -240,7 +256,7 @@ function replaceableLinkOn(start: string, mounted: (p: string) => boolean, readO
  * read-only), one that points into the mounts at nothing yet (refused: the session could create
  * it), and a file with another name (refused: the other name may be writable).
  */
-function aliasesIn(tree: string, mounted: (p: string) => boolean, readOnly: string[]): string[] {
+function aliasesIn(tree: string, mounted: (p: string) => boolean, readOnly: string[], writable: string[]): string[] {
   const targets: string[] = [];
   let seen = 0;
   const visit = (p: string, depth: number) => {
@@ -249,12 +265,12 @@ function aliasesIn(tree: string, mounted: (p: string) => boolean, readOnly: stri
     if (st.isSymbolicLink()) {
       // Each hop of the chain, and each linked directory on the way, could be swapped by the
       // session for a link to something else: refused unless it is itself protected.
-      const swappable = replaceableLinkOn(p, mounted, readOnly);
+      const swappable = replaceableLinkOn(p, mounted, readOnly, writable);
       if (swappable) throw new Error(`Airlock cannot protect ${p}: it resolves through ${swappable}, a link the session could replace. Nothing was launched.`);
       const lexical = path.resolve(path.dirname(p), fs.readlinkSync(p));
       let target = lexical;
       try { target = fs.realpathSync(p); } catch { /* dangling */ }
-      if (!mounted(target) || readOnly.some((r) => inside(target, r))) return;
+      if (!mounted(target) || underReadOnly(target, readOnly, writable)) return;
       if (!kindOfPath(target)) throw new Error(`Airlock cannot protect ${p}: it links to ${target}, which does not exist and the session could create. Nothing was launched.`);
       targets.push(target);
       return;
@@ -471,6 +487,54 @@ export const INSTALL_TIMEOUT = '600s';
 /** The largest lockfile read: the session writes it, and the launcher reads it on the host. */
 const MAX_LOCKFILE = 64 * 1024 * 1024;
 
+/**
+ * A linked worktree's git metadata (CGLAB-696 task 7): its .git file names its git dir, which
+ * names (commondir) the repository's common git dir, and sits in that dir's worktrees/. Null when
+ * the workspace's .git is not such a file; a throw when it is one that does not lead back.
+ */
+export function linkedWorktreeGit(workspace: string): { gitDir: string; common: string; name: string } | null {
+  const dotGit = path.join(workspace, '.git');
+  let st: fs.Stats;
+  try { st = fs.lstatSync(dotGit); } catch { return null; }
+  if (!st.isFile()) return null;
+  const refuse = (why: string): never => {
+    throw new Error(`Airlock cannot run in this linked git worktree (${workspace}): ${why}. Nothing was launched.`);
+  };
+  const pointer = /^gitdir: (.+)$/m.exec(readRegularFile(dotGit, 4096)?.toString('utf8') ?? '')?.[1]?.trim();
+  if (!pointer) refuse('its .git file names no git dir');
+  let gitDir: string;
+  let common: string;
+  try {
+    const named = path.resolve(workspace, pointer!);
+    gitDir = fs.realpathSync(named);
+    // Git follows the pointer as written on every run: a link anywhere on its way could be repointed
+    // once checked (review 01a18d52). The same for the commondir it names.
+    if (gitDir !== named) throw new Error(`${named} runs through a symbolic link`);
+    const commondir = readRegularFile(path.join(gitDir, 'commondir'), 4096)?.toString('utf8').trim();
+    if (!commondir) throw new Error('it has no commondir');
+    const namedCommon = path.resolve(gitDir, commondir);
+    common = fs.realpathSync(namedCommon);
+    if (common !== namedCommon) throw new Error(`${namedCommon} runs through a symbolic link`);
+  } catch (e) {
+    return refuse(`its git dir cannot be followed back to its repository (${(e as Error)?.message ?? e})`);
+  }
+  // Its git dir is the one the common dir keeps for it: nothing else would be mounted for git.
+  if (path.dirname(gitDir!) !== path.join(common!, 'worktrees') || !fs.statSync(common!).isDirectory()) {
+    refuse(`its git dir ${gitDir!} is not one of ${path.join(common!, 'worktrees')}`);
+  }
+  // A repository whose git dir lives apart (--separate-git-dir): its main checkout, whose config
+  // host git also reads, cannot be found from here, so what that config pulls in cannot be protected.
+  if (path.basename(common!) !== '.git') refuse(`its repository keeps its git dir apart (${common!}), and its main checkout cannot be found to protect what its config pulls in`);
+  // And it names this worktree back (another worktree's would make its metadata this one's).
+  const back = readRegularFile(path.join(gitDir!, 'gitdir'), 4096)?.toString('utf8').trim();
+  let backReal: string | null = null;
+  try { backReal = back ? fs.realpathSync(path.resolve(gitDir!, back)) : null; } catch { /* names nothing */ }
+  if (backReal !== fs.realpathSync(dotGit)) refuse(`its git dir ${gitDir!} belongs to another worktree (${back ?? 'it names none'})`);
+  // Linked parts would let what is mounted move: the pointer's git dir and the common dir are real directories.
+  for (const p of [gitDir!, common!]) if (fs.lstatSync(p).isSymbolicLink()) refuse(`${p} is a symbolic link`);
+  return { gitDir, common, name: path.basename(gitDir) };
+}
+
 export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: GitConfigReader = readGitConfig, holding: ReadonlySet<string> = new Set()): GuestPlan {
   // A placeholder the machine already holds is planned as what it stands for: missing. So a session
   // joining plans what the first one did.
@@ -482,6 +546,9 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   for (const p of [...new Set(candidates)].sort((a, b) => a.length - b.length)) {
     if (!roots.some((r) => inside(p, r))) roots.push(p);
   }
+  // A linked worktree: the repository's common git dir is mounted too, for git in the guest.
+  const linked = linkedWorktreeGit(workspace);
+  if (linked && !roots.some((r) => inside(linked.common, r))) roots.push(linked.common);
   const mounted = (p: string) => roots.some((r) => inside(p, r));
   // A mount the denies cannot be applied inside: the home itself (or above it) would put all of
   // it in the guest read-write, and a root that is (or is in) a protected path would leave that
@@ -502,10 +569,25 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   const placeholders: Placeholder[] = [];
   const dotGit = path.resolve(workspace, '.git');
   const gitKind = mounted(dotGit) ? kindOf(dotGit) : null;
-  if (gitKind === 'file') {
-    // Its git dir lives in the main checkout, outside the mounts: git in the guest could not work,
-    // and the file would name the git dir host git uses.
-    throw new Error(`Airlock cannot run in a linked git worktree yet (${workspace}): its git metadata is in the main checkout, outside what the machine mounts. Launch it from the main checkout.`);
+  // A linked worktree's pointer names the git dir host git uses: read-only. Its own git dir stays
+  // writable (index, HEAD), pinned with the common dir; what else names git config is protected.
+  const writable: string[] = [];
+  const worktreeHeld: string[] = [];
+  const worktreesHidden: string[] = [];
+  if (gitKind === 'file' && linked) {
+    readOnly.push(dotGit);
+    pinned.push(linked.common);
+    writable.push(linked.gitDir);
+    // Everything in the common dir host git reads config, hooks or another repository from (held
+    // when missing), and the main checkout's own index, HEAD and reflog (only when there: a held
+    // index would be a directory); objects and refs stay writable, as a main checkout's do.
+    worktreeHeld.push(...[...GIT_PROTECTED, 'worktrees', 'commondir', 'config.worktree', 'info', 'modules'].map((n) => path.join(linked.common, n)),
+      ...['index', 'HEAD', path.join('logs', 'HEAD')].map((n) => path.join(linked.common, n)).filter((f) => kindOfPath(f)),
+      ...['commondir', 'gitdir', 'config.worktree'].map((n) => path.join(linked.gitDir, n)));
+    // The other worktrees' metadata is theirs.
+    for (const name of fs.readdirSync(path.join(linked.common, 'worktrees'))) {
+      if (name !== linked.name) worktreesHidden.push(path.join(linked.common, 'worktrees', name));
+    }
   }
   if (gitKind === 'dir') pinned.push(dotGit);
   // No repository here: an empty, read-only .git keeps one from being planted for host git (which
@@ -514,7 +596,7 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     placeholders.push({ path: dotGit, kind: 'dir' });
     readOnly.push(dotGit);
   }
-  const held = [...spec.filesystem.denyWrite, ...(gitKind === 'dir' ? GIT_PROTECTED.map((p) => path.join(dotGit, p)) : [])];
+  const held = [...spec.filesystem.denyWrite, ...(gitKind === 'dir' ? GIT_PROTECTED.map((p) => path.join(dotGit, p)) : []), ...worktreeHeld];
   // Repositories below the workspace: their metadata is protected as the top one's is, and a
   // pointer file (a submodule's) can never be redirected.
   const repos = [workspace];
@@ -531,6 +613,9 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   // What git's config adds to what host git runs, read wherever host git may run (git finds the
   // repository above a workspace with none of its own): the config files, the files includes name,
   // and the hooks dir.
+  // A linked worktree's main checkout: what its own config (its config.worktree too) pulls in is
+  // in the mounted common dir, and host git reads it there (review 01a18d52).
+  if (linked && path.basename(linked.common) === '.git' && kindOfPath(path.dirname(linked.common)) === 'dir') repos.push(path.dirname(linked.common));
   for (const repo of repos) {
     const git = gitConfigDependencies(repo, readConfig);
     for (const p of [...git.hooksPaths, ...git.includes]) {
@@ -547,10 +632,11 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
       readOnly.push(p);
       continue;
     }
-    // Held only directly in a mount root or the pinned .git: the guest cannot swap either for a
-    // link while a session runs, so creating the placeholder cannot be steered out of the mounts.
+    // Held only directly in a mount root, the pinned .git or a writable bind (a worktree's git dir):
+    // the guest cannot swap any of them for a link while a session runs (each is a mount point), so
+    // creating the placeholder cannot be steered out of the mounts.
     const parent = path.dirname(p);
-    if (!held.some((h) => path.resolve(h) === p) || !(roots.includes(parent) || pinned.includes(parent))) continue;
+    if (!held.some((h) => path.resolve(h) === p) || !(roots.includes(parent) || pinned.includes(parent) || writable.includes(parent))) continue;
     const base = path.basename(p);
     placeholders.push(base in FILE_PLACEHOLDERS ? { path: p, kind: 'file', content: FILE_PLACEHOLDERS[base] } : { path: p, kind: 'dir' });
     readOnly.push(p);
@@ -560,7 +646,7 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   for (const queue = [...readOnly]; queue.length;) {
     const p = queue.shift() as string;
     if (!kindOf(p)) continue;
-    for (const t of aliasesIn(p, mounted, readOnly)) {
+    for (const t of aliasesIn(p, mounted, readOnly, writable)) {
       if (roots.includes(t)) throw new Error(`Airlock cannot protect what ${p} links to: ${t} is a whole write root of the session. Nothing was launched.`);
       if (!readOnly.includes(t)) {
         readOnly.push(t);
@@ -576,7 +662,8 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     for (let a = path.dirname(p); a !== root && inside(a, root); a = path.dirname(a)) {
       // One that is read-only, or inside one, cannot be renamed already: a pin there would only
       // take the place of its read-only bind.
-      if (!pinned.includes(a) && !readOnly.some((r) => inside(a, r))) pinned.push(a);
+      // A writable bind below a read-only one gives renaming back: underReadOnly (review 01a18d52).
+      if (!pinned.includes(a) && !underReadOnly(a, readOnly, writable)) pinned.push(a);
     }
   }
   // A bind follows a link: it would protect the target and leave the link itself replaceable.
@@ -601,6 +688,10 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     if (linked) throw new Error(`Airlock cannot hide ${linked}: it has another name (a hard link), which the session could read it by. Nothing was launched.`);
     hidden.push({ path: p, kind });
   }
+  for (const p of worktreesHidden) {
+    if (fs.lstatSync(p).isSymbolicLink()) throw new Error(`Airlock cannot hide ${p}: it is a symbolic link. Nothing was launched.`);
+    hidden.push({ path: p, kind: kindOfPath(p) === 'file' ? 'file' : 'dir' });
+  }
 
   const platform: GuestPlan['platform'] = [];
   const fromLockfiles = lockfileDestinations(workspace);
@@ -621,7 +712,7 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   }
 
   return {
-    mounts: roots.map((r) => ({ host: r, guest: r, readOnly: false as const })), pinned, readOnly, hidden, placeholders, platform,
+    mounts: roots.map((r) => ({ host: r, guest: r, readOnly: false as const })), pinned, writable, readOnly, hidden, placeholders, platform,
     ...(fromLockfiles.incomplete ? { platformIncomplete: fromLockfiles.incomplete } : {}),
   };
 }
@@ -665,6 +756,8 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
     'pin() { mounted "$2" || mount --rbind "$1" "$1"; }',
     // Read-only even when already a mount (an earlier session's): the remount is what protects.
     'ro() { mounted "$2" || mount --rbind "$1" "$1"; mount -o remount,bind,ro "$1"; }',
+    // Writable again below a read-only one (after it: deeper paths come later).
+    'rw() { mounted "$2" || mount --rbind "$1" "$1"; mount -o remount,bind,rw "$1"; }',
     `hide_file() { hidden "$2" || { mount --bind ${GUEST_HIDE}/empty "$1"; mount -o remount,bind,ro "$1"; }; }`,
     'hide_dir() { hidden "$2" || mount -t tmpfs -o ro,size=4k,mode=000 tmpfs "$1"; }',
     // The session's uid is the host user's, which the image does not know: ssh refuses a user it cannot look up.
@@ -687,7 +780,7 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
     ...platformBindLines(plan.platform, uid, gid),
     // Hidden first, then pins and read-only binds outer first.
     ...plan.hidden.map((h) => `hide_${h.kind} ${quote(h.path)} ${quote(mountinfoPath(h.path))}`),
-    ...[...plan.pinned.map((p) => ['pin', p] as const), ...plan.readOnly.map((p) => ['ro', p] as const)]
+    ...[...plan.pinned.map((p) => ['pin', p] as const), ...plan.readOnly.map((p) => ['ro', p] as const), ...plan.writable.map((p) => ['rw', p] as const)]
       .sort((a, b) => a[1].split(path.sep).length - b[1].split(path.sep).length)
       .map(([op, p]) => `${op} ${quote(p)} ${quote(mountinfoPath(p))}`),
   ];
@@ -1153,7 +1246,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       const machine = await this.ensureMachine(name, workspace, spec.machineImage ?? this.d.image);
       const network = path.join(this.machineDir(name), 'network.json');
       const protections = path.join(this.machineDir(name), 'protections.json');
-      const applied = JSON.stringify({ pinned: plan.pinned, readOnly: plan.readOnly, hidden: plan.hidden });
+      const applied = JSON.stringify({ pinned: plan.pinned, writable: plan.writable, readOnly: plan.readOnly, hidden: plan.hidden });
       const recorded = (file: string): string | null => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } };
       if (shared && !joining && recorded(network) !== JSON.stringify(spec.network)) {
         // One interceptor decides for the whole machine: a session under another network policy waits its turn.

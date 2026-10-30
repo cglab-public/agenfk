@@ -240,7 +240,7 @@ function liveSession(name: string, id = 'other', network: SandboxSpec['network']
   // The network policy and file protections the machine was started under, as the session that started it records them.
   fs.writeFileSync(path.join(stateDir, 'machines', name, 'network.json'), JSON.stringify(network));
   const plan = guestPlanOf(specOf(), workspace);
-  fs.writeFileSync(path.join(stateDir, 'machines', name, 'protections.json'), JSON.stringify({ pinned: plan.pinned, readOnly: plan.readOnly, hidden: plan.hidden }));
+  fs.writeFileSync(path.join(stateDir, 'machines', name, 'protections.json'), JSON.stringify({ pinned: plan.pinned, writable: plan.writable, readOnly: plan.readOnly, hidden: plan.hidden }));
   fs.writeFileSync(path.join(stateDir, 'machines', name, 'injection.json'), JSON.stringify(specOf().maskedEnv.map((m) => [m.name, [...m.injectHosts].sort()]).sort()));
 }
 /** The mounts this session's plan makes, as `mount ls` lists them. */
@@ -641,6 +641,143 @@ describe('a session in the machine', () => {
   });
 });
 
+/**
+ * CGLAB-696 task 7: a linked git worktree. Its .git is a file naming its git dir in the main
+ * checkout (<common>/worktrees/<name>), outside the workspace: the machine mounts the common git
+ * dir too, protected as a main checkout's is, the worktree's own git dir writable (index, HEAD),
+ * and the other worktrees' metadata hidden.
+ */
+describe.skipIf(process.platform === 'win32')('guestPlanOf: a linked git worktree (CGLAB-696 task 7)', () => {
+  let main: string;
+  let common: string;
+  let wt: string;
+  let wtGit: string;
+  const git = (dir: string, ...a: string[]) => {
+    const r = spawnSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+  };
+  beforeEach(() => {
+    main = path.join(root, 'work', 'main');
+    fs.mkdirSync(main, { recursive: true });
+    git(main, 'init', '-q');
+    git(main, 'commit', '-q', '--allow-empty', '-m', 'first');
+    wt = path.join(root, 'work', 'wt');
+    git(main, 'worktree', 'add', '-q', wt);
+    git(main, 'worktree', 'add', '-q', path.join(root, 'work', 'other'));
+    common = fs.realpathSync(path.join(main, '.git'));
+    wtGit = path.join(common, 'worktrees', 'wt');
+  });
+  const plan = () => guestPlanOf(specOf({ workspace: wt, gitDir: null }), wt);
+
+  it('mounts the common git dir beside the worktree, and nothing else of the main checkout', () => {
+    const roots = plan().mounts.map((m) => m.host);
+    expect(roots).toEqual(expect.arrayContaining([wt, common]));
+    expect(roots).not.toContain(main);
+  });
+
+  it('protects the common git dir as a main checkout\'s, and what points the worktree at it', () => {
+    const p = plan();
+    expect(p.readOnly).toEqual(expect.arrayContaining([
+      path.join(wt, '.git'), path.join(common, 'config'), path.join(common, 'hooks'),
+      path.join(common, 'worktrees'), path.join(wtGit, 'commondir'), path.join(wtGit, 'gitdir'),
+    ]));
+    expect(p.placeholders).toContainEqual({ path: path.join(wtGit, 'config.worktree'), kind: 'file', content: '' });
+    expect(p.pinned).toContain(common);
+  });
+
+  it('keeps the worktree\'s own git dir writable: its index and HEAD are the session\'s commits', () => {
+    expect(plan().readOnly).not.toContain(wtGit);
+    // Bound writable over the read-only worktrees dir: a bind made below a read-only one is read-only (measured).
+    expect(plan().writable).toEqual([wtGit]);
+  });
+
+  it('hides the other worktrees\' metadata', () => {
+    expect(plan().hidden).toContainEqual({ path: path.join(common, 'worktrees', 'other'), kind: 'dir' });
+    expect(plan().hidden.map((h) => h.path)).not.toContain(wtGit);
+  });
+
+  it('binds the worktree\'s git dir writable over the read-only worktrees dir: the read-only one first', () => {
+    const script = guestSetupScript(plan(), 503, 20);
+    const ro = script.indexOf(`ro '${path.join(common, 'worktrees')}'`);
+    const rw = script.indexOf(`rw '${wtGit}'`);
+    expect(ro).toBeGreaterThan(-1);
+    expect(rw).toBeGreaterThan(ro);
+    expect(script).toMatch(/rw\(\) \{[^}]*remount,bind,rw/);
+  });
+
+  it('a main checkout has nothing bound writable', () => {
+    expect(guestPlanOf(specOf(), workspace).writable).toEqual([]);
+  });
+
+  it('protects what else in the common dir host git reads or runs: commondir, config.worktree, info, modules (review 01a18d52)', () => {
+    const p = plan();
+    expect(p.readOnly).toEqual(expect.arrayContaining([path.join(common, 'info'), path.join(common, 'commondir'), path.join(common, 'config.worktree'), path.join(common, 'modules')]));
+    expect(p.placeholders).toEqual(expect.arrayContaining([
+      { path: path.join(common, 'commondir'), kind: 'file', content: '.\n' },
+      { path: path.join(common, 'config.worktree'), kind: 'file', content: '' },
+      { path: path.join(common, 'modules'), kind: 'dir' },
+    ]));
+  });
+
+  it('keeps the main checkout\'s own index, HEAD and reflog read-only (review 01a18d52)', () => {
+    fs.mkdirSync(path.join(common, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(common, 'logs', 'HEAD'), '');
+    expect(plan().readOnly).toEqual(expect.arrayContaining([path.join(common, 'index'), path.join(common, 'HEAD'), path.join(common, 'logs', 'HEAD')].filter((f) => fs.existsSync(f))));
+    expect(plan().readOnly).toContain(path.join(common, 'HEAD'));
+  });
+
+  it('a protected link into the worktree\'s own git dir keeps its target read-only, bound after the writable one (review 01a18d52)', () => {
+    fs.writeFileSync(path.join(wtGit, 'hook-script'), '#!/bin/sh\n');
+    fs.symlinkSync(path.join(wtGit, 'hook-script'), path.join(common, 'hooks', 'pre-commit'));
+    const p = plan();
+    expect(p.readOnly).toContain(path.join(wtGit, 'hook-script'));
+    const script = guestSetupScript(p, 503, 20);
+    expect(script.indexOf(`ro '${path.join(wtGit, 'hook-script')}'`)).toBeGreaterThan(script.indexOf(`rw '${wtGit}'`));
+  });
+
+  it('pins the directories between such a target and the writable git dir: none can be swapped (review 01a18d52, pass 2)', () => {
+    fs.mkdirSync(path.join(wtGit, 'scripts'));
+    fs.writeFileSync(path.join(wtGit, 'scripts', 'pre-commit'), '#!/bin/sh\n');
+    fs.symlinkSync(path.join(wtGit, 'scripts', 'pre-commit'), path.join(common, 'hooks', 'pre-commit'));
+    const p = plan();
+    expect(p.readOnly).toContain(path.join(wtGit, 'scripts', 'pre-commit'));
+    expect([...p.pinned, ...p.readOnly]).toContain(path.join(wtGit, 'scripts'));
+  });
+
+  it('refuses a pointer whose path runs through a symbolic link: the link could be repointed (review 01a18d52, pass 2)', () => {
+    fs.symlinkSync(common, path.join(wt, 'via'));
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(wt, 'via', 'worktrees', 'wt')}\n`);
+    expect(() => plan()).toThrow(/linked git worktree/);
+  });
+
+  it('protects what the main checkout\'s own config pulls in (its config.worktree included) (review 01a18d52, pass 2)', () => {
+    fs.writeFileSync(path.join(common, 'extra.conf'), '[alias]\n');
+    git(main, 'config', 'extensions.worktreeConfig', 'true');
+    git(main, 'config', '--worktree', 'include.path', path.join(common, 'extra.conf'));
+    expect(plan().readOnly).toContain(path.join(common, 'extra.conf'));
+  });
+
+  it('refuses a worktree of a repository whose git dir lives apart (--separate-git-dir): its main checkout\'s config cannot be found (review 01a18d52, pass 3)', () => {
+    const sep = path.join(root, 'work', 'sep');
+    const meta = path.join(root, 'meta');
+    spawnSync('git', ['init', '-q', `--separate-git-dir=${meta}`, sep]);
+    git(sep, 'commit', '-q', '--allow-empty', '-m', 'first');
+    const sepWt = path.join(root, 'work', 'sep-wt');
+    git(sep, 'worktree', 'add', '-q', sepWt);
+    expect(() => guestPlanOf(specOf({ workspace: sepWt, gitDir: null }), sepWt)).toThrow(/linked git worktree.*apart/s);
+  });
+
+  it('refuses a .git that names another worktree\'s git dir: the git dir must name this worktree back (review 01a18d52)', () => {
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(common, 'worktrees', 'other')}\n`);
+    expect(() => plan()).toThrow(/linked git worktree/);
+  });
+
+  it('refuses a worktree whose git dir does not lead back to the common dir it sits in', () => {
+    fs.writeFileSync(path.join(wtGit, 'commondir'), '/somewhere/else\n');
+    expect(() => plan()).toThrow(/linked git worktree/);
+  });
+});
+
 describe('guestPlanOf: what the session cannot move aside or plant', () => {
   it('pins the workspace .git, so it cannot be renamed and replaced around its read-only hooks and config', () => {
     const p = guestPlanOf(specOf(), workspace);
@@ -941,7 +1078,7 @@ describe('guestPlanOf: what the session cannot move aside or plant', () => {
     expect(p.readOnly).toContain(path.join(workspace, '.git'));
   });
 
-  it('refuses a linked git worktree, saying why: its git metadata is outside the mounts', () => {
+  it('refuses a linked git worktree whose git dir it cannot follow back to its repository, saying why', () => {
     fs.rmSync(path.join(workspace, '.git'), { recursive: true });
     fs.writeFileSync(path.join(workspace, '.git'), 'gitdir: /elsewhere/.git/worktrees/x\n');
     expect(() => guestPlanOf(specOf({ gitDir: null }), workspace)).toThrow(/linked git worktree/);
@@ -2255,6 +2392,58 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('the AgEnFK base image in a re
       expect(fs.readFileSync(path.join(workspace, 'pi.out'), 'utf8')).toBe('pi-sees-its-state\n');
     } finally {
       await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      icpt.close();
+      process.env.HOME = sandboxHome;
+    }
+  }, 600_000);
+});
+
+describe.skipIf(!smolvmHere || !baseImageArchive)('a linked git worktree in a real machine (CGLAB-696 task 7)', () => {
+  it('git works in the worktree as the session user, commits land, and the main checkout\'s config, hooks and other worktrees stay out of reach', async () => {
+    const run = (dir: string, ...a: string[]) => spawnSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+    const main = path.join(root, 'work', 'main');
+    fs.mkdirSync(main, { recursive: true });
+    run(main, 'init', '-q');
+    run(main, 'commit', '-q', '--allow-empty', '-m', 'first');
+    const wt = path.join(root, 'work', 'wt');
+    run(main, 'worktree', 'add', '-q', wt);
+    run(main, 'worktree', 'add', '-q', path.join(root, 'work', 'other'));
+    const common = fs.realpathSync(path.join(main, '.git'));
+    const icpt = await allowAllInterceptor();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address: icpt.address, token: icpt.token }), watch: () => () => undefined, stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'), addRoute: () => () => undefined,
+    };
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: {} });
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      const out = path.join(wt, 'probe.out');
+      const probe = [
+        'git status --porcelain >/dev/null || echo status-failed',
+        'echo x > f && git add f && git -c user.email=g@g -c user.name=g commit -qm in-guest || echo commit-failed',
+        `cat ${path.join(common, 'worktrees', 'other', 'HEAD')} >/dev/null 2>&1 && echo other-worktree-visible`,
+        `{ echo x >> ${path.join(common, 'config')}; } 2>/dev/null && echo common-config-writable`,
+        `{ echo x > ${path.join(common, 'hooks', 'pre-commit')}; } 2>/dev/null && echo hooks-writable`,
+        `{ echo /tmp > ${path.join(common, 'worktrees', 'wt', 'commondir')}; } 2>/dev/null && echo commondir-writable`,
+        `{ echo x > .git; } 2>/dev/null && echo pointer-writable`,
+        `mkdir ${path.join(common, 'worktrees', 'planted')} 2>/dev/null && echo worktrees-writable`,
+        `{ echo /tmp > ${path.join(common, 'commondir')}; } 2>/dev/null && echo common-commondir-writable`,
+        `mkdir -p ${path.join(common, 'modules', 'x')} 2>/dev/null && echo modules-writable`,
+        `{ echo x >> ${path.join(common, 'info', 'exclude')}; } 2>/dev/null && echo info-writable`,
+        `{ echo x > ${path.join(common, 'index')}; } 2>/dev/null && echo main-index-writable`,
+        // The verdict is the output: the refusals above leave the last status non-zero.
+        'true',
+      ].join('; ');
+      const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ workspace: wt, gitDir: null, inferenceHosts: [] }));
+      const launched = await rt.launch(spec, { file: 'sh', args: ['-c', `(${probe}) > ${out} 2>&1`], cwd: wt });
+      expect((await launched.exited).code).toBe(0);
+      expect(fs.readFileSync(out, 'utf8')).toBe('');
+      // The commit is the host repository's.
+      expect(run(main, 'log', '--all', '--format=%s').stdout).toContain('in-guest');
+    } finally {
+      await rt.reset(wt).catch(() => undefined);
       await rt.dispose();
       icpt.close();
       process.env.HOME = sandboxHome;
