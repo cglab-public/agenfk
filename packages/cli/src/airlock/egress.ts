@@ -46,6 +46,9 @@ export const GATEWAY = '100.96.0.1';
  * listens on a Unix socket in the machine's private routes dir, never a TCP port: a launcher that
  * crashed leaves a dead socket (refused), and no other process can take its place there.
  */
+/** What the decider sends a key injector before a flow: this, the address it allowed, a newline. */
+export const INJECT_PREFACE = 'AGENFK-DEST ';
+
 export type Route =
   | { kind: 'relay'; port: number; socket: string }
   | { kind: 'inject'; host: string; port: number; socket: string };
@@ -501,7 +504,9 @@ export class EgressService {
         // answer() redirects only what it allows. Every session's injector swaps the machine's
         // placeholders: any live one will do.
         const injectors = routes.filter((x) => x.kind === 'inject' && x.port === flow.port && x.host === d.host).map((x) => x.socket);
-        this.answer(sock, d, injectors.length ? () => this.redirect(sock, flow, injectors) : undefined);
+        // The injector is told the address this flow was allowed to: it connects there, never by
+        // the name again, which could resolve elsewhere by then (story review 2).
+        this.answer(sock, d, injectors.length ? () => this.redirect(sock, flow, injectors, Buffer.from(`${INJECT_PREFACE}${flow.ip}\n`)) : undefined);
       }, () => sock.destroy());
     });
   }
@@ -519,9 +524,9 @@ export class EgressService {
    * Reply 2: this connection becomes the guest's stream. It is carried to the first of `sockets`
    * that takes a connection, the flow's first bytes first (smolvm does not send them again). A
    * socket nothing listens on (its launcher gone) is passed over; none left refuses the flow: no 2
-   * is sent before a connection is made.
+   * is sent before a connection is made. `preface` goes first, when there is one.
    */
-  private redirect(sock: net.Socket, flow: Flow, sockets: string[]): void {
+  private redirect(sock: net.Socket, flow: Flow, sockets: string[], preface?: Buffer): void {
     const [socket, ...rest] = sockets;
     if (!socket) { sock.destroy(); return; }
     if (sock.destroyed) return;
@@ -529,7 +534,7 @@ export class EgressService {
     let connected = false;
     up.on('error', () => {
       up.destroy();
-      if (!connected) { this.redirect(sock, flow, rest); return; }
+      if (!connected) { this.redirect(sock, flow, rest, preface); return; }
       sock.destroy();
     });
     up.once('connect', () => {
@@ -540,6 +545,7 @@ export class EgressService {
       sock.on('close', () => up.destroy());
       up.on('close', () => sock.destroy());
       sock.write(Buffer.from([2]));
+      if (preface) up.write(preface);
       up.write(flow.payload);
       sock.pipe(up);
       up.pipe(sock);

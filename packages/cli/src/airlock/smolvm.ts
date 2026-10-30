@@ -1507,8 +1507,15 @@ export class SmolvmRuntime implements AirlockRuntime {
       // Key injection: every session's injector must know the same placeholders for the same hosts,
       // whichever of them the decider sends a flow to.
       const injection = path.join(this.machineDir(name), 'injection.json');
-      const injecting = JSON.stringify(spec.maskedEnv.map((m) => [m.name, [...m.injectHosts].sort()]).sort());
-      if (shared && !joining && recorded(injection) !== injecting) {
+      // And the same key: a keyed fingerprint of each value (story review 2), never the value - the
+      // same name with another value is another account, which the shared placeholders would mix.
+      const secret = this.machineSecret(name);
+      const keyOf = (n: string) => { const v = this.d.hostEnv[n]; return v ? crypto.createHmac('sha256', secret).update(v).digest('hex') : null; };
+      const injecting = JSON.stringify(spec.maskedEnv.map((m) => [m.name, [...m.injectHosts].sort(), keyOf(m.name)]).sort());
+      // A command joining the session injects nothing, or exactly what the session does (review): the
+      // decider may hand a session's flow to the command's injector, which must swap all its keys.
+      const foreign = joining && spec.maskedEnv.length > 0 && recorded(injection) !== injecting;
+      if ((shared && !joining && recorded(injection) !== injecting) || foreign) {
         throw new Error(`Another session is in the Airlock machine for ${workspace} with other model keys or inference hosts, so nothing was launched. Launch it once that session has ended.`);
       }
       if (shared && !joining && recorded(protections) !== applied) {
@@ -1634,6 +1641,19 @@ export class SmolvmRuntime implements AirlockRuntime {
       clearInterval(timer);
       await copying;
     };
+  }
+
+  /** The machine's own secret, which key fingerprints are made with: the user's alone. Made under the machine's lock. */
+  private machineSecret(name: string): Buffer {
+    const file = path.join(this.machineDir(name), 'key-secret');
+    try {
+      const s = fs.readFileSync(file);
+      if (s.length === 32) return s;
+    } catch { /* made below */ }
+    const s = crypto.randomBytes(32);
+    fs.writeFileSync(`${file}.tmp`, s, { mode: 0o600 });
+    fs.renameSync(`${file}.tmp`, file);
+    return s;
   }
 
   /** The session's HOME in the guest: the host user's path. */

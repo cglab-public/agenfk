@@ -14,7 +14,9 @@ import { realBroker, smolvmTestsEnabled } from './fixtures/smolvm-real';
 import tls from 'tls';
 import http from 'http';
 import crypto from 'crypto';
-import { machineCa, startKeyInjector, placeholderFor, type MachineCa } from '../airlock/keyInjector';
+import net from 'net';
+import https from 'https';
+import { machineCa, startKeyInjector, placeholderFor, upstreamTarget, leafFor, type MachineCa } from '../airlock/keyInjector';
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-inject-')); });
@@ -254,14 +256,117 @@ describe('startKeyInjector', () => {
     try {
       expect(viaSocket.socket).toBe(sock);
       const status = await new Promise<number>((resolve) => {
-        const req = http.request({ method: 'GET', path: '/v1', headers: { authorization: `Bearer ${PH}` }, createConnection: () => tls.connect({ path: sock, servername: 'api.inference.test', ca: ca.certPem }) }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
-        req.on('error', () => resolve(0));
-        req.end();
+        const raw = net.connect(sock, () => {
+          raw.write('AGENFK-DEST 127.0.0.1\n');
+          const req = http.request({ method: 'GET', path: '/v1', headers: { authorization: `Bearer ${PH}` }, createConnection: () => tls.connect({ socket: raw, servername: 'api.inference.test', ca: ca.certPem }) }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+          req.on('error', () => resolve(0));
+          req.end();
+        });
       });
       expect(status).toBe(200);
       expect(seen.at(-1)?.headers.authorization).toBe(`Bearer ${KEY}`);
     } finally {
       await viaSocket.close();
+    }
+  });
+
+  // Story review 2 (ISO-2): on its socket the injector is handed a flow the decider approved for an
+  // address; it connects there, never by the name again (a name re-resolving elsewhere would take the key).
+  const viaSocketPreface = async (preface: string | null, hosts: string[]) => {
+    const sock = path.join('/tmp', `agenfk-inj-${process.pid}-${Date.now()}-p.sock`);
+    const asked: Array<string | undefined> = [];
+    const inj = await startKeyInjector({ ca, routes: [{ host: 'api.inference.test', port: 443 }], secrets: [{ placeholder: PH, value: KEY }], socketPath: sock,
+      connectUpstream: (_h, _p, address) => { asked.push(address); return { protocol: 'http:', hostname: '127.0.0.1', port: upstreamPort }; } });
+    try {
+      const status = await new Promise<number>((resolve) => {
+        const raw = net.connect(sock, () => {
+          if (preface !== null) raw.write(preface);
+          const req = http.request({ method: 'GET', path: '/v1', headers: { authorization: `Bearer ${PH}` }, createConnection: () => tls.connect({ socket: raw, servername: 'api.inference.test', ca: ca.certPem }) }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+          req.on('error', () => resolve(0));
+          req.end();
+        });
+        raw.on('error', () => resolve(0));
+      });
+      hosts.push(...asked.map(String));
+      return status;
+    } finally {
+      await inj.close();
+    }
+  };
+
+  it('on its socket, sends a flow to the address the decider approved for it', async () => {
+    const asked: string[] = [];
+    expect(await viaSocketPreface('AGENFK-DEST 203.0.113.7\n', asked)).toBe(200);
+    expect(asked).toEqual(['203.0.113.7']);
+  });
+
+  it('on its socket, refuses a flow with no approved address, or one that is not an address', async () => {
+    const before = seen.length;
+    for (const preface of [null, 'AGENFK-DEST api.inference.test\n', 'HELLO 203.0.113.7\n']) {
+      expect(await viaSocketPreface(preface, []), String(preface)).toBe(0);
+    }
+    expect(seen.length).toBe(before);
+  });
+
+  it('connects upstream to the approved address, checking the certificate for the host\'s name', () => {
+    expect(upstreamTarget({ host: 'api.inference.test', port: 443 }, '203.0.113.7'))
+      .toEqual({ protocol: 'https:', hostname: '203.0.113.7', servername: 'api.inference.test', port: 443 });
+    // Without one (its loopback port, which only tests use): the name.
+    expect(upstreamTarget({ host: 'api.inference.test', port: 443 }, undefined))
+      .toEqual({ protocol: 'https:', hostname: 'api.inference.test', servername: 'api.inference.test', port: 443 });
+  });
+
+  // Review: the real upstream dial, not a stand-in - to the approved address, the certificate
+  // checked for the route's name.
+  it('dials the approved address over TLS and checks the certificate for the host\'s name', async () => {
+    const upCa = machineCa(fs.mkdtempSync(path.join(dir, 'up-')));
+    const serve = (host: string) => new Promise<https.Server>((resolve) => {
+      const leaf = leafFor(upCa, host);
+      const s = https.createServer({ key: leaf.key, cert: leaf.cert }, (req, res) => { seen.push({ method: req.method, url: req.url, headers: req.headers, body: '' }); res.end('ok'); });
+      s.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const call = async (server: https.Server) => {
+      const port = (server.address() as net.AddressInfo).port;
+      const sock = path.join('/tmp', `agenfk-inj-${process.pid}-${Date.now()}-t.sock`);
+      // The route's name resolves nowhere: only the approved address can be reached.
+      const inj = await startKeyInjector({ ca, routes: [{ host: 'api.inference.invalid', port }], secrets: [{ placeholder: PH, value: KEY }], socketPath: sock, upstreamCa: upCa.certPem });
+      try {
+        return await new Promise<number>((resolve) => {
+          const raw = net.connect(sock, () => {
+            raw.write('AGENFK-DEST 127.0.0.1\n');
+            const req = http.request({ method: 'GET', path: '/v1', headers: { authorization: `Bearer ${PH}` }, createConnection: () => tls.connect({ socket: raw, servername: 'api.inference.invalid', ca: ca.certPem }) }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+            req.on('error', () => resolve(0));
+            req.end();
+          });
+        });
+      } finally {
+        await inj.close();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    };
+    const before = seen.length;
+    expect(await call(await serve('api.inference.invalid'))).toBe(200);
+    expect(seen.at(-1)?.headers.authorization).toBe(`Bearer ${KEY}`);
+    // A certificate for another name: refused, and no request (no key) reached it.
+    const n = seen.length;
+    expect(await call(await serve('other.inference.invalid'))).toBe(502);
+    expect(seen.length).toBe(n);
+    expect(n).toBe(before + 1);
+  });
+
+  it('on its socket, cuts a flow whose TLS handshake never completes', async () => {
+    const sock = path.join('/tmp', `agenfk-inj-${process.pid}-${Date.now()}-h.sock`);
+    const inj = await startKeyInjector({ ca, routes: [{ host: 'api.inference.test', port: 443 }], secrets: [{ placeholder: PH, value: KEY }], socketPath: sock, handshakeTimeoutMs: 100 });
+    try {
+      const closed = await new Promise<boolean>((resolve) => {
+        const raw = net.connect(sock, () => raw.write('AGENFK-DEST 127.0.0.1\n'));
+        raw.on('close', () => resolve(true));
+        raw.on('error', () => undefined);
+        setTimeout(() => { resolve(false); raw.destroy(); }, 3000);
+      });
+      expect(closed).toBe(true);
+    } finally {
+      await inj.close();
     }
   });
 

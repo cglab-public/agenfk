@@ -18,7 +18,9 @@ import http from 'http';
 import https from 'https';
 import net from 'net';
 import path from 'path';
+import { Duplex } from 'stream';
 import tls from 'tls';
+import { INJECT_PREFACE } from './egress';
 
 /** The parts of node-forge used here (it ships no types). */
 interface ForgeCert {
@@ -108,7 +110,7 @@ export function machineCa(dir: string): MachineCa {
 }
 
 /** A certificate for `host`, issued by the machine's CA. */
-function leafFor(ca: MachineCa, host: string): { key: string; cert: string } {
+export function leafFor(ca: MachineCa, host: string): { key: string; cert: string } {
   const keys = rsaKeys();
   const caCert = forge.pki.certificateFromPem(ca.certPem);
   const cert = forge.pki.createCertificate();
@@ -148,15 +150,37 @@ const KEY_HEADERS = ['authorization', 'x-api-key', 'api-key', 'x-goog-api-key'];
 /** Not forwarded: they describe the guest's connection to the injector. */
 const HOP_HEADERS = ['connection', 'keep-alive', 'proxy-connection', 'proxy-authorization', 'te', 'trailer', 'upgrade'];
 
+export interface UpstreamTarget { protocol: 'http:' | 'https:'; hostname: string; port: number; servername?: string }
+
+/**
+ * Where a route's requests go: the address the decider allowed the flow to, over TLS whose
+ * certificate is checked for the route's host name - never the name looked up again, which could
+ * resolve to an address the policy denies by then (story review 2). Without one, the name.
+ */
+export function upstreamTarget(route: InjectorRoute, address: string | undefined): UpstreamTarget {
+  return { protocol: 'https:', hostname: address ?? route.host, servername: route.host, port: route.port };
+}
+
 export interface KeyInjectorOptions {
   ca: MachineCa;
   routes: InjectorRoute[];
   secrets: InjectorSecret[];
-  /** Where a route's requests go; the real host over TLS by default. */
-  connectUpstream?: (host: string, port: number) => { protocol: 'http:' | 'https:'; hostname: string; port: number };
-  /** A Unix socket to listen on (a session's route), instead of a loopback port. */
+  /** Where a route's requests go (`address`: the one the decider allowed); upstreamTarget by default. */
+  connectUpstream?: (host: string, port: number, address: string | undefined) => UpstreamTarget;
+  /**
+   * A Unix socket to listen on (a session's route), instead of a loopback port. There every
+   * connection is a flow the decider hands on: INJECT_PREFACE and the address it allowed come
+   * first, or the connection is refused.
+   */
   socketPath?: string;
+  /** Roots the upstream's certificate is checked against instead of the system's (tests). */
+  upstreamCa?: string;
+  /** How long a flow on the socket may take to finish its TLS handshake (ms). */
+  handshakeTimeoutMs?: number;
 }
+
+/** The most a preface can be: the marker, an IPv6 address, the newline. */
+const MAX_PREFACE = INJECT_PREFACE.length + 46;
 
 export async function startKeyInjector(o: KeyInjectorOptions): Promise<KeyInjector> {
   const swap = (v: string) => o.secrets.reduce((acc, s) => acc.split(s.placeholder).join(s.value), v);
@@ -173,6 +197,8 @@ export async function startKeyInjector(o: KeyInjectorOptions): Promise<KeyInject
       res.end();
     }
   });
+  /** The address the decider allowed each flow on the socket to. */
+  const allowed = new WeakMap<net.Socket, string>();
   const forward = (req: http.IncomingMessage, res: http.ServerResponse) => {
     const route = routeOf((req.socket as tls.TLSSocket).servername);
     if (!route) { res.writeHead(421).end(); return; }
@@ -191,9 +217,10 @@ export async function startKeyInjector(o: KeyInjectorOptions): Promise<KeyInject
       url.searchParams.set('key', swap(key));
       pathAndQuery = url.pathname + url.search;
     }
-    const target = o.connectUpstream?.(route.host, route.port) ?? { protocol: 'https:' as const, hostname: route.host, port: route.port };
+    const address = allowed.get(req.socket);
+    const target = o.connectUpstream?.(route.host, route.port, address) ?? upstreamTarget(route, address);
     const send = target.protocol === 'https:' ? https.request : http.request;
-    const up = send({ hostname: target.hostname, port: target.port, method: req.method, path: pathAndQuery, headers, ...(target.protocol === 'https:' ? { servername: route.host } : {}) }, (upRes) => {
+    const up = send({ hostname: target.hostname, port: target.port, method: req.method, path: pathAndQuery, headers, ...(target.protocol === 'https:' ? { servername: target.servername ?? route.host, ...(o.upstreamCa ? { ca: o.upstreamCa } : {}) } : {}) }, (upRes) => {
       res.writeHead(upRes.statusCode ?? 502, upRes.headers);
       upRes.on('error', () => res.destroy());
       upRes.pipe(res);
@@ -209,25 +236,66 @@ export async function startKeyInjector(o: KeyInjectorOptions): Promise<KeyInject
   };
 
   const sockets = new Set<net.Socket>();
-  const server = tls.createServer({
-    minVersion: 'TLSv1.2',
-    ALPNProtocols: ['http/1.1'],
-    // A certificate only for a host it injects for: any other name fails the handshake.
-    SNICallback: (name, cb) => {
-      const route = routeOf(name);
-      if (!route) { cb(new Error(`not an inference host: ${name}`)); return; }
-      let ctx = contexts.get(route.host);
-      if (!ctx) {
-        const leaf = leafFor(o.ca, route.host);
-        ctx = tls.createSecureContext({ key: leaf.key, cert: leaf.cert + o.ca.certPem });
-        contexts.set(route.host, ctx);
-      }
-      cb(null, ctx);
-    },
-  }, (sock) => { sock.on('error', () => undefined); proxy.emit('connection', sock); });
+  // A certificate only for a host it injects for: any other name fails the handshake.
+  const SNICallback = (name: string, cb: (err: Error | null, ctx?: tls.SecureContext) => void) => {
+    const route = routeOf(name);
+    if (!route) { cb(new Error(`not an inference host: ${name}`)); return; }
+    let ctx = contexts.get(route.host);
+    if (!ctx) {
+      const leaf = leafFor(o.ca, route.host);
+      ctx = tls.createSecureContext({ minVersion: 'TLSv1.2', key: leaf.key, cert: leaf.cert + o.ca.certPem });
+      contexts.set(route.host, ctx);
+    }
+    cb(null, ctx);
+  };
+  const serve = (sock: tls.TLSSocket) => { sock.on('error', () => undefined); proxy.emit('connection', sock); };
   // A guest that drops its connection is no error of the injector's.
-  server.on('connection', (s) => { sockets.add(s); s.on('error', () => undefined); s.on('close', () => sockets.delete(s)); });
-  server.on('tlsClientError', () => undefined);
+  const track = (s: net.Socket) => { sockets.add(s); s.on('error', () => undefined); s.on('close', () => sockets.delete(s)); };
+  /** A flow the decider hands on: its preface read, then TLS over the rest. */
+  const handOn = (raw: net.Socket) => {
+    track(raw);
+    let head = Buffer.alloc(0);
+    const timer = setTimeout(() => raw.destroy(), 5000);
+    raw.once('close', () => clearTimeout(timer));
+    const onData = (chunk: Buffer) => {
+      head = Buffer.concat([head, chunk]);
+      const nl = head.indexOf(0x0a);
+      if (nl < 0) { if (head.length > MAX_PREFACE) raw.destroy(); return; }
+      raw.off('data', onData);
+      clearTimeout(timer);
+      const line = head.subarray(0, nl).toString('latin1');
+      const address = line.startsWith(INJECT_PREFACE) ? line.slice(INJECT_PREFACE.length) : '';
+      if (!net.isIP(address)) { raw.destroy(); return; }
+      // TLS over what follows the preface. Through a stream of its own: a TLSSocket over the
+      // socket itself reads its handle, and the bytes already read past the preface would be lost.
+      const rest = new Duplex({
+        read() { raw.resume(); },
+        write(chunk, _enc, cb) { raw.write(chunk, cb); },
+        final(cb) { raw.end(); cb(); },
+        destroy(err, cb) { raw.destroy(); cb(err); },
+      });
+      raw.on('data', (c: Buffer) => { if (!rest.push(c)) raw.pause(); });
+      raw.on('end', () => rest.push(null));
+      raw.on('close', () => rest.destroy());
+      rest.push(head.subarray(nl + 1));
+      const secure = new tls.TLSSocket(rest as unknown as net.Socket, { isServer: true, ALPNProtocols: ['http/1.1'], SNICallback, secureContext: tls.createSecureContext({ minVersion: 'TLSv1.2' }) });
+      allowed.set(secure, address);
+      secure.on('error', () => raw.destroy());
+      // As tls.createServer's handshakeTimeout: a flow that never finishes its handshake is cut.
+      const handshake = setTimeout(() => raw.destroy(), o.handshakeTimeoutMs ?? 120_000);
+      raw.once('close', () => clearTimeout(handshake));
+      secure.once('secure', () => { clearTimeout(handshake); serve(secure); });
+    };
+    raw.on('data', onData);
+  };
+  const server: net.Server = o.socketPath
+    ? net.createServer(handOn)
+    : (() => {
+      const t = tls.createServer({ minVersion: 'TLSv1.2', ALPNProtocols: ['http/1.1'], SNICallback }, serve);
+      t.on('connection', track);
+      t.on('tlsClientError', () => undefined);
+      return t;
+    })();
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     if (o.socketPath) server.listen(o.socketPath, () => resolve());

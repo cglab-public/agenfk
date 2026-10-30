@@ -540,7 +540,11 @@ describe('EgressService: the decider on the host loopback', () => {
       const hello = clientHello('api.github.com');
       const r = await redirected(address, frame({ port: 443, payload: hello }), 'PING');
       expect(r.answer).toBe(2);
-      expect(got.subarray(0, hello.length).equals(hello)).toBe(true);
+      // The address it approved first (story review 2: the injector connects there, never by name
+      // again), then the flow's first bytes.
+      const preface = Buffer.from('AGENFK-DEST 93.184.216.34\n');
+      expect(got.subarray(0, preface.length).toString()).toBe(preface.toString());
+      expect(got.subarray(preface.length, preface.length + hello.length).equals(hello)).toBe(true);
       expect(decisions[0]).toMatchObject({ host: 'api.github.com', port: 443, decision: 'allow' });
     });
 

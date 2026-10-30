@@ -1905,6 +1905,52 @@ describe('the AgEnFK server and the model key, from inside the machine', () => {
     await expect(b.rt.launch(keySession({ maskedEnv: ['OTHER_KEY'] }), cmd())).rejects.toThrow(/other model keys/);
   });
 
+  // Story review 2 (LIFE-5): the same key name with another value is another account.
+  it('refuses to join a machine whose sessions inject another value for the same key, and records no key in clear', async () => {
+    const smolvm = fakeSmolvm();
+    const egress = fakeEgress();
+    const a = runtime({ smolvm, egress, pidAlive: () => true, ...injectorDeps() });
+    const b = runtime({ smolvm, egress, pidAlive: () => true, ...injectorDeps(), hostEnv: { OPENAI_API_KEY: 'sk-another-account-not-real', PATH: '/host/bin' } });
+    await a.rt.launch(keySession(), cmd());
+    await expect(b.rt.launch(keySession(), cmd())).rejects.toThrow(/other model keys/);
+    const dir = path.join(stateDir, 'machines', machineNameOf(workspace));
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.json'))) {
+      expect(fs.readFileSync(path.join(dir, f), 'utf8'), f).not.toContain('sk-fake-not-real');
+    }
+  });
+
+  it('refuses a command that would inject another value for a key the session in the machine injects', async () => {
+    const smolvm = fakeSmolvm();
+    const egress = fakeEgress();
+    const a = runtime({ smolvm, egress, pidAlive: () => true, ...injectorDeps() });
+    const inj = injectorDeps();
+    const b = runtime({ smolvm, egress, pidAlive: () => true, ...inj, hostEnv: { OPENAI_API_KEY: 'sk-another-account-not-real', PATH: '/host/bin' } });
+    await a.rt.launch(keySession(), cmd());
+    const command = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }),
+      session({ purpose: 'command', inferenceHosts: ['api.openai.com'], serverPort: 0, piAgentDir: undefined, maskedEnv: ['OPENAI_API_KEY'] }));
+    await expect(b.rt.launch(command, { file: '/bin/sh', args: ['-c', 'true'], cwd: workspace, processGroup: false })).rejects.toThrow(/other model keys/);
+    expect(inj.started).toEqual([]);
+    // With the session's own key it joins, and a command with no key at all always does.
+    const c = runtime({ smolvm, egress, pidAlive: () => true, ...injectorDeps() });
+    await c.rt.launch(command, { file: '/bin/sh', args: ['-c', 'true'], cwd: workspace, processGroup: false });
+    const d = runtime({ smolvm, egress, pidAlive: () => true, ...injectorDeps(), hostEnv: { PATH: '/host/bin' } });
+    await d.rt.launch(buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined })), { file: '/bin/sh', args: ['-c', 'true'], cwd: workspace, processGroup: false });
+  });
+
+  it('refuses a command injecting only some of the keys the session injects for a host', async () => {
+    const smolvm = fakeSmolvm();
+    const egress = fakeEgress();
+    const env = { OPENAI_API_KEY: 'sk-fake-not-real', OTHER_KEY: 'sk-other-not-real', PATH: '/host/bin' };
+    const a = runtime({ smolvm, egress, pidAlive: () => true, ...injectorDeps(), hostEnv: env });
+    await a.rt.launch(keySession({ maskedEnv: ['OPENAI_API_KEY', 'OTHER_KEY'] }), cmd());
+    const inj = injectorDeps();
+    const b = runtime({ smolvm, egress, pidAlive: () => true, ...inj, hostEnv: env });
+    const command = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }),
+      session({ purpose: 'command', inferenceHosts: ['api.openai.com'], serverPort: 0, piAgentDir: undefined, maskedEnv: ['OPENAI_API_KEY'] }));
+    await expect(b.rt.launch(command, { file: '/bin/sh', args: ['-c', 'true'], cwd: workspace, processGroup: false })).rejects.toThrow(/other model keys/);
+    expect(inj.started).toEqual([]);
+  });
+
   it('injects nothing for a key the host does not have set', async () => {
     const inj = injectorDeps();
     const egress = fakeEgress();
