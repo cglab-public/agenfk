@@ -125,8 +125,155 @@ function isRemovableWorktree(target: string): boolean {
   }
 }
 
+/*
+ * GitHub #269: `-c core.longpaths=true` on EVERY call, on every platform.
+ *
+ * Git for Windows otherwise refuses any path past MAX_PATH (260), and a
+ * worktree nests the whole repo under the worktree root (by default
+ * ~/.agenfk-worktrees/<repo>/<branch-slug>-<digest>, see buildWorktreePath),
+ * so a deep file that checks out fine in the main clone fails in its worktree.
+ * Per-invocation rather than `git config`: nothing global or repo-local is
+ * written, and off Windows the option is a no-op. It goes on every call - not
+ * only `worktree add` - because status/remove/prune walk the same paths.
+ */
+const LONGPATHS = ['-c', 'core.longpaths=true'];
+
 const git = (cwd: string, args: string[], env?: NodeJS.ProcessEnv): string =>
-  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...(env ? { env } : {}) });
+  execFileSync('git', [...LONGPATHS, ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...(env ? { env } : {}) });
+
+/** git redraws its progress with `\r`; these lines are noise in an error. */
+const PROGRESS_LINE = /^(Updating files:|Preparing worktree\b)/;
+const TOO_LONG = /file ?name too long/i;
+
+/**
+ * Turn `git worktree add`'s stderr into the message the user sees (#269).
+ *
+ * Pure, so the wording is testable without git. A too-long path is named as
+ * such, in our words, with the first file git could not create - and without
+ * advising `core.longpaths`, which every call here already passes. Anything
+ * else keeps git's own detail, minus the progress redraws.
+ *
+ * Only called after createWorktree's rollback has run. The rollback's outcome
+ * is passed in rather than assumed: the too-long message claims a clean slate
+ * only when the state after the rollback was checked and found clean, and any
+ * failure whose rollback was incomplete names what to remove by hand. Omitted,
+ * the outcome defaults to clean (the pure tests and any caller that ran no
+ * rollback).
+ */
+export function describeWorktreeAddFailure(
+  branchName: string, stderr: string, rollback: RollbackOutcome = { clean: true, remains: [] },
+): string {
+  const prefix = `git worktree add failed for branch '${branchName}': `;
+  const lines = (stderr ?? '')
+    .split(/\r\n|\r|\n/)
+    .map(l => l.trim())
+    .filter(l => l !== '' && !PROGRESS_LINE.test(l));
+  const leftovers = rollback.clean ? '' : describeLeftovers(rollback.remains);
+
+  if (!lines.some(l => TOO_LONG.test(l))) {
+    return prefix + (lines.length ? lines.join('\n') : 'git gave no further detail.') + (leftovers ? `\n${leftovers}` : '');
+  }
+
+  let culprit: string | null = null;
+  for (const l of lines) {
+    // Greedy on the name: a file name may itself contain ": ".
+    const file = /unable to create file (.+): [^:]+$/i.exec(l);
+    const dir = /cannot create directory at '(.+)'/i.exec(l);
+    culprit = file?.[1] ?? dir?.[1] ?? null;
+    if (culprit) break;
+  }
+
+  return prefix
+    + 'the worktree path is too long for this system'
+    + (culprit ? ` - git could not create '${culprit}'` : '')
+    + '. Long-path support is already requested on every git call, so either the full path '
+    + 'may still exceed the operating-system limit (on Windows, check that long-path support is enabled) '
+    + 'or a single file or folder name is longer than 255 characters. '
+    + 'Move the worktree root or the repository to a shorter path and try again. '
+    + (rollback.clean ? 'Nothing was left behind: what this attempt created was rolled back.' : leftovers);
+}
+
+/** Something a failed `worktree add` made that its rollback could not undo. */
+export interface Leftover {
+  kind: 'branch' | 'directory' | 'registration';
+  /** Branch name, or the path of the directory / registered worktree. */
+  name: string;
+}
+
+/** What the rollback left, judged by the state AFTER it ran - not by which steps threw. */
+export interface RollbackOutcome {
+  clean: boolean;
+  remains: Leftover[];
+}
+
+function describeLeftovers(remains: Leftover[]): string {
+  const parts = remains.map(r =>
+    r.kind === 'branch' ? `branch '${r.name}' (git branch -D ${r.name})`
+      : r.kind === 'directory' ? `directory '${r.name}'`
+        : `worktree registration for '${r.name}' (git worktree remove --force ${r.name})`);
+  return 'The rollback was incomplete; '
+    + (parts.length ? `still there: ${parts.join(', ')}. Remove ${parts.length > 1 ? 'them' : 'it'} by hand before retrying.`
+      : 'its state could not be confirmed. Check for a leftover branch or worktree by hand before retrying.');
+}
+
+/**
+ * Undo what a failed `worktree add` created, best effort (#269).
+ *
+ * git can fail AFTER creating the `-b` branch and registering the worktree
+ * (a checkout that dies on a too-long path, a failing post-checkout hook, and
+ * - on git 2.56 - even a target that already exists). Left alone, the next
+ * attempt then trips over its own debris.
+ *
+ * The rule is "only undo what this call made": a branch or directory that was
+ * there before is never touched. Every step swallows its own error - the
+ * caller reports the ORIGINAL failure, never a rollback's - and the outcome is
+ * judged afterwards by looking at what is actually there, because on Windows a
+ * step can "succeed" or fail for reasons (a file held open by antivirus) that
+ * the exit status alone does not tell you.
+ */
+function rollbackWorktreeAdd(
+  repoRoot: string, target: string, branchName: string,
+  before: { branchExisted: boolean; dirExisted: boolean },
+): RollbackOutcome {
+  const isRegistered = (): boolean | null => {
+    try {
+      return listWorktrees(repoRoot).some(w => canonical(w.path) === target);
+    } catch {
+      return null; // unknown
+    }
+  };
+
+  if (isRegistered()) {
+    try { git(repoRoot, ['worktree', 'remove', '--force', target]); } catch { /* best effort */ }
+  }
+  if (!before.dirExisted && fs.existsSync(target) && isRemovableWorktree(target)) {
+    try { fs.rmSync(target, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+  try { git(repoRoot, ['worktree', 'prune']); } catch { /* best effort */ }
+  if (!before.branchExisted && branchExists(repoRoot, branchName)) {
+    try { git(repoRoot, ['branch', '-D', branchName]); } catch { /* best effort */ }
+  }
+  /*
+   * git accepts an EMPTY existing directory as the add target, and
+   * `worktree remove --force` then takes it away with the rest. The directory
+   * was there before the call, so it is put back - empty, as git found it
+   * (git refuses a non-empty one before touching anything).
+   */
+  if (before.dirExisted && !fs.existsSync(target)) {
+    try { fs.mkdirSync(target, { recursive: true }); } catch { /* reported below */ }
+  }
+
+  const remains: Leftover[] = [];
+  let unknown = false;
+  const registered = isRegistered();
+  if (registered === null) unknown = true;
+  else if (registered) remains.push({ kind: 'registration', name: target });
+  if (!before.dirExisted && fs.existsSync(target)) remains.push({ kind: 'directory', name: target });
+  if (before.dirExisted && !fs.existsSync(target)) unknown = true; // the user's directory is gone and could not be restored
+  if (!before.branchExisted && branchExists(repoRoot, branchName)) remains.push({ kind: 'branch', name: branchName });
+
+  return { clean: !unknown && remains.length === 0, remains };
+}
 
 /**
  * Absolute path with symlinks resolved, so two spellings of the same directory
@@ -276,10 +423,14 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
 
   fs.mkdirSync(path.dirname(target), { recursive: true });
 
+  // Recorded BEFORE the add, so the rollback only ever undoes what it made.
+  const branchExisted = branchExists(repoRoot, branchName);
+  const dirExisted = fs.existsSync(target);
+
   // `-b` with no commit-ish branches from whatever HEAD happens to be. When
   // the caller knows where the branch should start — a fetched remote ref —
   // say so, or the directory is named after work it does not contain.
-  const args = branchExists(repoRoot, branchName)
+  const args = branchExisted
     ? ['worktree', 'add', target, branchName]
     : startPoint
       ? ['worktree', 'add', '-b', branchName, target, startPoint]
@@ -289,8 +440,9 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
     // SX-3: a covered card's worktree is added with the repository's hooks off (post-checkout is its code).
     git(repoRoot, args, opts.gitEnv);
   } catch (e: any) {
-    const detail = (e?.stderr?.toString() || e?.message || '').trim();
-    throw new Error(`git worktree add failed for branch '${branchName}': ${detail}`);
+    const stderr = e?.stderr?.toString() || e?.message || '';
+    const outcome = rollbackWorktreeAdd(repoRoot, target, branchName, { branchExisted, dirExisted });
+    throw new Error(describeWorktreeAddFailure(branchName, stderr, outcome));
   }
 
   /*
