@@ -109,6 +109,8 @@ function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string
           return ok();
         }
         return fail('unknown mount verb');
+      case 'cp':
+        return ok();
       case 'exec': {
         const failed = init.execFails?.(args);
         return failed ? fail(failed) : ok(init.execStdout?.(args) ?? '');
@@ -829,6 +831,165 @@ describe('sessions sharing a machine, and crashes (CGLAB-696 story review)', () 
   });
 });
 
+/**
+ * CGLAB-696 task 9: the agenfk adapters run inside the machine. The guest has no ~/.agenfk of its
+ * own: root gives the session one it cannot write, holding the host's hook scripts, policy state
+ * and workflow token; and marks the machine, which is how the adapters know they are inside one.
+ */
+describe('the agenfk adapters in the machine (CGLAB-696 task 9)', () => {
+  const agenfkDir = () => path.join(home, '.agenfk');
+  // The running CLI's own hook scripts (its install's bin/), not whatever ~/.agenfk/bin holds: review.
+  const hooksDir = () => path.join(root, 'install', 'bin');
+  const HOOKS = ['agenfk-airlock.mjs', 'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs'];
+  const withHooks = (over: Record<string, unknown> = {}) => runtime({ hookScriptsDir: hooksDir(), ...over });
+  const copies = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.calls.filter((c) => c.args[1] === 'cp').map((c) => c.args);
+  const target = (a: string[]) => a[a.length - 1];
+  const rootScripts = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.execs().filter((a) => flag(a, '-u') === 'root').map((a) => a[a.length - 1]);
+
+  beforeEach(() => {
+    fs.mkdirSync(path.join(agenfkDir(), 'bin'), { recursive: true });
+    fs.mkdirSync(path.join(agenfkDir(), 'airlock'), { recursive: true });
+    // An older install's scripts in ~/.agenfk/bin: never what the machine gets.
+    fs.writeFileSync(path.join(agenfkDir(), 'bin', 'agenfk-airlock.mjs'), '// old\n');
+    fs.mkdirSync(hooksDir(), { recursive: true });
+    for (const f of HOOKS) fs.writeFileSync(path.join(hooksDir(), f), 'export {};\n');
+    fs.writeFileSync(path.join(hooksDir(), 'not-a-hook.mjs'), 'export {};\n');
+    fs.writeFileSync(path.join(agenfkDir(), 'airlock-state.json'), '{"mode":"enforce"}\n');
+    fs.writeFileSync(path.join(agenfkDir(), 'verify-token'), 'tok\n');
+    // Not for the session: the server's config, the proxy reports' token, a link out of bin.
+    fs.writeFileSync(path.join(agenfkDir(), 'config.json'), '{}\n');
+    fs.writeFileSync(path.join(agenfkDir(), 'airlock', 'token'), 'secret\n');
+  });
+
+  it('marks the machine: root leaves a read-only /run/agenfk/machine', () => {
+    const script = guestSetupScript(guestPlanOf(specOf(), workspace), 503, 20);
+    expect(script).toContain('/run/agenfk/machine');
+    expect(script).toMatch(/chmod 444 \/run\/agenfk\/machine/);
+  });
+
+  it('gives a client session the CLI\'s own hook scripts, the host\'s policy state and token, in a ~/.agenfk root owns, before it starts', async () => {
+    const { rt, smolvm, sp } = withHooks();
+    await rt.launch(specOf(), cmd());
+    const name = machineNameOf(workspace);
+    const g = agenfkDir();
+    const made = rootScripts(smolvm).find((x) => x.includes(`mount -t tmpfs`) && x.includes(g));
+    expect(made).toBeDefined();
+    // Made before anything is copied in, and all of it before the session starts.
+    const order = smolvm.calls.map((c) => (c.args[1] === 'cp' ? 'cp' : c.args[c.args.length - 1] === made ? 'made' : ''));
+    expect(order.indexOf('made')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('made')).toBeLessThan(order.indexOf('cp'));
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+    const c = copies(smolvm);
+    expect(c.map(target).sort()).toEqual([
+      `${name}:${g}/airlock-state.json`, ...HOOKS.map((f) => `${name}:${g}/bin/${f}`), `${name}:${g}/verify-token`,
+    ]);
+    for (const a of c) {
+      const file = target(a).slice(name.length + 1);
+      const from = path.dirname(file) === path.join(g, 'bin') ? path.join(hooksDir(), path.basename(file)) : file;
+      expect(a[a.length - 2], file).toBe(from);
+      if (file.endsWith('verify-token')) {
+        // The session's group may read it; nobody in the machine may write it.
+        expect([flag(a, '--mode'), flag(a, '--uid'), flag(a, '--gid')]).toEqual(['440', '0', '20']);
+      } else {
+        expect(flag(a, '--mode'), file).toBe('444');
+        expect(flag(a, '--uid'), file).toBeUndefined();
+      }
+    }
+  });
+
+  it('copies only what the host has: no token or policy state yet still launches', async () => {
+    fs.rmSync(path.join(agenfkDir(), 'verify-token'));
+    fs.rmSync(path.join(agenfkDir(), 'airlock-state.json'));
+    const { rt, smolvm, sp } = withHooks();
+    await rt.launch(specOf(), cmd());
+    expect(copies(smolvm).map((a) => path.basename(target(a))).sort()).toEqual([...HOOKS].sort());
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  // Review (task 9): the adapters trust the state file over a cached answer when it is newer; in the
+  // machine it is a copy, so it must follow the host's while the session runs.
+  /** A smolvm whose state copies record what the host's file held when each was made (null: a refused one). */
+  function stateRecorder(fails: () => boolean = () => false) {
+    const smolvm = fakeSmolvm();
+    const sent: Array<string | null> = [];
+    const run = vi.fn(async (args: string[], o?: { env?: NodeJS.ProcessEnv }) => {
+      if (args[1] === 'cp' && args[args.length - 1].endsWith('/airlock-state.json')) {
+        if (fails()) { sent.push(null); return { code: 1, stdout: '', stderr: 'machine gone' }; }
+        sent.push(fs.readFileSync(args[args.length - 2], 'utf8'));
+      }
+      return smolvm.run(args, o);
+    });
+    return { smolvm: { ...smolvm, run }, sent };
+  }
+  const REV3 = '{"mode":"enforce","revision":3}\n';
+
+  it('keeps the session\'s policy state current while it runs, and stops when it ends', async () => {
+    const { smolvm, sent } = stateRecorder();
+    const { rt, sp } = withHooks({ policyFollowMs: 10, smolvm });
+    const launched = await rt.launch(specOf(), cmd());
+    fs.writeFileSync(path.join(agenfkDir(), 'airlock-state.json'), REV3);
+    await vi.waitFor(() => expect(sent).toContain(REV3), { timeout: 2000 });
+    sp.children[0].finish(0);
+    await launched.exited;
+    const after = sent.length;
+    fs.writeFileSync(path.join(agenfkDir(), 'airlock-state.json'), '{"mode":"off","revision":4}\n');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sent.length).toBe(after);
+  });
+
+  it('catches up with a change made while the session was still starting', async () => {
+    const { smolvm, sent } = stateRecorder();
+    // Changed right after the first copy, before the session's follower runs.
+    const run = smolvm.run;
+    let changed = false;
+    const racing = vi.fn(async (args: string[], o?: { env?: NodeJS.ProcessEnv }) => {
+      const r = await run(args, o);
+      if (!changed && args[1] === 'cp' && args[args.length - 1].endsWith('/airlock-state.json')) {
+        changed = true;
+        fs.writeFileSync(path.join(agenfkDir(), 'airlock-state.json'), REV3);
+      }
+      return r;
+    });
+    const { rt, sp } = withHooks({ policyFollowMs: 10, smolvm: { ...smolvm, run: racing } });
+    const launched = await rt.launch(specOf(), cmd());
+    await vi.waitFor(() => expect(sent).toContain(REV3), { timeout: 2000 });
+    sp.children[0].finish(0);
+    await launched.exited;
+  });
+
+  it('says so once when the policy state could not be brought up to date, and tries again until it is', async () => {
+    const warnings: string[] = [];
+    let refusals = 0;
+    const { smolvm, sent } = stateRecorder(() => refusals-- > 0);
+    const { rt, sp } = withHooks({ policyFollowMs: 10, smolvm, warn: (m: string) => warnings.push(m) });
+    const launched = await rt.launch(specOf(), cmd());
+    await vi.waitFor(() => expect(sent.length).toBeGreaterThan(1), { timeout: 2000 });
+    refusals = 5;
+    fs.writeFileSync(path.join(agenfkDir(), 'airlock-state.json'), REV3);
+    // No other change on the host: the copy is tried again until it lands.
+    await vi.waitFor(() => expect(sent.at(-1)).toBe(REV3), { timeout: 2000 });
+    expect(sent.filter((x) => x === null).length).toBe(5);
+    expect(warnings.filter((w) => /policy state/.test(w))).toHaveLength(1);
+    sp.children[0].finish(0);
+    await launched.exited;
+  });
+
+  it('refuses to launch without the CLI\'s hook scripts: the session\'s gate could not work', async () => {
+    fs.rmSync(path.join(hooksDir(), 'agenfk-gatekeeper.mjs'));
+    const { rt, sp } = withHooks();
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(/agenfk-gatekeeper\.mjs/);
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('gives a command the server runs none of it: it is no agent, and needs no token', async () => {
+    const { rt, smolvm } = withHooks();
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }),
+      session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined }));
+    await rt.launch(spec, { file: '/bin/sh', args: ['-c', 'true'], cwd: workspace, processGroup: false });
+    expect(copies(smolvm)).toEqual([]);
+  });
+});
+
 describe('the machine\'s resolver (CGLAB-696 task 8)', () => {
   const rootScripts = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.execs().filter((a) => flag(a, '-u') === 'root').map((a) => a[a.length - 1]);
 
@@ -1373,8 +1534,9 @@ describe('placeholders are taken back only as they were made', () => {
     for (const f of fs.readdirSync(sessions)) fs.writeFileSync(path.join(sessions, f), JSON.stringify({ pid: 999999 }));
     const next = runtime({ smolvm });
     const launched = await next.rt.launch(specOf(), cmd());
-    // The protections' setup: the root script before the resolver's (CGLAB-696 task 8).
-    const setup = smolvm.calls.filter((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root' && !c.args.join(' ').includes(DNS_RESOLVER_ADDRESS)).at(-1)!.args.at(-1) as string;
+    // The protections' setup: the root script that defines the binds (not the resolver's, task 8,
+    // nor the one making the session's ~/.agenfk, task 9).
+    const setup = smolvm.calls.filter((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root' && String(c.args.at(-1)).includes('pin() {')).at(-1)!.args.at(-1) as string;
     expect(setup).toContain(`ro '${commondir}'`);
     expect(fs.readFileSync(commondir, 'utf8')).toBe('.\n');
     next.sp.children[0].finish(0);

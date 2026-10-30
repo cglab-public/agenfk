@@ -224,7 +224,6 @@ export function defaultLaunchDeps(): LaunchDeps {
     }),
     ensurePrivateDir: (dir) => ensurePrivateDir(dir),
     reportToken: () => readReportToken(path.join(home, '.agenfk', 'airlock', 'report-token')),
-    hostNetns: (() => { try { return process.platform === 'linux' ? fs.readlinkSync('/proc/self/ns/net') : null; } catch { return null; } })(),
     onSignal: (signal, handler) => {
       process.on(signal, handler);
       return () => { process.off(signal, handler); };

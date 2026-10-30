@@ -837,12 +837,16 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
 }
 
 const quote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+/** `mounted <mountinfo path>`: is something mounted there? (sh, for root's scripts in the guest) */
+const MOUNTED_FN = `mounted() { P="$1" awk '$5 == ENVIRON["P"] { f = 1 } END { exit !f }' /proc/self/mountinfo; }`;
 /** How /proc/self/mountinfo spells a path. */
 const mountinfoPath = (p: string): string => p.replace(/\\/g, '\\134').replace(/ /g, '\\040').replace(/\t/g, '\\011').replace(/\n/g, '\\012');
 
 const GUEST_RUN = '/run/agenfk';
 const GUEST_SESSIONS = `${GUEST_RUN}/sessions`;
 const GUEST_HIDE = `${GUEST_RUN}/hide`;
+/** bin/agenfk-airlock.mjs's MACHINE_MARKER. */
+const GUEST_MACHINE_MARKER = `${GUEST_RUN}/machine`;
 /** The session user's: which lockfile each workspace was last installed from, and the package managers' caches. */
 const GUEST_PLATFORM_STAMPS = `${GUEST_PLATFORM_ROOT}/stamps`;
 const GUEST_PLATFORM_CACHE = `${GUEST_PLATFORM_ROOT}/cache`;
@@ -868,7 +872,7 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
   const pwHome = /^\/[^:\n]*$/.test(home) ? home : '/';
   const lines = [
     'set -e',
-    `mounted() { P="$1" awk '$5 == ENVIRON["P"] { f = 1 } END { exit !f }' /proc/self/mountinfo; }`,
+    MOUNTED_FN,
     // Hidden means a tmpfs over the path: a mount of any other kind there (a read-only bind) is not.
     `hidden() { P="$1" awk '$5 == ENVIRON["P"] { for (i = 7; i < NF; i++) if ($i == "-") { if ($(i + 1) == "tmpfs") f = 1; break } } END { exit !f }' /proc/self/mountinfo; }`,
     // Recursive binds: a pin or read-only bind made over a directory carries the mounts inside it.
@@ -883,8 +887,15 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
     `getent group ${gid} >/dev/null || echo ${quote(`agenfk:x:${gid}:`)} >> /etc/group`,
     `getent passwd ${uid} >/dev/null || echo ${quote(`agenfk:x:${uid}:${gid}:AgEnFK session:${pwHome}:/bin/sh`)} >> /etc/passwd`,
     `mkdir -p ${GUEST_SESSIONS} ${GUEST_HIDE}`,
+    `chown 0:0 ${GUEST_RUN}`,
+    `chmod 755 ${GUEST_RUN}`,
     `chown ${uid}:${gid} ${GUEST_SESSIONS}`,
     `chmod 700 ${GUEST_SESSIONS}`,
+    // The machine's mark, which the agenfk adapters prove they run in a machine by (CGLAB-696
+    // task 9): root's, in a directory only root writes.
+    `printf 'smolvm\\n' > ${GUEST_MACHINE_MARKER}.tmp`,
+    `chmod 444 ${GUEST_MACHINE_MARKER}.tmp`,
+    `mv -f ${GUEST_MACHINE_MARKER}.tmp ${GUEST_MACHINE_MARKER}`,
     // The file hidden files are bound to, on a tmpfs of its own: {} - an empty JSON object, which a
     // client reads as no logins where an empty file could be a broken one (pi's auth.json).
     `hidden ${GUEST_HIDE} || { mount -t tmpfs -o size=4k,mode=0755 tmpfs ${GUEST_HIDE}; printf '{}\\n' > ${GUEST_HIDE}/empty; chmod 444 ${GUEST_HIDE}/empty; mount -o remount,ro ${GUEST_HIDE}; }`,
@@ -1027,6 +1038,13 @@ export const WATCHDOG = 'cat >/dev/null; exec "$@"';
  * The compiled resolver beside this file (dist/airlock/guestDns.js; the desktop bundle carries it
  * beside its helper), or - run from the source tree, as the tests do - the build's.
  */
+/**
+ * The hook scripts the installer puts in ~/.agenfk/bin, which the agenfk adapters run. The machine
+ * gets the running CLI's own (review, task 9): ~/.agenfk/bin may hold an older install's, whose
+ * gate cannot prove a machine and would refuse every call.
+ */
+export const HOOK_SCRIPTS = ['agenfk-airlock.mjs', 'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs'];
+
 function defaultResolverSource(): string {
   for (const f of [path.join(__dirname, 'guestDns.js'), path.resolve(__dirname, '..', '..', 'dist', 'airlock', 'guestDns.js')]) {
     try { return fs.readFileSync(f, 'utf8'); } catch { /* next */ }
@@ -1069,6 +1087,10 @@ interface SmolvmRuntimeDeps {
   startWatchdog?: (args: string[]) => { stop(): void };
   /** The machine resolver's source (guestDns.js), written into the guest. */
   resolverSource?: () => string;
+  /** The running CLI's own hook scripts (its install's bin/): the session's adapters run them. */
+  hookScriptsDir?: string;
+  /** How often a running session's copy of the host's policy state is checked against it (ms). */
+  policyFollowMs?: number;
 }
 
 function runCli(file: string): SmolvmRun {
@@ -1149,6 +1171,8 @@ export class SmolvmRuntime implements AirlockRuntime {
       startInjector: deps.startInjector ?? startKeyInjector,
       startWatchdog: deps.startWatchdog ?? startWatchdog,
       resolverSource: deps.resolverSource ?? defaultResolverSource,
+      hookScriptsDir: deps.hookScriptsDir ?? path.resolve(__dirname, '..', '..', '..', '..', 'bin'),
+      policyFollowMs: deps.policyFollowMs ?? 1000,
       warn: deps.warn ?? (() => undefined),
       image: deps.image,
       egress: deps.egress,
@@ -1506,6 +1530,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       if (!joining) {
         await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid, ca.certPem, this.homeOf(spec))], 'protect the session\'s files in the machine');
         await this.startResolver(name, workspace, spec);
+        if (spec.purpose !== 'command') await this.provisionAgenfk(name, spec);
       }
       // Not under a session already in the machine: its dependencies would change beneath it.
       if (!shared && plan.platform.length) await this.installPlatform(name, workspace, spec, plan.platformIncomplete);
@@ -1529,6 +1554,86 @@ export class SmolvmRuntime implements AirlockRuntime {
     const why = `DNS lookups of denied names cannot be refused in the machine for ${workspace}, whose image has no ${missing}: they would leave the machine`;
     if (spec.network.mode !== 'observe') throw new Error(`Airlock cannot enforce here: ${why}. Use an image with them (the AgEnFK base image has them). Nothing was launched.`);
     this.d.warn(`Airlock: ${why}.`);
+  }
+
+  /**
+   * The session's ~/.agenfk in the machine (CGLAB-696 task 9): the agenfk adapters there read the
+   * hook scripts, the policy state and the workflow token from it, as on the host. A tmpfs root
+   * owns, so the session can read it and never write it (the adapters check that), holding the
+   * running CLI's hook scripts and copies of the host's policy state and token (what the host has
+   * of them, regular files only), and nothing else of the host's ~/.agenfk (its config, the proxy
+   * reports' token). Copied again by each session, so a session starts with the current policy state.
+   */
+  private async provisionAgenfk(name: string, spec: SandboxSpec): Promise<void> {
+    const dir = path.join(this.homeOf(spec), '.agenfk');
+    // Made where it is, never through a link the session left in the machine's disk.
+    await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', [
+      'set -e',
+      MOUNTED_FN,
+      `D=${quote(dir)}`,
+      `if ! mounted ${quote(mountinfoPath(dir))}; then`,
+      '  if [ -L "$D" ]; then rm -f "$D"; fi',
+      '  mkdir -p "$D"',
+      '  [ "$(readlink -f "$D")" = "$D" ] || { echo "$D resolves elsewhere in the machine" >&2; exit 1; }',
+      '  mount -t tmpfs -o size=4m,mode=0755 tmpfs "$D"',
+      'fi',
+      'mkdir -p "$D/bin"',
+    ].join('\n')], 'give the session its ~/.agenfk in the machine');
+    const regular = (p: string) => { try { return fs.lstatSync(p).isFile(); } catch { return false; } };
+    const give = (from: string, to: string, owner: string[]) =>
+      this.must(['machine', 'cp', ...owner, from, `${name}:${to}`], `copy ${from} into the machine`);
+    const missing = HOOK_SCRIPTS.find((f) => !regular(path.join(this.d.hookScriptsDir, f)));
+    if (missing) {
+      throw new Error(`Airlock cannot find its hook script ${path.join(this.d.hookScriptsDir, missing)}, without which the session's gate refuses every tool call. Reinstall AgEnFK (agenfk upgrade). Nothing was launched.`);
+    }
+    for (const f of HOOK_SCRIPTS) await give(path.join(this.d.hookScriptsDir, f), path.join(dir, 'bin', f), ['--mode', '444']);
+    const state = path.join(dir, 'airlock-state.json');
+    if (regular(state)) await give(state, state, ['--mode', '444']);
+    // The session's group may read it; nobody in the machine may write it.
+    const token = path.join(dir, 'verify-token');
+    if (regular(token)) await give(token, token, ['--mode', '440', '--uid', '0', '--gid', String(this.d.gid)]);
+  }
+
+  /**
+   * Keeps the session's copy of the host's policy state current while it runs (review, task 9):
+   * the adapters take the state file over an answer they cached when it is newer, as the server
+   * rewrites it on every change - a copy that never changed would let a cached permissive answer
+   * stand after the policy turned to enforce. Each tick compares the host's file with what this
+   * follower last delivered, so a change made while the session started is caught by the first
+   * tick and a copy that failed is tried again (said once per run of failures). The stop waits for
+   * a copy under way: none lands after the session ended.
+   */
+  private followPolicyState(name: string, spec: SandboxSpec): () => Promise<void> {
+    const file = path.join(this.homeOf(spec), '.agenfk', 'airlock-state.json');
+    let delivered: string | null = null;
+    let copying: Promise<void> | null = null;
+    let failing = false;
+    const tick = () => {
+      if (copying) return;
+      let now: string;
+      try {
+        if (!fs.lstatSync(file).isFile()) return;
+        now = fs.readFileSync(file, 'utf8');
+      } catch { return; }
+      if (now === delivered) return;
+      copying = (async () => {
+        const r = await this.cli(['machine', 'cp', '--mode', '444', file, `${name}:${file}`]).catch((e) => ({ code: 1, stdout: '', stderr: String(e?.message ?? e) }));
+        if (r.code === 0) {
+          // What was read before the copy: one that changed meanwhile is copied again next tick.
+          delivered = now;
+          failing = false;
+        } else if (!failing) {
+          failing = true;
+          this.d.warn(`Airlock: the session's copy of the policy state could not be brought up to date (${said(r)}); trying again, and its gate may decide by the old one until the server answers.`);
+        }
+      })().finally(() => { copying = null; });
+    };
+    const timer = setInterval(tick, this.d.policyFollowMs);
+    timer.unref();
+    return async () => {
+      clearInterval(timer);
+      await copying;
+    };
   }
 
   /** The session's HOME in the guest: the host user's path. */
@@ -1602,6 +1707,7 @@ export class SmolvmRuntime implements AirlockRuntime {
     try {
       const { ca, placeholders, commandSetup } = await this.prepare(name, workspace, spec, sessionFile);
       const keyEnv = await this.routeSession(name, spec, ca, placeholders, undo);
+      if (spec.purpose !== 'command') undo.push(this.followPolicyState(name, spec));
       const tell = hooks.onProxyDecision;
       if (tell) {
         const off = this.d.egress.watch(name, (decision) => { try { tell(decision); } catch { /* the report never decides anything */ } });

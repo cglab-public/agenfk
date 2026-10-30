@@ -38,11 +38,13 @@ let relayPort = 0;
 let directPort = 0;
 let relaySeen = 0;
 let directSeen = 0;
+/** What reached the server through the relay: path and headers. */
+const relayRequests: Array<{ url: string; headers: http.IncomingHttpHeaders }> = [];
 const sandboxHome = process.env.HOME;
 
-function serve(onHit: () => void, body: string): Promise<number> {
+function serve(onHit: (q: http.IncomingMessage) => void, body: string): Promise<number> {
   return new Promise((resolve) => {
-    const s = http.createServer((_q, r) => { onHit(); r.end(body); });
+    const s = http.createServer((q, r) => { onHit(q); r.end(body); });
     servers.push(s);
     s.listen(0, '127.0.0.1', () => resolve((s.address() as { port: number }).port));
   });
@@ -92,7 +94,7 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
     fs.writeFileSync(path.join(ws, '.git', 'config'), '[core]\n');
     fs.writeFileSync(path.join(home, '.ssh', 'id_fake'), 'fake\n');
     fs.writeFileSync(path.join(home, '.pi', 'agent', 'auth.json'), '{"fake":"not-a-key"}\n');
-    relayPort = await serve(() => { relaySeen++; }, 'relay-ok');
+    relayPort = await serve((q) => { relaySeen++; relayRequests.push({ url: q.url ?? '', headers: q.headers }); }, 'relay-ok');
     directPort = await serve(() => { directSeen++; }, 'server-direct');
     // smolvm keeps its sockets under HOME, and a vitest worker's sandbox HOME is past the 103-byte socket path limit.
     process.env.HOME = os.userInfo().homedir;
@@ -159,6 +161,36 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
     expect(r.out.filter((l) => !l.startsWith('workspace-writable'))).toEqual([]);
     expect(r.out).toContain('workspace-writable');
     expect(fs.readFileSync(path.join(ws, 'made-in-guest'), 'utf8')).toBe('ok\n');
+  }, TIMEOUT);
+
+  // CGLAB-696 task 9: the SHIPPED adapter script, run by node in the guest as the session.
+  it('the agenfk adapters work inside: confinement proven, ~/.agenfk there and unwritable, the CLI reaches the server through the relay with its token', async () => {
+    const g = path.join(home, '.agenfk');
+    // The hook scripts come from the running CLI's install (this checkout's bin/), not from here.
+    fs.mkdirSync(g, { recursive: true });
+    fs.writeFileSync(path.join(g, 'verify-token'), 'tok-task9\n');
+    fs.writeFileSync(path.join(g, 'airlock-state.json'), JSON.stringify({ mode: 'enforce' }));
+    relayRequests.length = 0;
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session());
+    const r = await inMachine(spec, [
+      `echo "probe $(echo '{"probe":"confinement"}' | node ${g}/bin/agenfk-airlock.mjs 2>&1)"`,
+      `echo "check $(node --input-type=module -e "const m = await import('${g}/bin/agenfk-airlock.mjs'); console.log(JSON.stringify(await m.airlockSandboxCheck()))" 2>&1)"`,
+      `echo "state $(cat ${g}/airlock-state.json)"`,
+      `{ echo x > ${g}/planted; } 2>/dev/null && echo agenfk-writable`,
+      `{ echo x > ${g}/bin/agenfk-airlock.mjs; } 2>/dev/null && echo bin-writable`,
+      `echo "verify $(agenfk verify item-task9 --evidence probe 2>&1 | tr '\\n' ' ' | head -c 400)"`,
+      'agenfk db vacuum >/dev/null 2>&1; echo cli-done',
+    ].join('; '));
+    expect(line(r.out, 'probe')).toBe('probe {"confined":true}');
+    expect(line(r.out, 'check')).toBe('check {"sandboxed":true}');
+    expect(line(r.out, 'state')).toBe('state {"mode":"enforce"}');
+    expect(r.out).not.toContain('agenfk-writable');
+    expect(r.out).not.toContain('bin-writable');
+    expect(r.out).toContain('cli-done');
+    const seen = `${line(r.out, 'verify')} | relay saw: ${relayRequests.map((q) => q.url).join(', ')}`;
+    // verify resolves the card through the server first (the stub's answer is no list, so it stops there).
+    expect(relayRequests.some((q) => q.url.startsWith('/items')), seen).toBe(true);
+    expect(relayRequests.some((q) => q.headers['x-agenfk-internal'] === 'tok-task9'), seen).toBe(true);
   }, TIMEOUT);
 
   it('a command the server runs: no relay to the server, the policy\'s allow list only', async () => {

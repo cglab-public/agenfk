@@ -471,16 +471,6 @@ describePosix('symlinked .agenfk directories (second pass, fix 3)', () => {
   });
 });
 
-describe('Linux: the launcher tells the gate its own network namespace (second pass, fix 1)', () => {
-  it('passes it into the sandbox, so a process still in it is never taken for confined', async () => {
-    const d = deps({ platform: 'linux', hostNetns: 'net:[4026531840]' });
-    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
-    expect(specOf(d).env.AGENFK_AIRLOCK_HOST_NETNS).toBe('net:[4026531840]');
-    const mac = deps({ platform: 'darwin', hostNetns: null });
-    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, mac);
-    expect(specOf(mac).env.AGENFK_AIRLOCK_HOST_NETNS).toBeUndefined();
-  });
-});
 
 describe('PO-1: the launcher asks for its workspace\'s project', () => {
   it('the policy fetch names the project the workspace belongs to', async () => {

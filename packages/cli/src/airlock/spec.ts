@@ -55,8 +55,6 @@ export interface SandboxSession {
   maskedEnv?: string[];
   /** The sandbox runtime package itself: never writable. */
   runtimePackageDir?: string;
-  /** Linux: the launcher's own network namespace (`net:[…]`), handed to the launch gate. */
-  hostNetns?: string | null;
   /**
    * pi: its real agent dir when not ~/.pi/agent (PI_CODING_AGENT_DIR): its state is pi's, its
    * auth.json is denied and its extensions are unwritable, as ~/.pi/agent's are.
@@ -323,8 +321,6 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
       // A command's own loopback (its test servers) goes direct: allowLocalBinding below.
       NO_PROXY: command ? LOCAL_NO_PROXY : '',
       no_proxy: command ? LOCAL_NO_PROXY : '',
-      // The gate's Linux evidence refuses a process still in this namespace.
-      ...(session.hostNetns ? { AGENFK_AIRLOCK_HOST_NETNS: session.hostNetns } : {}),
       // Every agenfk client inside (CLI, hooks, the pi and OpenCode adapters) reads it first.
       ...(session.serverUrl ? { AGENFK_API_URL: session.serverUrl } : {}),
       // The agent dir the user chose, by its resolved path (the machine does not see the host's env).

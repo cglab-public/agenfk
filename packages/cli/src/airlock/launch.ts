@@ -86,8 +86,6 @@ export interface LaunchDeps {
   /** Is `p` (followed through symlinks) a directory? */
   isDirectory(p: string): boolean;
   platform: NodeJS.Platform;
-  /** Linux: this process's network namespace (readlink /proc/self/ns/net), or null. */
-  hostNetns?: string | null;
   /**
    * POST /airlock/proxy-decisions, sending `token` as x-agenfk-airlock-report.
    * Absent: the proxy's decisions are not reported.
@@ -515,7 +513,6 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         gitDir: workspaceGitDir(workspace, d),
         maskedEnv,
         runtimePackageDir: d.runtimePackageDir,
-        hostNetns: d.platform === 'linux' ? d.hostNetns ?? null : null,
         ...(agentDir && agentDir !== path.join(d.home, '.pi', 'agent') ? { piAgentDir: agentDir } : {}),
       });
     } catch (e) {
