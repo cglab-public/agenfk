@@ -17,7 +17,7 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint, NO_VERIFY_COMMAND, VERIFY_COMMAND_FLAG } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint, NO_VERIFY_COMMAND, VERIFY_COMMAND_FLAG, AIRLOCK_SESSION_HEADER } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import { hubConfirmedAbsent } from "./hub/hubClient.js";
@@ -64,7 +64,6 @@ import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { resolveAirlockPolicy, registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
 import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/reportToken.js';
 import { airlockCoverageMiddleware, coverWritesIn } from './airlock/coverage.js';
-import { airlockCollectionScope } from './airlock/scope.js';
 import { airlockRepoPins } from './airlock/repoPins.js';
 import { airlockCommandFor, airlockArgvFor, airlockHooksOff, noHooksGitEnv, serverUrlFor, type AirlockRunDeps } from './airlock/execWrap.js';
 import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockDatasetEnabled, currentAirlockGeneration, airlockAuthorityOf } from './hub/airlockSync.js';
@@ -99,7 +98,11 @@ export const io = new Server(httpServer, {
   cors: {
     origin: corsOriginFn,
     methods: ["GET", "POST"]
-  }
+  },
+  // Engine.IO answers its requests before Express, so the Airlock middleware never sees them: a
+  // request carrying the sandbox's marker (polling through the relay) is refused here. The
+  // broadcasts carry approval keys and other sessions' runs (da69b17a review).
+  allowRequest: (req, cb) => cb(null, req.headers[AIRLOCK_SESSION_HEADER] === undefined),
 });
 // Requested base port. The server probes upward from here for the first free
 // port (mirrors Vite's default behaviour) and persists the bound port to
@@ -137,8 +140,6 @@ app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 // it never reaches a route, and every card such a request names is recorded as
 // covered, so the commands this server runs for that card's tree run sandboxed.
 app.use(airlockCoverageMiddleware({ storage: () => storage, reportToken: airlockReportTokenReader() }));
-// A sandboxed session's listings are its own project's (BUG afc07064).
-app.use(airlockCollectionScope());
 
 // SX-3 (8dd7c7c0): a covered card's commands (verify, suite, captures, worktree
 // setup) run through `agenfk airlock exec`, in the sandbox, while the policy enforces.
@@ -5947,13 +5948,6 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: 'model and harness are required (your actual model id + harness; do not omit or copy an example)' });
   }
 
-  // An Airlock session registers, or re-registers, only its own project's PRs (BUG 003bd959):
-  // a row already anchored in another project is not there for it.
-  if (req.airlockSession !== undefined) {
-    const prior = await storage.getPrByRepoNumber(repo, prNumber);
-    if (prior && !(await prInLaunchProject(req, prior.itemId))) return res.status(404).json({ error: `PR ${repo}#${prNumber} is not this project's` });
-  }
-
   // POST /prs is idempotent on (repo, prNumber). Newness is decided ATOMICALLY
   // by the upsert, not by a separate pre-read: insertPr does INSERT … ON CONFLICT
   // DO UPDATE without touching `id`, so the returned row keeps our freshly minted
@@ -6009,18 +6003,6 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
   res.status(201).json(pr);
 }));
 
-/**
- * Is a PR's anchor card in the project an Airlock session was launched for (BUG 003bd959)?
- * Always, for a request no sandbox made. The PR routes name a repository and a number, not a
- * card, so the coverage middleware cannot tell: another project's PR is answered as absent.
- */
-async function prInLaunchProject(req: any, anchorItemId: string | null | undefined): Promise<boolean> {
-  if (req.airlockSession === undefined) return true;
-  if (typeof req.airlockProject !== 'string' || !anchorItemId) return false;
-  const anchor: any = await storage.getItem(anchorItemId).catch(() => null);
-  return !!anchor && anchor.projectId === req.airlockProject;
-}
-
 app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   const repo = decodeURIComponent(req.params.repo);
   const prNumber = Number(req.params.number);
@@ -6038,7 +6020,7 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   }
 
   const existing = await storage.getPrByRepoNumber(repo, prNumber);
-  if (!existing || !(await prInLaunchProject(req, existing.itemId))) return res.status(404).json({ error: `PR ${repo}#${prNumber} not registered` });
+  if (!existing) return res.status(404).json({ error: `PR ${repo}#${prNumber} not registered` });
 
   const shadowCounts = await computeShadowSizing(existing.itemId);
   const shadow = { epic: shadowCounts.epic, story: shadowCounts.story, task: shadowCounts.task, bug: shadowCounts.bug };
@@ -6114,8 +6096,7 @@ const gitRun = { run: runGitSync };
  * The card a session works on, recorded for a gatekeeper that cannot write it itself: one inside
  * the Airlock sandbox, where ~/.agenfk is unwritable (BUG 3afbbf7e). Keyed to the session, the
  * note the run recorder and Airlock read; never the shared one, which every session without an
- * id reads. A sandbox may only name a card of its own project (airlock/coverage.ts), and its
- * note is kept under its launch (sandboxSessionKey).
+ * id reads. A sandbox's note is kept under its launch (sandboxSessionKey).
  */
 app.post("/active-work", asyncHandler(async (req: any, res: any) => {
   const { itemId, sessionId } = req.body || {};
@@ -11216,11 +11197,6 @@ app.get("/items/validate-runs/:runId", asyncHandler(async (req: any, res: any) =
   const run = validateRuns.get(req.params.runId);
   const notFound = () => res.status(404).json({ error: 'RUN_NOT_FOUND', message: 'Unknown or expired validation run. If the server restarted, check the item\'s comments — the outcome is persisted there.' });
   if (!run) return notFound();
-  // An Airlock session sees its own project's runs only, and is not told another's exists (BUG afc07064).
-  if (req.airlockSession !== undefined) {
-    const item: any = await storage.getItem(run.itemId).catch(() => null);
-    if (!item || typeof req.airlockProject !== 'string' || item.projectId !== req.airlockProject) return notFound();
-  }
   return res.json(run);
 }));
 

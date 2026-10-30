@@ -538,6 +538,7 @@ export class SQLiteStorageProvider implements StorageProvider {
         project_id TEXT,
         item_id TEXT,
         session_id TEXT,
+        launch_id TEXT,
         requested_at TEXT NOT NULL,
         granted_at TEXT,
         granted_by TEXT,
@@ -752,6 +753,8 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (!columns.includes('denied_by')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN denied_by TEXT');
     if (!columns.includes('capabilities')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN capabilities TEXT');
     if (!columns.includes('generation')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN generation INTEGER NOT NULL DEFAULT 1');
+    // A row from before it asked from no launch: only a call outside the sandbox can spend it.
+    if (!columns.includes('launch_id')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN launch_id TEXT');
   }
 
   /**
@@ -1804,15 +1807,16 @@ export class SQLiteStorageProvider implements StorageProvider {
       OR (airlock_approvals.expires_at IS NOT NULL AND airlock_approvals.expires_at <= :now))`;
     const usable = `(airlock_approvals.granted_at IS NOT NULL AND NOT ${spent})`;
     this.database.prepare(
-      `INSERT INTO airlock_approvals (key, rule, summary, capabilities, project_id, item_id, session_id, requested_at, generation)
-       VALUES (:key, :rule, :summary, :caps, :project, :item, :session, :requested, 1)
+      `INSERT INTO airlock_approvals (key, rule, summary, capabilities, project_id, item_id, session_id, launch_id, requested_at, generation)
+       VALUES (:key, :rule, :summary, :caps, :project, :item, :session, :launch, :requested, 1)
        ON CONFLICT(key) DO UPDATE SET
          rule = excluded.rule, summary = excluded.summary, capabilities = excluded.capabilities,
          project_id = excluded.project_id, item_id = excluded.item_id, session_id = excluded.session_id,
-         requested_at = excluded.requested_at,
+         launch_id = excluded.launch_id, requested_at = excluded.requested_at,
          generation = CASE WHEN ${spent}
              OR airlock_approvals.session_id IS NOT excluded.session_id
              OR airlock_approvals.item_id IS NOT excluded.item_id
+             OR airlock_approvals.launch_id IS NOT excluded.launch_id
            THEN airlock_approvals.generation + 1 ELSE airlock_approvals.generation END,
          granted_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.granted_at END,
          granted_by = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.granted_by END,
@@ -1823,7 +1827,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     ).run({
       key: req.key, rule: req.rule, summary: req.summary, caps: JSON.stringify(req.capabilities ?? []),
       project: req.projectId ?? null, item: req.itemId ?? null,
-      session: req.sessionId ?? null, requested: req.requestedAt, now,
+      session: req.sessionId ?? null, launch: req.launch ?? null, requested: req.requestedAt, now,
     });
     return (await this.getAirlockApproval(req.key))!;
   }
@@ -1957,12 +1961,12 @@ export class SQLiteStorageProvider implements StorageProvider {
       `UPDATE airlock_approvals SET consumed_at = :now, generation = generation + 1
        WHERE key = :key AND granted_at IS NOT NULL AND consumed_at IS NULL AND denied_at IS NULL
          AND (expires_at IS NULL OR expires_at > :now)
-         AND session_id IS :session AND item_id IS :item`
+         AND session_id IS :session AND item_id IS :item AND launch_id IS :launch`
     );
     db.exec('BEGIN IMMEDIATE');
     try {
       for (const key of new Set(keys)) {
-        const r = consume.run({ now, key, session: scope.sessionId ?? null, item: scope.itemId ?? null });
+        const r = consume.run({ now, key, session: scope.sessionId ?? null, item: scope.itemId ?? null, launch: scope.launch ?? null });
         if (Number(r.changes ?? 0) === 0) { db.exec('ROLLBACK'); return false; }
       }
       db.exec('COMMIT');

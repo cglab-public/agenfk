@@ -309,7 +309,7 @@ describe('airlock approvals (storage only; the grant flow is T5)', () => {
 });
 
 describe('airlock approvals: review fixes (T5 round 1)', () => {
-  const scope = { sessionId: 's1', itemId: 'i1' };
+  const scope = { sessionId: 's1', itemId: 'i1', launch: null };
   const ask = (key: string, over: Record<string, unknown> = {}) =>
     storage.upsertAirlockApproval({ key, rule: 'cloud-mutation', summary: 's', sessionId: 's1', itemId: 'i1', requestedAt: '2026-01-01T00:00:00.000Z', ...over });
 
@@ -329,9 +329,25 @@ describe('airlock approvals: review fixes (T5 round 1)', () => {
     await ask('c');
     const g = (await storage.getAirlockApproval('c'))!.generation!;
     await storage.grantAirlockApproval('c', { grantedBy: 'x', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z', generation: g });
-    expect(await storage.consumeAirlockApprovals(['c'], { sessionId: 's2', itemId: 'i1' })).toBe(false);
-    expect(await storage.consumeAirlockApprovals(['c'], { sessionId: 's1', itemId: 'i2' })).toBe(false);
+    expect(await storage.consumeAirlockApprovals(['c'], { sessionId: 's2', itemId: 'i1', launch: null })).toBe(false);
+    expect(await storage.consumeAirlockApprovals(['c'], { sessionId: 's1', itemId: 'i2', launch: null })).toBe(false);
     expect(await storage.consumeAirlockApprovals(['c'], scope)).toBe(true);
+  });
+
+  it('a grant is consumed only by the launch that asked for it (da69b17a review)', async () => {
+    await ask('l', { launch: 'L1' });
+    const g = (await storage.getAirlockApproval('l'))!.generation!;
+    await storage.grantAirlockApproval('l', { grantedBy: 'x', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z', generation: g });
+    expect(await storage.consumeAirlockApprovals(['l'], { ...scope, launch: 'L2' })).toBe(false);
+    expect(await storage.consumeAirlockApprovals(['l'], scope)).toBe(false);
+    expect(await storage.consumeAirlockApprovals(['l'], { ...scope, launch: 'L1' })).toBe(true);
+  });
+
+  it('a request re-asked from another launch is a new generation', async () => {
+    await ask('m', { launch: 'L1' });
+    const g = (await storage.getAirlockApproval('m'))!.generation!;
+    await ask('m', { launch: 'L2' });
+    expect((await storage.getAirlockApproval('m'))!.generation).toBe(g + 1);
   });
 
   it('a re-request from another scope does not take over a usable grant', async () => {
@@ -378,7 +394,7 @@ describe('airlock approvals: review fixes (T5 round 1)', () => {
     gens.push(await gen());
     await storage.grantAirlockApproval('g', { grantedBy: 'x', authority: 'board', expiresAt: '2099-01-01T00:00:00.000Z', generation: await gen() });
     gens.push(await gen());
-    expect(await storage.consumeAirlockApprovals(['g'], { sessionId: 's2', itemId: 'i9' })).toBe(true);
+    expect(await storage.consumeAirlockApprovals(['g'], { sessionId: 's2', itemId: 'i9', launch: null })).toBe(true);
     gens.push(await gen());
     await ask('g', { sessionId: 's2', itemId: 'i9' });        // reopened
     gens.push(await gen());

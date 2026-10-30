@@ -857,7 +857,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
       const targetOf = (v: { target?: string }) => (v.target && capabilities.find(c => capabilityText(c).includes(v.target!))) || capabilities[0];
 
       const nowIso = new Date(at).toISOString();
-      const scope: AirlockGrantScope = { sessionId: sessionId ?? null, itemId: work?.itemId ?? null };
+      const scope: AirlockGrantScope = { sessionId: sessionId ?? null, itemId: work?.itemId ?? null, launch: launch ?? null };
       const granted = await verdictWithGrants(storage, judge, scope, at, dryRun);
       /** The approval request's generation, when this call opened or re-asked one (DS-1 labels join it). */
       let approvalGeneration: number | null = null;
@@ -892,6 +892,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
             projectId,
             itemId: work?.itemId ?? null,
             sessionId: sessionId ?? null,
+            launch: launch ?? null,
             requestedAt: nowIso,
           }, nowIso);
           approvalGeneration = row.generation ?? null;
