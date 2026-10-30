@@ -224,7 +224,9 @@ describe('allowListArgs: what smolvm is given', () => {
   });
 
   it('observe: an empty list, so every name resolves and every flow reaches the decider', () => {
-    expect(allowListArgs(network('observe'))).toEqual(['--reset-allow-list']);
+    // --net: smolvm refuses to empty an allow list a machine had (one enforce set) unless every host is
+    // asked for explicitly (measured, 1.32.4: "removing the last allowed host ... say so explicitly").
+    expect(allowListArgs(network('observe'))).toEqual(['--reset-allow-list', '--net']);
   });
 });
 

@@ -878,11 +878,11 @@ export class SmolvmRuntime implements AirlockRuntime {
     try {
       r = await this.d.smolvm(['--version']);
     } catch {
-      return { ok: false, reason: `smolvm is not installed. Airlock needs smolvm ${SMOLVM_VERSION}: install it, then launch again.` };
+      return { ok: false, reason: `smolvm is not installed. Airlock needs smolvm ${SMOLVM_VERSION}: install it with \`agenfk airlock install\`, then launch again.` };
     }
     const found = /(\d+\.\d+\.\d+\S*)/.exec(r.stdout)?.[1] ?? 'an unknown version';
     if (r.code !== 0 || found !== SMOLVM_VERSION) {
-      return { ok: false, reason: `Airlock needs smolvm ${SMOLVM_VERSION}; found ${found}. Install ${SMOLVM_VERSION}, then launch again.` };
+      return { ok: false, reason: `Airlock needs smolvm ${SMOLVM_VERSION}; found ${found}. Install ${SMOLVM_VERSION} with \`agenfk airlock install\`, then launch again.` };
     }
     return { ok: true, warnings: [] };
   }

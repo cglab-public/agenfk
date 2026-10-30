@@ -349,8 +349,8 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
  *
  * ACCEPTED RISK (user decision 2026-10-28, after the security review): the sandbox can modify
  * anything of the user's under /tmp - a git checkout's hooks there run unsandboxed on the next
- * host commit, other tools' scratch files are writable. ASRT cannot give the sandbox a private
- * /tmp on macOS, and agenfk keeps no list of tool-specific paths.
+ * host commit, other tools' scratch files are writable. That was ASRT's limit (no private /tmp on
+ * macOS); smolvm mounts no host temp dir (privateTemp), so in a machine the guest's /tmp is its own.
  */
 export function sharedTempDir(platform: NodeJS.Platform, realpath: (p: string) => string | null): string | null {
   return platform === 'win32' ? null : realpath('/tmp');

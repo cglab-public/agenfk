@@ -35,6 +35,8 @@ RUN npm run build -w packages/core -w packages/telemetry -w packages/cli \
 # ── the image ───────────────────────────────────────────────────────────────
 FROM ${NODE_IMAGE}
 ARG PI_VERSION=1.4.0
+# The other client Airlock launches (agenfk airlock opencode): it runs from the image, as pi does.
+ARG OPENCODE_VERSION=1.19.1
 ARG MONGOSH_VERSION=2.5.8
 
 RUN apt-get update \
@@ -60,7 +62,7 @@ RUN --mount=type=secret,id=extra-ca \
 
 RUN --mount=type=secret,id=extra-ca \
     if [ -s /run/secrets/extra-ca ]; then cat /etc/ssl/certs/ca-certificates.crt /run/secrets/extra-ca > /tmp/build-ca.pem; export CURL_CA_BUNDLE=/tmp/build-ca.pem NODE_EXTRA_CA_CERTS=/run/secrets/extra-ca; fi \
- && npm install -g --no-audit --no-fund "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+ && npm install -g --no-audit --no-fund "@earendil-works/pi-coding-agent@${PI_VERSION}" "opencode-ai@${OPENCODE_VERSION}" \
  && npm cache clean --force && rm -f /tmp/build-ca.pem
 
 # mongosh from MongoDB's own build: the npm package compiles native modules.

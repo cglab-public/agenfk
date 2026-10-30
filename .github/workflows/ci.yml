@@ -182,6 +182,59 @@ jobs:
           path: vitest-windows-${{ matrix.shard }}.json
           if-no-files-found: ignore
 
+  # CGLAB-696: Airlock's sandbox conformance on the real, pinned smolvm (the AgEnFK base image,
+  # the spec and the egress decider AgEnFK builds). smolvm needs KVM: GitHub's Linux runners have
+  # it, the runner user just cannot open /dev/kvm until a udev rule says so.
+  airlock-conformance:
+    name: Linux · Airlock conformance (smolvm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 22.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Build
+        run: npm run build
+
+      - name: Open /dev/kvm to the runner user
+        run: |
+          test -e /dev/kvm || { echo "::error::this runner has no /dev/kvm: smolvm cannot run here"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install the pinned smolvm (as Airlock does)
+        run: |
+          node packages/cli/bin/agenfk.js airlock install
+          echo "AGENFK_SMOLVM_PATH=$HOME/.agenfk/smolvm/$(node -p "require('./packages/cli/dist/airlock/smolvm.js').SMOLVM_VERSION")/smolvm" >> "$GITHUB_ENV"
+
+      - name: Build the AgEnFK base image
+        run: |
+          docker build -f airlock-image/Dockerfile -t agenfk-airlock-base:ci .
+          docker save agenfk-airlock-base:ci -o "$RUNNER_TEMP/airlock-base.tar"
+          echo "AGENFK_AIRLOCK_TEST_IMAGE=$RUNNER_TEMP/airlock-base.tar" >> "$GITHUB_ENV"
+
+      - name: Conformance and real-machine tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/smolvm-bin"
+          ln -sf "$AGENFK_SMOLVM_PATH" "$RUNNER_TEMP/smolvm-bin/smolvm"
+          export PATH="$RUNNER_TEMP/smolvm-bin:$PATH"
+          npx vitest run --maxWorkers=1 packages/cli/src/test/airlock-sandbox-conformance.test.ts packages/cli/src/test/airlock-smolvm-runtime.test.ts packages/cli/src/test/airlock-egress.test.ts packages/cli/src/test/airlock-key-injector.test.ts
+        env:
+          AGENFK_SMOLVM_TESTS: '1'
+          AGENFK_REQUIRE_SMOLVM_TESTS: '1'
+
   # "Windows compat" is a required status check on main's "Protect main branch"
   # ruleset. It used to run the #201 subset; it now runs no tests and passes only
   # when every windows-full shard did, so the required check means "the whole

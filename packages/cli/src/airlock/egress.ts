@@ -26,7 +26,7 @@ import fs from 'fs';
 import net from 'net';
 import os from 'os';
 import path from 'path';
-import { spawn as nodeSpawn } from 'child_process';
+import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { matchHost } from '@agenfk/core';
 import type { SandboxSpec } from './spec';
 import type { ProxyDecision } from './runtime';
@@ -222,7 +222,8 @@ const NOTHING = '192.0.2.1/32';
  */
 export function allowListArgs(network: Network): string[] {
   const args = ['--reset-allow-list'];
-  if (network.mode === 'observe') return args;
+  // Every host, said explicitly: smolvm refuses to empty a list a machine had (enforce set one) without it.
+  if (network.mode === 'observe') return [...args, '--net'];
   // The gateway, where the decider relays a session to its launcher.
   const entries = new Set<string>([`--allow-cidr\0${GATEWAY}/32`]);
   for (const raw of network.allow) {
@@ -603,9 +604,21 @@ interface HelperEgressBrokerDeps {
   socketDir?: string;
 }
 
-/** The decider process: the compiled egressMain.js beside this file. */
-export function startEgressHelper(_machine: string, configPath: string): Promise<number> {
-  const child = nodeSpawn(process.execPath, [path.join(__dirname, 'egressMain.js'), configPath], { detached: true, stdio: 'ignore', windowsHide: true });
+/**
+ * The decider process: the compiled egressMain.js beside this file, run by this Node. Under
+ * Electron (the desktop app's bundled exec helper, whose env no longer says so) it is told to run
+ * as Node, or it would start the app.
+ */
+export function startEgressHelper(
+  _machine: string,
+  configPath: string,
+  o: { spawn?: (file: string, args: string[], options: SpawnOptions) => ChildProcess; electron?: string } = { electron: process.versions.electron },
+): Promise<number> {
+  const env = o.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : process.env;
+  const args = [path.join(__dirname, 'egressMain.js'), configPath];
+  const child = o.spawn
+    ? o.spawn(process.execPath, args, { detached: true, stdio: 'ignore', windowsHide: true, env })
+    : nodeSpawn(process.execPath, args, { detached: true, stdio: 'ignore', windowsHide: true, env });
   child.unref();
   if (!child.pid) return Promise.reject(new Error('Airlock could not start its egress decider.'));
   return Promise.resolve(child.pid);

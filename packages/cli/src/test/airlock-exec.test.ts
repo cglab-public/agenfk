@@ -38,7 +38,7 @@ function deps(over: Partial<ExecDeps> = {}, exit: SandboxExit = { code: 0, signa
     home: HOME,
     tmpDir: '/tmp/t',
     installDirs: ['/home/u/.agenfk-system'],
-    runtimePackageDir: '/home/u/.agenfk-system/node_modules/@anthropic-ai/sandbox-runtime',
+    runtimePackageDir: '/home/u/.agenfk/smolvm/1.32.4',
     directServerPort: 3000,
     listDir: () => [],
     realpath: (p: string) => p,

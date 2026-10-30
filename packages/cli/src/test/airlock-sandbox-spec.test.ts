@@ -1,6 +1,6 @@
 /**
  * Airlock layer 2 (GH-294, L2-1): the sandbox spec built from the EFFECTIVE
- * policy the server serves. Pure: no file system, no network, no ASRT.
+ * policy the server serves. Pure: no file system, no network, no runtime.
  */
 import { describe, it, expect } from 'vitest';
 import { normalizeAirlockPolicy, BUILTIN_DENY_HOSTS, HOME_CREDENTIAL_STORES } from '@agenfk/core';
@@ -11,7 +11,7 @@ import {
   type SandboxSession,
 } from '../airlock/spec';
 
-// The launcher refuses Windows (AsrtRuntime.check, tested there), so these POSIX
+// The launcher refuses Windows (SmolvmRuntime.check, tested in airlock-smolvm-runtime.test.ts), so these POSIX
 // sandbox specs never run on it; their literal POSIX paths would not hold either.
 const describePosix = process.platform === 'win32' ? describe.skip : describe;
 
@@ -117,8 +117,8 @@ describePosix('buildSandboxSpec: filesystem', () => {
   });
 
   it('protects the sandbox runtime package from writes', () => {
-    const spec = buildSandboxSpec(policy(), session({ runtimePackageDir: '/opt/agenfk/node_modules/@anthropic-ai/sandbox-runtime' }));
-    expect(spec.filesystem.denyWrite).toContain('/opt/agenfk/node_modules/@anthropic-ai/sandbox-runtime');
+    const spec = buildSandboxSpec(policy(), session({ runtimePackageDir: '/opt/agenfk/smolvm' }));
+    expect(spec.filesystem.denyWrite).toContain('/opt/agenfk/smolvm');
   });
 });
 
@@ -150,7 +150,7 @@ describe('buildSandboxSpec: environment and keys', () => {
 describe('writeRootHolding', () => {
   const spec = buildSandboxSpec(policy(), session());
   it('names the write root a path sits in', () => {
-    expect(writeRootHolding('/work/repo/node_modules/@anthropic-ai/sandbox-runtime', spec)).toBe('/work/repo');
+    expect(writeRootHolding('/work/repo/.tools/smolvm', spec)).toBe('/work/repo');
     expect(writeRootHolding('/work/repo', spec)).toBe('/work/repo');
   });
   it('is null outside every write root (a sibling with a common prefix is outside)', () => {

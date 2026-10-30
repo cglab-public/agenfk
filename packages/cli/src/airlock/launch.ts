@@ -57,6 +57,8 @@ export interface LaunchDeps {
    */
   ensureProjectRoot?(projectId: string, root: string): Promise<void>;
   runtime: AirlockRuntime;
+  /** Installs what the runtime runs on when it is missing (the pinned smolvm); rejects with why it could not. */
+  ensureRuntime?(): Promise<void>;
   env: NodeJS.ProcessEnv;
   home: string;
   cwd: string;
@@ -67,7 +69,6 @@ export interface LaunchDeps {
   readJson(file: string): unknown;
   exists(file: string): boolean;
   /** Absolute path of an executable on PATH, or null. */
-  which(file: string): string | null;
   runtimePackageDir: string;
   installDirs: string[];
   /**
@@ -323,6 +324,14 @@ const SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 const IMAGE_SOURCE: Record<MachineImageSource, string> = { policy: 'the policy\'s', base: 'AgEnFK base' };
 
 export async function runAirlockLaunch(client: AirlockClient, clientArgs: string[], opts: LaunchOptions, d: LaunchDeps): Promise<number> {
+  // The runtime first (CGLAB-696: the pinned smolvm, installed when missing): a launch is Airlock in use.
+  if (d.ensureRuntime) {
+    try {
+      await d.ensureRuntime();
+    } catch (e) {
+      throw new AirlockLaunchError(`${(e as Error)?.message ?? e} Nothing was launched.`);
+    }
+  }
   const ready = await d.runtime.check();
   if (!ready.ok) throw new AirlockLaunchError(ready.reason);
   ready.warnings.forEach((w) => d.warn(w));
@@ -381,8 +390,8 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     throw new AirlockLaunchError(`${(e as Error).message} Nothing was launched.`);
   }
 
-  const file = d.which(client);
-  if (!file) throw new AirlockLaunchError(`${client} is not installed (not found on PATH).`);
+  // The client the machine's image has, by name (review 01a18d3a): a host path names nothing in the guest.
+  const file = client;
 
   const session = client === 'pi' ? piSession(clientArgs, d) : opencodeSession(clientArgs, d);
   const provider = session.model.provider;

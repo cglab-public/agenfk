@@ -1,18 +1,12 @@
 /**
- * Sandbox proxy decisions reported to the server (GH-294, TEL-1).
+ * Sandbox egress decisions reported to the server (GH-294, TEL-1).
  *
- * The sandbox proxy runs in the launcher's own (unsandboxed) process. Its
- * decisions reach the AgEnFK server through ProxyDecisionReporter: batched,
- * deduplicated, fire-and-forget with a timeout. The proxy's verdict never
- * waits on, or depends on, the report: a slow, failing or absent server
- * changes nothing about what the sandbox lets through.
- *
- * Where the decisions come from, in the pinned ASRT (0.0.81): every proxy
- * denial is put in ASRT's violation store as
- * `deny network-outbound <host>:<port> (<reason>)` (or `deny http-request`),
- * and the runtime subscribes to it. Allows are not reported: a request filter
- * would change what the proxy does and see requests before its resolved-address
- * check, and the ask callback is never asked about a host the lists decide.
+ * The decisions reach the AgEnFK server through the launcher's
+ * ProxyDecisionReporter: batched, deduplicated, fire-and-forget with a timeout.
+ * The verdict never waits on, or depends on, the report: a slow, failing or
+ * absent server changes nothing about what the sandbox lets through. Where the
+ * decisions come from (the machine's egress decider) is tested in
+ * airlock-egress.test.ts and airlock-smolvm-runtime.test.ts.
  *
  * The report carries the report token (~/.agenfk/airlock/report-token, sent as
  * x-agenfk-airlock-report), read by the launcher outside the sandbox; the
@@ -20,10 +14,9 @@
  * verify-token stays readable there: the agent's own workflow needs it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { EventEmitter } from 'events';
 import { normalizeAirlockPolicy, verifyAirlockSessionMarker } from '@agenfk/core';
-import { buildSandboxSpec, type SandboxSession, type SandboxSpec } from '../airlock/spec';
-import { AsrtRuntime, toAsrtConfig, proxyDecisionOfViolation, sandboxCommandLine, type ProxyDecision, type SandboxCommand, type LaunchHooks } from '../airlock/runtime';
+import { buildSandboxSpec, type SandboxSpec } from '../airlock/spec';
+import type { ProxyDecision, SandboxCommand, LaunchHooks } from '../airlock/runtime';
 import {
   ProxyDecisionReporter,
   PROXY_REPORT_FLUSH_MS,
@@ -39,46 +32,6 @@ import path from 'path';
 
 const deny: ProxyDecision = { host: 'evil.example', port: 443, decision: 'deny', rule: 'not-on-allow-list' };
 const allow: ProxyDecision = { host: 'api.openai.com', port: 443, decision: 'allow', rule: 'allow-list' };
-
-describe('proxyDecisionOfViolation', () => {
-  it('reads a deny-list refusal', () => {
-    expect(proxyDecisionOfViolation('deny network-outbound 10.0.0.5:22 (host is on the deny list)'))
-      .toEqual({ host: '10.0.0.5', port: 22, decision: 'deny', rule: 'deny-list' });
-  });
-
-  it('reads a host no list allows', () => {
-    expect(proxyDecisionOfViolation('deny network-outbound evil.example:443 (host is not on the allow list)'))
-      .toEqual({ host: 'evil.example', port: 443, decision: 'deny', rule: 'not-on-allow-list' });
-  });
-
-  it('reads a refused resolved address (the reason names the class, never the address)', () => {
-    expect(proxyDecisionOfViolation('deny network-outbound sneaky.example:80 (resolved to a link-local address)'))
-      .toEqual({ host: 'sneaky.example', port: 80, decision: 'deny', rule: 'denied-address' });
-  });
-
-  it('reads an IPv6 literal host', () => {
-    expect(proxyDecisionOfViolation('deny network-outbound fe80::1:443 (host is not on the allow list)'))
-      .toMatchObject({ host: 'fe80::1', port: 443 });
-  });
-
-  it('reads a refused request: its host and port from the URL', () => {
-    expect(proxyDecisionOfViolation('deny http-request GET https://api.github.com/a/../b (ambiguous request-target)'))
-      .toEqual({ host: 'api.github.com', port: 443, decision: 'deny', rule: 'request-refused' });
-    expect(proxyDecisionOfViolation('deny http-request CONNECT example.com:8443 (misdirected)'))
-      .toEqual({ host: 'example.com', port: 8443, decision: 'deny', rule: 'request-refused' });
-  });
-
-  it('an unknown reason still reports the denial', () => {
-    expect(proxyDecisionOfViolation('deny network-outbound x.example:1 (something new)'))
-      .toEqual({ host: 'x.example', port: 1, decision: 'deny', rule: 'proxy-refused' });
-  });
-
-  it('is null for filesystem and other non-network violations', () => {
-    expect(proxyDecisionOfViolation('deny file-read-data /Users/u/.ssh/id_rsa')).toBeNull();
-    expect(proxyDecisionOfViolation('')).toBeNull();
-    expect(proxyDecisionOfViolation('deny network-outbound nonsense')).toBeNull();
-  });
-});
 
 describe('ProxyDecisionReporter', () => {
   beforeEach(() => { vi.useFakeTimers(); });
@@ -217,108 +170,6 @@ describe('ProxyDecisionReporter', () => {
   });
 });
 
-// --- The runtime: where ASRT's decisions are picked up. ---
-
-const session: SandboxSession = {
-  client: 'pi',
-  home: '/home/u',
-  workspace: '/work/repo',
-  tempDirs: ['/tmp/x'],
-  inferenceHosts: ['api.openai.com'],
-  serverPort: 3123,
-  installDirs: ['/home/u/.agenfk-system'],
-};
-const spec: SandboxSpec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }), session);
-
-function fakeStore(initial: Array<{ line: string }> = []) {
-  const violations = [...initial];
-  const listeners = new Set<(v: Array<{ line: string }>) => void>();
-  return {
-    subscribe: vi.fn((l: (v: Array<{ line: string }>) => void) => {
-      listeners.add(l);
-      l([...violations]);
-      return () => { listeners.delete(l); };
-    }),
-    add(line: string) {
-      violations.push({ line });
-      for (const l of listeners) l([...violations]);
-    },
-    listeners,
-  };
-}
-
-function fakeAsrt(store = fakeStore()) {
-  const manager = {
-    initialize: vi.fn(async (_cfg: any) => undefined),
-    checkDependencies: vi.fn(() => ({ errors: [] as string[], warnings: [] as string[] })),
-    wrapWithSandboxArgv: vi.fn(async (cmd: string) => ({ argv: ['/bin/bash', '-c', cmd], env: {} })),
-    reset: vi.fn(async () => undefined),
-    getSandboxViolationStore: vi.fn(() => store),
-  };
-  return { manager, store, load: vi.fn(async () => ({ SandboxManager: manager })) };
-}
-
-function fakeSpawn() {
-  const child = Object.assign(new EventEmitter(), { pid: 1, kill: vi.fn(() => true) });
-  return vi.fn(() => child);
-}
-
-const cmd: SandboxCommand = { file: 'pi', args: [], cwd: '/work/repo' };
-
-describe('AsrtRuntime: proxy decisions', () => {
-  it('with a hook the config is still exactly the spec\'s: no request filter, nothing ASRT decides differently', async () => {
-    const { manager, store, load } = fakeAsrt();
-    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: 'darwin' });
-    await rt.launch(spec, cmd, { onProxyDecision: () => {} });
-    expect(manager.initialize).toHaveBeenCalledWith(toAsrtConfig(spec));
-    expect(manager.initialize.mock.calls[0][0].network).not.toHaveProperty('filterRequest');
-    expect(store.subscribe).toHaveBeenCalledTimes(1);
-  });
-
-  it('reports each new proxy denial from the violation store, not the ones from before launch, nor file violations', async () => {
-    const store = fakeStore([{ line: 'deny network-outbound old.example:443 (host is not on the allow list)' }]);
-    const { load } = fakeAsrt(store);
-    const seen: ProxyDecision[] = [];
-    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: 'darwin' });
-    await rt.launch(spec, cmd, { onProxyDecision: (d) => { seen.push(d); } });
-    store.add('deny network-outbound evil.example:443 (host is not on the allow list)');
-    store.add('deny file-read-data /home/u/.ssh/id_rsa');
-    store.add('deny network-outbound 10.1.2.3:22 (host is on the deny list)');
-    expect(seen).toEqual([
-      { host: 'evil.example', port: 443, decision: 'deny', rule: 'not-on-allow-list' },
-      { host: '10.1.2.3', port: 22, decision: 'deny', rule: 'deny-list' },
-    ]);
-  });
-
-  it('a report that throws on a denial is contained', async () => {
-    const store = fakeStore();
-    const { load } = fakeAsrt(store);
-    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: 'darwin' });
-    await rt.launch(spec, cmd, { onProxyDecision: () => { throw new Error('boom'); } });
-    expect(() => store.add('deny network-outbound evil.example:443 (host is not on the allow list)')).not.toThrow();
-  });
-
-  it('dispose stops listening to the violation store', async () => {
-    const store = fakeStore();
-    const { load } = fakeAsrt(store);
-    const seen: ProxyDecision[] = [];
-    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: 'darwin' });
-    await rt.launch(spec, cmd, { onProxyDecision: (d) => { seen.push(d); } });
-    await rt.dispose();
-    expect(store.listeners.size).toBe(0);
-    store.add('deny network-outbound evil.example:443 (host is not on the allow list)');
-    expect(seen).toEqual([]);
-  });
-
-  it('with no hook the config is exactly the spec\'s: no filter, no subscription', async () => {
-    const { manager, store, load } = fakeAsrt();
-    const rt = new AsrtRuntime({ load, spawn: fakeSpawn() as any, runProbe: async () => ({ status: 0, stderr: '' }), platform: 'darwin' });
-    await rt.launch(spec, cmd);
-    expect(manager.initialize).toHaveBeenCalledWith(toAsrtConfig(spec));
-    expect(store.subscribe).not.toHaveBeenCalled();
-  });
-});
-
 // --- The launcher: the reporter is wired to the server, and never in the way. ---
 
 const TOKEN = 'airlock-report-token-0123456789abcdef';
@@ -355,8 +206,7 @@ function launchDeps(over: Partial<LaunchDeps> = {}) {
     apiUrl: 'http://127.0.0.1:3123',
     readJson: () => null,
     exists: () => false,
-    which: (f: string) => `/usr/local/bin/${f}`,
-    runtimePackageDir: '/home/u/.agenfk-system/node_modules/@anthropic-ai/sandbox-runtime',
+    runtimePackageDir: '/home/u/.agenfk/smolvm/1.32.4',
     installDirs: ['/home/u/.agenfk-system'],
     log: vi.fn(),
     warn: vi.fn(),
@@ -404,8 +254,6 @@ describe('runAirlockLaunch: proxy decisions reach the server', () => {
     await run;
     expect(JSON.stringify(launchedSpec)).not.toContain(TOKEN);
     expect(JSON.stringify(launchedCmd)).not.toContain(TOKEN);
-    expect(sandboxCommandLine(launchedSpec, launchedCmd)).not.toContain(TOKEN);
-    expect(JSON.stringify(toAsrtConfig(launchedSpec))).not.toContain(TOKEN);
     expect(Object.keys(hooks)).toEqual(['onProxyDecision']);
     // The whole directory, so its temp files are covered too.
     expect(launchedSpec.filesystem.denyRead).toContain(path.join('/home/u', '.agenfk', 'airlock'));

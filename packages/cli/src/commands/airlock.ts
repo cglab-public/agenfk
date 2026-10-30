@@ -4,13 +4,18 @@ import axios from 'axios';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import { getApiUrl } from '@agenfk/telemetry';
 import { resolveProjectIdentity, linkedWorktreeOf } from '@agenfk/core';
 import { resolveDashboardUrl } from '../uiUrl.js';
 import { runAirlockLaunch, AirlockLaunchError, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
 import { runAirlockExec, scopedCommandEnv, EXEC_CANNOT_SANDBOX, type ExecDeps } from '../airlock/exec.js';
-import { AsrtRuntime } from '../airlock/runtime.js';
+import { SmolvmRuntime, runAirlockReset } from '../airlock/smolvm.js';
+import { smolvmBinary, installSmolvm, runAirlockInstall } from '../airlock/smolvmInstall.js';
+import { defaultEgressBroker } from '../airlock/egress.js';
+import { baseImageFor, AIRLOCK_BASE_IMAGE } from '../airlock/image.js';
 import { stagePiAgentDir } from '../airlock/piAgentDir.js';
 import { PROXY_REPORT_TIMEOUT_MS } from '../airlock/proxyReport.js';
 import { runLearnImport, defaultPiSessionsDir } from '../airlock/learnImport.js';
@@ -53,19 +58,6 @@ function openInBrowser(url: string): void {
   }
 }
 
-/** Absolute path of an executable on PATH, or null. */
-function whichOnPath(file: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
-    const candidate = path.join(dir, file);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      if (fs.statSync(candidate).isFile()) return candidate;
-    } catch { /* next */ }
-  }
-  return null;
-}
-
 /**
  * `dir` as a real 0700 directory: created, or set to exactly 0700 (looser, or
  * owner-restrictive like 0600 that the owner could not use). Throws when it
@@ -106,16 +98,39 @@ function readReportToken(file: string): string | null {
 const realpath = (p: string): string => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 
 /**
- * Where the sandbox runtime is installed (never writable from the sandbox): its
- * package, or - in the desktop app's exec helper, which bundles it (ea94c023) -
- * the helper's own directory, which holds its vendored helpers.
+ * The smolvm Airlock runs (CGLAB-696): the one bundled beside the desktop app's exec helper
+ * (airlock/dist -> airlock/smolvm), else the one AgEnFK installs - never a smolvm on PATH.
  */
-function runtimePackageDir(): string {
-  try {
-    return AsrtRuntime.packageDir();
-  } catch {
-    return path.resolve(__dirname, '..');
-  }
+export function smolvmPathFor(dir: string, home: string, exists: (p: string) => boolean = fs.existsSync): string {
+  const bundled = path.resolve(dir, '..', 'smolvm', 'smolvm');
+  return exists(bundled) ? bundled : smolvmBinary(home);
+}
+
+/** Saves `url` to `dest`, following redirects; rejects on anything but a whole 200. */
+async function downloadTo(url: string, dest: string): Promise<void> {
+  const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(600_000) });
+  if (!res.ok || !res.body) throw new Error(`downloading ${url} failed: HTTP ${res.status}`);
+  await pipeline(Readable.fromWeb(res.body as any), fs.createWriteStream(dest, { mode: 0o600 }));
+}
+
+const installDeps = (home: string) => ({
+  home, platform: process.platform, arch: process.arch, download: downloadTo,
+  log: (m: string) => console.error(chalk.gray(m)),
+});
+
+/** SmolvmRuntime on `smolvmPath`, its machines' deciders detached, each reading its machine's audit. */
+function smolvmRuntime(smolvmPath: string, version: () => string): SmolvmRuntime {
+  let image: string;
+  // A launch names the image (spec.machineImage); this is only the fallback, so a version that makes no tag must not stop the CLI.
+  try { image = baseImageFor(version()); } catch { image = `${AIRLOCK_BASE_IMAGE}:unknown`; }
+  return new SmolvmRuntime({
+    image,
+    smolvmPath,
+    egress: defaultEgressBroker(async (machine) => {
+      const r = spawnSync(smolvmPath, ['machine', 'data-dir', '--name', machine], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
+      return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+    }),
+  });
 }
 
 /**
@@ -155,9 +170,12 @@ export function ensureProjectRootVia(
 const policyUrl = (apiUrl: string, projectId?: string | null): string =>
   `${apiUrl}/airlock/policy${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`;
 
-/** The real launcher's dependencies: this machine, this server, ASRT. */
+/** The real launcher's dependencies: this machine, this server, smolvm. */
 export function defaultLaunchDeps(): LaunchDeps {
   const home = os.homedir();
+  const smolvmPath = smolvmPathFor(__dirname, home);
+  const agenfkVersion = () => (typeof __AGENFK_VERSION__ === 'string' ? __AGENFK_VERSION__
+    : JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8')).version);
   return {
     fetchPolicy: async (projectId) => (await axios.get(policyUrl(getApiUrl(), projectId), { timeout: 5000 })).data,
     projectId: () => { try { return resolveProjectIdentity(process.cwd())?.projectId ?? null; } catch { return null; } },
@@ -172,7 +190,9 @@ export function defaultLaunchDeps(): LaunchDeps {
     ensureProjectRoot: ensureProjectRootVia(getApiUrl(), () => {
       try { return fs.readFileSync(path.join(home, '.agenfk', 'verify-token'), 'utf8').trim(); } catch { return null; }
     }),
-    runtime: new AsrtRuntime(),
+    runtime: smolvmRuntime(smolvmPath, agenfkVersion),
+    // A launch installs the pinned smolvm when it is missing; a bundled one is the app's to ship.
+    ensureRuntime: smolvmPath === smolvmBinary(home) ? async () => { await installSmolvm(installDeps(home)); } : undefined,
     stageAgentDir: (realDir) => stagePiAgentDir(realDir, realpath(os.tmpdir())),
     env: process.env,
     home,
@@ -181,14 +201,13 @@ export function defaultLaunchDeps(): LaunchDeps {
     apiUrl: getApiUrl(),
     readJson: (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } },
     exists: (file) => fs.existsSync(file),
-    which: (file) => whichOnPath(file),
-    runtimePackageDir: realpath(runtimePackageDir()),
+    // smolvm and what it runs from: never writable from inside.
+    runtimePackageDir: path.dirname(smolvmPathFor(__dirname, realpath(home))),
     // The installed copy, and the package this CLI runs from (dist/commands -> package root).
     installDirs: [...new Set([path.join(home, '.agenfk-system'), realpath(path.resolve(__dirname, '..', '..'))])],
     // The package this CLI runs from (dist/commands -> package root): its version tags the base image.
     // The desktop app's bundled exec helper has none: its bundler sets the version.
-    agenfkVersion: () => (typeof __AGENFK_VERSION__ === 'string' ? __AGENFK_VERSION__
-      : JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8')).version),
+    agenfkVersion,
     log: (m) => console.error(chalk.gray(m)),
     warn: (m) => console.error(chalk.yellow(m)),
     listDir: (dir) => {
@@ -248,19 +267,28 @@ export function defaultExecDeps(apiUrl: string, get: (url: string, opts: object)
 
 export function registerAirlockCommands(
   program: Command,
-  overrides: { launch?: Launch; exec?: Exec; exit?: (code: number) => void } = {},
+  overrides: { launch?: Launch; exec?: Exec; exit?: (code: number) => void; install?: (opts: { ifEnabled: boolean }) => Promise<number>; reset?: (workspace: string) => Promise<number> } = {},
 ): void {
   const launch: Launch = overrides.launch ?? ((client, args, opts) => runAirlockLaunch(client, args, opts, defaultLaunchDeps()));
   const exec: Exec = overrides.exec ?? ((command, opts) => {
     // Which server to ask, before the scope removes AGENFK_API_URL.
     const apiUrl = getApiUrl();
     const deps = defaultExecDeps(apiUrl);
-    // The sandbox's env comes from this process's: secrets out before ASRT reads it.
+    // The command's env comes from this process's (guestCommandEnv): secrets out first.
     const scoped = scopedCommandEnv(process.env);
     for (const name of Object.keys(process.env)) if (!(name in scoped)) delete process.env[name];
     return runAirlockExec(command, opts, deps);
   });
   const exit = overrides.exit ?? ((code: number) => process.exit(code));
+  const install = overrides.install ?? ((opts: { ifEnabled: boolean }) => runAirlockInstall(opts, {
+    ...installDeps(os.homedir()),
+    log: (m) => console.log(m),
+    fetchPolicy: async () => (await axios.get(`${getApiUrl()}/airlock/policy`, { timeout: 5000 })).data,
+  }));
+  const reset = overrides.reset ?? ((workspace: string) => {
+    const l = defaultLaunchDeps();
+    return runAirlockReset(workspace, { reset: (w) => (l.runtime as SmolvmRuntime).reset(w), log: (m) => console.log(m) });
+  });
   const airlock = program
     .command('airlock')
     .description('Airlock: the per-tool-call policy for pi and OpenCode sessions (read-only here; change it on the board)');
@@ -431,6 +459,22 @@ export function registerAirlockCommands(
         console.error(chalk.red(`❌ ${(e as Error)?.message ?? String(e)}`));
         exit(EXEC_CANNOT_SANDBOX);
       }
+    });
+
+  airlock
+    .command('install')
+    .description('Install the smolvm Airlock runs sessions in: exactly the version this agenfk pins, checked against its recorded sha256, into ~/.agenfk/smolvm. A launch installs it too.')
+    .option('--if-enabled', 'only where Airlock is in use: its policy observes or enforces, or a smolvm was installed before (what install and upgrade run); exits 3 when the server could not be asked')
+    .action(async (options: { ifEnabled?: boolean }) => {
+      exit(await install({ ifEnabled: !!options.ifEnabled }));
+    });
+
+  airlock
+    .command('reset')
+    .description('Delete the Airlock machine of a workspace (its installed dependencies with it); the next session starts a fresh one. Refused while a session runs in it.')
+    .option('--cwd <dir>', 'the workspace (default: this folder)')
+    .action(async (options: { cwd?: string }) => {
+      exit(await reset(path.resolve(options.cwd ?? process.cwd())));
     });
 
   for (const client of ['pi', 'opencode'] as const) {

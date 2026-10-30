@@ -250,6 +250,12 @@ const running = (name: string): Machine => ({ state: 'running', image: IMAGE, la
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
 describe('SmolvmRuntime.check', () => {
+  it('a missing smolvm: says how AgEnFK installs it (CGLAB-696 task 6)', async () => {
+    const r = await runtime({ smolvm: fakeSmolvm({ missing: true }) }).rt.check();
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/agenfk airlock install/);
+  });
+
   it('refuses Windows, and says why', async () => {
     const r = await runtime({ platform: 'win32' }).rt.check();
     expect(r).toMatchObject({ ok: false });
@@ -2188,7 +2194,7 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('the AgEnFK base image in a re
     try {
       const out = path.join(workspace, 'probe.out');
       const probe = [
-        'for c in node pi agenfk git psql mysql redis-cli mongosh python3 yarn pnpm; do command -v $c >/dev/null || echo "missing $c"; done',
+        'for c in node pi opencode agenfk git psql mysql redis-cli mongosh python3 yarn pnpm; do command -v $c >/dev/null || echo "missing $c"; done',
         'ssh -V 2>&1 | grep -q OpenSSH || echo "ssh: $(ssh -V 2>&1)"',
         // The image's ENV reaches the session: pnpm and yarn run from the corepack home it prepared.
         '[ "$COREPACK_HOME" = /usr/local/share/corepack ] || echo "COREPACK_HOME=$COREPACK_HOME"',

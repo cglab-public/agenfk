@@ -12,7 +12,7 @@ import { registerAirlockCommands } from '../commands/airlock';
 import type { AirlockRuntime, SandboxCommand, SandboxExit } from '../airlock/runtime';
 import type { SandboxSpec } from '../airlock/spec';
 
-// The launcher refuses Windows (AsrtRuntime.check, tested there), so these POSIX
+// The launcher refuses Windows (SmolvmRuntime.check, tested in airlock-smolvm-runtime.test.ts), so these POSIX
 // sandbox specs never run on it; their literal POSIX paths would not hold either.
 const describePosix = process.platform === 'win32' ? describe.skip : describe;
 
@@ -46,8 +46,7 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
     apiUrl: 'http://localhost:3123',
     readJson: (p: string) => (p in files ? files[p] : null),
     exists: (p: string) => p in files,
-    which: (f: string) => `/usr/local/bin/${f}`,
-    runtimePackageDir: '/home/u/.agenfk-system/node_modules/@anthropic-ai/sandbox-runtime',
+    runtimePackageDir: '/home/u/.agenfk/smolvm/1.32.4',
     installDirs: ['/home/u/.agenfk-system'],
     log: vi.fn(),
     warn: (m: string) => { warnings.push(m); },
@@ -122,9 +121,10 @@ describePosix('runAirlockLaunch: pi', () => {
     expect(spec.maskedEnv).toEqual([{ name: 'OPENAI_API_KEY', injectHosts: ['api.openai.com'] }]);
     expect(spec.filesystem.allowWrite).toEqual(expect.arrayContaining([CWD, '/tmp/t', '/home/u/.pi/agent']));
     expect(spec.filesystem.denyWrite).toEqual(expect.arrayContaining([
-      '/home/u/.agenfk', '/home/u/.agenfk-system', '/home/u/.agenfk-system/node_modules/@anthropic-ai/sandbox-runtime',
+      '/home/u/.agenfk', '/home/u/.agenfk-system', '/home/u/.agenfk/smolvm/1.32.4',
     ]));
-    expect(cmdOf(d)).toEqual({ file: '/usr/local/bin/pi', args: ['--model', 'openai/gpt-5', '-p', 'hi'], cwd: CWD });
+    // By name: the guest's own pi (review 01a18d3a) - a host path names nothing in the machine.
+    expect(cmdOf(d)).toEqual({ file: 'pi', args: ['--model', 'openai/gpt-5', '-p', 'hi'], cwd: CWD });
     expect(d.runtime.dispose).toHaveBeenCalled();
   });
 
@@ -297,9 +297,10 @@ describe('runAirlockLaunch: refusals', () => {
     expect(d.fetchPolicy).not.toHaveBeenCalled();
   });
 
-  it('refuses when the client is not installed', async () => {
-    const d = deps({ which: () => null });
-    await expect(runAirlockLaunch('opencode', ['-m', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/opencode is not installed/);
+  it('runs the client the machine\'s image has: the host needs no install of its own (review 01a18d3a)', async () => {
+    const d = deps();
+    await runAirlockLaunch('opencode', ['-m', 'openai/x'], { keyEnv: [] }, d);
+    expect(cmdOf(d).file).toBe('opencode');
   });
 
   it('refuses when it cannot tell which host serves the model', async () => {
@@ -308,7 +309,7 @@ describe('runAirlockLaunch: refusals', () => {
   });
 
   it('refuses when the sandbox runtime sits where the sandboxed agent could rewrite it', async () => {
-    const d = deps({ runtimePackageDir: '/work/repo/node_modules/@anthropic-ai/sandbox-runtime' });
+    const d = deps({ runtimePackageDir: '/work/repo/.tools/smolvm' });
     await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(AirlockLaunchError);
     await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/sandbox runtime.*\/work\/repo/s);
     expect(d.runtime.launch).not.toHaveBeenCalled();
@@ -574,5 +575,23 @@ describe('story review 2: the root the launcher records is the main checkout\'s'
     expect(mainCheckoutRoot('/repo/packages/svc', null)).toBe('/repo/packages/svc');
     // a project root above the worktree is not in it: left as it is
     expect(mainCheckoutRoot('/wt', { top: '/wt/feat', main: '/repo' })).toBe('/wt');
+  });
+});
+
+/** CGLAB-696 task 6: a launch installs the smolvm it runs on first, when it is missing. */
+describePosix('runAirlockLaunch: the runtime installed first (CGLAB-696 task 6)', () => {
+  it('ensures the runtime before checking it', async () => {
+    const order: string[] = [];
+    const { runtime } = fakeRuntime();
+    runtime.check.mockImplementation(async () => { order.push('check'); return { ok: true, warnings: [] }; });
+    const d = deps({ runtime, ensureRuntime: vi.fn(async () => { order.push('ensure'); }) });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(order).toEqual(['ensure', 'check']);
+  });
+
+  it('a runtime it cannot install: nothing is launched, and the reason is said', async () => {
+    const d = deps({ ensureRuntime: vi.fn(async () => { throw new Error('the download\'s sha256 is wrong'); }) });
+    await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/sha256 is wrong/);
+    expect(d.runtime.launch).not.toHaveBeenCalled();
   });
 });
