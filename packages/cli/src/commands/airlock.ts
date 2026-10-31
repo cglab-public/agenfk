@@ -264,6 +264,37 @@ export function defaultExecDeps(apiUrl: string, get: (url: string, opts: object)
   };
 }
 
+const AIRLOCK_CLIENTS = ['pi', 'opencode'] as const;
+
+/**
+ * Where the client's name is in `argv` (what follows `airlock`), when it is a launch: only the
+ * launcher's own options (--key-env NAME, --key-env=NAME) come before it. Else null.
+ */
+function clientIndexOf(argv: readonly string[]): number | null {
+  for (let i = 0; i < argv.length; i++) {
+    if ((AIRLOCK_CLIENTS as readonly string[]).includes(argv[i])) return i;
+    if (argv[i] === '--key-env' && i + 1 < argv.length) i++;
+    else if (!argv[i].startsWith('--key-env=')) return null;
+  }
+  return null;
+}
+
+/**
+ * `agenfk airlock [--key-env NAME].. <client> <args..>` as typed: the launcher's own options
+ * before the client's name, and every argument after it the client's, verbatim (user decision).
+ */
+export function clientArgsOf(raw: readonly string[], client: string): { keyEnv: string[]; args: string[] } {
+  const keyEnv: string[] = [];
+  for (let i = raw.indexOf('airlock') + 1; i > 0 && i < raw.length; i++) {
+    const tok = raw[i];
+    if (tok === client) return { keyEnv, args: raw.slice(i + 1) };
+    if (tok === '--key-env' && i + 1 < raw.length) keyEnv.push(raw[++i]);
+    else if (tok.startsWith('--key-env=')) keyEnv.push(tok.slice('--key-env='.length));
+    else throw new AirlockLaunchError(`${tok}: not an option of agenfk airlock ${client}. Its own options (--key-env NAME) go before "${client}"; ${client}'s go after it.`);
+  }
+  throw new AirlockLaunchError(`Could not find "${client}" on the command line.`);
+}
+
 export function registerAirlockCommands(
   program: Command,
   overrides: { launch?: Launch; exec?: Exec; exit?: (code: number) => void; install?: (opts: { ifEnabled: boolean }) => Promise<number>; reset?: (workspace: string) => Promise<number>; reap?: (o: { machine: string; session: string; workspace: string }) => Promise<number> } = {},
@@ -498,23 +529,49 @@ export function registerAirlockCommands(
       }
     });
 
-  for (const client of ['pi', 'opencode'] as const) {
-    airlock
+  // The launcher's own options come before the client's name; everything after it is the client's,
+  // verbatim (user decision): --help, -- and anything that looks like ours included. Declared for
+  // help; clientArgsOf reads them.
+  airlock.option('--key-env <name>', 'For pi/opencode, before the client\'s name: an env var holding the model key, to mask (repeatable; the provider\'s usual one is masked already)');
+
+  // Commander's ancestors take their options from anywhere on the line (agenfk's -V, --toon, the
+  // launcher's --key-env), so a launch is passed through them unparsed; the action reads the line.
+  const rootParse = program.parseOptions.bind(program);
+  // agenfk's own flags may come first (`agenfk --toon airlock pi ..`): parsed, and nothing after them.
+  const rootFlag = (t: string) => program.options.some((o) => (o.long === t || o.short === t) && !o.required && !o.optional);
+  program.parseOptions = (argv: string[]) => {
+    const at = argv.indexOf('airlock');
+    if (at < 0 || !argv.slice(0, at).every(rootFlag) || clientIndexOf(argv.slice(at + 1)) === null) return rootParse(argv);
+    rootParse(argv.slice(0, at));
+    return { operands: ['airlock'], unknown: argv.slice(at + 1) };
+  };
+  const airlockParse = airlock.parseOptions.bind(airlock);
+  airlock.parseOptions = (argv: string[]) => {
+    const at = clientIndexOf(argv);
+    return at === null ? airlockParse(argv) : { operands: argv.slice(at), unknown: [] };
+  };
+
+  for (const client of AIRLOCK_CLIENTS) {
+    const cmd = airlock
       .command(client)
-      .description(`Launch ${client} inside the Airlock sandbox: egress only to the policy's hosts and the session's inference host, credential stores unreadable, AgEnFK's own files unwritable. Every argument after "${client}" goes to ${client}.`)
-      .option('--key-env <name>', 'An env var holding the model key, to mask (repeatable; the provider\'s usual one is masked already)', (v: string, acc: string[]) => [...acc, v], [] as string[])
+      .description(`Launch ${client} inside the Airlock sandbox: egress only to the policy's hosts and the session's inference host, credential stores unreadable, AgEnFK's own files unwritable. Every argument after "${client}" goes to ${client} verbatim; agenfk's own options (--key-env) come before "${client}".`)
       .argument('[args...]', `arguments for ${client}`)
       .allowUnknownOption()
       .allowExcessArguments()
-      .helpOption(false)
-      .action(async (args: string[], options: { keyEnv?: string[] }) => {
-        try {
-          exit(await launch(client, args ?? [], { keyEnv: options.keyEnv ?? [] }));
-        } catch (e) {
-          const message = e instanceof AirlockLaunchError ? e.message : (e as Error)?.message ?? String(e);
-          console.error(chalk.red(`❌ ${message}`));
-          exit(1);
-        }
-      });
+      .helpOption(false);
+    cmd.parseOptions = (argv: string[]) => ({ operands: [...argv], unknown: [] });
+    cmd.action(async () => {
+      try {
+        // Read off the command line as typed, which nothing above has parsed.
+        let root: Command = cmd;
+        while (root.parent) root = root.parent;
+        const { keyEnv, args } = clientArgsOf((root as Command & { rawArgs: string[] }).rawArgs, client);
+        exit(await launch(client, args, { keyEnv }));
+      } catch (e) {
+        const message = e instanceof AirlockLaunchError ? e.message : (e as Error)?.message ?? String(e);
+        console.error(chalk.red(`❌ ${message}`));
+        exit(1);
+      }
+    });
   }
 }

@@ -8,7 +8,7 @@ import { describe, it, expect, vi } from 'vitest';
 import path from 'path';
 import { Command } from 'commander';
 import { runAirlockLaunch, AirlockLaunchError, findAgenfkDirs, type LaunchDeps } from '../airlock/launch';
-import { registerAirlockCommands } from '../commands/airlock';
+import { registerAirlockCommands, clientArgsOf } from '../commands/airlock';
 import type { AirlockRuntime, SandboxCommand, SandboxExit } from '../airlock/runtime';
 import type { SandboxSpec } from '../airlock/spec';
 
@@ -208,6 +208,16 @@ describePosix('runAirlockLaunch: pi', () => {
     expect(d.warnings.join('\n')).toMatch(/auth\.json/);
   });
 
+  it.each(['home-read-only', 'home-read-write'])('does not warn about auth.json when the policy opens the home folder (%s), and the spec mounts it', async (homeAccess) => {
+    const d = deps({
+      env: {},
+      fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: [] }, homeAccess }, source: 'hub', revision: 3, capabilities: ['sandboxed-commands', 'machine-image'] })) as any,
+    });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(d.warnings.join('\n')).not.toMatch(/auth\.json/);
+    expect(specOf(d).filesystem.homeMount).toBe(homeAccess === 'home-read-only' ? 'ro' : 'rw');
+  });
+
   it('what git reads its config from in the workspace is unwritable when .git is a directory (BUG 4639c6a4)', async () => {
     const d = deps();
     d.isDirectory = (p: string) => p === path.join(path.resolve(CWD), '.git');
@@ -359,14 +369,63 @@ describe('runAirlockLaunch: exit and signals', () => {
 });
 
 describe('agenfk airlock pi|opencode (command wiring)', () => {
-  it('hands every argument after the client name to the client, and --key-env to the launcher', async () => {
+  it('takes --key-env before the client name and hands the client its arguments', async () => {
     const launch = vi.fn(async () => 5);
     const exit = vi.fn();
     const program = new Command();
     registerAirlockCommands(program, { launch, exit });
-    await program.parseAsync(['node', 'agenfk', 'airlock', 'pi', '--key-env', 'K', '--model', 'openai/x', '-p', 'hi there', '--help']);
-    expect(launch).toHaveBeenCalledWith('pi', ['--model', 'openai/x', '-p', 'hi there', '--help'], { keyEnv: ['K'] });
+    await program.parseAsync(['node', 'agenfk', 'airlock', '--key-env', 'K', '--key-env', 'L', 'pi', '--model', 'openai/x', '-p', 'hi there']);
+    expect(launch).toHaveBeenCalledWith('pi', ['--model', 'openai/x', '-p', 'hi there'], { keyEnv: ['K', 'L'] });
     expect(exit).toHaveBeenCalledWith(5);
+  });
+
+  it.each(['pi', 'opencode'] as const)('hands every argument after "%s" to it verbatim: --help, --key-env and -- included', async (client) => {
+    const launch = vi.fn(async () => 0);
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerAirlockCommands(program, { launch, exit });
+    const args = ['--help', '-h', '--key-env', 'K', '--', '--model', 'x', '--', '-p', 'a -- b'];
+    await program.parseAsync(['node', 'agenfk', 'airlock', client, ...args]);
+    expect(launch).toHaveBeenCalledWith(client, args, { keyEnv: [] });
+  });
+
+  // Codex review 01a193dc-3bc3: with agenfk's own root options registered, as the real CLI has them.
+  it.each([['--key-env'], ['-V'], ['--toon'], ['--help'], ['-h'], ['--'], ['--version']])('hands a lone %s after the client\'s name to the client', async (arg) => {
+    const launch = vi.fn(async () => 0);
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride().version('9.9.9', '-V').option('--toon').configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerAirlockCommands(program, { launch, exit });
+    await program.parseAsync(['node', 'agenfk', 'airlock', '--key-env', 'K', 'pi', arg]);
+    expect(launch).toHaveBeenCalledWith('pi', [arg], { keyEnv: ['K'] });
+  });
+
+  it('hands the client its arguments when agenfk\'s own flags come before airlock (review 01a193dc-3bc3, second pass)', async () => {
+    const launch = vi.fn(async () => 0);
+    const program = new Command();
+    program.exitOverride().version('9.9.9', '-V').option('--toon').configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerAirlockCommands(program, { launch, exit: vi.fn() });
+    await program.parseAsync(['node', 'agenfk', '--toon', 'airlock', '--key-env', 'K', 'pi', '-V', '--key-env']);
+    expect(launch).toHaveBeenCalledWith('pi', ['-V', '--key-env'], { keyEnv: ['K'] });
+    expect(program.opts().toon).toBe(true);
+  });
+
+  it('leaves every other agenfk command to commander: root options still work after them', async () => {
+    const launch = vi.fn(async () => 0);
+    const program = new Command();
+    let toon: unknown;
+    program.option('--toon');
+    program.command('list').action(() => { toon = program.opts().toon; });
+    registerAirlockCommands(program, { launch, exit: vi.fn() });
+    await program.parseAsync(['node', 'agenfk', 'list', '--toon']);
+    expect(toon).toBe(true);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('reads --key-env=NAME too, and refuses an unknown launcher option before the client\'s name', () => {
+    expect(clientArgsOf(['node', 'agenfk', 'airlock', '--key-env=K', 'opencode', '-m', 'x'], 'opencode')).toEqual({ keyEnv: ['K'], args: ['-m', 'x'] });
+    expect(() => clientArgsOf(['node', 'agenfk', 'airlock', '--model', 'x', 'pi'], 'pi')).toThrow(/--model: not an option of agenfk airlock pi/);
   });
 
   it('prints a launch refusal and exits 1', async () => {
@@ -678,6 +737,31 @@ describe('runAirlockLaunch: a policy changed while the session runs (story revie
     expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
     expect(code).not.toBe(0);
     expect(d.warnings.join('\n')).toMatch(/api\.openai\.com/);
+  });
+
+  // Codex reviews 01a193dc-3bc3 / -38d2: mounts cannot be taken back from a running session.
+  it.each([
+    ['home-read-write', undefined], ['home-read-write', 'home-read-only'], ['home-read-only', undefined],
+  ])('ends the session when the home access narrows from %s to %s', async (from, to) => {
+    const live = liveRuntime();
+    const at = (homeAccess: string | undefined, revision: number) => ({ ...view({ allow: [], deny: [] }, 'enforce', revision), effective: { mode: 'enforce', hosts: { allow: [], deny: [] }, ...(homeAccess ? { homeAccess } : {}) } });
+    let n = 0;
+    const d = deps({ runtime: live.runtime as any, policyPollMs: 10, killGraceMs: 50, fetchPolicy: vi.fn(async () => (n++ === 0 ? at(from, 3) : at(to, 4))) } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(live.launched.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(d.warnings.join('\n')).toMatch(/home access/);
+  });
+
+  it('keeps the session when the home access widens: it takes effect from the next launch', async () => {
+    const live = liveRuntime();
+    const at = (homeAccess: string | undefined, revision: number) => ({ ...view({ allow: [], deny: [] }, 'enforce', revision), effective: { mode: 'enforce', hosts: { allow: [], deny: [] }, ...(homeAccess ? { homeAccess } : {}) } });
+    let n = 0;
+    const d = deps({ runtime: live.runtime as any, policyPollMs: 10, fetchPolicy: vi.fn(async () => (n++ === 0 ? at(undefined, 3) : at('home-read-write', 4))) } as any);
+    const done = runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    await vi.waitFor(() => expect((d.fetchPolicy as any).mock.calls.length).toBeGreaterThan(3), { timeout: 2000 });
+    expect(live.launched.kill).not.toHaveBeenCalled();
+    live.end({ code: 0, signal: null });
+    await done;
   });
 
   it('ends the session when its machine cannot follow the policy (started by an older AgEnFK)', async () => {
