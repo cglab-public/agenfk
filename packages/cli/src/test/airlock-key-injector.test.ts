@@ -93,6 +93,32 @@ describe('startKeyInjector', () => {
     await new Promise<void>((r) => upstream.close(() => r()));
   });
 
+  // Story review 3: the real upstream is TLS, reached by the inference host's name (SNI and the
+  // certificate's identity), whatever address the decider allowed.
+  it('reaches a TLS upstream by the inference host\'s name, checking its certificate against it', async () => {
+    await injector!.close();
+    const upCa = machineCa(fs.mkdtempSync(path.join(dir, 'upstream-ca-')));
+    const leaf = leafFor(upCa, 'api.inference.test');
+    const got: Array<{ sni: string | false; auth?: string }> = [];
+    const tlsUp = https.createServer({ key: leaf.key, cert: leaf.cert }, (req, res) => {
+      got.push({ sni: (req.socket as tls.TLSSocket).servername, auth: req.headers.authorization });
+      res.end('ok');
+    });
+    await new Promise<void>((r) => tlsUp.listen(0, '127.0.0.1', () => r()));
+    try {
+      injector = await startKeyInjector({
+        ca, routes: [{ host: 'api.inference.test', port: 443 }], secrets: [{ placeholder: PH, value: KEY }],
+        connectUpstream: () => ({ protocol: 'https:', hostname: '127.0.0.1', port: (tlsUp.address() as net.AddressInfo).port }),
+        upstreamCa: upCa.certPem,
+      });
+      const r = await request({ headers: { authorization: `Bearer ${PH}` } });
+      expect(r.status, r.body).toBe(200);
+      expect(got).toEqual([{ sni: 'api.inference.test', auth: `Bearer ${KEY}` }]);
+    } finally {
+      await new Promise<void>((r) => tlsUp.close(() => r()));
+    }
+  });
+
   /** A request through the injector as the guest makes it: TLS to the inference host's name, trusting the machine's CA. */
   function request(o: { servername?: string; path?: string; headers?: Record<string, string>; body?: string; trust?: string; verify?: boolean }): Promise<{ status: number; body: string; error?: string }> {
     return new Promise((resolve) => {
@@ -211,7 +237,8 @@ describe('startKeyInjector', () => {
 
   it('cancels requests still upstream when it closes', async () => {
     let upstreamClosed = false;
-    const hang = http.createServer((req) => { req.on('close', () => { upstreamClosed = true; }); });
+    let arrived = false;
+    const hang = http.createServer((req) => { arrived = true; req.on('close', () => { upstreamClosed = true; }); });
     await new Promise<void>((r) => hang.listen(0, '127.0.0.1', () => r()));
     const hangPort = (hang.address() as { port: number }).port;
     await injector!.close();
@@ -219,7 +246,8 @@ describe('startKeyInjector', () => {
     try {
       const s = tls.connect({ host: '127.0.0.1', port: injector.port, servername: 'api.inference.test', ca: ca.certPem }, () => s.write('GET /stream HTTP/1.1\r\nHost: api.inference.test\r\n\r\n'));
       s.on('error', () => undefined);
-      await new Promise((r) => setTimeout(r, 100));
+      // upstream for certain (a fixed wait lost the race under a loaded suite)
+      await vi.waitFor(() => expect(arrived).toBe(true));
       await injector.close();
       injector = null;
       await vi.waitFor(() => expect(upstreamClosed).toBe(true));
@@ -421,7 +449,8 @@ describe.skipIf(!smolvmHere)('relay and key injection against the real smolvm (A
           lines.push('relay:' + await get(http, process.env.AGENFK_API_URL + '/health'));
           lines.push('other:' + await get(http, 'http://' + process.env.GW + ':3000/'));
           lines.push('inference:' + await get(https, { host: '203.0.113.10', servername: 'inference.airlock.test', path: '/v1/models', headers: { host: 'inference.airlock.test', authorization: 'Bearer ' + process.env.TEST_API_KEY } }));
-          lines.push('key-in-guest:' + (process.env.TEST_API_KEY === '${REAL}'));
+          // What the guest sees, for the host to judge: the real key never goes into the guest, not even in this script.
+          fs.writeFileSync('${out}.key', String(process.env.TEST_API_KEY));
           fs.writeFileSync('${out}', lines.join('\\n') + '\\n');
         })();`;
       const launched = await rt.launch({ ...spec, env: { ...spec.env, GW: '100.96.0.1' } }, { file: 'node', args: ['-e', script], cwd: workspace });
@@ -430,8 +459,11 @@ describe.skipIf(!smolvmHere)('relay and key injection against the real smolvm (A
         'relay:relay-ok',
         'other:error:ECONNRESET',
         'inference:key-injected',
-        'key-in-guest:false',
       ]);
+      const seen = fs.readFileSync(`${out}.key`, 'utf8');
+      expect(seen).not.toBe(REAL);
+      expect(seen).toMatch(/^airlock_[A-Za-z0-9_-]{32}$/);
+      expect(script).not.toContain(REAL);
     } finally {
       await rt.reset(workspace).catch(() => undefined);
       await rt.dispose();

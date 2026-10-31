@@ -29,7 +29,10 @@ const smolvmPlatform = ['darwin-arm64', 'linux-arm64', 'linux-x64'].includes(`${
  * image the machine can pull (AGENFK_AIRLOCK_TEST_IMAGE_REF, util-linux in it) whose registry
  * hosts are in AGENFK_AIRLOCK_TEST_REGISTRY_HOSTS (comma-separated).
  */
-const realRun = process.env.AGENFK_SMOLVM_TESTS === '1' && !!process.env.AGENFK_AIRLOCK_TEST_IMAGE_REF;
+// Where smolvm can run at all (story review 3): asked here, so that once enabled a launch that
+// fails is a failure, never a skip.
+const canRunSmolvm = smolvmPlatform && (process.platform === 'darwin' || fs.existsSync('/dev/kvm'));
+const realRun = process.env.AGENFK_SMOLVM_TESTS === '1' && !!process.env.AGENFK_AIRLOCK_TEST_IMAGE_REF && canRunSmolvm;
 
 let isolated: string;
 let policy: http.Server;
@@ -134,9 +137,8 @@ describe.skipIf(!realRun)('the bundled helper, run where the app would run it (A
     child.on('close', (status) => { clearTimeout(t); resolve({ status, stdout, stderr }); });
   });
 
-  it('runs a command in the sandbox with Node', async (ctx) => {
+  it('runs a command in the sandbox with Node', async () => {
     const r = await run(process.execPath, {});
-    if (r.status === 125 && /could not start|cannot sandbox|does not support|cannot run here/i.test(r.stderr)) ctx.skip();
     expect(r.stdout, r.stderr).toContain('marker=command');
     expect(r.status).toBe(0);
   }, 300_000);
@@ -147,7 +149,6 @@ describe.skipIf(!realRun)('the bundled helper, run where the app would run it (A
     if (!electron) try { electron = require('electron') as unknown as string; } catch { electron = null; }
     if (!electron || typeof electron !== 'string' || !fs.existsSync(electron)) return ctx.skip();
     const r = await run(electron, { ELECTRON_RUN_AS_NODE: '1' });
-    if (r.status === 125 && /could not start|cannot sandbox|does not support|cannot run here/i.test(r.stderr)) ctx.skip();
     expect(r.stdout, r.stderr).toContain('marker=command');
     expect(r.status).toBe(0);
   }, 300_000);
