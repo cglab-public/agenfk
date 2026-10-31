@@ -1779,6 +1779,15 @@ describePosix('guestPlanOf: what the session cannot move aside or plant', () => 
       expect(() => guestPlanOf(specOf(), workspace)).toThrow(/later/);
     });
 
+    // A linked worktree checked out inside the workspace (Claude Code's .claude/worktrees): its
+    // pointer leads into the git dir's worktrees, which is protected as modules is (BUG 9bdd4d45).
+    it('accepts a linked worktree checked out inside the workspace', () => {
+      spawnSync('git', ['-C', workspace, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'first']);
+      git(workspace, 'worktree', 'add', '-q', path.join(workspace, '.claude', 'worktrees', 'agent-x'));
+      const p = guestPlanOf(specOf(), workspace);
+      expect(p.readOnly).toContain(path.join(workspace, '.claude', 'worktrees', 'agent-x', '.git'));
+    });
+
     it('refuses a nested .git that is a symbolic link', () => {
       fs.mkdirSync(path.join(workspace, 'elsewhere'));
       fs.mkdirSync(path.join(workspace, 'sub'));
