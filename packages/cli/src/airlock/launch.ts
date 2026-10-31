@@ -521,6 +521,8 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         ...(agentDir && agentDir !== path.join(d.home, '.pi', 'agent') ? { piAgentDir: agentDir } : {}),
       });
       built.machineImage = machineImage.image;
+      // A key that cannot be masked reaches the session as it is, as the warning above says.
+      if (keyNames.length && !endpoint.tls) built.plainEnv = keyNames;
       return built;
     };
     let spec: SandboxSpec;

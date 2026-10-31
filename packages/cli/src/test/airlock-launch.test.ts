@@ -147,6 +147,17 @@ describePosix('runAirlockLaunch: pi', () => {
     expect(spec.network.allow).toContain('127.0.0.1:8081');
     expect(spec.maskedEnv).toEqual([]);
     expect(d.warnings.join('\n')).toMatch(/LOCAL_KEY.*not masked/);
+    // ...and reaches the session as the warning says (story review 3): by name, never by value in the spec
+    expect(spec.plainEnv).toEqual(['LOCAL_KEY']);
+    expect(JSON.stringify(spec)).not.toContain('"k"');
+  });
+
+  it('a TLS endpoint\'s key is masked and not passed through as well', async () => {
+    const d = deps({ env: { SPARK_KEY: 's' } }, {
+      [path.join(HOME, '.pi/agent/models.json')]: { providers: { spark: { baseUrl: 'https://spark.example.com/v1', apiKey: 'SPARK_KEY' } } },
+    });
+    await runAirlockLaunch('pi', ['--provider', 'spark', '--model', 'm'], { keyEnv: [] }, d);
+    expect(specOf(d).plainEnv ?? []).toEqual([]);
   });
 
   it('--key-env masks a variable the caller names, and refuses one that is not set', async () => {
