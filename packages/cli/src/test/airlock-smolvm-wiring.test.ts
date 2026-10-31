@@ -10,10 +10,41 @@ import { EventEmitter } from 'events';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { spawn, spawnSync } from 'child_process';
 import { SmolvmRuntime, SMOLVM_VERSION } from '../airlock/smolvm';
 import { smolvmBinary, smolvmDir } from '../airlock/smolvmInstall';
 import { startEgressHelper } from '../airlock/egress';
 import { registerAirlockCommands, defaultLaunchDeps, defaultExecDeps, smolvmPathFor } from '../commands/airlock';
+
+// Fix review 3: the launcher reads the client's config (the project's opencode.json is the
+// workspace's, which a session writes) before anything else: never blocking, never unbounded.
+describe('the launcher\'s config reads', () => {
+  it('does not block on a FIFO, follows a link to a file, and reads nothing too large or not JSON', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-readjson-'));
+    try {
+      const read = defaultLaunchDeps().readJson;
+      const fifo = path.join(dir, 'opencode.json');
+      expect(spawnSync('mkfifo', [fifo]).status).toBe(0);
+      // a writer opens it after 2s: a blocking read would wait for it
+      const writer = spawn('sh', ['-c', `sleep 2; exec 3>"${fifo}"; exec 3>&-`], { stdio: 'ignore' });
+      const t0 = Date.now();
+      expect(read(fifo)).toBeNull();
+      expect(Date.now() - t0).toBeLessThan(1000);
+      // with nothing reading it any more, the writer would wait for ever
+      writer.kill('SIGKILL');
+      const real = path.join(dir, 'real.json');
+      fs.writeFileSync(real, '{"model":"a/b"}');
+      fs.symlinkSync(real, path.join(dir, 'link.json'));
+      expect(read(path.join(dir, 'link.json'))).toEqual({ model: 'a/b' });
+      fs.writeFileSync(path.join(dir, 'big.json'), `{"x":"${'a'.repeat(17 * 1024 * 1024)}"}`);
+      expect(read(path.join(dir, 'big.json'))).toBeNull();
+      fs.writeFileSync(path.join(dir, 'bad.json'), 'not json');
+      expect(read(path.join(dir, 'bad.json'))).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
 
 describe('the runtime the launcher and exec use', () => {
   it('the launcher runs sessions in SmolvmRuntime', () => {

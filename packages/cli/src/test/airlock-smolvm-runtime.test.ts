@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import crypto from 'crypto';
 import net from 'net';
 import fs from 'fs';
@@ -29,6 +29,8 @@ import {
   platformBindLines,
   platformInstallOf,
   PLATFORM_INSTALL_SCRIPT,
+  CONTAINED_INSTALL,
+  KILL_INSTALL_CGROUP,
   INSTALL_TIMEOUT,
   LOCK_TIMEOUT_MS,
   GUEST_PLATFORM_ROOT,
@@ -477,6 +479,32 @@ describe('guestPlanOf: what the guest sees', () => {
     expect(ro).not.toContain(path.join(home, '.agenfk-system'));
   });
 
+  it('binds pi\'s launcher and installs read-only, and holds a missing settings.json with a file pi reads as empty (story review 3)', () => {
+    for (const d of ['bin', 'install']) fs.mkdirSync(path.join(agentDir, d), { recursive: true });
+    const p = plan();
+    expect(p.readOnly).toEqual(expect.arrayContaining([path.join(agentDir, 'bin'), path.join(agentDir, 'install')]));
+    expect(p.placeholders).toContainEqual({ path: path.join(agentDir, 'settings.json'), kind: 'file', content: '{}\n' });
+    expect(p.readOnly).toContain(path.join(agentDir, 'settings.json'));
+    expect(p.readOnly).not.toContain(path.join(agentDir, 'sessions'));
+    // an existing settings.json is bound as it is
+    fs.writeFileSync(path.join(agentDir, 'settings.json'), '{"packages":[]}\n');
+    expect(plan().placeholders.map((h) => h.path)).not.toContain(path.join(agentDir, 'settings.json'));
+    expect(plan().readOnly).toContain(path.join(agentDir, 'settings.json'));
+  });
+
+  it('binds the project\'s client config that is there read-only, leaving .pi itself writable for pi\'s lock (fix review 3)', () => {
+    const files = ['opencode.json', 'opencode.jsonc', '.pi/settings.json'].map((f) => path.join(workspace, f));
+    const dirs = ['.opencode', '.pi/extensions'].map((d) => path.join(workspace, d));
+    // missing: nothing planted (a placeholder would show in git, like a missing .mcp.json)
+    const before = plan();
+    for (const p of [...files, ...dirs]) expect(before.placeholders.map((h) => h.path)).not.toContain(p);
+    for (const d of dirs) fs.mkdirSync(d, { recursive: true });
+    for (const f of files) fs.writeFileSync(f, '{}');
+    const after = plan();
+    expect(after.readOnly).toEqual(expect.arrayContaining([...files, ...dirs]));
+    expect(after.readOnly).not.toContain(path.join(workspace, '.pi'));
+  });
+
   it('hides what the spec keeps unreadable inside a mount: pi\'s auth.json', () => {
     expect(plan().hidden).toEqual([{ path: path.join(agentDir, 'auth.json'), kind: 'file' }]);
   });
@@ -640,6 +668,17 @@ describe('a session in the machine', () => {
     expect(smolvm.execs().some((a) => a.join(' ').includes('cgroup.kill'))).toBe(true);
     expect(smolvm.verbs()).toContain('stop');
     expect(egress.stop).toHaveBeenCalledWith(machineNameOf(workspace));
+  });
+
+  it('says so when the interceptor would not stop, and still finishes the release (story review 3)', async () => {
+    const warnings: string[] = [];
+    const egress = fakeEgress();
+    egress.stop.mockImplementation(async () => { throw new Error('the decider (pid 4242) is still running'); });
+    const { rt, sp } = runtime({ egress, warn: (m: string) => warnings.push(m) });
+    const launched = await rt.launch(specOf(), cmd());
+    sp.children[0].finish(0);
+    expect((await launched.exited).code).toBe(0);
+    expect(warnings.join('\n')).toMatch(/interceptor[\s\S]*pid 4242\) is still running/);
   });
 
   it('keeps the machine running while another session is in it', async () => {
@@ -1060,6 +1099,22 @@ describe('AgEnFK\'s MCP for an OpenCode session in the machine (story review 2)'
     expect(flag(cp[0], '--mode')).toBe('444');
     expect(smolvm.execs().some((a) => flag(a, '-u') === 'root' && a.join(' ').includes('mount -t tmpfs') && a.join(' ').includes(path.dirname(installServer())))).toBe(true);
   });
+
+  it('does not block on a config that is not a regular file (a FIFO); refuses one that is a link, which it cannot protect (story review 3)', async () => {
+    fs.mkdirSync(path.join(home, '.config', 'opencode'), { recursive: true });
+    const cfg = path.join(home, '.config', 'opencode', 'opencode.json');
+    expect(spawnSync('mkfifo', [cfg]).status).toBe(0);
+    const { rt, smolvm } = runtime({ mcpBundle: bundle() });
+    await rt.launch(opencodeSpec(), cmd());
+    expect(copiesTo(smolvm, installServer())).toEqual([]);
+    fs.rmSync(cfg);
+    const real = path.join(root, 'dotfiles-opencode.json');
+    fs.writeFileSync(real, JSON.stringify({ mcp: { agenfk: { type: 'local', enabled: true, command: ['node', installServer()] } } }));
+    fs.symlinkSync(real, cfg);
+    const b = runtime({ mcpBundle: bundle() });
+    // The session could swap the link for a file of its own, which host OpenCode would then run from.
+    await expect(b.rt.launch(opencodeSpec(), cmd())).rejects.toThrow(/opencode\.json: it is a symbolic link/);
+  }, 20_000);
 
   it('does nothing for pi, for a config that runs no AgEnFK MCP, or one that runs it from the mounts', async () => {
     writeConfig(['node', installServer()]);
@@ -2003,6 +2058,18 @@ describe('the AgEnFK server and the model key, from inside the machine', () => {
     return { started, closed, startInjector };
   }
 
+  // Story review 3: a key for a plain-http endpoint cannot be masked; it reaches the session as the
+  // launcher warns, from smolvm's own environment (--secret-env), never on a command line.
+  it('passes a plain key from the host environment, never on the command line', async () => {
+    const { rt, sp } = runtime({ hostEnv: { PATH: '/host/bin', LOCAL_KEY: 'plain-key-not-real' } });
+    await rt.launch({ ...specOf(), plainEnv: ['LOCAL_KEY', 'NOT_SET', 'bad name'] }, cmd());
+    const [, args, opts] = sp.spawn.mock.calls[0] as unknown as [string, string[], { env?: NodeJS.ProcessEnv }];
+    const secrets = args.flatMap((a, i) => (a === '--secret-env' ? [args[i + 1]] : []));
+    expect(secrets).toEqual(['LOCAL_KEY=LOCAL_KEY']);
+    expect(args.join(' ')).not.toContain('plain-key-not-real');
+    expect(opts.env?.LOCAL_KEY).toBe('plain-key-not-real');
+  });
+
   it('relays the session\'s AgEnFK server through the gateway: a route to a socket that reaches its relay, AGENFK_API_URL pointing there', async () => {
     let got = '';
     const relay = net.createServer((c) => c.on('data', (d) => { got += d; }));
@@ -2408,6 +2475,70 @@ describe('platformInstallOf: what installs the guest\'s dependencies', () => {
   });
 });
 
+describe('CONTAINED_INSTALL, run by sh with a stand-in cgroup (story review 3)', () => {
+  // Lifecycle scripts the install runs are the repository's: one that daemonizes must not outlive
+  // it. Root makes the cgroup, a child moves itself in before it becomes the session user, and
+  // everything still in it is killed once the install ends - root's shell is not in it.
+  let dir: string;
+  let bin: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-contained-'));
+    bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    // setpriv as a stand-in: records the user it was asked for, then runs what follows --
+    // setpriv as a stand-in: records every argument it was given, then runs what follows --
+    fs.writeFileSync(path.join(bin, 'setpriv'), '#!/bin/sh\nprintf "%s|" "$@" > "$SETPRIV_LOG"; while [ "$1" != "--" ]; do shift; done; shift; exec "$@"\n', { mode: 0o755 });
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // cgroup.procs as a FIFO with a collector, so every pid ever written to it is in procs.log (a
+  // plain file would keep only the last one).
+  const run = (inner: string) => {
+    const g = path.join(dir, 'cg');
+    fs.mkdirSync(g);
+    fs.writeFileSync(path.join(g, 'cgroup.events'), 'populated 0\n');
+    expect(spawnSync('mkfifo', [path.join(g, 'cgroup.procs')]).status).toBe(0);
+    const collector = spawn('sh', ['-c', 'while :; do cat "$0" >> "$1"; done', path.join(g, 'cgroup.procs'), path.join(g, 'procs.log')], { stdio: 'ignore' });
+    try {
+      const r = spawnSync('sh', ['-c', CONTAINED_INSTALL, g, '503', '20', inner, 'stamp', 'h1'], {
+        encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, SETPRIV_LOG: path.join(dir, 'setpriv.log'), MARK: path.join(dir, 'ran'), CG: g },
+      });
+      return { r, g, procs: () => fs.readFileSync(path.join(g, 'procs.log'), 'utf8').trim().split('\n') };
+    } finally {
+      collector.kill('SIGKILL');
+    }
+  };
+
+  it('moves the install into the cgroup before it runs as the session user, and kills the cgroup after it ends', () => {
+    // The repository's code (this script) checks it is already in the cgroup, as the very process
+    // that was moved there (setpriv and sh exec in place, so the pid is the same).
+    const { r, g, procs } = run('i=0; until grep -qx "$$" "$CG/procs.log" 2>/dev/null || [ $i -ge 40 ]; do sleep 0.05; i=$((i+1)); done; '
+      + 'grep -qx "$$" "$CG/procs.log" && w=in || w=out; echo "$0 $1 $w $$" > "$MARK"; exit 0');
+    expect(r.status, r.stderr).toBe(0);
+    const [stamp, hash, where, pid] = fs.readFileSync(path.join(dir, 'ran'), 'utf8').trim().split(' ');
+    expect([stamp, hash, where]).toEqual(['stamp', 'h1', 'in']);
+    // the whole privilege drop: the session's uid and gid, and no supplementary groups
+    expect(fs.readFileSync(path.join(dir, 'setpriv.log'), 'utf8').split('|').slice(0, 5)).toEqual(['--reuid=503', '--regid=20', '--clear-groups', '--', 'sh']);
+    expect(fs.readFileSync(path.join(g, 'cgroup.kill'), 'utf8').trim()).toBe('1');
+    // only the install's process was ever put in the cgroup: never the root shell that kills it
+    expect(procs()).toEqual([pid]);
+  });
+
+  it('keeps the install\'s exit status, and kills the cgroup when it fails too', () => {
+    const { r, g } = run('exit 7');
+    expect(r.status).toBe(7);
+    expect(fs.readFileSync(path.join(g, 'cgroup.kill'), 'utf8').trim()).toBe('1');
+  });
+
+  it('runs nothing when the cgroup cannot be made', () => {
+    fs.writeFileSync(path.join(dir, 'cg'), 'not a dir');
+    const r = spawnSync('sh', ['-c', CONTAINED_INSTALL, path.join(dir, 'cg'), '503', '20', 'echo ran > "$MARK"', 's', 'h'], {
+      encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, SETPRIV_LOG: path.join(dir, 'setpriv.log'), MARK: path.join(dir, 'ran') },
+    });
+    expect(r.status).toBe(125);
+    expect(fs.existsSync(path.join(dir, 'ran'))).toBe(false);
+  });
+});
+
 describe('PLATFORM_INSTALL_SCRIPT, run by sh', () => {
   // The script as the guest runs it: sh -c SCRIPT <stamp> <hash> <command...>, in the workspace.
   let bin: string;
@@ -2484,7 +2615,10 @@ describe('a session in a machine with dependencies to install', () => {
     await rt.launch(specOf(), cmd());
     const install = installExec(smolvm);
     expect(install).toBeTruthy();
-    expect(flag(install!.args, '-u', '--user')).toBe('503:20');
+    // Root puts it in a cgroup of its own, then it runs as the session user (story review 3).
+    expect(flag(install!.args, '-u', '--user')).toBe('root');
+    const contained = install!.args.slice(install!.args.indexOf(CONTAINED_INSTALL) + 1, install!.args.indexOf(PLATFORM_INSTALL_SCRIPT));
+    expect(contained).toEqual([expect.stringMatching(/^\/sys\/fs\/cgroup\/agenfk\/install-[0-9a-f]+$/), '503', '20']);
     expect(flag(install!.args, '-w', '--workdir')).toBe(workspace);
     const tail = install!.args.slice(install!.args.indexOf(PLATFORM_INSTALL_SCRIPT) + 2);
     expect(tail).toEqual([crypto.createHash('sha256').update(lock).digest('hex'), 'npm', 'ci']);
@@ -2492,6 +2626,46 @@ describe('a session in a machine with dependencies to install', () => {
     const order = (c: { args: string[] }) => smolvm.run.mock.invocationCallOrder[smolvm.calls.indexOf(c as any)];
     expect(order(setup)).toBeLessThan(order(install!));
     expect(order(install!)).toBeLessThan(sp.spawn.mock.invocationCallOrder[0]);
+  });
+
+  // Story review 3 (fix review): the install may be killed by its timeout before its own cleanup
+  // runs; the launcher ends the cgroup itself once the install exec settles, and refuses to start
+  // the session when it cannot.
+  const cleanupOf = (smolvm: ReturnType<typeof fakeSmolvm>, cgroup: string) => smolvm.calls.find((c) => c.args[1] === 'exec' && c.args.includes(KILL_INSTALL_CGROUP) && c.args.includes(cgroup));
+  it('ends the install\'s cgroup itself after the install, even when the install timed out', async () => {
+    for (const execFails of [undefined, (a: string[]) => (a.includes(PLATFORM_INSTALL_SCRIPT) ? 'Error: exec timed out after 600s' : null)]) {
+      const smolvm = fakeSmolvm({ execFails });
+      const { rt, sp } = runtime({ smolvm, warn: () => undefined });
+      const launched = await rt.launch(specOf(), cmd());
+      const install = installExec(smolvm)!;
+      const cgroup = install.args[install.args.indexOf(CONTAINED_INSTALL) + 1];
+      const cleanup = cleanupOf(smolvm, cgroup);
+      expect(cleanup).toBeTruthy();
+      expect(flag(cleanup!.args, '-u', '--user')).toBe('root');
+      const order = (c: { args: string[] }) => smolvm.run.mock.invocationCallOrder[smolvm.calls.indexOf(c as any)];
+      expect(order(cleanup!)).toBeGreaterThan(order(install));
+      expect(order(cleanup!)).toBeLessThan(sp.spawn.mock.invocationCallOrder[0]);
+      sp.children[0].finish(0);
+      await launched.exited;
+    }
+  });
+
+  it('starts no session when what the install started cannot be ended', async () => {
+    const smolvm = fakeSmolvm({ execFails: (a) => (a.includes(KILL_INSTALL_CGROUP) ? 'still populated' : null) });
+    const { rt, sp } = runtime({ smolvm });
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(/could not end what the dependency install started[\s\S]*still populated/);
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('gives each install a cgroup of its own (story review 3)', async () => {
+    const a = runtime();
+    const first = await a.rt.launch(specOf(), cmd());
+    const g1 = installExec(a.smolvm)!.args[installExec(a.smolvm)!.args.indexOf(CONTAINED_INSTALL) + 1];
+    a.sp.children[0].finish(0);
+    await first.exited;
+    const b = runtime();
+    await b.rt.launch(specOf(), cmd());
+    expect(installExec(b.smolvm)!.args[installExec(b.smolvm)!.args.indexOf(CONTAINED_INSTALL) + 1]).not.toBe(g1);
   });
 
   it('bounds the install: a hung lifecycle script cannot hold the machine\'s lock forever (review 7)', async () => {
@@ -3368,6 +3542,99 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('SmolvmRuntime against the rea
       const size = fs.statSync(path.join(workspace, 'escaped.out')).size;
       await new Promise((r) => setTimeout(r, 1500));
       expect(fs.statSync(path.join(workspace, 'escaped.out')).size).toBe(size);
+      fs.writeFileSync(path.join(workspace, 'done'), '');
+      expect((await holder.exited).code).toBe(0);
+    } finally {
+      await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      icpt.close();
+      process.env.HOME = sandboxHome;
+    }
+  }, 600_000);
+
+  // Fix review 3: the project's pi settings are read-only, and pi still reads them - it takes its
+  // lock (a .lock dir beside the file, proper-lockfile) in .pi, which stays writable.
+  it('lets pi lock and read the project\'s settings it cannot write', async () => {
+    const icpt = await allowAllInterceptor();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address: icpt.address, token: icpt.token }),
+      watch: () => () => undefined,
+      stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'),
+      addRoute: () => () => undefined,
+    };
+    fs.mkdirSync(path.join(workspace, '.pi'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.pi', 'settings.json'), '{"theme":"dark"}');
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: {} });
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      const probe = 'mkdir .pi/settings.json.lock && echo locked; cat .pi/settings.json; echo; rmdir .pi/settings.json.lock; '
+        + '{ echo "{}" > .pi/settings.json; } 2>/dev/null && echo written || echo refused';
+      const run = await rt.launch(specOf(), { file: 'sh', args: ['-c', `{ ${probe}; } > probe.out 2>&1`], cwd: workspace });
+      expect((await run.exited).code).toBe(0);
+      expect(fs.readFileSync(path.join(workspace, 'probe.out'), 'utf8').trim().split('\n')).toEqual(['locked', '{"theme":"dark"}', 'refused']);
+      expect(fs.readFileSync(path.join(workspace, '.pi', 'settings.json'), 'utf8')).toBe('{"theme":"dark"}');
+    } finally {
+      await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      icpt.close();
+      process.env.HOME = sandboxHome;
+    }
+  }, 600_000);
+
+  // Story review 3: a plain-http endpoint's key reaches the session from smolvm's environment.
+  it('gives the session a plain key through --secret-env', async () => {
+    const icpt = await allowAllInterceptor();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address: icpt.address, token: icpt.token }),
+      watch: () => () => undefined,
+      stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'),
+      addRoute: () => () => undefined,
+    };
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: { ...process.env, LOCAL_KEY: 'plain-key-not-real' } });
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      const run = await rt.launch({ ...specOf(), plainEnv: ['LOCAL_KEY'] }, { file: 'sh', args: ['-c', 'printf %s "$LOCAL_KEY" > plain.out'], cwd: workspace });
+      expect((await run.exited).code).toBe(0);
+      expect(fs.readFileSync(path.join(workspace, 'plain.out'), 'utf8')).toBe('plain-key-not-real');
+    } finally {
+      await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      icpt.close();
+      process.env.HOME = sandboxHome;
+    }
+  }, 600_000);
+
+  // Story review 3: the dependency install runs the repository's lifecycle scripts; one that
+  // daemonizes ends with the install, while another session keeps the machine running.
+  it('ends what a lifecycle script of the dependency install left running', async () => {
+    const icpt = await allowAllInterceptor();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address: icpt.address, token: icpt.token }),
+      watch: () => () => undefined,
+      stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'),
+      addRoute: () => () => undefined,
+    };
+    const daemon = 'setsid sh -c \'while true; do date +%s%N >> escaped.install; sleep 0.2; done\' </dev/null >/dev/null 2>&1 &';
+    fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ name: 'contained', version: '1.0.0', scripts: { postinstall: daemon } }));
+    fs.writeFileSync(path.join(workspace, 'package-lock.json'), JSON.stringify({ name: 'contained', version: '1.0.0', lockfileVersion: 3, requires: true, packages: { '': { name: 'contained', version: '1.0.0', hasInstallScript: true } } }));
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: {} });
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      const holder = await rt.launch(specOf(), { file: 'sh', args: ['-c', 'while [ ! -e done ]; do sleep 0.2; done'], cwd: workspace });
+      const out = path.join(workspace, 'escaped.install');
+      // the script ran (it wrote at least once) ...
+      await vi.waitFor(() => expect(fs.existsSync(out)).toBe(true), { timeout: 10_000 });
+      await new Promise((r) => setTimeout(r, 1000));
+      const size = fs.statSync(out).size;
+      await new Promise((r) => setTimeout(r, 1500));
+      // ... and stopped with the install, though the machine runs on
+      expect(fs.statSync(out).size).toBe(size);
       fs.writeFileSync(path.join(workspace, 'done'), '');
       expect((await holder.exited).code).toBe(0);
     } finally {

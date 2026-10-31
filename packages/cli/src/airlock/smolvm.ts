@@ -104,7 +104,11 @@ export interface GuestPlan {
  * Protected files held by content git accepts (measured): a commondir of `.` is the repository
  * itself, and an empty config or config.worktree sets nothing. Any other placeholder is an empty dir.
  */
-const FILE_PLACEHOLDERS: Record<string, string> = { commondir: '.\n', 'config.worktree': '', config: '' };
+const FILE_PLACEHOLDERS: Record<string, string> = {
+  commondir: '.\n', 'config.worktree': '', config: '',
+  // A client's settings held while missing: a file its client reads as empty, never a dir it cannot read.
+  'settings.json': '{}\n', 'opencode.json': '{}\n', 'opencode.jsonc': '{}\n', 'config.json': '{}\n', 'package.json': '{}\n',
+};
 
 /** In the workspace's .git: unwritable, and held when missing. */
 const GIT_PROTECTED = ['hooks', 'config'];
@@ -115,7 +119,10 @@ const NESTED_GIT_PROTECTED = ['hooks', 'config', 'commondir', 'config.worktree',
  * mandatory denies), kept so here when they exist. Not held when missing: an
  * empty .vscode or .idea would be noticed by the IDE.
  */
-const WORKSPACE_PROTECTED = ['.gitmodules', '.vscode', '.idea', '.claude/commands', '.claude/agents', '.mcp.json'];
+// The project's pi and OpenCode config and extensions too (fix review 3), which the host's client
+// loads on its next launch here. Not .pi itself: pi takes its settings lock in it before reading.
+const WORKSPACE_PROTECTED = ['.gitmodules', '.vscode', '.idea', '.claude/commands', '.claude/agents', '.mcp.json',
+  'opencode.json', 'opencode.jsonc', '.opencode', '.pi/settings.json', '.pi/extensions'];
 
 /** Where the guest keeps its own platform dirs, on the machine's disk. */
 export const GUEST_PLATFORM_ROOT = '/var/lib/agenfk/platform';
@@ -598,10 +605,32 @@ export const PLATFORM_INSTALL_SCRIPT = 'stamp="$0"; hash="$1"; shift; '
   + 'rm -f "$stamp"; "$@" || exit $?; '
   + 'tmp=$(mktemp "$stamp.XXXXXX") && printf \'%s\\n\' "$hash" > "$tmp" && mv -f "$tmp" "$stamp"';
 
+/**
+ * Run by root as `sh -c CONTAINED_INSTALL <cgroup> <uid> <gid> <script> <args...>` (story review 3):
+ * the install runs the repository's lifecycle scripts, one of which may daemonize. A child moves
+ * itself into a cgroup of its own, then becomes the session user and runs `sh -c <script> <args>`;
+ * once that ends, everything still in the cgroup is killed. Root's shell stays outside it. A cgroup
+ * that cannot be made runs nothing (125); the install's own status is kept.
+ */
+export const CONTAINED_INSTALL = 'G="$0"; u="$1"; g="$2"; s="$3"; shift 3; mkdir -p "$G" || exit 125; '
+  + 'sh -c \'echo $$ > "$0/cgroup.procs" || exit 125; exec "$@"\' "$G" setpriv --reuid="$u" --regid="$g" --clear-groups -- sh -c "$s" "$@"; rc=$?; '
+  + 'echo 1 > "$G/cgroup.kill" || exit 125; i=0; until grep -q "^populated 0" "$G/cgroup.events"; do [ $i -lt 50 ] || exit 125; sleep 0.1; i=$((i+1)); done; '
+  + 'rmdir "$G" 2>/dev/null; exit $rc';
+
+/**
+ * Root's, after the install exec settles however it ended (`sh -c KILL_INSTALL_CGROUP <cgroup>`):
+ * a timeout kills CONTAINED_INSTALL before its own cleanup. Fails unless the cgroup is gone or
+ * emptied and removed.
+ */
+export const KILL_INSTALL_CGROUP = 'G="$0"; [ -d "$G" ] || exit 0; echo 1 > "$G/cgroup.kill" || exit 1; i=0; '
+  + 'until grep -q "^populated 0" "$G/cgroup.events"; do [ $i -lt 50 ] || exit 1; sleep 0.1; i=$((i+1)); done; rmdir "$G"';
+
 /** How long the guest's install may take: it runs under the machine's lock. */
 export const INSTALL_TIMEOUT = '600s';
 /** The largest lockfile read: the session writes it, and the launcher reads it on the host. */
 const MAX_LOCKFILE = 64 * 1024 * 1024;
+/** The largest client config read (OpenCode's): the host user's file, read on every launch. */
+const MAX_CLIENT_CONFIG = 1024 * 1024;
 
 /**
  * A linked worktree's git metadata (CGLAB-696 task 7): its .git file names its git dir, which
@@ -1520,7 +1549,9 @@ export class SmolvmRuntime implements AirlockRuntime {
     if (r.code !== 0 && (await this.machine(name))?.state === 'running') {
       throw new Error(`Airlock could not stop the machine ${name}, so its protections stay in place (smolvm said: ${said(r) || `exit ${r.code}`}). Stop it with: smolvm machine stop --name ${name}`);
     }
-    await this.d.egress.stop(name).catch(() => undefined);
+    await this.d.egress.stop(name).catch((e) => {
+      this.d.warn(`Airlock: the machine ${name} stopped, but its network interceptor did not (${(e as Error)?.message ?? e}). It decides nothing without the machine; agenfk airlock reset clears it.`);
+    });
     this.removePlaceholders(name);
   }
 
@@ -1744,7 +1775,11 @@ export class SmolvmRuntime implements AirlockRuntime {
    */
   private async provisionMcp(name: string, spec: SandboxSpec): Promise<void> {
     let command: unknown;
-    try { command = JSON.parse(fs.readFileSync(path.join(this.homeOf(spec), '.config', 'opencode', 'opencode.json'), 'utf8'))?.mcp?.agenfk?.command; } catch { return; }
+    // Read bounded and never blocking (a FIFO, story review 3); a link (dotfiles) is followed to its file.
+    try {
+      const cfg = readRegularFile(fs.realpathSync(path.join(this.homeOf(spec), '.config', 'opencode', 'opencode.json')), MAX_CLIENT_CONFIG);
+      command = cfg ? JSON.parse(cfg.toString('utf8'))?.mcp?.agenfk?.command : undefined;
+    } catch { return; }
     if (!Array.isArray(command) || command.length !== 2 || command[0] !== 'node' || typeof command[1] !== 'string') return;
     const target = command[1];
     if (!path.isAbsolute(target) || path.normalize(target) !== target || !target.endsWith('/packages/server/dist/index.js')) return;
@@ -1797,10 +1832,19 @@ export class SmolvmRuntime implements AirlockRuntime {
       `XDG_CACHE_HOME=${GUEST_PLATFORM_CACHE}`,
       ...CA_BUNDLE_ENV.map((k) => `${k}=${GUEST_CA_BUNDLE}`),
     ];
+    // Root contains it in a cgroup of its own, killed when it ends; it runs as the session user.
+    const cgroup = `/sys/fs/cgroup/agenfk/install-${crypto.randomBytes(8).toString('hex')}`;
     const r = await this.cli([
-      'machine', 'exec', '--name', name, '--timeout', INSTALL_TIMEOUT, '-u', `${this.d.uid}:${this.d.gid}`, '-w', workspace, ...env.flatMap((e) => ['-e', e]),
-      '--', 'sh', '-c', PLATFORM_INSTALL_SCRIPT, `${GUEST_PLATFORM_STAMPS}/${hash16(workspace)}`, install.hash, ...install.command,
+      'machine', 'exec', '--name', name, '--timeout', INSTALL_TIMEOUT, '-u', 'root', '-w', workspace, ...env.flatMap((e) => ['-e', e]),
+      '--', 'sh', '-c', CONTAINED_INSTALL, cgroup, String(this.d.uid), String(this.d.gid),
+      PLATFORM_INSTALL_SCRIPT, `${GUEST_PLATFORM_STAMPS}/${hash16(workspace)}`, install.hash, ...install.command,
     ]).catch((e) => ({ code: null, stdout: '', stderr: String((e as Error)?.message ?? e) }));
+    // Whatever ended it (a timeout kills the wrapper before its own cleanup): nothing it started runs on.
+    const ended = await this.cli(['machine', 'exec', '--name', name, '--timeout', SIGNAL_TIMEOUT, '-u', 'root', '--', 'sh', '-c', KILL_INSTALL_CGROUP, cgroup])
+      .catch((e) => ({ code: null, stdout: '', stderr: String((e as Error)?.message ?? e) }));
+    if (ended.code !== 0) {
+      throw new Error(`Airlock could not end what the dependency install started in the machine (${said(ended) || `exit ${ended.code}`}), so no session was started: it could run on beside it. agenfk airlock reset clears the machine.`);
+    }
     if (r.code !== 0) {
       this.d.warn(`Airlock: \`${install.command.join(' ')}\` failed in the machine for ${workspace}, so the session starts with the dependencies the machine already has; it runs again on the next launch. A registry it needs must be on the policy's allowed hosts. It said: ${said(r) || `exit ${r.code}`}`);
     }
@@ -1863,12 +1907,18 @@ export class SmolvmRuntime implements AirlockRuntime {
         'TMPDIR=/tmp',
         ...PASSTHROUGH_ENV.filter((k) => this.d.hostEnv[k]).map((k) => `${k}=${this.d.hostEnv[k]}`),
       ];
-      const exec = (as: string, ...rest: string[]) => ['machine', 'exec', '--name', name, '-i', ...rest, '-u', as, '-w', command.cwd, ...env.flatMap((e) => ['-e', e]), '--'];
+      // A key no injector can mask (plain http): from smolvm's own environment, never on a command line.
+      const plain = (spec.plainEnv ?? []).filter((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n) && this.d.hostEnv[n]);
+      const exec = (as: string, ...rest: string[]) => ['machine', 'exec', '--name', name, '-i', ...rest, '-u', as, '-w', command.cwd, ...env.flatMap((e) => ['-e', e]),
+        ...plain.flatMap((n) => ['--secret-env', `${n}=${n}`]), '--'];
       const args = commandSetup !== undefined
         // A command: root first, for its namespace, then the user (no terminal: the server runs it).
         ? [...exec('root'), 'sh', '-c', COMMAND_IN_NAMESPACE, commandSetup, String(this.d.uid), String(this.d.gid), pidFile, command.file, ...command.args]
         : [...exec(user, ...(tty ? ['-t'] : [])), 'setsid', ...(tty ? ['-c'] : []), 'sh', '-c', SESSION_LEADER, pidFile, command.file, ...command.args];
-      child = this.d.spawn(this.d.smolvmPath, args, { cwd: command.cwd, stdio: 'inherit' });
+      child = this.d.spawn(this.d.smolvmPath, args, {
+        cwd: command.cwd, stdio: 'inherit',
+        ...(plain.length ? { env: { ...process.env, ...Object.fromEntries(plain.map((n) => [n, this.d.hostEnv[n] as string])) } } : {}),
+      });
     } catch (e) {
       unwatch?.();
       await unroute();

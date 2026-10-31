@@ -13,6 +13,7 @@ import { resolveDashboardUrl } from '../uiUrl.js';
 import { runAirlockLaunch, AirlockLaunchError, workspaceOf, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
 import { runAirlockExec, scopedCommandEnv, EXEC_CANNOT_SANDBOX, type ExecDeps } from '../airlock/exec.js';
 import { SmolvmRuntime, runAirlockReset } from '../airlock/smolvm.js';
+import { readJsonFile } from '../airlock/safeRead.js';
 import { smolvmBinary, installSmolvm, runAirlockInstall } from '../airlock/smolvmInstall.js';
 import { defaultEgressBroker } from '../airlock/egress.js';
 import { baseImageFor, AIRLOCK_BASE_IMAGE } from '../airlock/image.js';
@@ -197,7 +198,8 @@ export function defaultLaunchDeps(): LaunchDeps {
     cwd: realpath(process.cwd()),
     tmpDir: realpath(os.tmpdir()),
     apiUrl: getApiUrl(),
-    readJson: (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } },
+    // Bounded and never blocking: the project's config is the workspace's, which a session writes.
+    readJson: (file) => readJsonFile(file),
     exists: (file) => fs.existsSync(file),
     // smolvm and what it runs from: never writable from inside.
     runtimePackageDir: path.dirname(smolvmPathFor(__dirname, realpath(home))),

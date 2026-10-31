@@ -5,6 +5,19 @@
  */
 import fs from 'fs';
 
+/**
+ * A JSON config the host reads (a client's, which a session may have written: the project's
+ * opencode.json): through links to a regular file, never blocking, never past `max`. Null otherwise.
+ */
+export function readJsonFile(file: string, max = 16 * 1024 * 1024): unknown {
+  try {
+    const buf = readRegularFile(fs.realpathSync(file), max);
+    return buf ? JSON.parse(buf.toString('utf8')) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function readRegularFile(file: string, max: number): Buffer | null {
   let fd: number;
   try {
