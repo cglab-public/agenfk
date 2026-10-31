@@ -12,7 +12,7 @@ import { registerAirlockCommands } from '../commands/airlock';
 import type { AirlockRuntime, SandboxCommand, SandboxExit } from '../airlock/runtime';
 import type { SandboxSpec } from '../airlock/spec';
 
-// The launcher refuses Windows (AsrtRuntime.check, tested there), so these POSIX
+// The launcher refuses Windows (SmolvmRuntime.check, tested in airlock-smolvm-runtime.test.ts), so these POSIX
 // sandbox specs never run on it; their literal POSIX paths would not hold either.
 const describePosix = process.platform === 'win32' ? describe.skip : describe;
 
@@ -34,7 +34,7 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
   const warnings: string[] = [];
   const { runtime } = fakeRuntime();
   return {
-    fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] })),
+    fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands', 'machine-image'] })),
     runtime,
     // enforce launches need it to mark the sandbox's requests to the server (SX-1)
     reportToken: () => 'airlock-report-token-0123456789abcdef',
@@ -46,8 +46,7 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
     apiUrl: 'http://localhost:3123',
     readJson: (p: string) => (p in files ? files[p] : null),
     exists: (p: string) => p in files,
-    which: (f: string) => `/usr/local/bin/${f}`,
-    runtimePackageDir: '/home/u/.agenfk-system/node_modules/@anthropic-ai/sandbox-runtime',
+    runtimePackageDir: '/home/u/.agenfk/smolvm/1.32.4',
     installDirs: ['/home/u/.agenfk-system'],
     log: vi.fn(),
     warn: (m: string) => { warnings.push(m); },
@@ -57,7 +56,7 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
     isDirectory: () => false,
     platform: 'darwin',
     ensurePrivateDir: vi.fn(),
-    stageAgentDir: vi.fn(() => ({ dir: '/tmp/t/agenfk-airlock-pi-0', cleanup: vi.fn() })),
+    agenfkVersion: () => '2.1.0-test.1',
     ...over,
     warnings,
   } as LaunchDeps & { warnings: string[] };
@@ -65,6 +64,48 @@ function deps(over: Partial<LaunchDeps> = {}, files: Record<string, unknown> = {
 
 const specOf = (d: LaunchDeps): SandboxSpec => (d.runtime.launch as any).mock.calls[0][0];
 const cmdOf = (d: LaunchDeps): SandboxCommand => (d.runtime.launch as any).mock.calls[0][1];
+
+describePosix('runAirlockLaunch: the machine image (CGLAB-696)', () => {
+  const REPO_FILE = '/work/repo/.agenfk/airlock.json';
+  const withImage = (machineImage?: string) => vi.fn(async () => ({
+    effective: { mode: 'enforce', hosts: { allow: [], deny: [] }, ...(machineImage ? { machineImage } : {}) },
+    source: 'hub', revision: 3, capabilities: ['sandboxed-commands', 'machine-image'],
+  }));
+
+  it('runs the AgEnFK base image of this version when nothing names another, and says so', async () => {
+    const d = deps({ fetchPolicy: withImage() });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).machineImage).toBe('ghcr.io/cglab-public/agenfk-airlock-base:2.1.0-test.1');
+    expect((d.log as any).mock.calls.flat().join('\n')).toMatch(/image ghcr\.io\/cglab-public\/agenfk-airlock-base:2\.1\.0-test\.1 \(AgEnFK base\)/);
+  });
+
+  it('never runs an image the repository names: .agenfk/airlock.json is not read (the image is root in the machine)', async () => {
+    const d = deps({ fetchPolicy: withImage(), projectRoot: () => '/work/repo' }, { [REPO_FILE]: { image: 'ghcr.io/acme/app-airlock:3' } });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).machineImage).toBe('ghcr.io/cglab-public/agenfk-airlock-base:2.1.0-test.1');
+  });
+
+  it('runs the policy\'s image', async () => {
+    const d = deps({ fetchPolicy: withImage('ghcr.io/acme/org-airlock:1') });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).machineImage).toBe('ghcr.io/acme/org-airlock:1');
+    expect((d.log as any).mock.calls.flat().join('\n')).toMatch(/image ghcr\.io\/acme\/org-airlock:1 \(the policy's\)/);
+  });
+
+  it('refuses an enforce launch through a server that drops the policy\'s machine image (review 8)', async () => {
+    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: [] } }, source: 'hub', revision: 3, capabilities: ['sandboxed-commands'] })) });
+    await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/machine image[\s\S]*agenfk restart/);
+    expect(d.runtime.launch).not.toHaveBeenCalled();
+  });
+
+  it('observes through such a server, and says the policy\'s image may not be the one running', async () => {
+    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'observe', hosts: { allow: [], deny: [] } }, source: 'hub', revision: 3, capabilities: ['sandboxed-commands'] })) });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(d.runtime.launch).toHaveBeenCalled();
+    expect(d.warnings.join('\n')).toMatch(/machine image/);
+  });
+
+});
 
 describePosix('runAirlockLaunch: pi', () => {
   it('launches pi inside the sandbox with the effective policy, its inference host, the marker and the masked key', async () => {
@@ -79,9 +120,10 @@ describePosix('runAirlockLaunch: pi', () => {
     expect(spec.maskedEnv).toEqual([{ name: 'OPENAI_API_KEY', injectHosts: ['api.openai.com'] }]);
     expect(spec.filesystem.allowWrite).toEqual(expect.arrayContaining([CWD, '/tmp/t', '/home/u/.pi/agent']));
     expect(spec.filesystem.denyWrite).toEqual(expect.arrayContaining([
-      '/home/u/.agenfk', '/home/u/.agenfk-system', '/home/u/.agenfk-system/node_modules/@anthropic-ai/sandbox-runtime',
+      '/home/u/.agenfk', '/home/u/.agenfk-system', '/home/u/.agenfk/smolvm/1.32.4',
     ]));
-    expect(cmdOf(d)).toEqual({ file: '/usr/local/bin/pi', args: ['--model', 'openai/gpt-5', '-p', 'hi'], cwd: CWD });
+    // By name: the guest's own pi (review 01a18d3a) - a host path names nothing in the machine.
+    expect(cmdOf(d)).toEqual({ file: 'pi', args: ['--model', 'openai/gpt-5', '-p', 'hi'], cwd: CWD });
     expect(d.runtime.dispose).toHaveBeenCalled();
   });
 
@@ -105,6 +147,17 @@ describePosix('runAirlockLaunch: pi', () => {
     expect(spec.network.allow).toContain('127.0.0.1:8081');
     expect(spec.maskedEnv).toEqual([]);
     expect(d.warnings.join('\n')).toMatch(/LOCAL_KEY.*not masked/);
+    // ...and reaches the session as the warning says (story review 3): by name, never by value in the spec
+    expect(spec.plainEnv).toEqual(['LOCAL_KEY']);
+    expect(JSON.stringify(spec)).not.toContain('"k"');
+  });
+
+  it('a TLS endpoint\'s key is masked and not passed through as well', async () => {
+    const d = deps({ env: { SPARK_KEY: 's' } }, {
+      [path.join(HOME, '.pi/agent/models.json')]: { providers: { spark: { baseUrl: 'https://spark.example.com/v1', apiKey: 'SPARK_KEY' } } },
+    });
+    await runAirlockLaunch('pi', ['--provider', 'spark', '--model', 'm'], { keyEnv: [] }, d);
+    expect(specOf(d).plainEnv ?? []).toEqual([]);
   });
 
   it('--key-env masks a variable the caller names, and refuses one that is not set', async () => {
@@ -115,51 +168,30 @@ describePosix('runAirlockLaunch: pi', () => {
       .rejects.toThrow(/NOPE.*not set/);
   });
 
-  // BUG ff9969f5: pi treats an auth.json it cannot read as "no key" (it copes with a missing
-  // one), so with the sandbox denying it every pi session failed: "No API key found".
-  it('runs pi on a staged agent dir: everything but auth.json, which it cannot read, and removes it after', async () => {
-    const staged = { dir: '/tmp/t/agenfk-airlock-pi-1', cleanup: vi.fn() };
-    const stageAgentDir = vi.fn(() => staged);
-    const d = deps({ stageAgentDir });
-    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
-    expect(stageAgentDir).toHaveBeenCalledWith('/home/u/.pi/agent');
-    const spec = specOf(d);
-    expect(spec.env.PI_CODING_AGENT_DIR).toBe(staged.dir);
-    expect(spec.filesystem.denyRead).toContain('/home/u/.pi/agent/auth.json');
-    expect(staged.cleanup).toHaveBeenCalledTimes(1);
-    expect((d.runtime.launch as any).mock.invocationCallOrder[0]).toBeLessThan(staged.cleanup.mock.invocationCallOrder[0]);
-  });
-
-  it('a pi agent dir the user set (PI_CODING_AGENT_DIR) is the one read, staged, writable - and its auth.json is denied', async () => {
+  it('a pi agent dir the user set (PI_CODING_AGENT_DIR) is the one read, writable - and its auth.json is denied', async () => {
     const custom = '/home/u/pi-alt';
-    const stageAgentDir = vi.fn(() => ({ dir: '/tmp/t/agenfk-airlock-pi-2', cleanup: vi.fn() }));
-    const d = deps({ env: { PI_CODING_AGENT_DIR: custom }, stageAgentDir }, {
+    const d = deps({ env: { PI_CODING_AGENT_DIR: custom } }, {
       [path.join(custom, 'settings.json')]: { defaultProvider: 'spark', defaultModel: 'GLM' },
       [path.join(custom, 'models.json')]: { providers: { spark: { baseUrl: 'https://spark.example.com/v1', apiKey: 'literal-key' } } },
     });
     await runAirlockLaunch('pi', [], { keyEnv: [] }, d);
     const spec = specOf(d);
-    expect(stageAgentDir).toHaveBeenCalledWith(custom);
     expect(spec.network.allow).toContain('spark.example.com');
     expect(spec.filesystem.denyRead).toEqual(expect.arrayContaining([path.join(custom, 'auth.json'), '/home/u/.pi/agent/auth.json']));
     expect(spec.filesystem.allowWrite).toContain(custom);
     expect(spec.filesystem.denyWrite).toContain(path.join(custom, 'extensions'));
+    // The machine does not see the host's env: pi is told the dir, by its resolved path.
+    expect(spec.env.PI_CODING_AGENT_DIR).toBe(custom);
   });
 
   // Review C5: pi expands ~ and accepts a file:// URL there; so does the launcher.
   it('a PI_CODING_AGENT_DIR spelled with ~ or as a file:// URL is the dir pi reads', async () => {
     for (const spelled of ['~/pi-alt', 'file:///home/u/pi-alt']) {
-      const stageAgentDir = vi.fn(() => ({ dir: '/tmp/t/x', cleanup: vi.fn() }));
-      const d = deps({ env: { OPENAI_API_KEY: 'k', PI_CODING_AGENT_DIR: spelled }, stageAgentDir });
+      const d = deps({ env: { OPENAI_API_KEY: 'k', PI_CODING_AGENT_DIR: spelled } });
       await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
-      expect(stageAgentDir, spelled).toHaveBeenCalledWith('/home/u/pi-alt');
+      expect(specOf(d).filesystem.allowWrite, spelled).toContain('/home/u/pi-alt');
+      expect(specOf(d).env.PI_CODING_AGENT_DIR, spelled).toBe('/home/u/pi-alt');
     }
-  });
-
-  it('a staging that fails launches nothing', async () => {
-    const d = deps({ stageAgentDir: vi.fn(() => { throw new Error('EACCES: permission denied'); }) });
-    await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/agent dir.*EACCES/);
-    expect(d.runtime.launch).not.toHaveBeenCalled();
   });
 
   // BUG 38d7231e (user decision 2026-10-28): pi packages that hardcode /tmp (pi-patty-bg-tasks
@@ -223,7 +255,7 @@ describe('runAirlockLaunch: hub and policy', () => {
     const d = deps({
       fetchPolicy: vi.fn(async () => ({
         effective: { mode: 'enforce', hosts: { allow: ['hub-only.example.com'], deny: [] } },
-        source: 'hub', revision: 9, hubManaged: true, capabilities: ['sandboxed-commands'],
+        source: 'hub', revision: 9, hubManaged: true, capabilities: ['sandboxed-commands', 'machine-image'],
         local: { policy: { mode: 'enforce', hosts: { allow: ['local-wide.example.com'], deny: [] } } },
       })),
     });
@@ -254,9 +286,10 @@ describe('runAirlockLaunch: refusals', () => {
     expect(d.fetchPolicy).not.toHaveBeenCalled();
   });
 
-  it('refuses when the client is not installed', async () => {
-    const d = deps({ which: () => null });
-    await expect(runAirlockLaunch('opencode', ['-m', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/opencode is not installed/);
+  it('runs the client the machine\'s image has: the host needs no install of its own (review 01a18d3a)', async () => {
+    const d = deps();
+    await runAirlockLaunch('opencode', ['-m', 'openai/x'], { keyEnv: [] }, d);
+    expect(cmdOf(d).file).toBe('opencode');
   });
 
   it('refuses when it cannot tell which host serves the model', async () => {
@@ -265,7 +298,7 @@ describe('runAirlockLaunch: refusals', () => {
   });
 
   it('refuses when the sandbox runtime sits where the sandboxed agent could rewrite it', async () => {
-    const d = deps({ runtimePackageDir: '/work/repo/node_modules/@anthropic-ai/sandbox-runtime' });
+    const d = deps({ runtimePackageDir: '/work/repo/.tools/smolvm' });
     await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(AirlockLaunchError);
     await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/sandbox runtime.*\/work\/repo/s);
     expect(d.runtime.launch).not.toHaveBeenCalled();
@@ -284,11 +317,10 @@ describePosix('runAirlockLaunch: opencode', () => {
   });
 
   it('opencode is not given a pi agent dir', async () => {
-    const stageAgentDir = vi.fn(() => ({ dir: '/tmp/t/x', cleanup: vi.fn() }));
-    const d = deps({ env: { ANTHROPIC_API_KEY: 'x' }, stageAgentDir });
+    const d = deps({ env: { ANTHROPIC_API_KEY: 'x' } });
     await runAirlockLaunch('opencode', ['-m', 'anthropic/claude-x'], { keyEnv: [] }, d);
-    expect(stageAgentDir).not.toHaveBeenCalled();
     expect(specOf(d).env.PI_CODING_AGENT_DIR).toBeUndefined();
+    expect(specOf(d).filesystem.allowWrite).not.toContain('/home/u/.pi/agent');
   });
 
   it('takes the model and a custom endpoint from opencode.json', async () => {
@@ -398,7 +430,7 @@ describePosix('nested .agenfk directories (review fix 3)', () => {
 
 describe('a denied inference host (review fixes 1 and 2)', () => {
   it('refuses the launch with a clear error', async () => {
-    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: ['*.openai.com'] } }, source: 'hub', revision: 2, capabilities: ['sandboxed-commands'] })) });
+    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: { mode: 'enforce', hosts: { allow: [], deny: ['*.openai.com'] } }, source: 'hub', revision: 2, capabilities: ['sandboxed-commands', 'machine-image'] })) });
     await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/inference host.*denied/s);
     expect(d.runtime.launch).not.toHaveBeenCalled();
   });
@@ -450,16 +482,6 @@ describePosix('symlinked .agenfk directories (second pass, fix 3)', () => {
   });
 });
 
-describe('Linux: the launcher tells the gate its own network namespace (second pass, fix 1)', () => {
-  it('passes it into the sandbox, so a process still in it is never taken for confined', async () => {
-    const d = deps({ platform: 'linux', hostNetns: 'net:[4026531840]' });
-    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
-    expect(specOf(d).env.AGENFK_AIRLOCK_HOST_NETNS).toBe('net:[4026531840]');
-    const mac = deps({ platform: 'darwin', hostNetns: null });
-    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, mac);
-    expect(specOf(mac).env.AGENFK_AIRLOCK_HOST_NETNS).toBeUndefined();
-  });
-});
 
 describe('PO-1: the launcher asks for its workspace\'s project', () => {
   it('the policy fetch names the project the workspace belongs to', async () => {
@@ -490,7 +512,7 @@ describe('story review: the launcher records its project\'s root before its sand
     const order: string[] = [];
     const ensureProjectRoot = vi.fn(async () => { order.push('root'); });
     const d = deps({ projectId: () => 'p-api', projectRoot: () => '/work/api', ensureProjectRoot,
-      fetchPolicy: vi.fn(async () => { order.push('policy'); return { effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands'] }; }) } as any);
+      fetchPolicy: vi.fn(async () => { order.push('policy'); return { effective: { mode: 'enforce', hosts: { allow: ['api.github.com'], deny: [] } }, source: 'local', revision: 3, capabilities: ['sandboxed-commands', 'machine-image'] }; }) } as any);
     await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
     expect(ensureProjectRoot).toHaveBeenCalledWith('p-api', '/work/api');
     expect(order).toEqual(['root', 'policy']);
@@ -531,5 +553,157 @@ describe('story review 2: the root the launcher records is the main checkout\'s'
     expect(mainCheckoutRoot('/repo/packages/svc', null)).toBe('/repo/packages/svc');
     // a project root above the worktree is not in it: left as it is
     expect(mainCheckoutRoot('/wt', { top: '/wt/feat', main: '/repo' })).toBe('/wt');
+  });
+});
+
+/** CGLAB-696 task 6: a launch installs the smolvm it runs on first, when it is missing. */
+describePosix('runAirlockLaunch: the runtime installed first (CGLAB-696 task 6)', () => {
+  it('ensures the runtime before checking it', async () => {
+    const order: string[] = [];
+    const { runtime } = fakeRuntime();
+    runtime.check.mockImplementation(async () => { order.push('check'); return { ok: true, warnings: [] }; });
+    const d = deps({ runtime, ensureRuntime: vi.fn(async () => { order.push('ensure'); }) });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(order).toEqual(['ensure', 'check']);
+  });
+
+  it('a runtime it cannot install: nothing is launched, and the reason is said', async () => {
+    const d = deps({ ensureRuntime: vi.fn(async () => { throw new Error('the download\'s sha256 is wrong'); }) });
+    await expect(runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d)).rejects.toThrow(/sha256 is wrong/);
+    expect(d.runtime.launch).not.toHaveBeenCalled();
+  });
+});
+
+/** CGLAB-696 task 7: the machine is the repository's - a launch from a subdirectory uses the repository top. */
+describePosix('runAirlockLaunch: launched from a subdirectory (CGLAB-696 task 7)', () => {
+  it('uses the repository top as the workspace, and runs the client in the subdirectory', async () => {
+    const d = deps({ cwd: '/work/repo/packages/a', isDirectory: (p: string) => p === '/work/repo/.git' }, { '/work/repo/.git': {}, '/work/repo/.git/HEAD': {}, '/work/repo/.git/objects': {}, '/work/repo/.git/refs': {} });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).workspace).toBe('/work/repo');
+    expect(specOf(d).filesystem.allowWrite).toContain('/work/repo');
+    expect(cmdOf(d).cwd).toBe('/work/repo/packages/a');
+  });
+
+  it('a linked worktree\'s top is its own folder (its .git is a file)', async () => {
+    const d = deps({ cwd: '/work/wt/src' }, { '/work/wt/.git': 'gitdir: /work/repo/.git/worktrees/wt' });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).workspace).toBe('/work/wt');
+  });
+
+  it('an empty .git above is no repository: the workspace is not widened to it (review 01a18d52)', async () => {
+    const d = deps({ cwd: '/work/notes', isDirectory: (p: string) => p === '/work/.git' }, { '/work/.git': {} });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).workspace).toBe('/work/notes');
+  });
+
+  it('a .git above with only a HEAD is no repository either (review 01a18d52, pass 2)', async () => {
+    const d = deps({ cwd: '/work/notes', isDirectory: (p: string) => p === '/work/.git' }, { '/work/.git': {}, '/work/.git/HEAD': {} });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).workspace).toBe('/work/notes');
+  });
+
+  it('outside a repository the folder it is launched from is the workspace', async () => {
+    const d = deps({ cwd: '/work/notes' });
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).workspace).toBe('/work/notes');
+  });
+});
+
+/** CGLAB-696 story review: pi runs on its own agent dir in the machine; no staged copy (each launch's would keep sessions from sharing it). */
+describePosix('runAirlockLaunch: pi\'s agent dir in the machine (CGLAB-696 story review)', () => {
+  it('is pi\'s own: nothing is staged, PI_CODING_AGENT_DIR is not repointed', async () => {
+    const d = deps();
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(specOf(d).filesystem.allowWrite.some((p) => p.includes('agenfk-airlock-pi'))).toBe(false);
+    expect(specOf(d).env.PI_CODING_AGENT_DIR).toBeUndefined();
+    expect(specOf(d).filesystem.allowWrite).toContain('/home/u/.pi/agent');
+  });
+});
+
+/** Story review 2 (LIFE-2): the policy is followed while the session runs, not only read at launch. */
+describe('runAirlockLaunch: a policy changed while the session runs (story review 2)', () => {
+  const view = (hosts: { allow: string[]; deny: string[] }, mode = 'enforce', revision = 3) =>
+    ({ effective: { mode, hosts }, source: 'local', revision, capabilities: ['sandboxed-commands', 'machine-image'] });
+  /** A runtime whose session runs until told to end, and that can take a new network. */
+  /** The machine's update as the runtime does it: the fetch (`next`) inside it, its spec applied. */
+  const machineUpdate = (applied: SandboxSpec[]) => vi.fn(async (_workspace: string, next: () => Promise<SandboxSpec | null>) => {
+    const spec = await next();
+    if (spec) applied.push(spec);
+    return spec ? 'applied' : 'unchanged';
+  });
+  function liveRuntime() {
+    let end: (e: SandboxExit) => void = () => undefined;
+    const launched = { pid: 99, kill: vi.fn((_s: NodeJS.Signals) => { end({ code: null, signal: 'SIGTERM' }); return true; }), exited: new Promise<SandboxExit>((r) => { end = r; }) };
+    const applied: SandboxSpec[] = [];
+    const runtime = {
+      id: 'fake', check: vi.fn(async () => ({ ok: true, warnings: [] })),
+      launch: vi.fn(async () => launched), dispose: vi.fn(async () => undefined),
+      updateNetwork: machineUpdate(applied),
+    };
+    return { runtime, launched, applied, end: (e: SandboxExit) => end(e) };
+  }
+
+  it('fetches the policy inside the machine\'s update, which applies what it fetched (fourth pass)', async () => {
+    const live = liveRuntime();
+    let inside = false;
+    const views = [view({ allow: ['api.github.com'], deny: [] }), view({ allow: ['api.github.com'], deny: ['evil.example'] }, 'enforce', 5)];
+    let n = 0;
+    const fetchedInside: boolean[] = [];
+    const update = live.runtime.updateNetwork.getMockImplementation()!;
+    live.runtime.updateNetwork.mockImplementation(async (w: string, next: () => Promise<SandboxSpec | null>) => { inside = true; try { return await update(w, next); } finally { inside = false; } });
+    const d = deps({ runtime: live.runtime as any, policyPollMs: 10, fetchPolicy: vi.fn(async () => { if (n > 0) fetchedInside.push(inside); return views[Math.min(n++, views.length - 1)]; }) } as any);
+    const done = runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    await vi.waitFor(() => expect(live.applied.length).toBeGreaterThan(0), { timeout: 2000 });
+    expect(live.applied.at(-1)!.network.deny).toContain('evil.example');
+    expect(live.runtime.updateNetwork.mock.calls.at(-1)![0]).toBe(path.resolve(CWD));
+    expect(fetchedInside.length).toBeGreaterThan(0);
+    expect(fetchedInside.every(Boolean)).toBe(true);
+    live.end({ code: 0, signal: null });
+    await done;
+    const calls = (d.fetchPolicy as any).mock.calls.length;
+    await new Promise((r) => setTimeout(r, 60));
+    expect((d.fetchPolicy as any).mock.calls.length).toBe(calls);
+  });
+
+  it('ends the session when the policy comes to deny its inference host: the machine is held to it first, and a session that ignores SIGTERM is killed', async () => {
+    let end: (e: SandboxExit) => void = () => undefined;
+    const signals: string[] = [];
+    const launched = { pid: 99, exited: new Promise<SandboxExit>((r) => { end = r; }), kill: vi.fn((s: NodeJS.Signals) => { signals.push(s); if (s === 'SIGKILL') end({ code: null, signal: 'SIGKILL' }); return true; }) };
+    const applied: SandboxSpec[] = [];
+    const runtime = { id: 'fake', check: vi.fn(async () => ({ ok: true, warnings: [] })), launch: vi.fn(async () => launched), dispose: vi.fn(async () => undefined), updateNetwork: machineUpdate(applied) };
+    let n = 0;
+    const d = deps({ runtime: runtime as any, policyPollMs: 10, killGraceMs: 50, fetchPolicy: vi.fn(async () => (n++ === 0 ? view({ allow: ['api.github.com'], deny: [] }) : view({ allow: ['api.github.com'], deny: ['api.openai.com'] }, 'enforce', 4))) } as any);
+    const code = await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(applied[0].network.deny).toContain('api.openai.com');
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(code).not.toBe(0);
+    expect(d.warnings.join('\n')).toMatch(/api\.openai\.com/);
+  });
+
+  it('ends the session when its machine cannot follow the policy (started by an older AgEnFK)', async () => {
+    const live = liveRuntime();
+    live.runtime.updateNetwork.mockImplementation(async () => { throw Object.assign(new Error('the machine was started by an older AgEnFK'), { cannotFollow: true }); });
+    let n = 0;
+    const d = deps({ runtime: live.runtime as any, policyPollMs: 10, killGraceMs: 50, fetchPolicy: vi.fn(async () => (n++ === 0 ? view({ allow: ['api.github.com'], deny: [] }) : view({ allow: ['api.github.com'], deny: ['evil.example'] }, 'enforce', 4))) } as any);
+    await runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    expect(live.launched.kill).toHaveBeenCalled();
+    expect(d.warnings.join('\n')).toMatch(/older AgEnFK/);
+  });
+
+  it('keeps the session as it is when the server cannot be asked, or turns the policy off', async () => {
+    const live = liveRuntime();
+    let n = 0;
+    const d = deps({ runtime: live.runtime as any, policyPollMs: 10, fetchPolicy: vi.fn(async () => {
+      n++;
+      if (n === 1) return view({ allow: ['api.github.com'], deny: [] });
+      if (n % 2 === 0) throw new Error('ECONNREFUSED');
+      return view({ allow: [], deny: [] }, 'off', 9);
+    }) } as any);
+    const done = runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
+    await vi.waitFor(() => expect(n).toBeGreaterThan(4), { timeout: 2000 });
+    expect(live.applied).toEqual([]);
+    expect(live.launched.kill).not.toHaveBeenCalled();
+    live.end({ code: 0, signal: null });
+    await done;
   });
 });

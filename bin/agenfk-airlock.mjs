@@ -16,7 +16,6 @@
  * the policy; allow otherwise.
  */
 import fs from 'fs';
-import net from 'net';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -310,82 +309,40 @@ export function decideWhenUnreachable(lastKnown, stateFile = defaultStateFile(),
 
 /** Set inside the Airlock sandbox (agenfk airlock pi|opencode) to the client's name. */
 export const AIRLOCK_SANDBOX_MARKER = 'AGENFK_AIRLOCK_SANDBOX';
-const PROXY_VARS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'];
 const DENIED = new Set(['EPERM', 'EACCES', 'EROFS']);
 
 /**
- * A literal address the sandbox never lets a process dial directly: the cloud
- * metadata endpoint (built-in deny). Outside the sandbox a direct connect is
- * refused by nothing local: it connects, times out or is unreachable.
+ * What the machine's root setup leaves (CGLAB-696 task 9): a file only root
+ * could have made, at a path only root can write. A process on the host cannot
+ * make one without root, and Airlock refuses to run sessions as root.
  */
-export const CONFINEMENT_PROBE = Object.freeze({ host: '169.254.169.254', port: 80 });
-/** What the macOS sandbox (seatbelt) answers a direct connect with. */
-const MACOS_CONFINED_CODES = ['EPERM', 'EACCES'];
+export const MACHINE_MARKER = '/run/agenfk/machine';
 
 /**
- * Linux evidence, from the kernel and fixed for the life of the process: it
- * is in a network namespace whose only device is the loopback one, which is
- * what bubblewrap's --unshare-net gives the sandbox. A host lists its real
- * devices even offline (down, but listed), so a missing route or an
- * ENETUNREACH is never evidence. And it is not the launcher's own namespace
- * when the launcher said which that is. NOT MEASURED: written from bwrap's
- * documented behaviour on a Mac; anything unreadable refuses admission.
- */
-function linuxConfinement({ readFile, readlink, env }) {
-  const refused = (why) => ({
-    confined: false,
-    reason: `${why}; without kernel evidence of the sandbox, Linux enforce-mode admission is refused`,
-  });
-  let netdev;
-  try { netdev = String(readFile('/proc/self/net/dev')); } catch { return refused('/proc/self/net/dev could not be read'); }
-  const devices = netdev.split('\n').slice(2).map((l) => l.split(':')[0].trim()).filter(Boolean);
-  if (devices.length !== 1 || devices[0] !== 'lo') {
-    return { confined: false, reason: `this process's network namespace has devices other than loopback (${devices.join(', ') || 'none'})` };
-  }
-  const host = typeof env?.AGENFK_AIRLOCK_HOST_NETNS === 'string' ? env.AGENFK_AIRLOCK_HOST_NETNS.trim() : '';
-  if (host) {
-    let own;
-    try { own = String(readlink('/proc/self/ns/net')); } catch { return refused('/proc/self/ns/net could not be read'); }
-    if (own === host) return { confined: false, reason: 'this process is in the launcher\'s own network namespace' };
-  }
-  return { confined: true };
-}
-
-/**
- * Prove this process is confined. macOS: a direct TCP connect to a literal
- * external address, bypassing any proxy, must be refused by the sandbox
- * (EPERM/EACCES); a connection, a timeout (offline?) or any other error is not
- * proof. Linux: kernel evidence (linuxConfinement), never a connect error.
- * Elsewhere: never.
+ * Prove this process runs in an Airlock machine: the machine's marker, a
+ * regular file root owns that nobody else may write, this process not root,
+ * and in the initial user namespace. Airlock sessions run in a Linux machine:
+ * anywhere else, never.
  */
 export function proveConfinement({
-  connect = net.connect, timeoutMs = 1000, platform = process.platform,
-  readFile = (p) => fs.readFileSync(p, 'utf8'), readlink = fs.readlinkSync, env = process.env,
+  platform = process.platform, lstat = fs.lstatSync, getuid = process.getuid,
+  readFile = (p) => fs.readFileSync(p, 'utf8'),
 } = {}) {
-  if (platform === 'linux') return Promise.resolve(linuxConfinement({ readFile, readlink, env }));
-  if (platform !== 'darwin') return Promise.resolve({ confined: false, reason: `the Airlock sandbox does not support ${platform}` });
-  const codes = MACOS_CONFINED_CODES;
-  return new Promise((resolve) => {
-    let done = false;
-    let socket;
-    const finish = (result) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      try { socket?.destroy?.(); } catch { /* gone */ }
-      resolve(result);
-    };
-    const timer = setTimeout(() => finish({ confined: false, reason: `no answer from a direct connection to ${CONFINEMENT_PROBE.host} within ${timeoutMs}ms (offline?), so the sandbox could not be proven` }), timeoutMs);
-    try {
-      socket = connect({ host: CONFINEMENT_PROBE.host, port: CONFINEMENT_PROBE.port });
-      socket.on('connect', () => finish({ confined: false, reason: 'a direct connection outside the proxy succeeded' }));
-      socket.on('error', (e) => finish(codes.includes(e?.code)
-        ? { confined: true }
-        : { confined: false, reason: `a direct connection was not refused by a sandbox (${e?.code ?? e?.message ?? 'error'})` }));
-    } catch (e) {
-      finish({ confined: false, reason: `the direct connection could not be tried (${e?.message ?? e})` });
-    }
-  });
+  const no = (why) => ({ confined: false, reason: `this process is not in an Airlock machine: ${why}` });
+  if (platform !== 'linux') return Promise.resolve(no(`Airlock sessions run in a Linux machine, and this is ${platform}`));
+  if (typeof getuid === 'function' && getuid() === 0) return Promise.resolve(no('it runs as root, which Airlock never runs a session as'));
+  // In a user namespace of its own a host process is "root" to make the marker and another uid to
+  // check it: the machine's processes are in the initial one, where every uid maps to itself.
+  let uidMap = '';
+  try { uidMap = String(readFile('/proc/self/uid_map')); } catch { /* unreadable: not proven */ }
+  const maps = uidMap.trim().split('\n').map((l) => l.trim().split(/\s+/).join(' '));
+  if (maps.length !== 1 || maps[0] !== '0 0 4294967295') return Promise.resolve(no('it runs in a user namespace of its own, not the machine\'s'));
+  let st;
+  try { st = lstat(MACHINE_MARKER); } catch (e) { return Promise.resolve(no(`${MACHINE_MARKER} is not there (${e?.code ?? 'error'})`)); }
+  if (st.isSymbolicLink() || !st.isFile()) return Promise.resolve(no(`${MACHINE_MARKER} is not a regular file`));
+  if (st.uid !== 0) return Promise.resolve(no(`${MACHINE_MARKER} is not root's`));
+  if (st.mode & 0o022) return Promise.resolve(no(`${MACHINE_MARKER} may be written by others than root`));
+  return Promise.resolve({ confined: true });
 }
 
 /** proveConfinement, run once for the life of the process (confinement cannot change). */
@@ -396,15 +353,14 @@ export function confinementOnce(opts = {}) {
 const processConfinement = confinementOnce();
 
 /**
- * Is this process inside the Airlock sandbox? The marker and the proxy env the
- * launcher sets, ~/.agenfk unwritable, AND a direct connection refused by the
- * sandbox. Env vars and a chmod alone are not enough.
+ * Is this process inside the Airlock sandbox? The marker env the launcher sets,
+ * ~/.agenfk unwritable (root's, in the machine), AND the machine proven
+ * (proveConfinement). Env vars and a chmod alone are not enough.
  * Resolves to { sandboxed: true } or { sandboxed: false, reason }.
  */
 export async function airlockSandboxCheck({ env = process.env, homeDir = os.homedir(), access = fs.accessSync, prove = processConfinement } = {}) {
   const set = (v) => typeof v === 'string' && v.trim().length > 0;
   if (!set(env[AIRLOCK_SANDBOX_MARKER])) return { sandboxed: false };
-  if (!PROXY_VARS.some((k) => set(env[k]))) return { sandboxed: false };
   try {
     access(path.join(homeDir, '.agenfk'), fs.constants.W_OK);
     return { sandboxed: false, reason: '~/.agenfk is writable, which it never is inside the sandbox' };

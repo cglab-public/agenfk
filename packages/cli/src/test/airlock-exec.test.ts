@@ -21,12 +21,14 @@ import type { SandboxSpec } from '../airlock/spec';
 const describePosix = process.platform === 'win32' ? describe.skip : describe;
 const HOME = '/home/u';
 const CWD = '/work/repo';
+/** What a server of this version says it does. */
+const CAPS = ['sandboxed-commands', 'machine-image'];
 
 function deps(over: Partial<ExecDeps> = {}, exit: SandboxExit = { code: 0, signal: null }): ExecDeps & { errors: string[] } {
   const errors: string[] = [];
   return {
     // a whole policy, as the server serves one (exec refuses a partial answer)
-    fetchPolicy: vi.fn(async () => ({ effective: normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['registry.npmjs.org', 'localhost'], deny: [] } }), source: 'local', revision: 3 })),
+    fetchPolicy: vi.fn(async () => ({ effective: normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['registry.npmjs.org', 'localhost'], deny: [] } }), source: 'local', revision: 3, capabilities: CAPS })),
     runtime: {
       id: 'fake',
       check: vi.fn(async () => ({ ok: true as const, warnings: [] })),
@@ -36,7 +38,7 @@ function deps(over: Partial<ExecDeps> = {}, exit: SandboxExit = { code: 0, signa
     home: HOME,
     tmpDir: '/tmp/t',
     installDirs: ['/home/u/.agenfk-system'],
-    runtimePackageDir: '/home/u/.agenfk-system/node_modules/@anthropic-ai/sandbox-runtime',
+    runtimePackageDir: '/home/u/.agenfk/smolvm/1.32.4',
     directServerPort: 3000,
     listDir: () => [],
     realpath: (p: string) => p,
@@ -46,6 +48,8 @@ function deps(over: Partial<ExecDeps> = {}, exit: SandboxExit = { code: 0, signa
     ensurePrivateDir: vi.fn(),
     onSignal: vi.fn(() => () => undefined),
     error: (m: string) => { errors.push(m); },
+    agenfkVersion: () => '2.1.0',
+    env: {},
     ...over,
     errors,
   } as ExecDeps & { errors: string[] };
@@ -125,7 +129,7 @@ describePosix('runAirlockExec', () => {
   });
 
   it('it sandboxes whatever the mode says: the server asks only when it must', async () => {
-    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: normalizeAirlockPolicy({ mode: 'observe' }), source: 'local', revision: 1 })) });
+    const d = deps({ fetchPolicy: vi.fn(async () => ({ effective: normalizeAirlockPolicy({ mode: 'observe' }), source: 'local', revision: 1, capabilities: CAPS })) });
     await runAirlockExec('true', { cwd: CWD }, d);
     expect(d.runtime.launch).toHaveBeenCalled();
   });
@@ -305,5 +309,128 @@ describe('PO-1: exec asks for the card\'s project', () => {
     const get = vi.fn(async (_url: string) => ({ data: { effective: normalizeAirlockPolicy({ mode: 'enforce' }) } }));
     await defaultExecDeps('http://127.0.0.1:47999', get as any).fetchPolicy('p api');
     expect(get.mock.calls[0][0]).toBe('http://127.0.0.1:47999/airlock/policy?projectId=p%20api');
+  });
+});
+
+/**
+ * CGLAB-696 task 5: the command runs in the workspace's machine, made from the image the
+ * session's is (the policy's, else the AgEnFK base image of this version), with the
+ * environment a toolchain reads there - never the host's paths, which mean nothing in the guest.
+ */
+describePosix('a command in the workspace machine (CGLAB-696 task 5)', () => {
+  const withPolicy = (policy: Record<string, unknown>, capabilities: string[] = CAPS) =>
+    vi.fn(async () => ({ effective: normalizeAirlockPolicy({ mode: 'enforce', ...policy }), source: 'local', revision: 1, capabilities }));
+
+  it('is a command\'s spec, so the runtime runs it as one', async () => {
+    const d = deps();
+    await runAirlockExec('true', { cwd: CWD }, d);
+    expect(specOf(d).purpose).toBe('command');
+  });
+
+  it('runs in the image the policy names', async () => {
+    const d = deps({ fetchPolicy: withPolicy({ machineImage: 'ghcr.io/acme/airlock:7' }) });
+    await runAirlockExec('true', { cwd: CWD }, d);
+    expect(specOf(d).machineImage).toBe('ghcr.io/acme/airlock:7');
+  });
+
+  it('runs in the AgEnFK base image of this version when the policy names none', async () => {
+    const d = deps({ agenfkVersion: () => '2.1.0-beta.6' });
+    await runAirlockExec('true', { cwd: CWD }, d);
+    expect(specOf(d).machineImage).toBe('ghcr.io/cglab-public/agenfk-airlock-base:2.1.0-beta.6');
+  });
+
+  it('a server that does not deliver the machine image: the command never runs, 125 with the reason', async () => {
+    const d = deps({ fetchPolicy: withPolicy({}, ['sandboxed-commands']) });
+    expect(await runAirlockExec('true', { cwd: CWD }, d)).toBe(EXEC_CANNOT_SANDBOX);
+    expect(d.runtime.launch).not.toHaveBeenCalled();
+    expect(d.errors.join('\n')).toMatch(/older than this agenfk.*machine image/s);
+  });
+
+  it('gets what a toolchain reads in the guest, and none of the host\'s paths or secrets', async () => {
+    const d = deps({
+      env: {
+        CI: '1', NODE_ENV: 'test', LANG: 'en_US.UTF-8', TZ: 'UTC', FORCE_COLOR: '0', VITEST_POOL_ID: '1', LC_ALL: 'C',
+        PATH: '/opt/homebrew/bin:/usr/bin', HOME: '/Users/u', TMPDIR: '/var/folders/x', NODE_PATH: '/Users/u/lib',
+        SHELL: '/bin/zsh', PWD: '/Users/u', JAVA_HOME: '/Library/Java', XDG_CONFIG_HOME: '/Users/u/.config',
+        GH_TOKEN: 'ghp_fake', OPENAI_API_KEY: 'sk-fake',
+      },
+    });
+    await runAirlockExec('true', { cwd: CWD }, d);
+    const env = specOf(d).env;
+    expect(env).toMatchObject({ CI: '1', NODE_ENV: 'test', LANG: 'en_US.UTF-8', TZ: 'UTC', FORCE_COLOR: '0', VITEST_POOL_ID: '1', LC_ALL: 'C' });
+    for (const k of ['PATH', 'HOME', 'TMPDIR', 'NODE_PATH', 'SHELL', 'PWD', 'JAVA_HOME', 'XDG_CONFIG_HOME', 'GH_TOKEN', 'OPENAI_API_KEY']) {
+      expect(env, k).not.toHaveProperty(k);
+    }
+  });
+
+  it('a value naming a host path stays out too: a host preload in NODE_OPTIONS, npm\'s package.json (review 01a18ca1)', async () => {
+    const d = deps({
+      env: {
+        NODE_OPTIONS: '--require=/opt/host/instrumentation.js', npm_package_json: '/Users/u/app/package.json',
+        npm_lifecycle_script: 'vitest run', npm_package_name: 'app', TZ: 'America/Sao_Paulo',
+      },
+    });
+    await runAirlockExec('true', { cwd: CWD }, d);
+    const env = specOf(d).env;
+    expect(env).not.toHaveProperty('NODE_OPTIONS');
+    expect(env).not.toHaveProperty('npm_package_json');
+    expect(env).toMatchObject({ npm_lifecycle_script: 'vitest run', npm_package_name: 'app', TZ: 'America/Sao_Paulo' });
+  });
+
+  it('a quoted host path stays out as well (review 01a18ca1, pass 2)', async () => {
+    for (const NODE_OPTIONS of ['--require="/opt/host/x.js"', "--require='/opt/host/x.js'", '-r "/opt/host/x.js"']) {
+      const d = deps({ env: { NODE_OPTIONS } });
+      await runAirlockExec('true', { cwd: CWD }, d);
+      expect(specOf(d).env, NODE_OPTIONS).not.toHaveProperty('NODE_OPTIONS');
+    }
+  });
+
+  it('NODE_OPTIONS without a path is kept: a heap size means the same in the guest', async () => {
+    const d = deps({ env: { NODE_OPTIONS: '--max-old-space-size=4096' } });
+    await runAirlockExec('true', { cwd: CWD }, d);
+    expect(specOf(d).env.NODE_OPTIONS).toBe('--max-old-space-size=4096');
+  });
+
+  it('the environment never overrides what the spec sets: the sandbox marker stays the command\'s', async () => {
+    const d = deps({ env: { AGENFK_AIRLOCK_SANDBOX: 'pi', NO_PROXY: '*' } as any });
+    await runAirlockExec('true', { cwd: CWD }, d);
+    expect(specOf(d).env.AGENFK_AIRLOCK_SANDBOX).toBe('command');
+    expect(specOf(d).env.NO_PROXY).toBe('localhost,127.0.0.1,::1');
+  });
+
+  it('defaultExecDeps reads the version and the scoped environment', async () => {
+    const { defaultExecDeps } = await import('../commands/airlock');
+    const d = defaultExecDeps('http://127.0.0.1:47999', vi.fn() as any);
+    expect(d.agenfkVersion()).toMatch(/^\d+\.\d+\.\d+/);
+    expect(d.env).toBe(process.env);
+  });
+});
+
+/** CGLAB-696 task 7: a command runs in the machine of its repository, in the folder it was given. */
+describePosix('runAirlockExec: a command in a subdirectory (CGLAB-696 task 7)', () => {
+  it('uses the repository top as the workspace, and runs the command in its folder', async () => {
+    const d = deps({ exists: (p: string) => ['/work/repo/.git', '/work/repo/.git/HEAD', '/work/repo/.git/objects', '/work/repo/.git/refs'].includes(p), isDirectory: (p: string) => p === '/work/repo/.git' });
+    await runAirlockExec('npm test', { cwd: '/work/repo/packages/a' }, d);
+    expect(specOf(d).workspace).toBe('/work/repo');
+    expect(cmdOf(d).cwd).toBe('/work/repo/packages/a');
+  });
+});
+
+/** Story review 2 (LIFE-2): a command the server runs follows the policy as a session does. */
+describe('runAirlockExec: a policy changed while the command runs', () => {
+  it('hands the running machine the policy it fetches', async () => {
+    let end: (e: SandboxExit) => void = () => undefined;
+    const applied: SandboxSpec[] = [];
+    const updateNetwork = vi.fn(async (_w: string, next: () => Promise<SandboxSpec | null>) => { const spec = await next(); if (spec) applied.push(spec); return spec ? 'applied' : 'unchanged'; });
+    let n = 0;
+    const d = deps({
+      policyPollMs: 10,
+      fetchPolicy: vi.fn(async () => ({ effective: normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['registry.npmjs.org'], deny: n++ === 0 ? [] : ['evil.example'] } }), source: 'local', revision: n, capabilities: CAPS })),
+      runtime: { ...deps().runtime, updateNetwork, launch: vi.fn(async () => ({ pid: 7, kill: vi.fn(() => true), exited: new Promise<SandboxExit>((r) => { end = r; }) })) } as any,
+    } as any);
+    const done = runAirlockExec('npm test', { cwd: CWD }, d);
+    await vi.waitFor(() => expect(applied.some((sp) => sp.network.deny.includes('evil.example'))).toBe(true), { timeout: 2000 });
+    end({ code: 0, signal: null });
+    expect(await done).toBe(0);
   });
 });

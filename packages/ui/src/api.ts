@@ -123,11 +123,15 @@ export interface AirlockPolicyDto {
   rules: { uploadToUnlistedHost: AirlockRuleActionDto; credentialReadWithNetwork: AirlockRuleActionDto; namespaceEscape: AirlockRuleActionDto; cloudMutation: AirlockRuleActionDto; publishThroughAllowedHost: AirlockRuleActionDto };
   /** Per-project overrides (PO-1), keyed by repository or project:<id>; absent when there are none. */
   projects?: Record<string, AirlockProjectOverrideDto>;
+  /** The image Airlock machines are made from (CGLAB-696); absent: the AgEnFK base image. */
+  machineImage?: string;
 }
 /** Adds to the policy's host lists; each rule it sets wins over the policy's. */
 export interface AirlockProjectOverrideDto {
   hosts?: { allow: string[]; deny: string[] };
   rules?: Partial<AirlockPolicyDto['rules']>;
+  /** The project's own machine image, over the policy's. */
+  machineImage?: string;
 }
 /** GET /airlock/policy. `hubManaged`: the hub owns the policy and a local write is refused. */
 export interface AirlockPolicyViewDto {

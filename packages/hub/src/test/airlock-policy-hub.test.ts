@@ -165,6 +165,22 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub airlock policy (%s)', (backe
       expect(typeof r.body.updatedAt).toBe('string');
     });
 
+    it('a machine image the admin sets is stored and delivered to installations; a save without it clears it (CGLAB-696)', async () => {
+      const put1 = await adminPut({ policy: { ...POLICY, machineImage: 'ghcr.io/acme/airlock:1.2' } });
+      expect(put1.status, JSON.stringify(put1.body)).toBe(200);
+      expect((await adminGet()).body.policy.machineImage).toBe('ghcr.io/acme/airlock:1.2');
+      expect((await install(keyA)).body.policy.machineImage).toBe('ghcr.io/acme/airlock:1.2');
+      await adminPut({ policy: POLICY });
+      expect('machineImage' in (await install(keyA)).body.policy).toBe(false);
+    });
+
+    it('a PUT naming something other than an image reference as the machine image is 400 and nothing is stored', async () => {
+      const r = await adminPut({ policy: { ...POLICY, machineImage: 'ghcr.io/acme/airlock:1 --trust-host-certs' } });
+      expect(r.status).toBe(400);
+      expect(r.body.errors.join(' ')).toMatch(/machineImage/);
+      expect((await adminGet()).body.policy).toBeNull();
+    });
+
     it('a PUT allow-listing a metadata host is 400 and nothing is stored', async () => {
       const r = await adminPut({ policy: { ...POLICY, hosts: { allow: ['169.254.169.254'], deny: [] } } });
       expect(r.status).toBe(400);

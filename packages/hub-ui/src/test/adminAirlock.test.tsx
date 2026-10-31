@@ -155,6 +155,38 @@ describe('Admin → Airlock', () => {
     expect(body.policy.rules.cloudMutation).toBe('needs-human-approval');
   });
 
+  it('shows the machine image the policy names, and saves an edit of it (CGLAB-696)', async () => {
+    hubAnswers({ ...STORED, policy: { ...STORED.policy, machineImage: 'ghcr.io/acme/airlock:1.2' } });
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    const image = await screen.findByLabelText(/machine image/i) as HTMLInputElement;
+    expect(image.value).toBe('ghcr.io/acme/airlock:1.2');
+    fireEvent.change(image, { target: { value: '  ghcr.io/acme/airlock:1.3  ' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect(put.mock.calls[0][1].policy.machineImage).toBe('ghcr.io/acme/airlock:1.3');
+  });
+
+  it('an empty machine image saves none: installations use the AgEnFK base image or their repository\'s (CGLAB-696)', async () => {
+    hubAnswers({ ...STORED, policy: { ...STORED.policy, machineImage: 'ghcr.io/acme/airlock:1.2' } });
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    const image = await screen.findByLabelText(/machine image/i);
+    fireEvent.change(image, { target: { value: '   ' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect('machineImage' in put.mock.calls[0][1].policy).toBe(false);
+  });
+
+  it('says what runs when it is empty, and that a project override can name its own (CGLAB-696)', async () => {
+    hubAnswers(STORED);
+    renderPage();
+    expect((await screen.findByLabelText(/^machine image$/i) as HTMLInputElement).value).toBe('');
+    expect(screen.getByText(/each project override can name its own/)).toBeInTheDocument();
+    expect(screen.getByText(/AgEnFK base image/)).toBeInTheDocument();
+    expect(screen.queryByText(/airlock\.json/)).toBeNull();
+  });
+
   it('edits the publish rule; a policy stored before it existed shows and saves its default (c9bdbe61)', async () => {
     hubAnswers(STORED);
     put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
@@ -486,6 +518,23 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
       'github.com/acme/api': { hosts: { allow: ['pypi.org'], deny: ['tracker.example'] }, rules: { cloudMutation: 'deny' } },
       'project:local-1': { rules: { publishThroughAllowedHost: 'off' } },
       'git@github.com:acme/web.git': { hosts: { allow: [], deny: ['a.example', 'b.example'] }, rules: { namespaceEscape: 'needs-human-approval' } },
+    });
+  });
+
+  it('shows and saves a project\'s own machine image; an empty one is left out (CGLAB-696)', async () => {
+    hubAnswers({ ...STORED, policy: { ...STORED.policy, projects: { 'acme/api': { machineImage: 'ghcr.io/acme/api-airlock:2' }, 'acme/web': { rules: { cloudMutation: 'deny' } } } } });
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    const card = await screen.findByRole('form', { name: 'Per-project overrides' });
+    expect((within(card).getByLabelText('Machine image, override 1') as HTMLInputElement).value).toBe('ghcr.io/acme/api-airlock:2');
+    fireEvent.change(within(card).getByLabelText('Machine image, override 2'), { target: { value: ' ghcr.io/acme/web-airlock:1 ' } });
+    fireEvent.change(within(card).getByLabelText('Machine image, override 1'), { target: { value: '' } });
+    fireEvent.change(within(card).getByLabelText('Allowed hosts, override 1'), { target: { value: 'x.example' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect(put.mock.calls[0][1].policy.projects).toEqual({
+      'acme/api': { hosts: { allow: ['x.example'], deny: [] } },
+      'acme/web': { rules: { cloudMutation: 'deny' }, machineImage: 'ghcr.io/acme/web-airlock:1' },
     });
   });
 

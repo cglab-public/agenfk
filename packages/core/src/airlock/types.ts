@@ -49,12 +49,20 @@ export interface AirlockPolicy {
    * Absent when there are none. effectivePolicyFor applies them; the result carries none.
    */
   projects?: Record<string, AirlockProjectOverride>;
+  /**
+   * The image the Airlock machine is made from (CGLAB-696); a project override may name its own.
+   * Only the policy names it, never the repository: the image is root in the machine (user
+   * decision 2026-10-30). Absent: the AgEnFK base image.
+   */
+  machineImage?: string;
 }
 
-/** Adds to the org's host lists (a deny always outranks an allow); each rule set wins over the org's. */
+/** Adds to the org's host lists (a deny always outranks an allow); each rule set, and a machine image, wins over the org's. */
 export interface AirlockProjectOverride {
   hosts?: { allow: HostPattern[]; deny: HostPattern[] };
   rules?: Partial<AirlockRules>;
+  /** The project's own machine image, over the org's. */
+  machineImage?: string;
 }
 
 /** Cloud metadata endpoints. Always denied; no policy can allow-list them. */

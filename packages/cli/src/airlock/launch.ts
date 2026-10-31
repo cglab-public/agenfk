@@ -25,7 +25,8 @@ import { buildSandboxSpec, writeRootHolding, sharedTempDir, ENV_NAME, type Sandb
 import type { AirlockRuntime } from './runtime';
 import { startServerRelay, type ServerRelay, type ServerRelayOptions } from './serverRelay';
 import { ProxyDecisionReporter, type ProxyReportBody } from './proxyReport';
-import type { StagedAgentDir } from './piAgentDir';
+import { machineImageFor, type MachineImageSource } from './image';
+import { followPolicy } from './followPolicy';
 
 export class AirlockLaunchError extends Error {
   constructor(message: string) {
@@ -45,6 +46,10 @@ export interface PolicyView {
 export interface LaunchDeps {
   /** GET /airlock/policy: for a project (its overrides applied, PO-1), or the org's when null. */
   fetchPolicy(projectId?: string | null): Promise<PolicyView>;
+  /** How often the policy is asked for again while a session runs (ms). */
+  policyPollMs?: number;
+  /** How long a session the policy no longer admits has after SIGTERM before SIGKILL (ms). */
+  killGraceMs?: number;
   /** The AgEnFK project the workspace belongs to, or null outside one. */
   projectId?(): string | null;
   /** The directory holding that project's .agenfk, or null outside one. */
@@ -56,6 +61,8 @@ export interface LaunchDeps {
    */
   ensureProjectRoot?(projectId: string, root: string): Promise<void>;
   runtime: AirlockRuntime;
+  /** Installs what the runtime runs on when it is missing (the pinned smolvm); rejects with why it could not. */
+  ensureRuntime?(): Promise<void>;
   env: NodeJS.ProcessEnv;
   home: string;
   cwd: string;
@@ -66,9 +73,13 @@ export interface LaunchDeps {
   readJson(file: string): unknown;
   exists(file: string): boolean;
   /** Absolute path of an executable on PATH, or null. */
-  which(file: string): string | null;
   runtimePackageDir: string;
   installDirs: string[];
+  /**
+   * This agenfk's version: the AgEnFK base image the machine runs is the one built with it.
+   * Read only when a launch resolves its image (exec's bundled helper has no package.json).
+   */
+  agenfkVersion(): string;
   log(message: string): void;
   warn(message: string): void;
   /** Subscribe to a signal; returns the unsubscribe. */
@@ -80,8 +91,6 @@ export interface LaunchDeps {
   /** Is `p` (followed through symlinks) a directory? */
   isDirectory(p: string): boolean;
   platform: NodeJS.Platform;
-  /** Linux: this process's network namespace (readlink /proc/self/ns/net), or null. */
-  hostNetns?: string | null;
   /**
    * POST /airlock/proxy-decisions, sending `token` as x-agenfk-airlock-report.
    * Absent: the proxy's decisions are not reported.
@@ -103,12 +112,6 @@ export interface LaunchDeps {
    * exists at launch, and the server may create the directory later.
    */
   ensurePrivateDir: (dir: string) => void;
-  /**
-   * Stage the agent dir pi runs on inside (BUG ff9969f5, piAgentDir.ts): every entry of
-   * `realDir` but auth.json, which the sandbox denies and pi reads as "no key" when it
-   * cannot open it. Throws when it cannot.
-   */
-  stageAgentDir: (realDir: string) => StagedAgentDir;
 }
 
 export interface LaunchOptions {
@@ -295,6 +298,24 @@ export function findAgenfkDirs(
 /** `.agenfk` directories in the workspace and above it (not the home one, handled apart). */
 /** Project `.agenfk` directories from `cwd` up (the home one aside): never writable from the sandbox. */
 /** The workspace's `.git` when it is a directory (not a linked worktree's `.git` file): BUG 4639c6a4. */
+/**
+ * The workspace of a launch from `cwd` (CGLAB-696 task 7): the repository's top - the nearest
+ * folder above with a .git (a directory, or a linked worktree's file) - so a machine is the
+ * repository's and git in it sees the whole repository; `cwd` itself outside one. Never the home
+ * folder or above: a home kept in git would put all of it in the machine.
+ */
+export function workspaceOf(cwd: string, d: Pick<LaunchDeps, 'home' | 'exists' | 'isDirectory'>): string {
+  const home = path.resolve(d.home);
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    if (dir === home || path.dirname(dir) === dir) return path.resolve(cwd);
+    const dotGit = path.join(dir, '.git');
+    if (!d.exists(dotGit)) continue;
+    // A repository git would find (review 01a18d52): a .git directory with HEAD, objects and refs, or a .git file
+    // (a linked worktree's, which the machine's plan checks strictly). An empty .git widens nothing.
+    if (!d.isDirectory(dotGit) || ['HEAD', 'objects', 'refs'].every((n) => d.exists(path.join(dotGit, n)))) return dir;
+  }
+}
+
 export function workspaceGitDir(workspace: string, d: Pick<LaunchDeps, 'isDirectory'>): string | null {
   const dotGit = path.join(workspace, '.git');
   return d.isDirectory(dotGit) ? dotGit : null;
@@ -314,7 +335,17 @@ export function projectAgenfkDirs(d: Pick<LaunchDeps, 'cwd' | 'home' | 'exists'>
 
 const SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
+const IMAGE_SOURCE: Record<MachineImageSource, string> = { policy: 'the policy\'s', base: 'AgEnFK base' };
+
 export async function runAirlockLaunch(client: AirlockClient, clientArgs: string[], opts: LaunchOptions, d: LaunchDeps): Promise<number> {
+  // The runtime first (CGLAB-696: the pinned smolvm, installed when missing): a launch is Airlock in use.
+  if (d.ensureRuntime) {
+    try {
+      await d.ensureRuntime();
+    } catch (e) {
+      throw new AirlockLaunchError(`${(e as Error)?.message ?? e} Nothing was launched.`);
+    }
+  }
   const ready = await d.runtime.check();
   if (!ready.ok) throw new AirlockLaunchError(ready.reason);
   ready.warnings.forEach((w) => d.warn(w));
@@ -358,8 +389,23 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     d.warn(`Airlock: ${older} Restart it (agenfk restart) to sandbox them.`);
   }
 
-  const file = d.which(client);
-  if (!file) throw new AirlockLaunchError(`${client} is not installed (not found on PATH).`);
+  // An older server's policy drops machineImage: its absence there says nothing, and the
+  // repository's image (or the base) would run over the one the policy names.
+  if (!caps.includes('machine-image')) {
+    const older = 'The AgEnFK server running is older than this agenfk: the policy it gives drops the machine image your policy may name.';
+    if (policy.mode === 'enforce') throw new AirlockLaunchError(`${older} Nothing was launched. Restart it on this version (agenfk restart), or upgrade it, and retry.`);
+    d.warn(`Airlock: ${older} Restart it (agenfk restart) so the machine runs that image.`);
+  }
+
+  let machineImage: { image: string; source: MachineImageSource };
+  try {
+    machineImage = machineImageFor(policy, d.agenfkVersion());
+  } catch (e) {
+    throw new AirlockLaunchError(`${(e as Error).message} Nothing was launched.`);
+  }
+
+  // The client the machine's image has, by name (review 01a18d3a): a host path names nothing in the guest.
+  const file = client;
 
   const session = client === 'pi' ? piSession(clientArgs, d) : opencodeSession(clientArgs, d);
   const provider = session.model.provider;
@@ -406,9 +452,10 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     throw new AirlockLaunchError(`The AgEnFK server address ${d.apiUrl} is not a URL.`);
   }
 
-  const nested = findAgenfkDirs(path.resolve(d.cwd), d);
+  const workspace = workspaceOf(d.cwd, d);
+  const nested = findAgenfkDirs(workspace, d);
   if (!nested.complete) {
-    const why = `Could not list every .agenfk directory under ${d.cwd} (a directory or symlink could not be read, or there were more than ${AGENFK_SCAN_LIMIT} to search)`;
+    const why = `Could not list every .agenfk directory under ${workspace} (a directory or symlink could not be read, or there were more than ${AGENFK_SCAN_LIMIT} to search)`;
     if (d.platform === 'linux') {
       throw new AirlockLaunchError(`${why}. On Linux each one has to be protected by name, so nothing was launched. Launch from a smaller workspace.`);
     }
@@ -448,25 +495,19 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     },
     requireMarker: enforce,
   });
-  let staged: StagedAgentDir | null = null;
   try {
+    // pi runs on its own agent dir in the machine: its auth.json is hidden there and reads as {}
+    // (no logins), so nothing is staged (a per-launch copy would keep sessions from sharing it).
     const agentDir = client === 'pi' ? piAgentDirOf(d) : null;
-    if (agentDir) {
-      try {
-        staged = d.stageAgentDir(agentDir);
-      } catch (e) {
-        throw new AirlockLaunchError(`Could not stage pi's agent dir (${agentDir}) for the sandbox: ${(e as Error)?.message ?? e}. Nothing was launched.`);
-      }
-    }
     const sharedTmp = sharedTempDir(d.platform, d.realpath);
-    let spec: SandboxSpec;
-    try {
-      spec = buildSandboxSpec(policy, {
+    // The session's sandbox under a policy: at launch, and again whenever the policy changes while it runs.
+    const specFor = (p: typeof policy, inferenceHosts = [endpoint.host]): SandboxSpec => {
+      const built = buildSandboxSpec(p, {
         client,
         home: d.home,
-        workspace: path.resolve(d.cwd),
+        workspace,
         tempDirs: sharedTmp && sharedTmp !== d.tmpDir ? [d.tmpDir, sharedTmp] : [d.tmpDir],
-        inferenceHosts: [endpoint.host],
+        inferenceHosts,
         serverPort: relay.port,
         serverUrl: `http://${relay.host}:${relay.port}`,
         directServerPort,
@@ -474,13 +515,19 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         // A .agenfk made after launch is not a registered project; those that
         // exist now are, whatever the platform does with patterns.
         projectAgenfkDirs: [...projectAgenfkDirs(d), ...nested.dirs],
-        gitDir: workspaceGitDir(path.resolve(d.cwd), d),
+        gitDir: workspaceGitDir(workspace, d),
         maskedEnv,
         runtimePackageDir: d.runtimePackageDir,
-        hostNetns: d.platform === 'linux' ? d.hostNetns ?? null : null,
         ...(agentDir && agentDir !== path.join(d.home, '.pi', 'agent') ? { piAgentDir: agentDir } : {}),
-        ...(staged ? { piStagedAgentDir: staged.dir } : {}),
       });
+      built.machineImage = machineImage.image;
+      // A key that cannot be masked reaches the session as it is, as the warning above says.
+      if (keyNames.length && !endpoint.tls) built.plainEnv = keyNames;
+      return built;
+    };
+    let spec: SandboxSpec;
+    try {
+      spec = specFor(policy);
     } catch (e) {
       // A denied inference host: the session could not reach its model.
       throw new AirlockLaunchError((e as Error).message);
@@ -494,6 +541,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     }
     for (const s of spec.skipped) d.warn(`Airlock: "${s.entry}" left out of the sandbox (${s.reason}).`);
     d.log(`Airlock: launching ${client} in the sandbox (${d.runtime.id}; policy ${policy.mode}, ${view.source ?? 'local'} revision ${view.revision ?? 0}; inference ${endpoint.host}).`);
+    d.log(`Airlock: machine image ${machineImage.image} (${IMAGE_SOURCE[machineImage.source]}).`);
 
     const post = d.postProxyDecisions;
     const token = post ? str(d.reportToken?.() ?? null) : null;
@@ -517,18 +565,26 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
       reporter ? { onProxyDecision: (decision) => reporter.report(decision) } : undefined,
     );
     const offs = SIGNALS.map((sig) => d.onSignal(sig, () => { launched.kill(sig); }));
+    const following = followPolicy(d, {
+      project: launchProject ?? null,
+      workspace,
+      specFor: (v) => specFor(normalizeAirlockPolicy(v?.effective)),
+      networkOnlyFor: (v) => specFor(normalizeAirlockPolicy(v?.effective), []),
+      session: launched,
+    });
     try {
       const exit = await launched.exited;
       if (exit.code !== null) return exit.code;
       return 128 + ((exit.signal && os.constants.signals[exit.signal]) || 1);
     } finally {
       offs.forEach((off) => off());
+      await following.stop();
       await d.runtime.dispose();
       // The proxy has stopped: the last batch, bounded by the report timeout.
       await reporter?.close();
     }
   } finally {
-    staged?.cleanup();
     await relay.close();
   }
 }
+

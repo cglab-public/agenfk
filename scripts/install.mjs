@@ -9,7 +9,7 @@ import readline from 'readline';
 import { writePrivateFileSync } from './private-file.mjs';
 import { forceLocalFlag, tarPath } from '../bin/tar-flags.mjs';
 import { runTool } from './client-cli.mjs';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, withSkillName, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive, probeServerPort } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, withSkillName, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive, probeServerPort, installAirlockRuntime } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -1691,6 +1691,12 @@ async function run() {
             await fs.writeFile(cursorHooksPath, JSON.stringify(config, null, 2), 'utf8');
             detail(`  Registered afterShellExecution hook in ${cursorHooksPath}`);
         }
+    }
+
+    // CGLAB-696: Airlock's pinned smolvm, where Airlock is in use - asked of the server still
+    // running (before the restart below), or because an earlier smolvm was installed.
+    if (!onlyPlatform && process.platform !== 'win32') {
+        installAirlockRuntime({ run: (file, args, opts) => spawnSync(file, args, { ...opts, windowsHide: true }), rootDir, warn, detail });
     }
 
     // BUG 174270e6: if a server was running before we replaced the files on

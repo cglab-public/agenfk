@@ -51,6 +51,15 @@ Run `git push` and show the output to the user.
   ```
   Abort the release if it reports `DIRTY`.
 - **Suite gate (#249)**: Before tagging, run the full suite on the version-bump commit you are about to tag: `npm test`. Read BOTH vitest summary lines (`Test Files` and `Tests`): an import-time throw fails a file with 0 failed tests, so the `Tests` line alone can read green. The run must exit 0 (vitest exits non-zero on an unhandled error even when both lines read green) and neither line may report a failure. Otherwise **STOP**: do not tag, do not push, do not create the release; report the failing files to the user. Say in your final report that the gate ran and what it printed. CI is not a substitute here - the bump commit has no CI run until it is pushed.
-- **Tag & Push**: Run `git tag <tag>` to create the tag locally on the version-bump commit, then run `git push origin HEAD <tag>` to push both the commit and the tag to the remote. Push only that one tag, never `--tags`: GitHub starts no workflows for a push of more than three tags, and this tag starts the desktop installer build (`desktop-release.yml`, CGLAB-621).
+- **Build the Airlock image first (CGLAB-696)**: every `agenfk airlock` launch of this version pulls `ghcr.io/<owner>/agenfk-airlock-base:<version>`, so it must exist before the release does. Push the version-bump commit alone (`git push origin HEAD`), then build the image from it and wait for it:
+  ```bash
+  SHA=$(git rev-parse HEAD); BRANCH=$(git branch --show-current)
+  gh workflow run airlock-image.yml --ref "$BRANCH" -f version=<version>
+  sleep 10   # the run takes a moment to be listed
+  RUN=$(gh run list --workflow airlock-image.yml --branch "$BRANCH" --event workflow_dispatch --limit 5 --json databaseId,headSha --jq "map(select(.headSha == \"$SHA\"))[0].databaseId")
+  gh run watch "$RUN" --exit-status
+  ```
+  `RUN` must be non-empty (a run built from exactly `$SHA`). If the run fails, **STOP**: do not tag, do not create the release; report the failed run's URL. The tag pushed next runs the image workflow again, which finds this commit's image for both platforms and skips.
+- **Tag & Push**: Run `git tag <tag>` to create the tag locally on the version-bump commit, then run `git push origin <tag>` to push the tag (the commit went out with the image build). Push only that one tag, never `--tags`: GitHub starts no workflows for a push of more than three tags, and this tag starts the desktop installer build (`desktop-release.yml`, CGLAB-621).
 - **Create Beta Release**: Run `gh release create <tag> agenfk-dist.tar.gz --prerelease --title "<title>" --notes "<notes>"`.
 - Show the release URL returned by `gh`.

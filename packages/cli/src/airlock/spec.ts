@@ -55,15 +55,11 @@ export interface SandboxSession {
   maskedEnv?: string[];
   /** The sandbox runtime package itself: never writable. */
   runtimePackageDir?: string;
-  /** Linux: the launcher's own network namespace (`net:[…]`), handed to the launch gate. */
-  hostNetns?: string | null;
   /**
    * pi: its real agent dir when not ~/.pi/agent (PI_CODING_AGENT_DIR): its state is pi's, its
    * auth.json is denied and its extensions are unwritable, as ~/.pi/agent's are.
    */
   piAgentDir?: string;
-  /** pi: the staged agent dir pi is pointed at inside (BUG ff9969f5; piAgentDir.ts). */
-  piStagedAgentDir?: string;
 }
 
 export interface SandboxSpec {
@@ -74,9 +70,38 @@ export interface SandboxSpec {
     deny: string[];
     /** Address ranges an allowed name may not resolve to. */
     denyResolved: string[];
+    /**
+     * The policy's mode, for a runtime that decides each connection (smolvm): observe allows and
+     * reports what enforce would refuse; the deny side holds in both.
+     */
+    mode?: 'observe' | 'enforce';
   };
-  filesystem: { denyRead: string[]; allowWrite: string[]; denyWrite: string[] };
+  filesystem: {
+    denyRead: string[];
+    allowWrite: string[];
+    denyWrite: string[];
+    /** The temp dirs among allowWrite: a runtime with its own file system (a VM) gives the guest its own instead. */
+    privateTemp?: string[];
+  };
+  /** The folder the session was launched from: a runtime that keeps a machine keeps one per workspace. */
+  workspace?: string;
+  /** The user's home, at the same path inside a runtime that mounts. */
+  home?: string;
+  /** The image a runtime that keeps a machine makes it from (CGLAB-696; image.ts): the launcher sets it. */
+  machineImage?: string;
+  /** A client's relay to the AgEnFK server (SX-1), on the host loopback: a machine reaches it through its decider. */
+  relayPort?: number;
+  /**
+   * Inference endpoints on the host's own loopback (an ssh tunnel, ollama), as allowed: a machine's
+   * loopback is its own, so a runtime that keeps one routes these through its decider to the host.
+   */
+  loopbackInference?: Array<{ host: string; port: number }>;
   maskedEnv: Array<{ name: string; injectHosts: string[] }>;
+  /**
+   * Host env vars the session gets as they are: a key for a plain-http inference endpoint, which no
+   * injector can mask (story review 3). Names only; the runtime reads the values from the host.
+   */
+  plainEnv?: string[];
   /** Set for the sandboxed process, over the runtime's own. */
   env: Record<string, string>;
   allowPty: boolean;
@@ -84,6 +109,8 @@ export interface SandboxSpec {
   skipped: Array<{ entry: string; reason: string }>;
   /** A command's sandbox (SX-2): it may bind loopback ports, so its test servers run. */
   allowLocalBinding?: boolean;
+  /** What the sandbox runs (SandboxSession.purpose): a runtime that keeps a machine runs a command beside a client. */
+  purpose?: 'client' | 'command';
 }
 
 type Entry = { kind: 'host' | 'cidr'; value: string; reason?: undefined } | { kind: 'bad'; reason: string; value?: undefined };
@@ -226,6 +253,18 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     }
     if (addAllow(raw, 'inference host: ')) inference.push(classify(raw).value as string);
   }
+  // The machine reaches the host loopback over IPv4 alone (its gateway): `localhost` and 127.x are
+  // routed, an IPv6 or unspecified address cannot be.
+  const loopbackInference: Array<{ host: string; port: number }> = [];
+  for (const e of inference) {
+    const m = /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(e);
+    if (!m || !matchHost(m[1].replace(/^\[|\]$/g, ''), LOOPBACK)) continue;
+    if (m[1].startsWith('[') || m[1] === '0.0.0.0') {
+      skipped.push({ entry: e, reason: 'inference host: the machine reaches the host loopback over IPv4 only; name the endpoint 127.0.0.1 or localhost' });
+      continue;
+    }
+    loopbackInference.push({ host: m[1], port: Number(m[2]) });
+  }
   // A command the server runs does not talk to the server (SX-2); a client does, through the relay.
   if (session.purpose !== 'command') {
     addAllow(`127.0.0.1:${session.serverPort}`, 'the AgEnFK server: ', true);
@@ -265,13 +304,23 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     : [j(home, '.local', 'share', 'opencode'), j(home, '.local', 'state', 'opencode'), j(home, '.cache', 'opencode'), j(home, '.config', 'opencode')];
   const allowWrite = uniq([session.workspace, ...session.tempDirs, ...clientState]);
 
+  // What the host runs next from a client's own state (story review 3): pi's launcher, its installed
+  // releases and packages and the settings that name packages to load; OpenCode's config (MCP
+  // commands, plugins), the LSP binaries and the plugin packages it installs. The rest of that
+  // state (sessions, models.json) stays writable.
+  const piHostCode = (dir: string) => ['extensions', 'bin', 'install', 'npm', 'git', 'settings.json'].map((p) => j(dir, p));
   const denyWrite = uniq([
     j(home, '.agenfk'),
     ...session.installDirs,
-    j(home, '.pi', 'agent', 'extensions'),
-    ...(session.piAgentDir ? [j(session.piAgentDir, 'extensions')] : []),
+    ...piHostCode(j(home, '.pi', 'agent')),
+    ...(session.piAgentDir ? piHostCode(session.piAgentDir) : []),
     j(home, '.config', 'opencode', 'plugins'),
     j(home, '.config', 'opencode', 'plugin'),
+    // (OpenCode installs plugin packages into its config dir too.)
+    ...['opencode.json', 'opencode.jsonc', 'config.json', 'node_modules', 'package.json'].map((f) => j(home, '.config', 'opencode', f)),
+    j(home, '.local', 'share', 'opencode', 'bin'),
+    j(home, '.cache', 'opencode', 'node_modules'),
+    j(home, '.cache', 'opencode', 'package.json'),
     j(session.workspace, '.agenfk'),
     ...(session.projectAgenfkDirs ?? []),
     ...(session.gitDir ? ['commondir', 'config.worktree', 'modules', 'worktrees'].map((n) => j(session.gitDir!, n)) : []),
@@ -288,8 +337,12 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   });
 
   return {
-    network: { allow: uniq(allow), deny: uniq(deny), denyResolved: uniq(denyResolved) },
-    filesystem: { denyRead, allowWrite, denyWrite },
+    network: { allow: uniq(allow), deny: uniq(deny), denyResolved: uniq(denyResolved), mode: policy.mode === 'observe' ? 'observe' : 'enforce' },
+    filesystem: { denyRead, allowWrite, denyWrite, privateTemp: uniq(session.tempDirs) },
+    workspace: session.workspace,
+    home,
+    ...(command ? {} : { relayPort: session.serverPort }),
+    loopbackInference,
     maskedEnv,
     env: {
       [AIRLOCK_SANDBOX_MARKER]: command ? 'command' : session.client,
@@ -301,17 +354,16 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
       // A command's own loopback (its test servers) goes direct: allowLocalBinding below.
       NO_PROXY: command ? LOCAL_NO_PROXY : '',
       no_proxy: command ? LOCAL_NO_PROXY : '',
-      // The gate's Linux evidence refuses a process still in this namespace.
-      ...(session.hostNetns ? { AGENFK_AIRLOCK_HOST_NETNS: session.hostNetns } : {}),
       // Every agenfk client inside (CLI, hooks, the pi and OpenCode adapters) reads it first.
       ...(session.serverUrl ? { AGENFK_API_URL: session.serverUrl } : {}),
-      // pi reads its config through the staged dir, whose auth.json it can open (BUG ff9969f5).
-      ...(!command && session.client === 'pi' && session.piStagedAgentDir ? { PI_CODING_AGENT_DIR: session.piStagedAgentDir } : {}),
+      // The agent dir the user chose, by its resolved path (the machine does not see the host's env).
+      ...(!command && session.client === 'pi' && session.piAgentDir ? { PI_CODING_AGENT_DIR: session.piAgentDir } : {}),
     },
     // A TUI needs raw mode on its terminal: EPERM without it (measured, macOS).
     allowPty: true,
     skipped,
     ...(command ? { allowLocalBinding: true } : {}),
+    purpose: command ? 'command' : 'client',
   };
 }
 
@@ -322,8 +374,8 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
  *
  * ACCEPTED RISK (user decision 2026-10-28, after the security review): the sandbox can modify
  * anything of the user's under /tmp - a git checkout's hooks there run unsandboxed on the next
- * host commit, other tools' scratch files are writable. ASRT cannot give the sandbox a private
- * /tmp on macOS, and agenfk keeps no list of tool-specific paths.
+ * host commit, other tools' scratch files are writable. That was ASRT's limit (no private /tmp on
+ * macOS); smolvm mounts no host temp dir (privateTemp), so in a machine the guest's /tmp is its own.
  */
 export function sharedTempDir(platform: NodeJS.Platform, realpath: (p: string) => string | null): string | null {
   return platform === 'win32' ? null : realpath('/tmp');

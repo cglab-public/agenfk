@@ -59,7 +59,8 @@ describe('what it asks git for', () => {
     await readGitStatus('/tmp/wt', { exec });
     const [file, args] = exec.mock.calls[0] as unknown as [string, string[]];
     expect(file).toBe('git');
-    expect(args).toEqual(['status', '--porcelain=v1', '-z']);
+    // After the fsmonitor guard (CGLAB-696 story review), the format is unchanged.
+    expect(args.slice(args.indexOf('status'))).toEqual(['status', '--porcelain=v1', '-z']);
   });
 
   it('runs it in the worktree, never anywhere else', async () => {
@@ -113,5 +114,15 @@ describe('what it gives back', () => {
   it('reads an empty status as a clean tree', async () => {
     const result = await readGitStatus('/tmp/wt', { exec: vi.fn(async () => '') });
     expect(result).toEqual({ changed: 0, staged: 0, files: [] });
+  });
+});
+
+// CGLAB-696 story review: a sandboxed session can rewrite the workspace's scripts, and the server's
+// git status would run one configured as core.fsmonitor - on the host, with the server's rights.
+describe('readGitStatus never runs a configured fsmonitor', () => {
+  it('passes core.fsmonitor=false to git', async () => {
+    const calls: string[][] = [];
+    await readGitStatus('/w', { exec: async (_f: string, args: readonly string[]) => { calls.push([...args]); return ''; } } as any);
+    expect(calls[0].slice(0, 2)).toEqual(['-c', 'core.fsmonitor=false']);
   });
 });

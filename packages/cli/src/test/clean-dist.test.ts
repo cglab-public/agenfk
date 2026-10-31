@@ -92,7 +92,8 @@ describe('Dockerfiles that build a package', () => {
       const lines = fs.readFileSync(f, 'utf8').split('\n');
       const build = lines.findIndex(l => /npm run build/.test(l));
       if (build < 0) return false;
-      const copy = lines.findIndex(l => /^\s*COPY\s+(\S*\s+)*scripts(\/clean-dist\.mjs)?\/?\s+/.test(l));
+      // scripts/ named, or the whole build context (`COPY . <dest>`), which carries it
+      const copy = lines.findIndex(l => /^\s*COPY\s+(\S*\s+)*(scripts(\/clean-dist\.mjs)?\/?|\.)\s+/.test(l));
       return copy < 0 || copy > build;
     }).map(f => path.relative(REPO_ROOT, f));
     expect(missing, `these Dockerfiles build without scripts/clean-dist.mjs: ${missing.join(', ')}`).toEqual([]);

@@ -41,8 +41,10 @@ const serverResources = [
   { from: '../core/package.json', to: 'packages/core/package.json' },
   { from: '../storage-sqlite/package.json', to: 'packages/storage-sqlite/package.json' },
   { from: '../telemetry/package.json', to: 'packages/telemetry/package.json' },
-  // ea94c023: the Airlock exec helper and the Sandbox Runtime it loads (scripts/bundle-airlock.mjs).
+  // ea94c023, CGLAB-696: the Airlock exec helper and its egress decider (scripts/bundle-airlock.mjs),
   { from: 'build/airlock', to: 'packages/airlock' },
+  // and the pinned smolvm of the artifact's own OS and architecture, beside them.
+  { from: 'build/airlock-smolvm/${os}-${arch}', to: 'packages/airlock/smolvm' },
 ];
 
 /**

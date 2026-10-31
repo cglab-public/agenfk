@@ -4,13 +4,13 @@
  * tool call refused with "relaunch with agenfk airlock pi|opencode". Checked per
  * tool call, so switching mid-session to a covered model is caught.
  *
- * "Inside the sandbox" is the marker, the proxy env, and ~/.agenfk being
- * unwritable (the sandbox denies writes there; outside it is the user's own
- * directory): env vars alone do not make a session sandboxed.
+ * "Inside the sandbox" is the marker env, ~/.agenfk being unwritable (root's
+ * in the machine; outside it is the user's own directory), and the machine's
+ * root-owned marker file (CGLAB-696 task 9): env vars alone do not make a
+ * session sandboxed.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import fs from 'fs';
-import { EventEmitter } from 'events';
 import os from 'os';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -20,7 +20,7 @@ import activate, { airlockSandboxed } from '../../../../bin/agenfk-pi-extension.
 const PLUGIN = path.resolve(__dirname, '../../../../bin/agenfk-airlock-opencode.mjs');
 const REAL_SCRIPT = path.resolve(__dirname, '../../../../bin/agenfk-airlock.mjs');
 
-const SANDBOX_ENV = { AGENFK_AIRLOCK_SANDBOX: 'pi', HTTPS_PROXY: 'http://u:p@localhost:5555' };
+const SANDBOX_ENV = { AGENFK_AIRLOCK_SANDBOX: 'pi' };
 const eperm = () => { throw Object.assign(new Error('denied'), { code: 'EPERM' }); };
 const enoent = () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); };
 
@@ -30,80 +30,72 @@ function ok(verdict: any, mode = 'enforce', applies = true) {
 const ALLOW = { decision: 'allow', why: 'no-rule-matched' };
 
 const CONFINED = () => ({ confined: true });
-const NOT_CONFINED = () => ({ confined: false, reason: 'a direct connection was not refused' });
+const NOT_CONFINED = () => ({ confined: false, reason: 'this process is not in an Airlock machine' });
 
-/** A fake net.connect: emits what the test says, or nothing (a timeout). */
-function fakeConnect(outcome: { error?: string } | 'connect' | 'silent') {
-  return vi.fn(() => {
-    const sock = Object.assign(new EventEmitter(), { destroy: vi.fn() });
-    setImmediate(() => {
-      if (outcome === 'connect') sock.emit('connect');
-      else if (outcome !== 'silent') sock.emit('error', Object.assign(new Error(outcome.error), { code: outcome.error }));
-    });
-    return sock;
+describe('confinement proof: the Airlock machine (CGLAB-696 task 9)', () => {
+  // What the machine's root setup leaves at /run/agenfk/machine: a root-owned file nobody else can write.
+  const MARKER = { isFile: () => true, isSymbolicLink: () => false, uid: 0, mode: 0o100444 };
+  // /proc/self/uid_map of the machine's (initial) user namespace: every uid, mapped to itself.
+  const INITIAL_USERNS = '         0          0 4294967295\n';
+  const statOf = (st: object | null) => vi.fn(() => {
+    if (!st) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    return st;
   });
-}
-
-describe('confinement proof (review fix 6)', () => {
-  it('a direct connection refused by the sandbox proves confinement; anything else does not', async () => {
+  const prove = async (over: object = {}) => {
     const mod = await import(pathToFileURL(REAL_SCRIPT).href);
-    const prove = (outcome: any, platform = 'darwin') => mod.proveConfinement({ connect: fakeConnect(outcome), timeoutMs: 50, platform });
-    expect(await prove({ error: 'EPERM' })).toMatchObject({ confined: true });
-    expect(await prove({ error: 'EACCES' })).toMatchObject({ confined: true });
-    expect(await prove({ error: 'ENETUNREACH' }, 'darwin')).toMatchObject({ confined: false });
-    expect(await prove({ error: 'ECONNREFUSED' })).toMatchObject({ confined: false });
-    expect(await prove('connect')).toMatchObject({ confined: false });
-    const silent = await prove('silent');
-    expect(silent.confined).toBe(false);
-    expect(silent.reason).toMatch(/no answer|offline/i);
+    return mod.proveConfinement({ platform: 'linux', lstat: statOf(MARKER), getuid: () => 501, readFile: () => INITIAL_USERNS, ...over });
+  };
+
+  it('the machine\'s marker, root-owned and unwritable to others, proves confinement for a session that is not root', async () => {
+    expect(await prove()).toEqual({ confined: true });
   });
 
-  // Linux is unmeasured on this Mac: the evidence follows bwrap --unshare-net,
-  // whose fresh network namespace holds the loopback device and nothing else.
-  const NETDEV = (...devs: string[]) => 'Inter-|   Receive\n face |bytes\n' + devs.map((d) => `  ${d}: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n`).join('');
-  it('Linux: kernel evidence, not a connect error: a network namespace holding only loopback', async () => {
-    const mod = await import(pathToFileURL(REAL_SCRIPT).href);
-    const connect = fakeConnect({ error: 'ENETUNREACH' });
-    const linux = (netdev: string | null, extra: object = {}) => mod.proveConfinement({
-      platform: 'linux', connect,
-      readFile: () => { if (netdev === null) throw Object.assign(new Error('no'), { code: 'ENOENT' }); return netdev; },
-      readlink: () => 'net:[4026532301]',
-      env: {},
-      ...extra,
-    });
-    expect(await linux(NETDEV('lo'))).toMatchObject({ confined: true });
-    // An offline host still lists its (down) devices; ENETUNREACH never counts.
-    expect(await linux(NETDEV('lo', 'eth0'))).toMatchObject({ confined: false });
-    expect(await linux(NETDEV('lo', 'wlan0'))).toMatchObject({ confined: false });
-    const none = await linux(null);
-    expect(none.confined).toBe(false);
-    expect(none.reason).toMatch(/Linux.*refused|refused.*Linux/s);
-    // The launcher's own namespace, when it passed it: the same one is not a sandbox.
-    expect(await linux(NETDEV('lo'), { env: { AGENFK_AIRLOCK_HOST_NETNS: 'net:[4026532301]' } })).toMatchObject({ confined: false });
-    expect(await linux(NETDEV('lo'), { env: { AGENFK_AIRLOCK_HOST_NETNS: 'net:[4026531840]' } })).toMatchObject({ confined: true });
-    expect(connect).not.toHaveBeenCalled();
+  it('anything less does not: no marker, another owner, writable by others, a link, a session running as root', async () => {
+    const missing = await prove({ lstat: statOf(null) });
+    expect(missing.confined).toBe(false);
+    expect(missing.reason).toMatch(/Airlock machine/);
+    expect((await prove({ lstat: statOf({ ...MARKER, uid: 501 }) })).confined).toBe(false);
+    expect((await prove({ lstat: statOf({ ...MARKER, mode: 0o100666 }) })).confined).toBe(false);
+    expect((await prove({ lstat: statOf({ ...MARKER, mode: 0o100464 }) })).confined).toBe(false);
+    expect((await prove({ lstat: statOf({ ...MARKER, isFile: () => false, isSymbolicLink: () => true }) })).confined).toBe(false);
+    expect((await prove({ getuid: () => 0 })).confined).toBe(false);
   });
 
-  it('probes once per process', async () => {
-    const mod = await import(pathToFileURL(REAL_SCRIPT).href);
-    const connect = fakeConnect({ error: 'EPERM' });
-    const once = mod.confinementOnce({ connect, timeoutMs: 50, platform: 'darwin' });
-    expect(await once()).toMatchObject({ confined: true });
-    expect(await once()).toMatchObject({ confined: true });
-    expect(connect).toHaveBeenCalledTimes(1);
+  // Review (task 9): in a user namespace of its own, a host process is "root" to make the marker
+  // and another uid to check it. The machine's processes are in the initial user namespace.
+  it('a marker made in a user namespace of its own does not: the process must be in the initial one', async () => {
+    const forged = await prove({ readFile: () => '         0       1000          1\n      501     100000      65536\n' });
+    expect(forged.confined).toBe(false);
+    expect(forged.reason).toMatch(/user namespace/);
+    expect((await prove({ readFile: () => { throw Object.assign(new Error('no'), { code: 'ENOENT' }); } })).confined).toBe(false);
   });
 
-  it('the shared script (OpenCode): marker + proxy env + unwritable ~/.agenfk + confinement', async () => {
+  it('never outside Linux: sessions run in a Linux machine', async () => {
+    const r = await prove({ platform: 'darwin' });
+    expect(r.confined).toBe(false);
+    expect(r.reason).toMatch(/Linux/);
+  });
+
+  it('proves once per process', async () => {
     const mod = await import(pathToFileURL(REAL_SCRIPT).href);
-    const check = (env: any, access: any, prove: any) => mod.airlockSandboxCheck({ env, homeDir: '/h', access, prove });
+    const lstat = statOf(MARKER);
+    const once = mod.confinementOnce({ platform: 'linux', lstat, getuid: () => 501, readFile: () => INITIAL_USERNS });
+    expect(await once()).toEqual({ confined: true });
+    expect(await once()).toEqual({ confined: true });
+    expect(lstat).toHaveBeenCalledTimes(1);
+  });
+
+  it('the shared script (OpenCode): the marker env + unwritable ~/.agenfk + confinement; no proxy env is needed', async () => {
+    const mod = await import(pathToFileURL(REAL_SCRIPT).href);
+    const check = (env: any, access: any, proof: any) => mod.airlockSandboxCheck({ env, homeDir: '/h', access, prove: proof });
     expect(await check(SANDBOX_ENV, eperm, CONFINED)).toEqual({ sandboxed: true });
-    // Forged: env set and ~/.agenfk chmod-ed read-only, but the process is not confined.
+    expect(await check({ AGENFK_AIRLOCK_SANDBOX: 'opencode' }, eperm, CONFINED)).toEqual({ sandboxed: true });
+    // Forged: env set and ~/.agenfk chmod-ed read-only, but the process is not in a machine.
     const forged = await check(SANDBOX_ENV, () => { throw Object.assign(new Error(''), { code: 'EACCES' }); }, NOT_CONFINED);
     expect(forged.sandboxed).toBe(false);
-    expect(forged.reason).toMatch(/not refused/);
+    expect(forged.reason).toMatch(/not in an Airlock machine/);
     expect((await check(SANDBOX_ENV, () => undefined, CONFINED)).sandboxed).toBe(false);
     expect((await check({ HTTPS_PROXY: 'x' }, eperm, CONFINED)).sandboxed).toBe(false);
-    expect((await check({ AGENFK_AIRLOCK_SANDBOX: 'opencode' }, eperm, CONFINED)).sandboxed).toBe(false);
   });
 
   it('pi extension: the same rule', () => {
@@ -112,15 +104,15 @@ describe('confinement proof (review fix 6)', () => {
     expect(airlockSandboxed(SANDBOX_ENV, '/h', () => undefined, CONFINED).sandboxed).toBe(false);
     expect(airlockSandboxed(SANDBOX_ENV, '/h', enoent, CONFINED).sandboxed).toBe(false);
     expect(airlockSandboxed({ HTTPS_PROXY: 'http://x' }, '/h', eperm, CONFINED).sandboxed).toBe(false);
-    expect(airlockSandboxed({ AGENFK_AIRLOCK_SANDBOX: 'pi' }, '/h', eperm, CONFINED).sandboxed).toBe(false);
   });
 
-  it('the real check, outside any sandbox: not sandboxed', async () => {
+  it('the real check, outside any machine: not sandboxed', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-home-'));
     fs.mkdirSync(path.join(home, '.agenfk'));
     const mod = await import(pathToFileURL(REAL_SCRIPT).href);
-    expect((await mod.airlockSandboxCheck({ env: SANDBOX_ENV, homeDir: home, prove: NOT_CONFINED })).sandboxed).toBe(false);
+    expect((await mod.airlockSandboxCheck({ env: SANDBOX_ENV, homeDir: home })).sandboxed).toBe(false);
     expect(airlockSandboxed(SANDBOX_ENV, home, undefined, CONFINED).sandboxed).toBe(false);
+    expect((await mod.proveConfinement()).confined).toBe(false);
     fs.rmSync(home, { recursive: true, force: true });
   });
 });

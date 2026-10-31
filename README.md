@@ -28,6 +28,7 @@ Welcome to **AgEnFK**, a high-reliability, measurable, and visual framework desi
 - [Multi-Project Support](#multi-project-support)
 - [GitHub Issues Sync](#github-issues-sync)
 - [Corporate Hub](#corporate-hub)
+- [Airlock (sandboxed agent sessions)](#airlock-sandboxed-agent-sessions)
 - [Architecture Deep Dive](#architecture-deep-dive)
 - [Release Channels (`beta` and `main`)](docs/RELEASES.md)
 - [Custom Workflow Flows](#custom-workflow-flows)
@@ -365,6 +366,16 @@ The hub does not own your code, your local database, or your editor. Everything 
 ### Where to read more
 
 [`HUB_ARCHITECTURE.md`](./HUB_ARCHITECTURE.md) is the operator-grade reference: data model, auth realms (admin sessions vs installation bearer keys), ingest contract, identity-provider setup walkthroughs for Google Cloud Console and Microsoft Entra, the full HTTP surface, and a quick-reference table for who-owns-what.
+
+## Airlock (sandboxed agent sessions)
+
+Airlock runs a pi or OpenCode session inside a sandbox built from a policy a person sets on the board (or an org admin on the hub): `agenfk airlock pi ...` / `agenfk airlock opencode ...`.
+
+*   **Runtime: smolvm microVMs.** Each workspace (the folder Airlock is launched from) gets one persistent [smolvm](https://github.com/smol-machines/smolvm) machine, started for a session and stopped when the last one leaves. Sessions run in a Linux guest image: the AgEnFK base image, or the one the policy names. What a session installs there (its Linux `node_modules`, packages) stays on the machine's disk; `agenfk airlock reset` deletes the machine.
+*   **Every connection is decided.** HTTPS, psql, ssh, raw TCP: the host decides each outbound flow before it is dialled, from its destination and first bytes (TLS SNI, HTTP Host) or the DNS lookup behind it. `enforce` allows only the policy's hosts and the session's inference host; `observe` lets everything through and reports what enforce would refuse. Metadata addresses and the host's loopback are never reachable; the AgEnFK server is reached only through the session's relay.
+*   **Files.** The guest sees only the workspace and the client's own state, at their host paths. Credential stores are hidden, AgEnFK's files and git's hooks and config are read-only, and model keys stay on the host: the guest gets a placeholder that is swapped for the key on the way to the inference host.
+*   **Verify and suite runs** of a card a sandboxed session touched run in the same machine (`agenfk airlock exec`), so they see the session's dependencies. A command run beside a live session can reach what that session can.
+*   **Install.** `agenfk airlock install` installs exactly the smolvm version AgEnFK pins (checked against its recorded sha256) into `~/.agenfk/smolvm`; a launch installs it when missing, and install/upgrade do so where Airlock is on. smolvm needs Apple Silicon on macOS, or Linux with KVM; Airlock refuses elsewhere and says why. The desktop app bundles it.
 
 ## Architecture Deep Dive
 

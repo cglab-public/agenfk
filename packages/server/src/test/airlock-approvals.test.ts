@@ -67,6 +67,12 @@ beforeEach(async () => {
   emit.mockReset();
   app = express();
   app.use(express.json());
+  // what the coverage middleware sets from a verified marker: the launch it was minted for
+  app.use((req: any, _res, next) => {
+    const launch = req.headers['x-test-launch'];
+    if (typeof launch === 'string') { req.airlockSession = launch; req.airlockProject = 'proj-1'; }
+    next();
+  });
   registerAirlockRoutes(app, {
     storage: () => storage,
     hubJoined: () => false,
@@ -547,5 +553,44 @@ describe('review fixes (T5 round 1)', () => {
       expect(JSON.stringify(row)).not.toContain('k-private-1');
       expect((await grant(key)).status).toBe(409);
     });
+  });
+});
+
+describe('a grant belongs to the launch that asked for it (da69b17a review)', () => {
+  // The session id and the card are what the caller states, and another launch can read them
+  // (runs, token events): only the launch, read from a marker no sandbox can mint, binds a grant.
+  const fromLaunch = (launch: string | null, extra: Record<string, unknown> = {}) =>
+    launch ? evaluate(MUTATION, extra).set('x-test-launch', launch) : evaluate(MUTATION, extra);
+
+  it('another launch stating the same session and card cannot spend it; the launch that asked still can', async () => {
+    const asked = await fromLaunch('launch-a');
+    expect(asked.body.verdict.decision).toBe('needs-human-approval');
+    const key = asked.body.verdict.approvalKey;
+    expect((await grant(key)).status).toBe(200);
+    const thief = await fromLaunch('launch-b');
+    expect(thief.body.verdict.decision).toBe('needs-human-approval');
+    expect((await rowOf(key)).status).toBe('granted');
+    expect((await fromLaunch('launch-a')).body.verdict).toEqual({ decision: 'allow', why: 'approved' });
+  });
+
+  it('a grant asked on the host is not a sandbox\'s to spend, nor a sandbox\'s grant the host\'s', async () => {
+    const key = await needsApproval();
+    expect((await grant(key)).status).toBe(200);
+    expect((await fromLaunch('launch-a')).body.verdict.decision).toBe('needs-human-approval');
+    expect((await fromLaunch(null)).body.verdict).toEqual({ decision: 'allow', why: 'approved' });
+
+    work = { itemId: 'card-2', projectId: 'proj-1' };
+    const sandboxed = (await fromLaunch('launch-a', { sessionId: 'sess-9' })).body.verdict.approvalKey;
+    expect((await grant(sandboxed)).status).toBe(200);
+    expect((await fromLaunch(null, { sessionId: 'sess-9' })).body.verdict.decision).toBe('needs-human-approval');
+    expect((await fromLaunch('launch-a', { sessionId: 'sess-9' })).body.verdict).toEqual({ decision: 'allow', why: 'approved' });
+  });
+
+  it("a request re-asked by another launch invalidates the board's answer to the first", async () => {
+    const key = (await fromLaunch('launch-a')).body.verdict.approvalKey;
+    const seen = await rowOf(key);
+    await fromLaunch('launch-b');
+    expect((await grant(key, BOARD, seen.generation)).status).toBe(409);
+    expect((await rowOf(key)).status).toBe('pending');
   });
 });
