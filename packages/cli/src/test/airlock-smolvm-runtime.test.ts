@@ -239,6 +239,7 @@ function runtime({ smolvm: givenSmolvm, egress: givenEgress, ...over }: Record<s
     isTTY: false,
     hostEnv: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8', OPENAI_API_KEY: 'sk-fake-not-real', PATH: '/host/bin' },
     pidAlive: (pid: number) => pid === process.pid,
+    processIdentity: (pid: number) => (pid === process.pid ? 'boot-1/this' : null),
     startWatchdog: watchdog.start,
     reaperCommand: ['/usr/bin/node', '/opt/agenfk/cli.js'],
     ...over,
@@ -1247,6 +1248,43 @@ describe('a network policy changed while the session runs (story review 2)', () 
   });
 });
 
+// 6386d4ac: a session is its launcher, not just its pid: after a crash or a reboot the pid is reused.
+describe('which sessions are in the machine', () => {
+  const record = (rec: Record<string, unknown>) => {
+    const dir = path.join(stateDir, 'machines', machineNameOf(workspace), 'sessions');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a1b2c3d4e5f60718.json'), JSON.stringify({ workspace, purpose: 'client', ...rec }));
+    return path.join(dir, 'a1b2c3d4e5f60718.json');
+  };
+
+  it('a record whose pid is another process now is no session: reset goes ahead, and the record goes', async () => {
+    const file = record({ pid: process.pid, identity: 'boot-0/before' });
+    const { rt } = runtime();
+    expect(await rt.reset(workspace)).toBe('absent');
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('a record of the very launcher is a session: reset is refused', async () => {
+    record({ pid: process.pid, identity: 'boot-1/this' });
+    const { rt } = runtime();
+    await expect(rt.reset(workspace)).rejects.toThrow(/session is running/);
+  });
+
+  it('an older record, with no identity, is judged by its pid', async () => {
+    record({ pid: process.pid });
+    const { rt } = runtime();
+    await expect(rt.reset(workspace)).rejects.toThrow(/session is running/);
+  });
+
+  it('records the launcher with its identity', async () => {
+    const { rt } = runtime();
+    await rt.launch(specOf(), cmd());
+    const dir = path.join(stateDir, 'machines', machineNameOf(workspace), 'sessions');
+    const recs = fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+    expect(recs).toEqual([expect.objectContaining({ pid: process.pid, identity: 'boot-1/this' })]);
+  });
+});
+
 describe('the machine\'s resolver (CGLAB-696 task 8)', () => {
   const rootScripts = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.execs().filter((a) => flag(a, '-u') === 'root').map((a) => a[a.length - 1]);
 
@@ -2031,6 +2069,27 @@ describe('sessions starting and leaving at once', () => {
     // on a lock it could never take (story review: an ownerless lock pinned the CPU).
     expect((rt as unknown as { breakStaleLock(l: string, ino: number): boolean }).breakStaleLock(lock, staleIno)).toBe(false);
     expect(fs.readFileSync(lock, 'utf8')).toBe(`${process.pid} live`);
+  });
+
+  // 6386d4ac: after a crash or a reboot the pid a lock names can be another process's.
+  it('takes over a lock whose pid is alive but is another process now (its identity differs)', async () => {
+    const name = machineNameOf(workspace);
+    const lock = path.join(stateDir, 'machines', name, 'lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, `${process.pid} other boot-0/before`);
+    const { rt, sp } = runtime();
+    await rt.launch(specOf(), cmd());
+    expect(sp.spawn).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
+  it('names itself in the lock it holds, identity and all', async () => {
+    const name = machineNameOf(workspace);
+    const lock = path.join(stateDir, 'machines', name, 'lock');
+    let held = '';
+    const smolvm = fakeSmolvm({ execStdout: () => { if (!held) { try { held = fs.readFileSync(lock, 'utf8'); } catch { /* not held */ } } return ''; } });
+    const { rt } = runtime({ smolvm });
+    await rt.launch(specOf(), cmd());
+    expect(held).toMatch(new RegExp(`^${process.pid} [0-9a-f]{16} boot-1/this$`));
   });
 
   it('takes over the lock of a process that is gone', async () => {

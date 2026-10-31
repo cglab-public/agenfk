@@ -32,6 +32,7 @@ import path from 'path';
 import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
 import { AIRLOCK_SANDBOX_MARKER, type SandboxSpec } from './spec';
 import { allowListArgs, GATEWAY, networkKey, RESOLVER_REPORT_PORT, type Route } from './egress';
+import { processIdentity, sameProcess } from './processIdentity';
 import { machineCa, placeholderFor, startKeyInjector, type KeyInjector, type KeyInjectorOptions, type MachineCa } from './keyInjector';
 import { readRegularFile } from './safeRead';
 import type { AirlockRuntime, LaunchHooks, LaunchedSandbox, ProxyDecision, RuntimeCheck, SandboxCommand, SandboxExit } from './runtime';
@@ -1192,6 +1193,8 @@ interface SmolvmRuntimeDeps {
   isTTY?: boolean;
   hostEnv?: NodeJS.ProcessEnv;
   pidAlive?: (pid: number) => boolean;
+  /** Which process a pid is now (processIdentity.ts): a record naming the pid of another is stale. */
+  processIdentity?: (pid: number) => string | null;
   warn?: (message: string) => void;
   readGitConfig?: GitConfigReader;
   startInjector?: (o: KeyInjectorOptions) => Promise<KeyInjector>;
@@ -1284,6 +1287,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       isTTY: deps.isTTY ?? !!process.stdin.isTTY,
       hostEnv: deps.hostEnv ?? process.env,
       pidAlive: deps.pidAlive ?? defaultPidAlive,
+      processIdentity: deps.processIdentity ?? processIdentity,
       readGitConfig: deps.readGitConfig ?? readGitConfig,
       startInjector: deps.startInjector ?? startKeyInjector,
       startWatchdog: deps.startWatchdog ?? startWatchdog,
@@ -1365,12 +1369,22 @@ export class SmolvmRuntime implements AirlockRuntime {
     }
     return files.filter((f) => {
       const file = path.join(dir, f);
-      let pid = NaN;
-      try { pid = Number(JSON.parse(fs.readFileSync(file, 'utf8')).pid); } catch { /* unreadable: stale */ }
-      if (Number.isInteger(pid) && pid > 0 && this.d.pidAlive(pid)) return true;
+      let rec: { pid: number; identity?: string } = { pid: NaN };
+      try { const r = JSON.parse(fs.readFileSync(file, 'utf8')); rec = { pid: Number(r.pid), identity: typeof r.identity === 'string' ? r.identity : undefined }; } catch { /* unreadable: stale */ }
+      if (this.alive(rec)) return true;
       fs.rmSync(file, { force: true });
       return false;
     });
+  }
+
+  /** Is the recorded launcher running (its pid, and the process it was: 6386d4ac)? */
+  private alive(rec: { pid: number; identity?: string | null }): boolean {
+    return sameProcess(rec, { pidAlive: this.d.pidAlive, identityOf: this.d.processIdentity });
+  }
+
+  /** This launcher, as a lock names it: pid, a token of its own, and its identity when it has one. */
+  private lockOwner(): string {
+    return [process.pid, crypto.randomBytes(8).toString('hex'), this.d.processIdentity(process.pid)].filter(Boolean).join(' ');
   }
 
   /** The live sessions' records: what each is (a record from before purposes were kept counts as a client). */
@@ -1429,8 +1443,9 @@ export class SmolvmRuntime implements AirlockRuntime {
   /** A lock left by a launcher that is gone, or naming none (an older launcher's) and a minute old. */
   private lockStale(lock: string): boolean {
     const st = fs.statSync(lock);
-    const holder = Number(fs.readFileSync(lock, 'utf8').split(' ')[0]);
-    return Number.isInteger(holder) && holder > 0 ? !this.d.pidAlive(holder) : Date.now() - st.mtimeMs > 60_000;
+    const [pid, , identity] = fs.readFileSync(lock, 'utf8').split(' ');
+    const holder = Number(pid);
+    return Number.isInteger(holder) && holder > 0 ? !this.alive({ pid: holder, identity }) : Date.now() - st.mtimeMs > 60_000;
   }
 
   /**
@@ -1460,7 +1475,7 @@ export class SmolvmRuntime implements AirlockRuntime {
    */
   private breakStaleLock(lock: string, ino: number): boolean {
     const turn = `${lock}.break`;
-    const mine = `${process.pid} ${crypto.randomBytes(8).toString('hex')}`;
+    const mine = this.lockOwner();
     if (!SmolvmRuntime.takeLock(turn, mine)) {
       // Held for an instant; one left by a launcher that is gone is cleared (an older launcher's
       // naming none, once a minute old: story review), and only if it is still that same turn.
@@ -1489,7 +1504,7 @@ export class SmolvmRuntime implements AirlockRuntime {
   private async withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
     const lock = path.join(this.machineDir(name), 'lock');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
-    const mine = `${process.pid} ${crypto.randomBytes(8).toString('hex')}`;
+    const mine = this.lockOwner();
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
     for (;;) {
       if (SmolvmRuntime.takeLock(lock, mine)) break;
@@ -1603,7 +1618,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       const ca = machineCa(path.join(this.machineDir(name), 'ca'));
       const placeholders = this.placeholdersOf(name, spec.maskedEnv.map((m) => m.name));
       fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
-      fs.writeFileSync(sessionFile, JSON.stringify({ pid: process.pid, workspace, purpose: spec.purpose ?? 'client' }));
+      fs.writeFileSync(sessionFile, JSON.stringify({ pid: process.pid, identity: this.d.processIdentity(process.pid), workspace, purpose: spec.purpose ?? 'client' }));
       const shared = this.liveSessions(name).length > 1;
       if (!shared) {
         // No session but this one. A machine still running was left so by a session that is gone,
