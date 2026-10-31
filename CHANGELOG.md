@@ -4,6 +4,15 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.8] — 2026-10-31
+
+**Airlock**
+
+- **Launches work again in a repository that holds a linked worktree** (#300). A worktree checked out inside the
+  workspace (Claude Code's `.claude/worktrees/...`, say) made `agenfk airlock pi` and `opencode` refuse to start
+  in beta.7, because that worktree's `.git` pointer leads into `.git/worktrees`. That folder is protected the
+  same way submodules' is, so it is now accepted.
+
 ## [2.1.0-beta.7] — 2026-10-31
 
 Airlock runs sandboxed agents in smolvm microVMs (#299, CGLAB-696).
