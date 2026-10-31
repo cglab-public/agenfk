@@ -261,12 +261,15 @@ describe('the resolver, on real sockets', () => {
 
   it('a TCP asker that asks slowly but never reads is cut off by the answers queued for it (review 01a18ddc, pass 2)', async () => {
     const up = await fakeUpstream();
-    resolver = await startResolver({ host: '127.0.0.1', port: 0, upstream: { host: '127.0.0.1', port: up }, deny: ['evil.example'] });
+    // A name near the longest DNS allows: each refusal is large, so the answers fill the kernel's
+    // socket buffers (several MB on a CI runner) and then the resolver's queue in seconds, not minutes.
+    const long = `${'a'.repeat(60)}.${'b'.repeat(60)}.${'c'.repeat(60)}.${'d'.repeat(50)}.evil.example`;
+    resolver = await startResolver({ host: '127.0.0.1', port: 0, upstream: { host: '127.0.0.1', port: up }, deny: [long] });
     const s = net.connect(resolver.port, '127.0.0.1');
     await new Promise((r) => s.once('connect', r));
     s.pause();
     s.on('error', () => undefined);
-    const q = query('evil.example');
+    const q = query(long);
     const len = Buffer.alloc(2);
     len.writeUInt16BE(q.length);
     const frame = Buffer.concat([len, q]);

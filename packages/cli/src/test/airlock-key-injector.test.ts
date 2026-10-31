@@ -221,7 +221,8 @@ describe('startKeyInjector', () => {
 
   it('cancels the request upstream when the guest goes away', async () => {
     let upstreamClosed = false;
-    const hang = http.createServer((req) => { req.on('close', () => { upstreamClosed = true; }); });
+    let arrived = false;
+    const hang = http.createServer((req) => { arrived = true; req.on('close', () => { upstreamClosed = true; }); });
     await new Promise<void>((r) => hang.listen(0, '127.0.0.1', () => r()));
     const hangPort = (hang.address() as { port: number }).port;
     await injector!.close();
@@ -229,7 +230,8 @@ describe('startKeyInjector', () => {
     try {
       const s = tls.connect({ host: '127.0.0.1', port: injector.port, servername: 'api.inference.test', ca: ca.certPem }, () => s.write('GET /stream HTTP/1.1\r\nHost: api.inference.test\r\n\r\n'));
       s.on('error', () => undefined);
-      await new Promise((r) => setTimeout(r, 100));
+      // upstream for certain before the guest goes (a fixed wait lost the race on a loaded Windows runner)
+      await vi.waitFor(() => expect(arrived).toBe(true));
       s.destroy();
       await vi.waitFor(() => expect(upstreamClosed).toBe(true));
     } finally {
