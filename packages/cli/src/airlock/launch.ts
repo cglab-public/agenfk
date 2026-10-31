@@ -438,7 +438,8 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     d.warn(`${keyNames.join(', ')}: not masked, because ${endpoint.host} is plain http and the proxy injects a masked key over TLS only. The sandboxed session can read it.`);
     maskedEnv = [];
   }
-  if (client === 'pi' && !maskedEnv.length) {
+  // An open home folder (the policy's homeAccess) leaves auth.json readable.
+  if (client === 'pi' && !maskedEnv.length && !policy.homeAccess) {
     d.warn('pi\'s auth.json (its /login logins and saved keys) is not readable inside the Airlock sandbox; keys in models.json are. For a provider you logged into, give pi its key as an env var (it is masked: the agent sees a stand-in, the proxy sends the real one to the inference host), or with --key-env NAME.');
   }
 
@@ -496,7 +497,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     requireMarker: enforce,
   });
   try {
-    // pi runs on its own agent dir in the machine: its auth.json is hidden there and reads as {}
+    // pi runs on its own agent dir in the machine: its auth.json is hidden there (unless the policy opens the home folder) and reads as {}
     // (no logins), so nothing is staged (a per-launch copy would keep sessions from sharing it).
     const agentDir = client === 'pi' ? piAgentDirOf(d) : null;
     const sharedTmp = sharedTempDir(d.platform, d.realpath);
@@ -571,6 +572,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
       specFor: (v) => specFor(normalizeAirlockPolicy(v?.effective)),
       networkOnlyFor: (v) => specFor(normalizeAirlockPolicy(v?.effective), []),
       session: launched,
+      homeMount: spec.filesystem.homeMount,
     });
     try {
       const exit = await launched.exited;

@@ -15,6 +15,18 @@ import path from 'path';
 import { isIPv4, isIPv6 } from 'net';
 import { BUILTIN_DENY_HOSTS, HOME_CREDENTIAL_STORES, matchHost, type AirlockClient, type AirlockPolicy } from '@agenfk/core';
 
+/**
+ * What host programs read and run from the home folder: git's config, ssh's, the shells' startup
+ * files, login agents and services. Unwritable under a read-write home (homeAccess); the clients'
+ * own code and config are protected in every mode below.
+ */
+export const HOST_RUN_CONFIGS = Object.freeze([
+  '.gitconfig', path.join('.config', 'git'), '.ssh',
+  '.profile', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout',
+  '.zshrc', '.zshenv', '.zprofile', '.zlogin', '.zlogout', path.join('.config', 'fish'),
+  path.join('Library', 'LaunchAgents'), path.join('.config', 'systemd'), path.join('.config', 'autostart'),
+]);
+
 /** Set inside the sandbox to the client's name; the launch gate (L2-3) looks for it. */
 export const AIRLOCK_SANDBOX_MARKER = 'AGENFK_AIRLOCK_SANDBOX';
 
@@ -82,6 +94,11 @@ export interface SandboxSpec {
     denyWrite: string[];
     /** The temp dirs among allowWrite: a runtime with its own file system (a VM) gives the guest its own instead. */
     privateTemp?: string[];
+    /**
+     * The policy's homeAccess (story 525cd331): the whole home folder mounted read-only or read-write.
+     * Absent: no home folder beyond the write roots. denyWrite holds in every mode.
+     */
+    homeMount?: 'ro' | 'rw';
   };
   /** The folder the session was launched from: a runtime that keeps a machine keeps one per workspace. */
   workspace?: string;
@@ -283,12 +300,16 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     else skipped.push({ entry: raw, reason: `deny: ${e.reason ?? 'not a host'}; enforced by leaving out every allow it matches` });
   }
 
+  // The policy's homeAccess: an open home folder protects no credential store (user decision 2026-10-31).
+  const homeMount = policy.homeAccess === 'home-read-only' ? 'ro' as const : policy.homeAccess === 'home-read-write' ? 'rw' as const : undefined;
   const denyRead = [
     // The credential stores layer 1 also recognises (core's HOME_CREDENTIAL_STORES).
-    ...HOME_CREDENTIAL_STORES.map((p) => j(home, p)),
-    j(home, '.pi', 'agent', 'auth.json'),
-    ...(session.piAgentDir ? [j(session.piAgentDir, 'auth.json')] : []),
-    j(home, '.local', 'share', 'opencode', 'auth.json'),
+    ...(homeMount ? [] : [
+      ...HOME_CREDENTIAL_STORES.map((p) => j(home, p)),
+      j(home, '.pi', 'agent', 'auth.json'),
+      ...(session.piAgentDir ? [j(session.piAgentDir, 'auth.json')] : []),
+      j(home, '.local', 'share', 'opencode', 'auth.json'),
+    ]),
     // Where the token the launcher's proxy reports carry lives (TEL-1), its
     // temp files included: an agent holding it could forge them. verify-token
     // stays readable: the agent's own workflow (agenfk verify, review record)
@@ -310,6 +331,9 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   // state (sessions, models.json) stays writable.
   const piHostCode = (dir: string) => ['extensions', 'bin', 'install', 'npm', 'git', 'settings.json'].map((p) => j(dir, p));
   const denyWrite = uniq([
+    // A home folder the policy opens read-write (user decision 2026-10-31): what host programs run
+    // from it stays unwritable too, as far as it can be held. The rest of it is the agent's.
+    ...(homeMount === 'rw' ? HOST_RUN_CONFIGS.map((p) => j(home, p)) : []),
     j(home, '.agenfk'),
     ...session.installDirs,
     ...piHostCode(j(home, '.pi', 'agent')),
@@ -338,7 +362,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
 
   return {
     network: { allow: uniq(allow), deny: uniq(deny), denyResolved: uniq(denyResolved), mode: policy.mode === 'observe' ? 'observe' : 'enforce' },
-    filesystem: { denyRead, allowWrite, denyWrite, privateTemp: uniq(session.tempDirs) },
+    filesystem: { denyRead, allowWrite, denyWrite, privateTemp: uniq(session.tempDirs), ...(homeMount ? { homeMount } : {}) },
     workspace: session.workspace,
     home,
     ...(command ? {} : { relayPort: session.serverPort }),
