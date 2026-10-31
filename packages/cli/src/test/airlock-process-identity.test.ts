@@ -13,6 +13,19 @@ describe.skipIf(process.platform === 'win32')('processIdentity, on this machine'
     expect(processIdentity(process.pid)).toBe(me);
   });
 
+  // Story review (Codex): launchers run with different environments; a process is the same process to each.
+  it('names a process the same way whatever the timezone it is looked at from', () => {
+    const tz = process.env.TZ;
+    try {
+      process.env.TZ = 'UTC';
+      const utc = processIdentity(process.pid);
+      process.env.TZ = 'America/Sao_Paulo';
+      expect(processIdentity(process.pid)).toBe(utc);
+    } finally {
+      if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz;
+    }
+  });
+
   it('tells another process apart, and has nothing for a process that is gone', async () => {
     // macOS gives a start time to the second: the other process starts in a later one.
     await new Promise((r) => setTimeout(r, 1100));

@@ -688,6 +688,19 @@ describe('EgressService: the decider on the host loopback', () => {
       expect(got.subarray(preface.length, preface.length + hello.length).equals(hello)).toBe(true);
     });
 
+    // Story review (Codex): the guest's 127.0.0.1:P and 127.0.0.2:P both arrive as the gateway's P, so
+    // which one was meant cannot be told: refused, never carried to a destination it was not judged for.
+    it('refuses a gateway port whose loopback routes name different destinations, carrying nothing', async () => {
+      const routes: Route[] = [
+        { kind: 'forward', host: '127.0.0.1', port: 18888, socket: path.join(dir, 'gone.sock') },
+        { kind: 'forward', host: '127.0.0.2', port: 18888, socket: sock },
+      ];
+      const { address, decisions } = await start('observe', { routes: () => routes });
+      expect(await ask(address, frame({ ip: gw, port: 18888, payload: Buffer.from('GET /v1 ') }))).toBe(1);
+      expect(got.length).toBe(0);
+      expect(decisions).toEqual([{ host: GATEWAY, port: 18888, decision: 'deny', rule: 'loopback-port-conflict' }]);
+    });
+
     it('does not hand a gateway flow to an inference host off the loopback on that port', async () => {
       const routes: Route[] = [{ kind: 'inject', host: 'api.github.com', port: 18888, socket: sock }];
       const { address, decisions } = await start('observe', { routes: () => routes });

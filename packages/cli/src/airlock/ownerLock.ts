@@ -23,14 +23,19 @@ export function lockOwner(d: Pick<OwnerLockDeps, 'identityOf'>): string {
   return [process.pid, crypto.randomBytes(8).toString('hex'), d.identityOf(process.pid)].filter(Boolean).join(' ');
 }
 
-/** A lock left by an owner that is gone, or naming none (an older AgEnFK's) and a minute old. */
-export function lockStale(lock: string, d: Pick<OwnerLockDeps, 'pidAlive' | 'identityOf'>): boolean {
-  const st = fs.statSync(lock);
-  const [pid, , identity] = fs.readFileSync(lock, 'utf8').split(' ');
+/** Whether a lock's owner line names an owner that is gone, or none (an older AgEnFK's) and its file is a minute old. */
+function ownerGone(owner: string, mtimeMs: number, d: Pick<OwnerLockDeps, 'pidAlive' | 'identityOf'>): boolean {
+  const [pid, , identity] = owner.split(' ');
   const holder = Number(pid);
   return Number.isInteger(holder) && holder > 0
     ? !sameProcess({ pid: holder, identity }, { pidAlive: d.pidAlive, identityOf: d.identityOf })
-    : Date.now() - st.mtimeMs > 60_000;
+    : Date.now() - mtimeMs > 60_000;
+}
+
+/** A lock left by an owner that is gone, or naming none (an older AgEnFK's) and a minute old. */
+export function lockStale(lock: string, d: Pick<OwnerLockDeps, 'pidAlive' | 'identityOf'>): boolean {
+  const st = fs.statSync(lock);
+  return ownerGone(fs.readFileSync(lock, 'utf8'), st.mtimeMs, d);
 }
 
 /**
@@ -52,28 +57,54 @@ function takeLock(lock: string, owner: string): boolean {
   }
 }
 
+/** Turns past this many left by breakers that are gone: none is taken (the caller waits, then gives up). */
+const MAX_TURNS = 64;
+
 /**
- * Removes a stale lock. Processes doing so take turns on a second lock, and each checks again
- * under it that the lock is still that same file and still stale: a live owner's lock is never
- * touched. True only when it removed it; false when another holds the turn, or the lock is no
- * longer stale.
+ * The turn to break `lock`, taken for `owner`: `<lock>.break`, or past each one a breaker that is
+ * gone left (or one naming none, a minute old), the next (`.break.1`, ...). A turn is never removed
+ * by anyone but its taker: checking that one is stale and removing it are two steps, between which
+ * another could have removed it and a live breaker taken it afresh (story review). Null while a live
+ * breaker holds one.
+ */
+function takeTurn(lock: string, owner: string, d: Pick<OwnerLockDeps, 'pidAlive' | 'identityOf'>): string | null {
+  for (let n = 0; n < MAX_TURNS; n++) {
+    const turn = n ? `${lock}.break.${n}` : `${lock}.break`;
+    if (takeLock(turn, owner)) return turn;
+    // Passed over only while it is still the very turn judged gone (story review pass 2): its owner
+    // may release it, and another take it afresh, while it is judged. A gone owner's stays as it is.
+    try {
+      const st = fs.statSync(turn);
+      const held = fs.readFileSync(turn, 'utf8');
+      if (!ownerGone(held, st.mtimeMs, d)) return null;
+      if (fs.statSync(turn).ino !== st.ino || fs.readFileSync(turn, 'utf8') !== held) return null;
+    } catch {
+      return null; // released meanwhile: asked again next time
+    }
+  }
+  return null;
+}
+
+/**
+ * Removes a stale lock. Processes doing so take turns (takeTurn), and each checks again under its
+ * turn that the lock is still that same file and still stale: a live owner's lock is never touched.
+ * True only when it removed it; false when another holds the turn, or the lock is no longer stale.
  */
 export function breakStaleLock(lock: string, ino: number, d: Pick<OwnerLockDeps, 'pidAlive' | 'identityOf'>): boolean {
-  const turn = `${lock}.break`;
   const mine = lockOwner(d);
-  if (!takeLock(turn, mine)) {
-    // Held for an instant; one left by a process that is gone is cleared (an older one's naming
-    // none, once a minute old: story review), and only if it is still that same turn.
-    try {
-      const held = fs.readFileSync(turn, 'utf8');
-      if (lockStale(turn, d) && fs.readFileSync(turn, 'utf8') === held) fs.rmSync(turn);
-    } catch { /* gone */ }
-    return false;
-  }
+  const turn = takeTurn(lock, mine, d);
+  if (!turn) return false;
   let removed = false;
   try {
-    // Judged again under the turn, by the same rule the caller used (story review).
-    if (fs.statSync(lock).ino === ino && lockStale(lock, d)) { fs.rmSync(lock); removed = true; }
+    // Judged again under the turn, by the same rule the caller used (story review), and removed only
+    // while it is still the very lock judged (story review pass 3): its owner may release it, and a live
+    // one take it, while it is judged. A gone owner's lock stays as it is, and only a turn's holder breaks one.
+    const st = fs.statSync(lock);
+    const held = fs.readFileSync(lock, 'utf8');
+    if (st.ino === ino && ownerGone(held, st.mtimeMs, d) && fs.statSync(lock).ino === st.ino && fs.readFileSync(lock, 'utf8') === held) {
+      fs.rmSync(lock);
+      removed = true;
+    }
   } catch { /* released meanwhile */ } finally {
     try { if (fs.readFileSync(turn, 'utf8') === mine) fs.rmSync(turn); } catch { /* not ours any more */ }
   }

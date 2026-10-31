@@ -2029,7 +2029,7 @@ describe('sessions starting and leaving at once', () => {
     expect(sp.spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('clears a breaking turn whose launcher is gone, and goes on', async () => {
+  it('passes over a breaking turn whose launcher is gone, and goes on', async () => {
     const name = machineNameOf(workspace);
     const lock = path.join(stateDir, 'machines', name, 'lock');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
@@ -2038,10 +2038,11 @@ describe('sessions starting and leaving at once', () => {
     const { rt, sp } = runtime();
     await rt.launch(specOf(), cmd());
     expect(sp.spawn).toHaveBeenCalledTimes(1);
-    expect(fs.existsSync(`${lock}.break`)).toBe(false);
+    // Passed over, never removed (story review: removing it could remove a fresh one).
+    expect(fs.readFileSync(`${lock}.break`, 'utf8')).toBe('999998 crashed');
   });
 
-  it('clears a breaking turn with no owner in it (a launcher killed while taking it) once it is old, and goes on', async () => {
+  it('passes over a breaking turn with no owner in it (a launcher killed while taking it) once it is old, and goes on', async () => {
     const name = machineNameOf(workspace);
     const lock = path.join(stateDir, 'machines', name, 'lock');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
@@ -2052,7 +2053,7 @@ describe('sessions starting and leaving at once', () => {
     const { rt, sp } = runtime();
     await rt.launch(specOf(), cmd());
     expect(sp.spawn).toHaveBeenCalledTimes(1);
-    expect(fs.existsSync(`${lock}.break`)).toBe(false);
+    expect(fs.existsSync(`${lock}.break`)).toBe(true);
   });
 
   it('never breaks a lock a live owner took after the stale one was seen', () => {

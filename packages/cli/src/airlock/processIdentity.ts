@@ -36,7 +36,8 @@ function started(pid: number): string | null {
       return null;
     }
   }
-  const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+  // In UTC and the C locale: ps writes the time as its environment says, and launchers' differ (story review).
+  const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000, windowsHide: true, env: { PATH: process.env.PATH, TZ: 'UTC', LC_ALL: 'C' } });
   const t = r.status === 0 ? r.stdout.trim() : '';
   return t ? t.replace(/\s+/g, '_') : null;
 }

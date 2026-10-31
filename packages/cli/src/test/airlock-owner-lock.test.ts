@@ -73,6 +73,56 @@ describe('breakStaleLock', () => {
     expect(fs.readFileSync(lock, 'utf8')).toBe(`${process.pid} live boot-1/this`);
   });
 
+  // Story review (Codex): a turn is never unlinked by another process - checking a stale turn and
+  // removing it are two steps, between which a live breaker could have taken a fresh one.
+  it('passes over a turn whose breaker is gone, without removing it, and breaks the stale lock', () => {
+    fs.writeFileSync(lock, '999999 gone');
+    fs.writeFileSync(`${lock}.break`, '999998 crashed');
+    expect(breakStaleLock(lock, fs.statSync(lock).ino, deps())).toBe(true);
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(fs.readFileSync(`${lock}.break`, 'utf8')).toBe('999998 crashed');
+  });
+
+  it('waits for a live breaker\'s turn taken past a gone one\'s', () => {
+    fs.writeFileSync(lock, '999999 gone');
+    fs.writeFileSync(`${lock}.break`, '999998 crashed');
+    fs.writeFileSync(`${lock}.break.1`, `${process.pid} breaking boot-1/this`);
+    expect(breakStaleLock(lock, fs.statSync(lock).ino, deps())).toBe(false);
+    expect(fs.existsSync(lock)).toBe(true);
+    expect(fs.readFileSync(`${lock}.break.1`, 'utf8')).toBe(`${process.pid} breaking boot-1/this`);
+  });
+
+  // Story review pass 2 (Codex): the turn judged must still be the turn passed over. Here its owner
+  // released it and another breaker took it afresh while it was being judged.
+  it('does not pass over a turn taken afresh while its old owner was being judged', () => {
+    fs.writeFileSync(lock, '999999 gone');
+    fs.writeFileSync(`${lock}.break`, '777777 released');
+    const replaced = deps({
+      pidAlive: (pid) => {
+        if (pid === 777777) { fs.rmSync(`${lock}.break`); fs.writeFileSync(`${lock}.break`, `${process.pid} fresh boot-1/this`); return false; }
+        return pid === process.pid;
+      },
+    });
+    expect(breakStaleLock(lock, fs.statSync(lock).ino, replaced)).toBe(false);
+    expect(fs.existsSync(`${lock}.break.1`)).toBe(false);
+    expect(fs.existsSync(lock)).toBe(true);
+  });
+
+  // Story review pass 3 (Codex): the lock removed must be the very lock judged stale. Here its owner
+  // released it and a live owner took it while it was being judged.
+  it('does not remove a lock taken afresh while its old owner was being judged', () => {
+    fs.writeFileSync(lock, '777777 old');
+    const ino = fs.statSync(lock).ino;
+    const replaced = deps({
+      pidAlive: (pid) => {
+        if (pid === 777777) { fs.rmSync(lock); fs.writeFileSync(lock, `${process.pid} fresh boot-1/this`); return false; }
+        return pid === process.pid;
+      },
+    });
+    expect(breakStaleLock(lock, ino, replaced)).toBe(false);
+    expect(fs.readFileSync(lock, 'utf8')).toBe(`${process.pid} fresh boot-1/this`);
+  });
+
   it('breaks nothing while another process has the turn to', () => {
     fs.writeFileSync(lock, '999999 gone');
     fs.writeFileSync(`${lock}.break`, `${process.pid} breaking boot-1/this`);

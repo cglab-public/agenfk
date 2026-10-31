@@ -556,6 +556,11 @@ export class EgressService {
         const loopback = routes.filter((x): x is Exclude<Route, { kind: 'relay' }> => x.kind !== 'relay' && x.port === flow.port && onLoopback(x.host));
         if (loopback.length) {
           const host = loopback[0].host;
+          // 127.0.0.1:P and 127.0.0.2:P both arrive here as P: which was meant cannot be told (story review).
+          if (loopback.some((x) => x.host !== host)) {
+            this.answer(sock, { host: GATEWAY, port: flow.port, decision: 'deny', rule: 'loopback-port-conflict' });
+            return;
+          }
           const ip = isIp(host) ? host : '127.0.0.1';
           const network = { ...this.network, allow: [...this.network.allow, `${host}:${flow.port}`] };
           const d = decideFlow({ names: isIp(host) ? [] : [host], ip, port: flow.port }, network);
