@@ -55,7 +55,18 @@ export interface AirlockPolicy {
    * decision 2026-10-30). Absent: the AgEnFK base image.
    */
   machineImage?: string;
+  /**
+   * What of the host's home folder a session may read and write (user decision 2026-10-31): absent
+   * protects the credential stores (the default); the home folder read-only or read-write otherwise.
+   * The org's alone: no project override and no local setting widens it. AgEnFK's own control paths
+   * stay unwritable, and Airlock's own records unreadable, in every mode.
+   */
+  homeAccess?: Exclude<AirlockHomeAccess, 'protect-credentials'>;
 }
+
+/** The choices of AirlockPolicy.homeAccess, the default first. */
+export const AIRLOCK_HOME_ACCESS = Object.freeze(['protect-credentials', 'home-read-only', 'home-read-write'] as const);
+export type AirlockHomeAccess = (typeof AIRLOCK_HOME_ACCESS)[number];
 
 /** Adds to the org's host lists (a deny always outranks an allow); each rule set, and a machine image, wins over the org's. */
 export interface AirlockProjectOverride {

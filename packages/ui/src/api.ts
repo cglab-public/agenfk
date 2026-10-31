@@ -125,6 +125,8 @@ export interface AirlockPolicyDto {
   projects?: Record<string, AirlockProjectOverrideDto>;
   /** The image Airlock machines are made from (CGLAB-696); absent: the AgEnFK base image. */
   machineImage?: string;
+  /** The home folder a session may read or write (story 525cd331); absent: credentials protected. */
+  homeAccess?: 'home-read-only' | 'home-read-write';
 }
 /** Adds to the policy's host lists; each rule it sets wins over the policy's. */
 export interface AirlockProjectOverrideDto {

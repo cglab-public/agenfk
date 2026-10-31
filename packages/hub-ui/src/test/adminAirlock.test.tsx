@@ -178,6 +178,31 @@ describe('Admin → Airlock', () => {
     expect('machineImage' in put.mock.calls[0][1].policy).toBe(false);
   });
 
+  it('protects credentials unless the policy opens the home folder, and saves the choice (story 525cd331)', async () => {
+    hubAnswers(STORED);
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    const home = await screen.findByLabelText('Home access') as HTMLSelectElement;
+    expect(home.value).toBe('protect-credentials');
+    fireEvent.change(home, { target: { value: 'home-read-only' } });
+    expect(screen.getByText(/the agent can read your users' credentials/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect(put.mock.calls[0][1].policy.homeAccess).toBe('home-read-only');
+  });
+
+  it('going back to protect credentials saves no home access (story 525cd331)', async () => {
+    hubAnswers({ ...STORED, policy: { ...STORED.policy, homeAccess: 'home-read-write' } });
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    const home = await screen.findByLabelText('Home access') as HTMLSelectElement;
+    expect(home.value).toBe('home-read-write');
+    fireEvent.change(home, { target: { value: 'protect-credentials' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect('homeAccess' in put.mock.calls[0][1].policy).toBe(false);
+  });
+
   it('says what runs when it is empty, and that a project override can name its own (CGLAB-696)', async () => {
     hubAnswers(STORED);
     renderPage();

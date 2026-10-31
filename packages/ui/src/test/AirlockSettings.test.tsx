@@ -517,3 +517,45 @@ describe('the ?settings= deep link', () => {
     expect(settingsSectionFromSearch('')).toBeNull();
   });
 });
+
+describe('Airlock panel: home access (story 525cd331)', () => {
+  it('protects credentials when the policy says nothing, and says what that means', async () => {
+    renderPanel();
+    await modeReady();
+    expect((screen.getByLabelText('Home access') as HTMLSelectElement).value).toBe('protect-credentials');
+    expect(screen.getByText(/credential stores .* stay unreadable/i)).toBeTruthy();
+  });
+
+  it.each(['home-read-only', 'home-read-write'])('saves %s, and warns what it opens', async (value) => {
+    renderPanel();
+    await modeReady();
+    fireEvent.change(screen.getByLabelText('Home access'), { target: { value } });
+    expect(screen.getByText(/the agent can read your credentials/i)).toBeTruthy();
+    if (value === 'home-read-write') expect(screen.getByText(/treat it as able to run code here/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveAirlockPolicy).mock.calls[0][0].policy.homeAccess).toBe(value);
+  });
+
+  it('going back to protect credentials saves none', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(view({ effective: { ...POLICY, homeAccess: 'home-read-write' } }) as never);
+    renderPanel();
+    await modeReady();
+    const select = screen.getByLabelText('Home access') as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe('home-read-write'));
+    fireEvent.change(select, { target: { value: 'protect-credentials' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect('homeAccess' in vi.mocked(api.saveAirlockPolicy).mock.calls[0][0].policy).toBe(false);
+  });
+
+  it('shows the hub\'s choice read-only: nothing local overrides it', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(view({
+      source: 'hub', hubManaged: true, revision: 9, effective: { ...POLICY, homeAccess: 'home-read-only' },
+    }) as never);
+    renderPanel();
+    const select = await screen.findByLabelText('Home access') as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe('home-read-only'));
+    expect(select.disabled).toBe(true);
+  });
+});

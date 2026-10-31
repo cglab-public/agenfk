@@ -32,7 +32,12 @@ export interface Followed {
   /** The machine's network under `view` for a session it no longer admits (no inference host). */
   networkOnlyFor(view: PolicyView): SandboxSpec;
   session: { kill(signal: NodeJS.Signals): boolean; exited: Promise<unknown> };
+  /** The home folder the session was started with (homeAccess): mounts cannot be taken back while it runs. */
+  homeMount?: 'ro' | 'rw';
 }
+
+const HOME_ORDER = [undefined, 'ro', 'rw'] as const;
+const homeWords = (m: SandboxSpec['filesystem']['homeMount']) => (m === 'rw' ? 'the home folder read-write' : m === 'ro' ? 'the home folder read-only' : 'credentials protected');
 
 /** Follows the policy until stop(), which waits for a check under way. Nothing when the runtime cannot. */
 export function followPolicy(d: FollowDeps, f: Followed): { stop(): Promise<void> } {
@@ -56,7 +61,13 @@ export function followPolicy(d: FollowDeps, f: Followed): { stop(): Promise<void
       try { view = await d.fetchPolicy(f.project); } catch { return null; }
       if (stopped || normalizeAirlockPolicy(view?.effective).mode === 'off') return null;
       try {
-        return f.specFor(view);
+        const spec = f.specFor(view);
+        // Narrower than the session's mounts: a session holding what it may no longer have is ended
+        // (reviews 01a193dc-3bc3, -38d2); wider takes effect from the next launch.
+        if (HOME_ORDER.indexOf(spec.filesystem.homeMount) < HOME_ORDER.indexOf(f.homeMount)) {
+          refused = `the policy changed its home access to ${homeWords(spec.filesystem.homeMount)}, and this session was started with ${homeWords(f.homeMount)}.`;
+        }
+        return spec;
       } catch (e) {
         refused = `the policy changed and no longer admits this session: ${(e as Error).message.replace(/ Nothing was launched\.$/, '')}`;
         try { return f.networkOnlyFor(view); } catch { return null; }

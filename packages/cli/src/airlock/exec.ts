@@ -197,7 +197,7 @@ export async function runAirlockExec(command: string, opts: { cwd: string; proce
   const offs = SIGNALS.map((sig) => d.onSignal(sig, () => { launched.kill(sig); }));
   // As a session does (story review 2): a long suite is held to a policy changed while it runs.
   const toSpec = (v: PolicyView) => commandSpecFor!(effectivePolicyOf(v));
-  const following = followPolicy({ ...d, warn: d.error }, { project: opts.projectId ?? null, workspace: spec.workspace ?? cwd, specFor: toSpec, networkOnlyFor: toSpec, session: launched });
+  const following = followPolicy({ ...d, warn: d.error }, { project: opts.projectId ?? null, workspace: spec.workspace ?? cwd, specFor: toSpec, networkOnlyFor: toSpec, session: launched, homeMount: spec.filesystem.homeMount });
   try {
     const exit = await launched.exited;
     if (exit.code !== null) return exit.code;

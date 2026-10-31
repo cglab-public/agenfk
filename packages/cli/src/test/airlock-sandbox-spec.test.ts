@@ -8,6 +8,7 @@ import {
   buildSandboxSpec,
   writeRootHolding,
   AIRLOCK_SANDBOX_MARKER,
+  HOST_RUN_CONFIGS,
   type SandboxSession,
 } from '../airlock/spec';
 
@@ -330,5 +331,35 @@ describe('buildSandboxSpec: the server is never reachable directly', () => {
   it('the relay\'s own port stays allowed', () => {
     const spec = buildSandboxSpec(policy(), session({ directServerPort: direct, serverPort: 47003 }));
     expect(spec.network.allow).toEqual(expect.arrayContaining(['127.0.0.1:47003', 'localhost:47003']));
+  });
+});
+
+describePosix('buildSandboxSpec: home access (story 525cd331)', () => {
+  it('protects the credential stores and mounts no home folder by default', () => {
+    const { denyRead, homeMount } = buildSandboxSpec(policy(), session()).filesystem;
+    expect(homeMount).toBeUndefined();
+    for (const p of HOME_CREDENTIAL_STORES) expect(denyRead).toContain(`/home/u/${p}`);
+    expect(denyRead).toContain('/home/u/.pi/agent/auth.json');
+  });
+
+  it.each([['home-read-only', 'ro'], ['home-read-write', 'rw']] as const)('%s mounts the home folder %s and hides only Airlock\'s own records', (homeAccess, mount) => {
+    const { denyRead, homeMount } = buildSandboxSpec(policy({ homeAccess }), session({ piAgentDir: '/home/u/pi-agent' })).filesystem;
+    expect(homeMount).toBe(mount);
+    expect(denyRead).toEqual(['/home/u/.agenfk/airlock']);
+  });
+
+  it('keeps a server command away from the verify token whatever the home access', () => {
+    const { denyRead } = buildSandboxSpec(policy({ homeAccess: 'home-read-write' }), session({ purpose: 'command' })).filesystem;
+    expect(denyRead).toEqual(['/home/u/.agenfk/airlock', '/home/u/.agenfk/verify-token']);
+  });
+
+  it.each(['home-read-only', 'home-read-write'] as const)('keeps every AgEnFK control path unwritable under %s', (homeAccess) => {
+    const open = buildSandboxSpec(policy({ homeAccess }), session({ projectAgenfkDirs: ['/work/.agenfk'] })).filesystem;
+    const closed = buildSandboxSpec(policy(), session({ projectAgenfkDirs: ['/work/.agenfk'] })).filesystem;
+    // Every one protected by default, and under a read-write home what host programs run from it too.
+    expect(open.denyWrite).toEqual(homeAccess === 'home-read-only'
+      ? closed.denyWrite
+      : [...HOST_RUN_CONFIGS.map((p) => `/home/u/${p}`), ...closed.denyWrite]);
+    expect(open.allowWrite).toEqual(closed.allowWrite);
   });
 });

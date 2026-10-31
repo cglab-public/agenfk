@@ -6,6 +6,7 @@
  *    stored. Shared by the server PUT, the hub admin PUT and the server's sync.
  */
 import {
+  AIRLOCK_HOME_ACCESS,
   BUILTIN_DENY_HOSTS,
   DEFAULT_AIRLOCK_RULES,
   type AirlockMode,
@@ -168,6 +169,7 @@ export function normalizeAirlockPolicy(raw: unknown): AirlockPolicy {
     rules: normalizedRules,
     ...(projects ? { projects } : {}),
     ...(isAirlockImageRef(r.machineImage) ? { machineImage: r.machineImage } : {}),
+    ...(r.homeAccess === 'home-read-only' || r.homeAccess === 'home-read-write' ? { homeAccess: r.homeAccess } : {}),
   };
 }
 
@@ -202,6 +204,7 @@ function projectsErrors(raw: unknown): string[] {
     }
     errors.push(...rulesErrors(`${field}.rules`, o.rules));
     errors.push(...imageErrors(`${field}.machineImage`, o.machineImage));
+    if (o.homeAccess !== undefined) errors.push(`${field}.homeAccess: home access is set org-wide only`);
   }
   return errors;
 }
@@ -279,5 +282,8 @@ export function airlockPolicyErrors(raw: unknown): string[] {
   errors.push(...rulesErrors('rules', raw.rules));
   errors.push(...projectsErrors(raw.projects));
   errors.push(...imageErrors('machineImage', raw.machineImage));
+  if (raw.homeAccess !== undefined && !(AIRLOCK_HOME_ACCESS as readonly unknown[]).includes(raw.homeAccess)) {
+    errors.push(`homeAccess must be one of ${AIRLOCK_HOME_ACCESS.join(', ')}`);
+  }
   return errors;
 }
