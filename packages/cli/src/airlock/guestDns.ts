@@ -17,7 +17,10 @@
  * new privileged source port per connection, after the resolver has given up root.
  * Beyond it (review 01a18ddc): DNS over HTTPS or TLS to a host the policy allows carries any
  * question inside an allowed TCP connection, which only the host decider sees, as that host; and
- * a lookup refused here is not reported to the board (smolvm's audit reports what it refuses).
+ * A lookup refused here is reported (85d37bd5): the resolver sends each name and the rule that
+ * refused it to the host's decider, on the gateway's report port, under a token only it can read
+ * (given by root in a file it reads before giving up root). The decider records and reports them as
+ * it does smolvm's own refusals.
  */
 import dgram from 'dgram';
 import fs from 'fs';
@@ -37,6 +40,56 @@ export interface ResolverConfig {
   /** The user (and group) to run as once bound. */
   uid?: number;
   gid?: number;
+  /** Where refusals are reported (the decider, through the gateway); none when absent. */
+  report?: { host: string; port: number };
+  /** The token reports are sent under: never in the config file, read by main from root's file. */
+  reportToken?: string;
+}
+
+/** What a report starts with: this, the token, a newline; then one JSON line per refusal. */
+export const REPORT_PREFACE = 'AGENFK-DNS ';
+const REPORT_FLUSH_MS = 250;
+const REPORT_MAX_NAMES = 256;
+/** A report arrives whole as its flow's first bytes (what the decider reads) only while it is small. */
+const REPORT_MAX_BYTES = 1200;
+
+/**
+ * Refusals waiting to be reported: each name once, at most `maxNames` held (past that, counted
+ * and said as `{"dropped":n}`), sent in reports of at most `maxBytes`.
+ */
+export class RefusalReporter {
+  private readonly held = new Map<string, string>();
+  private dropped = 0;
+  constructor(private readonly o: { token: string; send: (payload: string) => void; maxNames?: number; maxBytes?: number }) {}
+
+  add(name: string, rule: string): void {
+    if (this.held.has(name)) return;
+    if (this.held.size >= (this.o.maxNames ?? REPORT_MAX_NAMES)) { this.dropped++; return; }
+    this.held.set(name, rule);
+  }
+
+  flush(): void {
+    const lines = [...this.held].map(([name, rule]) => JSON.stringify({ name, rule }));
+    if (this.dropped) lines.push(JSON.stringify({ dropped: this.dropped }));
+    this.held.clear();
+    this.dropped = 0;
+    const head = `${REPORT_PREFACE}${this.o.token}\n`;
+    const max = this.o.maxBytes ?? REPORT_MAX_BYTES;
+    let payload = head;
+    for (const line of lines) {
+      if (payload !== head && Buffer.byteLength(payload) + Buffer.byteLength(line) + 1 > max) { this.o.send(payload); payload = head; }
+      payload += `${line}\n`;
+    }
+    if (payload !== head) this.o.send(payload);
+  }
+}
+
+/** Sends a report to `to`, best effort: one connection, ended once written, cut if it hangs. */
+function sendReport(to: { host: string; port: number }, payload: string): void {
+  const s = net.connect(to.port, to.host, () => s.end(payload));
+  s.setTimeout(UPSTREAM_TIMEOUT_MS, () => s.destroy());
+  s.on('error', () => undefined);
+  s.on('data', () => s.destroy());
 }
 
 export interface Resolver {
@@ -124,11 +177,15 @@ function failureOf(query: Buffer): Buffer | null {
   return out;
 }
 
-/** The answer to `msg`: refused here, failed here, or smolvm's. */
-async function answer(msg: Buffer, c: ResolverConfig, ask: (m: Buffer) => Promise<Buffer>): Promise<Buffer | null> {
+/** The answer to `msg`: refused here (and told to `refused`), failed here, or smolvm's. */
+async function answer(msg: Buffer, c: ResolverConfig, ask: (m: Buffer) => Promise<Buffer>, refused?: (name: string, rule: string) => void): Promise<Buffer | null> {
   const name = questionName(msg);
   if (name === null) return failureOf(msg);
-  if (nameDenied(name, c.deny) || (c.allow && !nameDenied(name, c.allow))) return refusalOf(msg);
+  const rule = nameDenied(name, c.deny) ? 'deny-list' : c.allow && !nameDenied(name, c.allow) ? 'not-on-allow-list' : null;
+  if (rule) {
+    refused?.(name, rule);
+    return refusalOf(msg);
+  }
   try {
     return await ask(msg);
   } catch {
@@ -187,11 +244,16 @@ export async function startResolver(c: ResolverConfig): Promise<Resolver> {
   await new Promise<void>((resolve, reject) => { upSocket.once('error', reject); upSocket.bind(c.upstreamSourcePort ?? 0, () => resolve()); });
   const up = new Upstream(upSocket, c.upstream);
   const ask = (m: Buffer) => up.ask(m);
+  const to = c.report;
+  const reporter = to && c.reportToken ? new RefusalReporter({ token: c.reportToken, send: (p) => sendReport(to, p) }) : null;
+  const refused = reporter ? (name: string, rule: string) => reporter.add(name, rule) : undefined;
+  const flusher = reporter ? setInterval(() => reporter.flush(), REPORT_FLUSH_MS) : null;
+  flusher?.unref();
   const udp = dgram.createSocket(net.isIPv6(c.host) ? 'udp6' : 'udp4');
   udp.on('error', () => undefined);
   let closing = false;
   udp.on('message', (msg, from) => {
-    void answer(msg, c, ask).then((a) => {
+    void answer(msg, c, ask, refused).then((a) => {
       // Not after close: a question pending then is failed, and its socket is gone.
       if (!a || closing) return;
       try { udp.send(a, from.port, from.address); } catch { /* closed */ }
@@ -212,7 +274,7 @@ export async function startResolver(c: ResolverConfig): Promise<Resolver> {
         buf = buf.subarray(2 + msg.length);
         // An asker that does not read its answers, or asks without end, is cut off.
         if (++inFlight > MAX_TCP_IN_FLIGHT || s.writableLength > MAX_TCP_QUEUED_BYTES) { s.destroy(); return; }
-        void answer(msg, c, ask).then((a) => {
+        void answer(msg, c, ask, refused).then((a) => {
           inFlight--;
           if (!a || s.destroyed) return;
           const len = Buffer.alloc(2);
@@ -227,7 +289,14 @@ export async function startResolver(c: ResolverConfig): Promise<Resolver> {
   await new Promise<void>((resolve, reject) => { tcp.once('error', reject); tcp.listen(port, c.host, () => resolve()); });
   return {
     port,
-    close: () => new Promise<void>((resolve) => { closing = true; up.close(); udp.close(); tcp.close(() => resolve()); }),
+    close: () => new Promise<void>((resolve) => {
+      closing = true;
+      if (flusher) clearInterval(flusher);
+      reporter?.flush();
+      up.close();
+      udp.close();
+      tcp.close(() => resolve());
+    }),
   };
 }
 
@@ -255,10 +324,16 @@ export function followConfig(configPath: string, c: ResolverConfig, intervalMs =
 
 async function main(configPath: string): Promise<void> {
   const c = JSON.parse(fs.readFileSync(configPath, 'utf8')) as ResolverConfig;
+  const dir = configPath.replace(/[^/]*$/, '');
+  // Root's alone: read while still root, never kept in the config the session can read.
+  delete c.reportToken;
+  try { c.reportToken = fs.readFileSync(`${dir}report-token`, 'utf8').trim() || undefined; } catch { /* none: nothing is reported */ }
   await startResolver(c);
   followConfig(configPath, c);
-  // Said while still root, beside its config: it follows it (a running one an older AgEnFK started does not).
-  fs.writeFileSync(`${configPath.replace(/[^/]*$/, '')}follows`, '');
+  // Said while still root, beside its config: it follows it, and reports what it refuses (a running
+  // one an older AgEnFK started does not).
+  fs.writeFileSync(`${dir}follows`, '');
+  fs.writeFileSync(`${dir}reports`, '');
   // Bound: now as the resolver's own user, whom alone the firewall lets ask smolvm's resolver.
   if (typeof c.gid === 'number') process.setgid?.(c.gid);
   if (typeof c.uid === 'number') process.setuid?.(c.uid);

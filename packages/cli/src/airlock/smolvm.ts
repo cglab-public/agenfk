@@ -31,7 +31,7 @@ import os from 'os';
 import path from 'path';
 import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
 import { AIRLOCK_SANDBOX_MARKER, type SandboxSpec } from './spec';
-import { allowListArgs, GATEWAY, networkKey, type Route } from './egress';
+import { allowListArgs, GATEWAY, networkKey, RESOLVER_REPORT_PORT, type Route } from './egress';
 import { machineCa, placeholderFor, startKeyInjector, type KeyInjector, type KeyInjectorOptions, type MachineCa } from './keyInjector';
 import { readRegularFile } from './safeRead';
 import type { AirlockRuntime, LaunchHooks, LaunchedSandbox, ProxyDecision, RuntimeCheck, SandboxCommand, SandboxExit } from './runtime';
@@ -59,6 +59,8 @@ export interface EgressBroker {
   addRoute(machine: string, route: Route): () => void;
   /** The machine's running decider decides by `network` from now on (story review 2). */
   updateNetwork(machine: string, network: SandboxSpec['network']): Promise<void>;
+  /** The token the machine's resolver reports its refusals under (85d37bd5); none: it reports nothing. */
+  resolverToken?(machine: string): string | null;
 }
 
 const hash16 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
@@ -1005,12 +1007,13 @@ export function resolverAllowOf(network: SandboxSpec['network']): string[] | und
  * none of it: the script prints DNS_UNPROTECTED_MARK with what is missing, and the runtime refuses
  * (enforce) or warns. Idempotent: rules are added once, a running resolver is kept.
  */
-export function guestDnsScript(network: SandboxSpec['network'], resolverSource: string, sessionUid: number, allow?: string[]): string {
+export function guestDnsScript(network: SandboxSpec['network'], resolverSource: string, sessionUid: number, allow?: string[], reports = false): string {
   // The session could signal a resolver running under its own uid (review 01a18ddc).
   const uid = sessionUid === DNS_UID ? DNS_UID_ALT : DNS_UID;
   const config = JSON.stringify({
     host: DNS_RESOLVER_ADDRESS, port: 53, upstream: { host: '__UPSTREAM__', port: 53 }, upstreamSourcePort: DNS_UPSTREAM_SOURCE_PORT,
     deny: resolverDenyOf(network), ...(allow ? { allow } : {}), uid, gid: uid,
+    ...(reports ? { report: { host: GATEWAY, port: RESOLVER_REPORT_PORT } } : {}),
   });
   return [
     'set -e',
@@ -1029,10 +1032,14 @@ export function guestDnsScript(network: SandboxSpec['network'], resolverSource: 
     `printf '%s' ${quote(config)} | sed "s/__UPSTREAM__/$up/" > ${GUEST_DNS}/config.json.tmp`,
     `chmod 444 ${GUEST_DNS}/resolver.js ${GUEST_DNS}/config.json.tmp ${GUEST_DNS}/upstream`,
     `mv -f ${GUEST_DNS}/config.json.tmp ${GUEST_DNS}/config.json`,
-    // Running already (another session's): kept, if it follows its config - one an older AgEnFK
-    // started does not, and is replaced (review). A pid file, not pgrep -f, which would find this script.
-    `if [ -s ${GUEST_DNS}/pid ] && [ ! -e ${GUEST_DNS}/follows ]; then kill "$(cat ${GUEST_DNS}/pid)" 2>/dev/null; rm -f ${GUEST_DNS}/pid; sleep 0.2; fi`,
-    `if ! { [ -s ${GUEST_DNS}/pid ] && kill -0 "$(cat ${GUEST_DNS}/pid)" 2>/dev/null; }; then rm -f ${GUEST_DNS}/follows ${GUEST_DNS}/log; `
+    // The token its reports go under (85d37bd5), from smolvm's environment (never a command line):
+    // root's alone, read by the resolver before it gives up root.
+    ...(reports ? [`(umask 077; printf '%s' "$AGENFK_DNS_REPORT_TOKEN" > ${GUEST_DNS}/report-token.tmp) && mv -f ${GUEST_DNS}/report-token.tmp ${GUEST_DNS}/report-token`] : []),
+    // Running already (another session's): kept, if it follows its config and reports its refusals -
+    // one an older AgEnFK started does not, and is replaced (review). A pid file, not pgrep -f, which
+    // would find this script.
+    `if [ -s ${GUEST_DNS}/pid ] && [ ! -e ${GUEST_DNS}/reports ]; then kill "$(cat ${GUEST_DNS}/pid)" 2>/dev/null; rm -f ${GUEST_DNS}/pid; sleep 0.2; fi`,
+    `if ! { [ -s ${GUEST_DNS}/pid ] && kill -0 "$(cat ${GUEST_DNS}/pid)" 2>/dev/null; }; then rm -f ${GUEST_DNS}/follows ${GUEST_DNS}/reports ${GUEST_DNS}/log; `
       + `setsid node ${GUEST_DNS}/resolver.js ${GUEST_DNS}/config.json > ${GUEST_DNS}/log 2>&1 < /dev/null & echo $! > ${GUEST_DNS}/pid; `
       + `i=0; until grep -q ready ${GUEST_DNS}/log 2>/dev/null; do i=$((i+1)); [ $i -lt 100 ] || { echo "the resolver did not start: $(tail -c 300 ${GUEST_DNS}/log)" >&2; exit 1; }; sleep 0.1; done; fi`,
     'rule() { t="$1"; tb="$2"; shift 2; "$t" -t "$tb" -C OUTPUT "$@" 2>/dev/null || "$t" -t "$tb" -A OUTPUT "$@"; }',
@@ -1690,7 +1697,13 @@ export class SmolvmRuntime implements AirlockRuntime {
     const allow = resolverAllowOf(spec.network);
     // Not knowing what smolvm's list was set to (a machine an older AgEnFK started): taken as behind (review).
     const behind = !!allow && (!started || started.mode !== 'enforce' || JSON.stringify([...(resolverAllowOf(started) ?? [])].sort()) !== JSON.stringify([...allow].sort()));
-    const r = await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestDnsScript(spec.network, this.d.resolverSource(), this.d.uid, behind ? allow : undefined)], 'start the machine\'s resolver');
+    // What it refuses goes to the decider under a token of the machine's (85d37bd5), given through
+    // smolvm's environment.
+    const token = this.d.egress.resolverToken?.(name) ?? null;
+    const script = guestDnsScript(spec.network, this.d.resolverSource(), this.d.uid, behind ? allow : undefined, !!token);
+    const r = await this.must(['machine', 'exec', '--name', name, '-u', 'root',
+      ...(token ? ['--secret-env', 'AGENFK_DNS_REPORT_TOKEN=AGENFK_DNS_REPORT_TOKEN'] : []), '--', 'sh', '-c', script],
+    'start the machine\'s resolver', token ? { AGENFK_DNS_REPORT_TOKEN: token } : undefined);
     const mark = r.stdout.split('\n').find((l) => l.startsWith(DNS_UNPROTECTED_MARK));
     if (!mark) return;
     const missing = mark.slice(DNS_UNPROTECTED_MARK.length).trim();

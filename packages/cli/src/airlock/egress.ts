@@ -49,6 +49,20 @@ export const GATEWAY = '100.96.0.1';
 /** What the decider sends a key injector before a flow: this, the address it allowed, a newline. */
 export const INJECT_PREFACE = 'AGENFK-DEST ';
 
+/**
+ * The gateway port the machine's resolver reports its refusals to (85d37bd5; guestDns.ts): `discard`,
+ * below any port a launcher's relay or a model server is given. A report is its flow's first bytes,
+ * under resolverTokenOf the decider's token; anything else there is refused as any gateway port.
+ */
+export const RESOLVER_REPORT_PORT = 9;
+const RESOLVER_REPORT_PREFACE = 'AGENFK-DNS ';
+const RESOLVER_RULES = new Set(['deny-list', 'not-on-allow-list']);
+
+/** The token the machine's resolver reports under: its decider's, keyed for that alone. */
+export function resolverTokenOf(deciderToken: string): string {
+  return crypto.createHmac('sha256', Buffer.from(deciderToken, 'hex')).update('agenfk-resolver-report').digest('hex');
+}
+
 export type Route =
   | { kind: 'relay'; port: number; socket: string }
   | { kind: 'inject'; host: string; port: number; socket: string }
@@ -440,6 +454,7 @@ const resolveAll = async (name: string): Promise<string[]> => (await dns.promise
 /** The decider: a server on the host loopback, plus smolvm's audit followed for names and refusals. */
 export class EgressService {
   private readonly token: Buffer;
+  private readonly resolverToken: Buffer;
   private readonly names: DnsNames;
   private server: net.Server | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -458,6 +473,7 @@ export class EgressService {
     this.network = o.network;
     this.token = Buffer.from(o.token, 'hex');
     if (this.token.length !== 32) throw new Error('The egress token must be 64 hex digits.');
+    this.resolverToken = Buffer.from(resolverTokenOf(o.token));
     this.names = new DnsNames(o.resolve ?? resolveAll);
   }
 
@@ -529,6 +545,7 @@ export class EgressService {
       const flow = r.flow;
       const routes = this.o.routes?.() ?? [];
       if (flow.ip === GATEWAY) {
+        if (flow.port === RESOLVER_REPORT_PORT && this.resolverReport(flow.payload)) { sock.end(Buffer.from([1])); return; }
         // The gateway is the launchers' alone: a session's relay port, or nothing.
         const relays = routes.filter((x) => x.kind === 'relay' && x.port === flow.port).map((x) => x.socket);
         if (relays.length) { this.redirect(sock, flow, relays); return; }
@@ -561,6 +578,29 @@ export class EgressService {
         this.answer(sock, d, injectors.length ? () => this.redirect(sock, flow, injectors, Buffer.from(`${INJECT_PREFACE}${flow.ip}\n`)) : undefined);
       }, () => sock.destroy());
     });
+  }
+
+  /**
+   * The machine resolver's refusals (85d37bd5): each recorded and reported as a lookup refused, as
+   * smolvm's own are. False, taking nothing, when the report is not under the resolver's token.
+   */
+  private resolverReport(payload: Buffer): boolean {
+    const text = payload.toString('latin1');
+    const nl = text.indexOf('\n');
+    if (nl < 0 || !text.startsWith(RESOLVER_REPORT_PREFACE)) return false;
+    const given = Buffer.from(text.slice(RESOLVER_REPORT_PREFACE.length, nl));
+    if (given.length !== this.resolverToken.length || !crypto.timingSafeEqual(given, this.resolverToken)) return false;
+    for (const line of text.slice(nl + 1).split('\n')) {
+      let e: { name?: unknown; rule?: unknown; dropped?: unknown };
+      try { e = JSON.parse(line); } catch { continue; }
+      const name = typeof e?.name === 'string' ? asHostname(e.name) : null;
+      if (name && typeof e.rule === 'string' && RESOLVER_RULES.has(e.rule)) {
+        this.reportRefusal({ host: name, port: null, decision: 'deny', rule: e.rule });
+      } else if (Number.isInteger(e?.dropped) && (e.dropped as number) > 0) {
+        this.reportRefusal({ host: '*', port: null, decision: 'deny', rule: `resolver-overflow:${e.dropped}` });
+      }
+    }
+    return true;
   }
 
   /** Records and reports `d`, then answers it (or, allowed and redirected, hands the flow on). */
@@ -747,6 +787,16 @@ export class HelperEgressBroker implements EgressBroker {
       if (!this.isDecider(machine, pid)) return null;
       const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')) as EgressConfig;
       return { address: fs.readFileSync(cfg.addressPath, 'utf8').trim(), token: cfg.token, network: networkKey(cfg.network) };
+    } catch {
+      return null;
+    }
+  }
+
+  /** The token the machine's resolver reports under (85d37bd5): its running decider's; none without one. */
+  resolverToken(machine: string): string | null {
+    try {
+      const token = (JSON.parse(fs.readFileSync(path.join(this.dir(machine), 'config.json'), 'utf8')) as EgressConfig).token;
+      return /^[0-9a-f]{64}$/.test(token) ? resolverTokenOf(token) : null;
     } catch {
       return null;
     }

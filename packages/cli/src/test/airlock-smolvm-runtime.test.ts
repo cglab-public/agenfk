@@ -19,7 +19,7 @@ import path from 'path';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSession, type SandboxSpec } from '../airlock/spec';
 import type { ProxyDecision } from '../airlock/runtime';
-import { allowListArgs, EgressService, GATEWAY, networkKey, type Route } from '../airlock/egress';
+import { allowListArgs, EgressService, GATEWAY, networkKey, resolverTokenOf, type Route } from '../airlock/egress';
 import {
   SmolvmRuntime,
   SMOLVM_VERSION,
@@ -1235,7 +1235,8 @@ describe('a network policy changed while the session runs (story review 2)', () 
 
   it('replaces a running resolver that cannot follow its config (an older AgEnFK\'s)', () => {
     const net = { allow: ['api.github.com'], deny: [], denyResolved: [], mode: 'enforce' as const };
-    expect(guestDnsScript(net, 'x', 503)).toContain('/run/agenfk/dns/follows');
+    // One that follows and reports leaves this mark (85d37bd5: one that follows but does not report is replaced too).
+    expect(guestDnsScript(net, 'x', 503)).toContain('/run/agenfk/dns/reports');
   });
 
   it('does nothing for a policy the machine already has', async () => {
@@ -1275,6 +1276,28 @@ describe('the machine\'s resolver (CGLAB-696 task 8)', () => {
     await rt.launch(spec, cmd());
     expect(sp.spawn).toHaveBeenCalled();
     expect(warnings.join('\n')).toMatch(/DNS.*node/s);
+  });
+
+  // 85d37bd5: its refusals reach the decider, under a token only it can read.
+  it('is given the machine\'s resolver token from smolvm\'s environment, never on a command line, and the gateway to report to', async () => {
+    const egress = Object.assign(fakeEgress(), { resolverToken: vi.fn(() => 'r'.repeat(64)) });
+    const { rt, smolvm } = runtime({ egress });
+    await rt.launch(specOf(), cmd());
+    const call = smolvm.calls.filter((c) => c.args[1] === 'exec' && String(c.args.at(-1)).includes('resolver.js')).at(-1)!;
+    expect(call.args).toContain('--secret-env');
+    expect(call.args[call.args.indexOf('--secret-env') + 1]).toBe('AGENFK_DNS_REPORT_TOKEN=AGENFK_DNS_REPORT_TOKEN');
+    expect(call.env?.AGENFK_DNS_REPORT_TOKEN).toBe('r'.repeat(64));
+    expect(call.args.join(' ')).not.toContain('r'.repeat(64));
+    expect(String(call.args.at(-1))).toContain(`"report":{"host":"${GATEWAY}","port":9}`);
+    expect(egress.resolverToken).toHaveBeenCalledWith(machineNameOf(workspace));
+  });
+
+  it('reports nothing where the machine\'s decider gives no token', async () => {
+    const { rt, smolvm } = runtime();
+    await rt.launch(specOf(), cmd());
+    const call = smolvm.calls.filter((c) => c.args[1] === 'exec' && String(c.args.at(-1)).includes('resolver.js')).at(-1)!;
+    expect(call.args).not.toContain('--secret-env');
+    expect(String(call.args.at(-1))).not.toContain('"report"');
   });
 
   it('runs as a user the session is not: another uid when the host user\'s is the usual one (review 01a18ddc)', () => {
@@ -3583,6 +3606,34 @@ except Exception: print("silent")' ${server} ${name}`;
       '{ echo 2000 > /proc/sys/net/ipv4/ip_unprivileged_port_start; } 2>/dev/null && echo port-threshold-writable',
     ].join('; '));
     expect(out.split('\n').filter(Boolean)).toEqual(["smolvm's rcode 3", 'another rcode 3', 'allowed rcode 0']);
+  }, 600_000);
+
+  // 85d37bd5: a lookup the resolver refused reaches the real decider, so the session's report shows it.
+  it('reports the names it refused to the decider', async () => {
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'observe', hosts: { allow: [], deny: ['example.org'] } }), session({ inferenceHosts: [] }));
+    const decisions: ProxyDecision[] = [];
+    const token = crypto.randomBytes(32).toString('hex');
+    const svc = new EgressService({ token, network: spec.network, auditPath: null, onDecision: (d) => decisions.push(d) });
+    const address = await svc.listen();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address, token }), watch: () => () => undefined, stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'), addRoute: () => () => undefined,
+      resolverToken: () => resolverTokenOf(token),
+    } as EgressBroker;
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: {} });
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      const run = await rt.launch(spec, { file: 'sh', args: ['-c', 'getent hosts example.org; getent hosts www.example.org; sleep 2; true'], cwd: workspace });
+      expect((await run.exited).code).toBe(0);
+      await vi.waitFor(() => expect(decisions).toContainEqual({ host: 'example.org', port: null, decision: 'deny', rule: 'deny-list' }), { timeout: 10_000 });
+      expect(decisions.filter((d) => d.host === 'www.example.org')).toEqual([]);
+    } finally {
+      await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      await svc.close();
+      process.env.HOME = sandboxHome;
+    }
   }, 600_000);
 
   it('enforce: a denied name under an allowed wildcard does not resolve; its allowed siblings do', async () => {

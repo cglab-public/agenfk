@@ -6,14 +6,14 @@
  * question to smolvm's resolver, over UDP and TCP. It runs on the image's node from its own file,
  * so it may need nothing but Node's built-ins.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import dgram from 'dgram';
 import net from 'net';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
-import { questionName, nameDenied, refusalOf, startResolver, followConfig, type Resolver, type ResolverConfig } from '../airlock/guestDns';
+import { questionName, nameDenied, refusalOf, startResolver, followConfig, RefusalReporter, REPORT_PREFACE, type Resolver, type ResolverConfig } from '../airlock/guestDns';
 
 /** A DNS query for `name` (type A), as a stub resolver sends it. */
 function query(name: string, id = 0x1234): Buffer {
@@ -115,6 +115,31 @@ describe('the resolver, on real sockets', () => {
     const len = Buffer.alloc(2);
     len.writeUInt16BE(msg.length);
     s.write(Buffer.concat([len, msg]));
+  });
+
+  // 85d37bd5: what it refuses reaches the host's decider (gateway, its own port) under the token it
+  // alone was given, so the session's report shows it.
+  it('sends each name it refused, with the rule that refused it, to its report address under its token; an allowed one is not sent', async () => {
+    const up = await fakeUpstream();
+    const got: string[] = [];
+    const sink = net.createServer((s) => { let b = ''; s.on('data', (d) => { b += d; }); s.on('end', () => { got.push(b); s.end(); }); });
+    await new Promise<void>((r) => sink.listen(0, '127.0.0.1', () => r()));
+    try {
+      resolver = await startResolver({
+        host: '127.0.0.1', port: 0, upstream: { host: '127.0.0.1', port: up }, deny: ['evil.example'], allow: ['api.github.com', 'evil.example'],
+        report: { host: '127.0.0.1', port: (sink.address() as net.AddressInfo).port }, reportToken: 'tok3n',
+      });
+      expect(rcodeOf(await udpAsk(resolver.port, query('evil.example', 1)))).toBe(3);
+      expect(rcodeOf(await udpAsk(resolver.port, query('evil.example', 2)))).toBe(3);
+      expect(rcodeOf(await tcpAsk(resolver.port, query('nextjs.org', 3)))).toBe(3);
+      expect(rcodeOf(await udpAsk(resolver.port, query('api.github.com', 4)))).toBe(0);
+      await vi.waitFor(() => expect(got.join('')).toContain('nextjs.org'), { timeout: 3000 });
+      for (const g of got) expect(g.startsWith(`${REPORT_PREFACE}tok3n\n`)).toBe(true);
+      const entries = got.flatMap((g) => g.split('\n').slice(1).filter(Boolean).map((l) => JSON.parse(l)));
+      expect(entries).toEqual([{ name: 'evil.example', rule: 'deny-list' }, { name: 'nextjs.org', rule: 'not-on-allow-list' }]);
+    } finally {
+      await new Promise<void>((r) => sink.close(() => r()));
+    }
   });
 
   it('passes an allowed name to smolvm\'s resolver and its answer back, over UDP and TCP', async () => {
@@ -287,5 +312,50 @@ describe.skipIf(process.platform === 'win32')('the compiled resolver, run alone 
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('RefusalReporter (85d37bd5)', () => {
+  const lines = (payload: string) => payload.split('\n').slice(1).filter(Boolean).map((l) => JSON.parse(l));
+
+  it('sends what it holds once, each name once, under its token', () => {
+    const sent: string[] = [];
+    const r = new RefusalReporter({ token: 't', send: (p) => sent.push(p) });
+    r.add('a.example', 'deny-list');
+    r.add('a.example', 'deny-list');
+    r.add('b.example', 'not-on-allow-list');
+    r.flush();
+    r.flush();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].startsWith(`${REPORT_PREFACE}t\n`)).toBe(true);
+    expect(lines(sent[0])).toEqual([{ name: 'a.example', rule: 'deny-list' }, { name: 'b.example', rule: 'not-on-allow-list' }]);
+  });
+
+  it('holds a bounded number of names: past it, it counts those it could not keep, and says how many', () => {
+    const sent: string[] = [];
+    const r = new RefusalReporter({ token: 't', send: (p) => sent.push(p), maxNames: 3 });
+    for (let i = 0; i < 7; i++) r.add(`n${i}.example`, 'deny-list');
+    r.flush();
+    const all = sent.flatMap(lines);
+    expect(all.filter((e) => e.name)).toHaveLength(3);
+    expect(all).toContainEqual({ dropped: 4 });
+  });
+
+  it('does not count a name it already holds as one it could not keep', () => {
+    const sent: string[] = [];
+    const r = new RefusalReporter({ token: 't', send: (p) => sent.push(p), maxNames: 2 });
+    for (const n of ['a.example', 'b.example', 'a.example']) r.add(n, 'deny-list');
+    r.flush();
+    expect(sent.flatMap(lines)).toEqual([{ name: 'a.example', rule: 'deny-list' }, { name: 'b.example', rule: 'deny-list' }]);
+  });
+
+  it('keeps each report small enough to arrive as a flow\'s first bytes: the rest goes in the next', () => {
+    const sent: string[] = [];
+    const r = new RefusalReporter({ token: 't', send: (p) => sent.push(p), maxBytes: 200 });
+    for (let i = 0; i < 20; i++) r.add(`name-number-${i}.example.org`, 'deny-list');
+    r.flush();
+    expect(sent.length).toBeGreaterThan(1);
+    for (const p of sent) expect(Buffer.byteLength(p)).toBeLessThanOrEqual(200);
+    expect(sent.flatMap(lines).map((e) => e.name)).toEqual(Array.from({ length: 20 }, (_, i) => `name-number-${i}.example.org`));
   });
 });

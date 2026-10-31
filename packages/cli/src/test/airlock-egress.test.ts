@@ -29,6 +29,8 @@ import {
   GATEWAY,
   readRoutes,
   followNetwork,
+  resolverTokenOf,
+  RESOLVER_REPORT_PORT,
   type Flow,
   type Route,
 } from '../airlock/egress';
@@ -702,6 +704,40 @@ describe('EgressService: the decider on the host loopback', () => {
     });
   });
 
+  // 85d37bd5: the machine resolver's refusals, sent to the gateway on its own port.
+  describe('the machine resolver\'s refusals', () => {
+    const gw = GATEWAY.split('.').map(Number);
+    const report = (token: string, entries: string[]) => Buffer.from(`AGENFK-DNS ${token}\n${entries.join('\n')}\n`);
+
+    it('records and reports each refusal sent under the machine\'s resolver token, as a lookup refused; answers 1', async () => {
+      const recorded: ProxyDecision[] = [];
+      const { address, decisions } = await start('enforce', { record: (d) => { recorded.push(d); } });
+      const payload = report(resolverTokenOf(TOKEN.toString('hex')), ['{"name":"evil.example.net","rule":"deny-list"}', '{"name":"nextjs.org","rule":"not-on-allow-list"}', '{"dropped":4}']);
+      expect(await ask(address, frame({ ip: gw, port: RESOLVER_REPORT_PORT, payload }))).toBe(1);
+      const expected = [
+        { host: 'evil.example.net', port: null, decision: 'deny', rule: 'deny-list' },
+        { host: 'nextjs.org', port: null, decision: 'deny', rule: 'not-on-allow-list' },
+        { host: '*', port: null, decision: 'deny', rule: 'resolver-overflow:4' },
+      ];
+      expect(decisions).toEqual(expected);
+      expect(recorded).toEqual(expected);
+    });
+
+    it('takes nothing from a report under another token: that port is refused as any other', async () => {
+      const { address, decisions } = await start('observe');
+      const payload = report('f'.repeat(64), ['{"name":"framed.example","rule":"deny-list"}']);
+      expect(await ask(address, frame({ ip: gw, port: RESOLVER_REPORT_PORT, payload }))).toBe(1);
+      expect(decisions).toEqual([{ host: GATEWAY, port: RESOLVER_REPORT_PORT, decision: 'deny', rule: 'host-not-relayed' }]);
+    });
+
+    it('skips what is not a refusal: no host name, a rule it does not know, not JSON', async () => {
+      const { address, decisions } = await start('enforce');
+      const payload = report(resolverTokenOf(TOKEN.toString('hex')), ['{"name":"a b","rule":"deny-list"}', '{"name":"x.example","rule":"allow"}', 'junk', '{"dropped":"lots"}', '{"name":"ok.example","rule":"deny-list"}']);
+      expect(await ask(address, frame({ ip: gw, port: RESOLVER_REPORT_PORT, payload }))).toBe(1);
+      expect(decisions).toEqual([{ host: 'ok.example', port: null, decision: 'deny', rule: 'deny-list' }]);
+    });
+  });
+
   it('a decision hook that throws changes no answer', async () => {
     const { address } = await start('enforce', { onDecision: () => { throw new Error('boom'); } });
     expect(await ask(address, frame({ payload: clientHello('api.github.com') }))).toBe(0);
@@ -790,6 +826,16 @@ describe('HelperEgressBroker: one decider per running machine, outliving the ses
     expect(cfg.token).toBe(r.token);
     expect(cfg.network).toEqual(spec.network);
     expect(cfg.auditPath).toBe(path.join(stateDir, 'agenfk-m1-audit.jsonl'));
+  });
+
+  // 85d37bd5: the token the machine's resolver reports under, derived from the running decider's.
+  it('gives the resolver token of the machine\'s running decider, and none without one', async () => {
+    const { b } = broker();
+    expect(b.resolverToken('agenfk-m1')).toBeNull();
+    const r = await b.ensure('agenfk-m1', spec);
+    expect(b.resolverToken('agenfk-m1')).toBe(resolverTokenOf(r.token));
+    expect(resolverTokenOf(r.token)).toMatch(/^[0-9a-f]{64}$/);
+    expect(resolverTokenOf(r.token)).not.toBe(r.token);
   });
 
   it('does not reuse a running decider made for another policy (one a crash left before its machine started): it starts one for this (story review)', async () => {
