@@ -47,7 +47,15 @@ interface AirlockPolicy {
   rules: Record<RuleKey, RuleAction>;
   projects?: Record<string, ProjectOverride>;
   machineImage?: string;
+  homeAccess?: 'home-read-only' | 'home-read-write';
 }
+
+type HomeAccess = 'protect-credentials' | 'home-read-only' | 'home-read-write';
+const HOME_ACCESS: Array<{ value: HomeAccess; label: string }> = [
+  { value: 'protect-credentials', label: 'Protect credentials' },
+  { value: 'home-read-only', label: 'Home folder, read-only' },
+  { value: 'home-read-write', label: 'Home folder, read-write' },
+];
 
 /** Adds to the policy's host lists; each rule it sets wins over the org's. */
 interface ProjectOverride {
@@ -302,6 +310,7 @@ interface PolicyDraft {
   deny: string;
   rules: Record<RuleKey, RuleAction>;
   image: string;
+  home: HomeAccess;
 }
 
 const policyDraftOf = (v: AirlockView): PolicyDraft => ({
@@ -312,12 +321,13 @@ const policyDraftOf = (v: AirlockView): PolicyDraft => ({
   deny: (v.policy?.hosts.deny ?? []).join('\n'),
   rules: { ...DEFAULT_RULES, ...(v.policy?.rules ?? {}) },
   image: v.policy?.machineImage ?? '',
+  home: v.policy?.homeAccess ?? 'protect-credentials',
 });
 
 function PolicyCard({ view }: { view: AirlockView }) {
   const qc = useQueryClient();
   const d = useRevisionDraft(view, policyDraftOf);
-  const { mode, models, unknown, allow, deny, rules, image } = d.draft;
+  const { mode, models, unknown, allow, deny, rules, image, home } = d.draft;
   const p = d.base.policy;
 
   const save = useMutation({
@@ -332,6 +342,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
         hosts: { allow: linesOf(allow), deny: linesOf(deny) },
         rules,
         ...(image.trim() ? { machineImage: image.trim() } : {}),
+        ...(home !== 'protect-credentials' ? { homeAccess: home } : {}),
       },
     })).data as AirlockView,
     onSuccess: onSaved(qc, d.adopt),
@@ -344,6 +355,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
   const setDeny = field('deny');
   const setRules = field('rules');
   const setImage = field('image');
+  const setHome = field('home');
 
   return (
     <form className={`${cardClass} max-w-form`} onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
@@ -425,6 +437,20 @@ function PolicyCard({ view }: { view: AirlockView }) {
       <p className="mt-1 text-small text-ink-tertiary">
         The image every Airlock session's machine is made from; each project override can name its own. Empty: the
         AgEnFK base image. Only this policy names an image, never a repository: the image is root in the machine.
+      </p>
+
+      <label className="block mt-3">
+        <span className="eyebrow text-ink-tertiary">Home access</span>
+        <select aria-label="Home access" className={`${controlClass} mt-1.5 max-w-[16rem]`} value={home} onChange={(e) => setHome(e.target.value as HomeAccess)}>
+          {HOME_ACCESS.map(h => <option key={h.value} value={h.value}>{h.label}</option>)}
+        </select>
+      </label>
+      <p className="mt-1 text-small text-ink-tertiary">
+        {home === 'protect-credentials'
+          ? 'Every installation follows this; none can open more locally. A session\'s machine sees only its workspace and its agent\'s own state; the credential stores (~/.ssh, ~/.aws, logins in auth.json) stay unreadable.'
+          : home === 'home-read-only'
+            ? "Every installation follows this; none can open more locally. The whole home folder is mounted read-only: the agent can read your users' credentials (~/.ssh, ~/.aws, auth.json), and the network policy is what keeps them in. AgEnFK's own files stay unwritable and Airlock's records unreadable."
+            : "Every installation follows this; none can open more locally. The whole home folder is mounted read-write: the agent can read your users' credentials (~/.ssh, ~/.aws, auth.json), and can change files programs on their machines run later (other projects' git hooks, tools' settings), so treat it as able to run code there. Still held from it: AgEnFK, the workspace's git, git's and ssh's config, the shells' startup files, login agents and the agents' own configs."}
       </p>
 
       <div className="mt-3">

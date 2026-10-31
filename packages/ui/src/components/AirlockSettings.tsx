@@ -88,7 +88,15 @@ interface Draft {
   rules: AirlockPolicyDto['rules'];
   overrides: OverrideDraft[];
   image: string;
+  homeAccess: HomeAccess;
 }
+
+type HomeAccess = 'protect-credentials' | 'home-read-only' | 'home-read-write';
+const HOME_ACCESS: Array<{ value: HomeAccess; label: string }> = [
+  { value: 'protect-credentials', label: 'Protect credentials' },
+  { value: 'home-read-only', label: 'Home folder, read-only' },
+  { value: 'home-read-write', label: 'Home folder, read-write' },
+];
 
 const overrideDraftOf = (key: string, o: AirlockProjectOverrideDto): OverrideDraft => ({
   key,
@@ -137,12 +145,14 @@ const draftOf = (p: AirlockPolicyDto): Draft => ({
   rules: { ...DEFAULT_RULES, ...p.rules },
   overrides: Object.entries(p.projects ?? {}).map(([k, o]) => overrideDraftOf(k, o)),
   image: p.machineImage ?? '',
+  homeAccess: p.homeAccess ?? 'protect-credentials',
 });
 
 /** The draft as a policy, on top of what it was made from (the IOC list is the hub's, never the board's). */
-const policyOf = ({ machineImage: _image, ...base }: AirlockPolicyDto, d: Draft): AirlockPolicyDto => ({
+const policyOf = ({ machineImage: _image, homeAccess: _home, ...base }: AirlockPolicyDto, d: Draft): AirlockPolicyDto => ({
   ...base,
   ...(d.image.trim() ? { machineImage: d.image.trim() } : {}),
+  ...(d.homeAccess !== 'protect-credentials' ? { homeAccess: d.homeAccess } : {}),
   mode: d.mode,
   models: d.models.map(m => ({ ...m })),
   appliesWhenModelUnknown: d.appliesWhenModelUnknown,
@@ -475,6 +485,27 @@ function PolicyForm({
           id="airlock-image" value={draft.image} readOnly={readOnly} onChange={e => set('image', e.target.value)}
           placeholder="ghcr.io/cglab-public/agenfk-airlock-base:<version>" className={clsx(FIELD, 'mt-2 font-mono')}
         />
+      </div>
+
+      <div className={BLOCK}>
+        <label htmlFor="airlock-home-access" className={LABEL}>Home access</label>
+        <p className={HELP}>
+          What of your home folder a session’s machine sees. AgEnFK’s own files stay unwritable, and Airlock’s records
+          unreadable, whichever you choose.
+        </p>
+        <select
+          id="airlock-home-access" value={draft.homeAccess} disabled={readOnly}
+          onChange={e => set('homeAccess', e.target.value as HomeAccess)} className={clsx(FIELD, 'mt-2 w-auto')}
+        >
+          {HOME_ACCESS.map(h => <option key={h.value} value={h.value}>{h.label}</option>)}
+        </select>
+        <p className={clsx(HELP, 'mt-2')}>
+          {draft.homeAccess === 'protect-credentials'
+            ? 'Only the workspace and the agent’s own state are mounted; the credential stores (~/.ssh, ~/.aws, logins in auth.json) stay unreadable.'
+            : draft.homeAccess === 'home-read-only'
+              ? 'The whole home folder is mounted read-only: the agent can read your credentials (~/.ssh, ~/.aws, auth.json). The network policy is what keeps them in.'
+              : 'The whole home folder is mounted read-write: the agent can read your credentials (~/.ssh, ~/.aws, auth.json), and can change files programs on this machine run later (other projects’ git hooks, tools’ settings), so treat it as able to run code here. Still held from it: AgEnFK, this workspace’s git, git’s and ssh’s config, the shells’ startup files, login agents and the agents’ own configs.'}
+        </p>
       </div>
 
       <OverrideRows overrides={draft.overrides} readOnly={readOnly} onChange={overrides => set('overrides', overrides)} />
