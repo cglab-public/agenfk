@@ -11,6 +11,8 @@ import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { SMOLVM_VERSION } from './smolvm';
+import { withOwnerLock } from './ownerLock';
+import { processIdentity } from './processIdentity';
 
 export interface SmolvmRelease { url: string; sha256: string }
 
@@ -35,6 +37,8 @@ export interface InstallDeps {
   download: (url: string, dest: string) => Promise<void>;
   releases?: Record<string, SmolvmRelease>;
   log: (message: string) => void;
+  /** Which process a pid is now (processIdentity.ts), for the install lock's owners. */
+  identityOf?: (pid: number) => string | null;
 }
 
 function releaseFor(d: InstallDeps): SmolvmRelease {
@@ -59,65 +63,6 @@ const pidAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
 };
 
-/** The owner a lock names (`<pid> <token>`), or null when it names none. */
-function ownerOf(lock: string): { pid: number; line: string } | null {
-  let line: string;
-  try { line = fs.readFileSync(path.join(lock, 'owner'), 'utf8'); } catch { return null; }
-  const m = /^(\d+) \S+$/.exec(line);
-  return m && Number(m[1]) > 0 ? { pid: Number(m[1]), line } : null;
-}
-
-/**
- * Holds `lock` while `fn` runs. The lock directory is made whole elsewhere, owner inside, and
- * renamed into place: a rename onto a directory that exists fails, so there is one owner and the
- * lock is never seen half-made. A lock whose owner is gone, or which names none, is moved aside
- * and taken over - put back when what was moved is not the one judged (another took it over first).
- * Released only while it still names this install.
- */
-async function withInstallLock<T>(lock: string, fn: () => Promise<T>): Promise<T> {
-  const me = `${process.pid} ${crypto.randomBytes(8).toString('hex')}`;
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    const mine = fs.mkdtempSync(`${lock}.new-`);
-    fs.writeFileSync(path.join(mine, 'owner'), me);
-    try {
-      fs.renameSync(mine, lock);
-      break;
-    } catch (e) {
-      fs.rmSync(mine, { recursive: true, force: true });
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'EPERM') throw e;
-    }
-    const held = ownerOf(lock);
-    if (!held || !pidAlive(held.pid)) {
-      const aside = `${lock}.stale-${crypto.randomBytes(8).toString('hex')}`;
-      try { fs.renameSync(lock, aside); } catch { continue; }
-      const moved = ownerOf(aside);
-      if (moved?.line !== held?.line) {
-        // Another install's fresh lock, not the stale one: back where it was.
-        try { fs.renameSync(aside, lock); } catch { /* it has a new owner already */ }
-      } else {
-        fs.rmSync(aside, { recursive: true, force: true });
-      }
-      continue;
-    }
-    if (Date.now() > deadline) throw new Error(`Another smolvm install has held ${lock} for ${LOCK_WAIT_MS / 1000}s; not installed.`);
-    await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
-  }
-  try {
-    return await fn();
-  } finally {
-    if (ownerOf(lock)?.line === me) {
-      const gone = `${lock}.done-${crypto.randomBytes(8).toString('hex')}`;
-      try {
-        fs.renameSync(lock, gone);
-        if (ownerOf(gone)?.line === me) fs.rmSync(gone, { recursive: true, force: true });
-        else fs.renameSync(gone, lock);
-      } catch { /* not ours to release */ }
-    }
-  }
-}
-
 /**
  * Installs SMOLVM_VERSION unless it is there. One install at a time (a lock beside the target),
  * so a valid install is never removed under a launch using it. The download and the unpacking
@@ -131,7 +76,9 @@ export async function installSmolvm(d: InstallDeps): Promise<{ status: 'installe
   if (fs.existsSync(binary) && versionOf(binary) === SMOLVM_VERSION) return { status: 'present', path: binary };
   const parent = path.dirname(target);
   fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
-  return withInstallLock(path.join(parent, `.lock-${SMOLVM_VERSION}`), async () => {
+  // Airlock's owner lock (03d41e43): the one a machine's is, whose stale owners are broken one at a time.
+  const lock = path.join(parent, `.install-lock-${SMOLVM_VERSION}`);
+  return withOwnerLock(lock, async () => {
     // Again under the lock: another install may have finished while this one waited.
     if (fs.existsSync(binary) && versionOf(binary) === SMOLVM_VERSION) return { status: 'present' as const, path: binary };
     const work = fs.mkdtempSync(path.join(parent, `.install-${SMOLVM_VERSION}-`));
@@ -149,8 +96,8 @@ export async function installSmolvm(d: InstallDeps): Promise<{ status: 'installe
       if (tar.status !== 0) throw new Error(`Could not unpack smolvm ${SMOLVM_VERSION}: ${(tar.stderr || tar.error?.message || `exit ${tar.status}`).trim()}`);
       const got = versionOf(path.join(unpacked, 'smolvm'));
       if (got !== SMOLVM_VERSION) throw new Error(`The smolvm unpacked says it is ${got ?? 'nothing it can run'}, not ${SMOLVM_VERSION}: not installed.`);
-      // A working install is never replaced: one that appeared meanwhile (the lock's rare
-      // three-way takeover race) is kept, and this copy goes with the work dir.
+      // A working install is never replaced: one that appeared meanwhile (an install that did not
+      // hold the lock - an older AgEnFK's, on its own lock) is kept, and this copy goes with the work dir.
       if (fs.existsSync(binary) && versionOf(binary) === SMOLVM_VERSION) return { status: 'present' as const, path: binary };
       // What is there is not a working install: an interrupted one's leftovers.
       fs.rmSync(target, { recursive: true, force: true });
@@ -160,6 +107,12 @@ export async function installSmolvm(d: InstallDeps): Promise<{ status: 'installe
     } finally {
       fs.rmSync(work, { recursive: true, force: true });
     }
+  }, {
+    pidAlive,
+    identityOf: d.identityOf ?? processIdentity,
+    timeoutMs: LOCK_WAIT_MS,
+    pollMs: LOCK_POLL_MS,
+    timedOut: () => new Error(`Another smolvm install has held ${lock} for ${LOCK_WAIT_MS / 1000}s; not installed.`),
   });
 }
 

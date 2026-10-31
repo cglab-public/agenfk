@@ -137,8 +137,10 @@ describePosix('installSmolvm', () => {
     expect(spawnSync(smolvmBinary(home), ['--version'], { encoding: 'utf8' }).stdout).toBe(`smolvm ${SMOLVM_VERSION}\n`);
   });
 
-  const lockPath = () => path.join(path.dirname(smolvmDir(home)), `.lock-${SMOLVM_VERSION}`);
-  const writeLock = (owner: string) => { fs.mkdirSync(lockPath(), { recursive: true }); fs.writeFileSync(path.join(lockPath(), 'owner'), owner); };
+  // The install's lock is Airlock's owner lock (ownerLock.ts, 03d41e43): a file naming its owner.
+  const lockPath = () => path.join(path.dirname(smolvmDir(home)), `.install-lock-${SMOLVM_VERSION}`);
+  const writeLock = (owner: string) => { fs.mkdirSync(path.dirname(lockPath()), { recursive: true }); fs.writeFileSync(lockPath(), owner); };
+  const readLock = () => fs.readFileSync(lockPath(), 'utf8');
 
   it('a lock an install left behind (its process gone) does not block the next one', async () => {
     const t = tarball();
@@ -148,11 +150,21 @@ describePosix('installSmolvm', () => {
 
   it('a lock with no owner in it (an install stopped while making it) does not block the next one (review 01a18d3a, pass 2)', async () => {
     const t = tarball();
-    for (const owner of [null, '', 'garbage']) {
+    // The owner lock is published whole, so none is ever ownerless but an older install's: taken once a minute old.
+    for (const owner of ['', 'garbage']) {
       fs.rmSync(path.join(home, '.agenfk'), { recursive: true, force: true });
-      if (owner === null) fs.mkdirSync(lockPath(), { recursive: true }); else writeLock(owner);
+      writeLock(owner);
+      const old = new Date(Date.now() - 120_000);
+      fs.utimesSync(lockPath(), old, old);
       expect((await installSmolvm(deps({ url: 'u', sha256: t.sha256 }))).status, String(owner)).toBe('installed');
     }
+  });
+
+  // 03d41e43: after a crash or a reboot the pid a lock names can be another process's.
+  it('a lock whose pid is another process now does not block the next one', async () => {
+    const t = tarball();
+    writeLock(`${process.pid} deadbeef boot-0/before`);
+    expect((await installSmolvm(deps({ url: 'u', sha256: t.sha256 }, { identityOf: () => 'boot-1/this' }))).status).toBe('installed');
   });
 
   it('a lock a live process holds is waited for, not taken', async () => {
@@ -162,7 +174,7 @@ describePosix('installSmolvm', () => {
     const run = installSmolvm(d);
     await new Promise((r) => setTimeout(r, 400));
     expect(d.download).not.toHaveBeenCalled();
-    fs.rmSync(lockPath(), { recursive: true, force: true });
+    fs.rmSync(lockPath(), { force: true });
     expect((await run).status).toBe('installed');
   });
 
@@ -170,10 +182,10 @@ describePosix('installSmolvm', () => {
     const t = tarball();
     const d = deps({ url: 'u', sha256: t.sha256 }, {
       // While this install holds the lock, another takes it over (as a takeover race would leave it).
-      download: vi.fn(async (_u: string, dest: string) => { writeLock(`${process.pid} the-other-one`); fs.copyFileSync(path.join(root, 'release.tar.gz'), dest); }),
+      download: vi.fn(async (_u: string, dest: string) => { fs.rmSync(lockPath()); writeLock(`${process.pid} the-other-one`); fs.copyFileSync(path.join(root, 'release.tar.gz'), dest); }),
     });
     await installSmolvm(d);
-    expect(fs.readFileSync(path.join(lockPath(), 'owner'), 'utf8')).toBe(`${process.pid} the-other-one`);
+    expect(readLock()).toBe(`${process.pid} the-other-one`);
   });
 
   it('never replaces a valid install that appeared while it downloaded, lock or no lock (review 01a18d3a, pass 3)', async () => {

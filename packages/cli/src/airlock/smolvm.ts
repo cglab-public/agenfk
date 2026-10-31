@@ -33,6 +33,7 @@ import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } f
 import { AIRLOCK_SANDBOX_MARKER, type SandboxSpec } from './spec';
 import { allowListArgs, GATEWAY, networkKey, RESOLVER_REPORT_PORT, type Route } from './egress';
 import { processIdentity, sameProcess } from './processIdentity';
+import { breakStaleLock, withOwnerLock, type OwnerLockDeps } from './ownerLock';
 import { machineCa, placeholderFor, startKeyInjector, type KeyInjector, type KeyInjectorOptions, type MachineCa } from './keyInjector';
 import { readRegularFile } from './safeRead';
 import type { AirlockRuntime, LaunchHooks, LaunchedSandbox, ProxyDecision, RuntimeCheck, SandboxCommand, SandboxExit } from './runtime';
@@ -1382,10 +1383,6 @@ export class SmolvmRuntime implements AirlockRuntime {
     return sameProcess(rec, { pidAlive: this.d.pidAlive, identityOf: this.d.processIdentity });
   }
 
-  /** This launcher, as a lock names it: pid, a token of its own, and its identity when it has one. */
-  private lockOwner(): string {
-    return [process.pid, crypto.randomBytes(8).toString('hex'), this.d.processIdentity(process.pid)].filter(Boolean).join(' ');
-  }
 
   /** The live sessions' records: what each is (a record from before purposes were kept counts as a client). */
   private liveSessionRecords(name: string): Array<{ purpose: string }> {
@@ -1440,87 +1437,23 @@ export class SmolvmRuntime implements AirlockRuntime {
     fs.rmSync(path.join(this.machineDir(name), 'placeholders.json'), { force: true });
   }
 
-  /** A lock left by a launcher that is gone, or naming none (an older launcher's) and a minute old. */
-  private lockStale(lock: string): boolean {
-    const st = fs.statSync(lock);
-    const [pid, , identity] = fs.readFileSync(lock, 'utf8').split(' ');
-    const holder = Number(pid);
-    return Number.isInteger(holder) && holder > 0 ? !this.alive({ pid: holder, identity }) : Date.now() - st.mtimeMs > 60_000;
+  /** What the machine's lock (ownerLock.ts) judges its owners by. */
+  private lockDeps(timedOut: () => Error = () => new Error('timed out')): OwnerLockDeps {
+    return { pidAlive: this.d.pidAlive, identityOf: this.d.processIdentity, timeoutMs: LOCK_TIMEOUT_MS, pollMs: LOCK_POLL_MS, timedOut };
   }
 
-  /**
-   * Takes `lock` for `owner`, published whole: the owner written to a file of its own, linked into
-   * place (a link onto an existing name fails) - a lock is never seen without its owner. False when
-   * it is held.
-   */
-  private static takeLock(lock: string, owner: string): boolean {
-    const tmp = `${lock}.${crypto.randomBytes(8).toString('hex')}`;
-    fs.writeFileSync(tmp, owner, { flag: 'wx' });
-    try {
-      fs.linkSync(tmp, lock);
-      return true;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-      return false;
-    } finally {
-      fs.rmSync(tmp, { force: true });
-    }
-  }
-
-  /**
-   * Removes a stale lock. Launchers doing so take turns on a second lock, and
-   * each checks again under it that the lock is still that same file and still
-   * stale: a live owner's lock is never touched. True only when it removed it;
-   * false when another launcher holds the turn, or the lock is no longer stale.
-   */
   private breakStaleLock(lock: string, ino: number): boolean {
-    const turn = `${lock}.break`;
-    const mine = this.lockOwner();
-    if (!SmolvmRuntime.takeLock(turn, mine)) {
-      // Held for an instant; one left by a launcher that is gone is cleared (an older launcher's
-      // naming none, once a minute old: story review), and only if it is still that same turn.
-      try {
-        const held = fs.readFileSync(turn, 'utf8');
-        if (this.lockStale(turn) && fs.readFileSync(turn, 'utf8') === held) fs.rmSync(turn);
-      } catch { /* gone */ }
-      return false;
-    }
-    let removed = false;
-    try {
-      // Judged again under the turn, by the same rule the caller used (story review).
-      if (fs.statSync(lock).ino === ino && this.lockStale(lock)) { fs.rmSync(lock); removed = true; }
-    } catch { /* released meanwhile */ } finally {
-      try { if (fs.readFileSync(turn, 'utf8') === mine) fs.rmSync(turn); } catch { /* not ours any more */ }
-    }
-    return removed;
+    return breakStaleLock(lock, ino, this.lockDeps());
   }
 
   /**
    * Runs `fn` holding the machine's lock, across processes: registration,
-   * create and start, mounts, setup, release and reset never interleave. The
-   * lock names its owner (pid and a token), only its owner removes it, and one
-   * whose holder is gone is broken (breakStaleLock).
+   * create and start, mounts, setup, release and reset never interleave.
    */
   private async withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
     const lock = path.join(this.machineDir(name), 'lock');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
-    const mine = this.lockOwner();
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
-    for (;;) {
-      if (SmolvmRuntime.takeLock(lock, mine)) break;
-      // A holder seen to be gone is taken over; so is a lock naming none (left by an older launcher) once it is a minute old.
-      let ino: number | null = null;
-      try { if (this.lockStale(lock)) ino = fs.statSync(lock).ino; } catch { /* released meanwhile */ }
-      // Always yield before trying again: a retry that cannot succeed must never spin.
-      if (ino !== null && this.breakStaleLock(lock, ino)) { await new Promise((r) => setImmediate(r)); continue; }
-      if (Date.now() > deadline) throw new Error(`Airlock waited ${LOCK_TIMEOUT_MS / 1000}s for another session to finish starting or stopping the machine ${name}; nothing was launched.`);
-      await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
-    }
-    try {
-      return await fn();
-    } finally {
-      try { if (fs.readFileSync(lock, 'utf8') === mine) fs.rmSync(lock); } catch { /* not ours any more */ }
-    }
+    return withOwnerLock(lock, fn, this.lockDeps(() => new Error(`Airlock waited ${LOCK_TIMEOUT_MS / 1000}s for another session to finish starting or stopping the machine ${name}; nothing was launched.`)));
   }
 
   private async ensureMachine(name: string, workspace: string, image: string): Promise<MachineInfo> {
