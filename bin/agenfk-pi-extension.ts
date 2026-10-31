@@ -230,17 +230,14 @@ function airlockStateCovers(state: AirlockState, model: AirlockSessionModel | nu
 
 // ── Airlock launch gate (layer 2) ────────────────────────────────────────────
 
-const AIRLOCK_PROXY_VARS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'];
-
 export interface AirlockConfinement { confined: boolean; reason?: string }
 export interface AirlockSandboxStatus { sandboxed: boolean; reason?: string }
 
 /**
- * Is this process inside the Airlock sandbox? The marker and the proxy env
- * `agenfk airlock pi` sets, ~/.agenfk unwritable, AND a direct connection
- * refused by the sandbox (`prove`, see proveConfinement in
- * bin/agenfk-airlock.mjs). Env vars and a chmod alone are not enough. Mirrors
- * airlockSandboxCheck there.
+ * Is this process inside the Airlock sandbox? The marker env `agenfk airlock
+ * pi` sets, ~/.agenfk unwritable (root's, in the machine), AND the machine
+ * proven (`prove`, see proveConfinement in bin/agenfk-airlock.mjs). Env vars
+ * and a chmod alone are not enough. Mirrors airlockSandboxCheck there.
  */
 export function airlockSandboxed(
   env: Record<string, string | undefined> = process.env,
@@ -250,7 +247,6 @@ export function airlockSandboxed(
 ): AirlockSandboxStatus {
   const set = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
   if (!set(env.AGENFK_AIRLOCK_SANDBOX)) return { sandboxed: false };
-  if (!AIRLOCK_PROXY_VARS.some((k) => set(env[k]))) return { sandboxed: false };
   try {
     access(path.join(homeDir, '.agenfk'), fs.constants.W_OK);
     return { sandboxed: false, reason: '~/.agenfk is writable, which it never is inside the sandbox' };
@@ -264,7 +260,7 @@ export function airlockSandboxed(
 
 /**
  * The confinement proof, run once per process through the shared script
- * (pi's hooks are synchronous, the probe is a socket). A probe that could not
+ * (one implementation of the proof for both adapters). A probe that could not
  * run at all is not remembered, so a later call tries again.
  */
 let confinementResult: AirlockConfinement | null = null;

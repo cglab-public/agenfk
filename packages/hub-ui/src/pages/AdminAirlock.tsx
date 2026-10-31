@@ -46,12 +46,14 @@ interface AirlockPolicy {
   iocHosts: { revision: string; hosts: string[]; updatedAt: string | null };
   rules: Record<RuleKey, RuleAction>;
   projects?: Record<string, ProjectOverride>;
+  machineImage?: string;
 }
 
 /** Adds to the policy's host lists; each rule it sets wins over the org's. */
 interface ProjectOverride {
   hosts?: { allow: string[]; deny: string[] };
   rules?: Partial<Record<RuleKey, RuleAction>>;
+  machineImage?: string;
 }
 
 export interface AirlockView {
@@ -299,6 +301,7 @@ interface PolicyDraft {
   allow: string;
   deny: string;
   rules: Record<RuleKey, RuleAction>;
+  image: string;
 }
 
 const policyDraftOf = (v: AirlockView): PolicyDraft => ({
@@ -308,12 +311,13 @@ const policyDraftOf = (v: AirlockView): PolicyDraft => ({
   allow: (v.policy?.hosts.allow ?? []).join('\n'),
   deny: (v.policy?.hosts.deny ?? []).join('\n'),
   rules: { ...DEFAULT_RULES, ...(v.policy?.rules ?? {}) },
+  image: v.policy?.machineImage ?? '',
 });
 
 function PolicyCard({ view }: { view: AirlockView }) {
   const qc = useQueryClient();
   const d = useRevisionDraft(view, policyDraftOf);
-  const { mode, models, unknown, allow, deny, rules } = d.draft;
+  const { mode, models, unknown, allow, deny, rules, image } = d.draft;
   const p = d.base.policy;
 
   const save = useMutation({
@@ -327,6 +331,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
         appliesWhenModelUnknown: unknown,
         hosts: { allow: linesOf(allow), deny: linesOf(deny) },
         rules,
+        ...(image.trim() ? { machineImage: image.trim() } : {}),
       },
     })).data as AirlockView,
     onSuccess: onSaved(qc, d.adopt),
@@ -338,6 +343,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
   const setAllow = field('allow');
   const setDeny = field('deny');
   const setRules = field('rules');
+  const setImage = field('image');
 
   return (
     <form className={`${cardClass} max-w-form`} onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
@@ -409,6 +415,18 @@ function PolicyCard({ view }: { view: AirlockView }) {
         ))}
       </fieldset>
 
+      <label className="block mt-3">
+        <span className="eyebrow text-ink-tertiary">Machine image</span>
+        <input
+          aria-label="Machine image" className={`${controlClass} mt-1.5 font-mono`} value={image}
+          onChange={(e) => setImage(e.target.value)} placeholder="ghcr.io/cglab-public/agenfk-airlock-base:<version>"
+        />
+      </label>
+      <p className="mt-1 text-small text-ink-tertiary">
+        The image every Airlock session's machine is made from; each project override can name its own. Empty: the
+        AgEnFK base image. Only this policy names an image, never a repository: the image is root in the machine.
+      </p>
+
       <div className="mt-3">
         <button type="submit" className={buttonClass('primary')} disabled={save.isPending}>
           {save.isPending ? 'Saving…' : 'Save policy'}
@@ -419,23 +437,25 @@ function PolicyCard({ view }: { view: AirlockView }) {
   );
 }
 
-interface OverrideDraft { key: string; allow: string; deny: string; rules: Partial<Record<RuleKey, RuleAction>> }
+interface OverrideDraft { key: string; allow: string; deny: string; rules: Partial<Record<RuleKey, RuleAction>>; image: string }
 
 const overrideDraftsOf = (projects: Record<string, ProjectOverride> | undefined): OverrideDraft[] =>
   Object.entries(projects ?? {}).map(([key, o]) => ({
-    key, allow: (o.hosts?.allow ?? []).join('\n'), deny: (o.hosts?.deny ?? []).join('\n'), rules: { ...o.rules },
+    key, allow: (o.hosts?.allow ?? []).join('\n'), deny: (o.hosts?.deny ?? []).join('\n'), rules: { ...o.rules }, image: o.machineImage ?? '',
   }));
 
-/** The drafts as the policy holds them: hosts only when there are some, only the rules set. */
+/** The drafts as the policy holds them: hosts only when there are some, only the rules set, an image when named. */
 export function projectsOf(drafts: OverrideDraft[]): Record<string, ProjectOverride> {
   const out: Record<string, ProjectOverride> = {};
   for (const d of drafts) {
     const allow = linesOf(d.allow);
     const deny = linesOf(d.deny);
     const rules = { ...d.rules };
+    const image = d.image.trim();
     out[d.key.trim()] = {
       ...(allow.length || deny.length ? { hosts: { allow, deny } } : {}),
       ...(Object.keys(rules).length ? { rules } : {}),
+      ...(image ? { machineImage: image } : {}),
     };
   }
   return out;
@@ -533,6 +553,10 @@ function ProjectOverridesCard({ view }: { view: AirlockView }) {
                   <textarea aria-label={`Allowed hosts, override ${n}`} placeholder="added allowed hosts" rows={2} className={`${controlClass} font-mono`} value={d.allow} onChange={(e) => edit(i, { allow: e.target.value })} />
                   <textarea aria-label={`Denied hosts, override ${n}`} placeholder="added denied hosts" rows={2} className={`${controlClass} font-mono`} value={d.deny} onChange={(e) => edit(i, { deny: e.target.value })} />
                 </div>
+                <input
+                  aria-label={`Machine image, override ${n}`} placeholder="machine image (the org's when empty)"
+                  className={`${controlClass} mt-2 font-mono`} value={d.image} onChange={(e) => edit(i, { image: e.target.value })}
+                />
                 <div className="mt-2 space-y-1.5">
                   {RULES.map(r => (
                     <label key={r.key} className="flex items-center justify-between gap-3 text-small text-ink">
@@ -551,7 +575,7 @@ function ProjectOverridesCard({ view }: { view: AirlockView }) {
             );
           })}
           <div className="mt-3 flex gap-2">
-            <button type="button" className={buttonClass('secondary')} onClick={() => change([...drafts, { key: '', allow: '', deny: '', rules: {} }])}>
+            <button type="button" className={buttonClass('secondary')} onClick={() => change([...drafts, { key: '', allow: '', deny: '', rules: {}, image: '' }])}>
               Add a project override
             </button>
             <button type="submit" className={buttonClass('primary')} disabled={save.isPending}>

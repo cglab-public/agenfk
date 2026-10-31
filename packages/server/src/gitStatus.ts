@@ -59,7 +59,9 @@ export async function readGitStatus(
 ): Promise<GitWorktreeStatus> {
   // `--porcelain=v1 -z` is a contract with the parser, not a preference: v2
   // and newline separation both parse to nonsense.
-  const out = await deps.exec('git', ['status', '--porcelain=v1', '-z'], {
+  // Never a configured fsmonitor: in a workspace an Airlock session wrote, it could be the session's
+  // script, run here with the server's rights (CGLAB-696 story review).
+  const out = await deps.exec('git', ['-c', 'core.fsmonitor=false', 'status', '--porcelain=v1', '-z'], {
     cwd,
     encoding: 'utf8',
     timeout: GIT_STATUS_TIMEOUT_MS,

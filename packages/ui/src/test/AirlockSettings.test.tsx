@@ -241,6 +241,54 @@ describe('Airlock panel: hub-joined', () => {
     expect((screen.getByLabelText('Cloud mutation') as HTMLSelectElement).disabled).toBe(true);
     expect(screen.queryByRole('button', { name: 'Save policy' })).toBeNull();
   });
+
+  it('shows the machine image the hub set, read-only (CGLAB-696)', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(view({
+      source: 'hub', hubManaged: true, revision: 9, effective: { ...POLICY, machineImage: 'ghcr.io/acme/airlock:1.2' },
+    }) as never);
+    renderPanel();
+    const image = await screen.findByLabelText('Machine image') as HTMLInputElement;
+    await waitFor(() => expect(image.value).toBe('ghcr.io/acme/airlock:1.2'));
+    expect(image.readOnly).toBe(true);
+  });
+});
+
+describe('Airlock panel: machine image (CGLAB-696)', () => {
+  it('is empty when the policy names none, and says what runs then', async () => {
+    renderPanel();
+    await modeReady();
+    expect((screen.getByLabelText('Machine image') as HTMLInputElement).value).toBe('');
+    expect(screen.getByText(/AgEnFK base image/i)).toBeTruthy();
+  });
+
+  it('saves the image typed, trimmed', async () => {
+    renderPanel();
+    await modeReady();
+    fireEvent.change(screen.getByLabelText('Machine image'), { target: { value: ' ghcr.io/acme/airlock:1.3 ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveAirlockPolicy).mock.calls[0][0].policy.machineImage).toBe('ghcr.io/acme/airlock:1.3');
+  });
+
+  it('a cleared image saves none', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(view({ effective: { ...POLICY, machineImage: 'ghcr.io/acme/airlock:1.2' } }) as never);
+    renderPanel();
+    await modeReady();
+    const image = screen.getByLabelText('Machine image') as HTMLInputElement;
+    await waitFor(() => expect(image.value).toBe('ghcr.io/acme/airlock:1.2'));
+    fireEvent.change(image, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect('machineImage' in vi.mocked(api.saveAirlockPolicy).mock.calls[0][0].policy).toBe(false);
+  });
+
+  it('a policy without one saves none when the field is left alone', async () => {
+    renderPanel();
+    await modeReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect('machineImage' in vi.mocked(api.saveAirlockPolicy).mock.calls[0][0].policy).toBe(false);
+  });
 });
 
 describe('Airlock panel: per-project overrides (PO-2)', () => {
@@ -275,6 +323,32 @@ describe('Airlock panel: per-project overrides (PO-2)', () => {
       'github.com/acme/api': { hosts: { allow: ['pypi.org'], deny: [] }, rules: { cloudMutation: 'deny' } },
       'project:local-1': { hosts: { allow: ['localonly.example'], deny: [] }, rules: { publishThroughAllowedHost: 'deny' } },
     });
+  });
+
+  it('shows and saves a project\'s own machine image, trimmed (CGLAB-696)', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(withOverrides() as never);
+    renderPanel();
+    await modeReady();
+    const image = screen.getByLabelText('Machine image, override 1') as HTMLInputElement;
+    expect(image.value).toBe('');
+    fireEvent.change(image, { target: { value: ' ghcr.io/acme/api-airlock:2 ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect((vi.mocked(api.saveAirlockPolicy).mock.calls[0][0] as any).policy.projects['github.com/acme/api'].machineImage).toBe('ghcr.io/acme/api-airlock:2');
+  });
+
+  it('a project\'s machine image cleared saves none for it', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(view({
+      effective: { ...POLICY, projects: { 'github.com/acme/api': { machineImage: 'ghcr.io/acme/api-airlock:2', rules: { cloudMutation: 'deny' } } } },
+    }) as never);
+    renderPanel();
+    await modeReady();
+    const image = screen.getByLabelText('Machine image, override 1') as HTMLInputElement;
+    await waitFor(() => expect(image.value).toBe('ghcr.io/acme/api-airlock:2'));
+    fireEvent.change(image, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect((vi.mocked(api.saveAirlockPolicy).mock.calls[0][0] as any).policy.projects).toEqual({ 'github.com/acme/api': { rules: { cloudMutation: 'deny' } } });
   });
 
   it('an override that sets only rules saves no hosts; a rule set back to the policy\'s is left out', async () => {

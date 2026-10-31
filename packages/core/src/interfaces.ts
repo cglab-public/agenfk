@@ -238,10 +238,16 @@ export interface AirlockApprovalCapability {
   concealed?: boolean;
 }
 
-/** Who may spend a grant: the session and card that asked for it. */
+/** Who may spend a grant: the session and card that asked for it, and the Airlock launch it asked from. */
 export interface AirlockGrantScope {
   sessionId: string | null;
   itemId: string | null;
+  /**
+   * The verified launch (the nonce of the Airlock marker), null for a call made outside any
+   * sandbox. The session and card are what a caller states, so only this keeps one launch from
+   * spending a grant a person gave another (da69b17a review).
+   */
+  launch: string | null;
 }
 
 export interface AirlockApprovalRequest {
@@ -253,6 +259,8 @@ export interface AirlockApprovalRequest {
   projectId?: string | null;
   itemId?: string | null;
   sessionId?: string | null;
+  /** The verified Airlock launch that asked (AirlockGrantScope.launch); never shown or sent. */
+  launch?: string | null;
   requestedAt: string;
 }
 

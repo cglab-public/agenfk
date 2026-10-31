@@ -18,6 +18,7 @@ import {
 } from './types';
 import { isValidHostPattern, matchHost, normalizeHost, parseCidr } from './hosts';
 import { airlockRepoKey } from './repoKey';
+import { isAirlockImageRef } from './image';
 
 const MODES: readonly AirlockMode[] = ['off', 'observe', 'enforce'];
 const ACTIONS: readonly RuleAction[] = ['deny', 'needs-human-approval', 'off'];
@@ -75,7 +76,8 @@ function override(raw: unknown): AirlockProjectOverride | null {
     }
     if (Object.keys(rules).length) out.rules = rules;
   }
-  return out.hosts || out.rules ? out : null;
+  if (isAirlockImageRef(raw.machineImage)) out.machineImage = raw.machineImage;
+  return out.hosts || out.rules || out.machineImage ? out : null;
 }
 
 /** Two raw keys naming one repository merge: their lists unite, the later rules win. */
@@ -103,6 +105,8 @@ function applyOverride(base: AirlockProjectOverride, o: AirlockProjectOverride):
     };
   }
   if (base.rules || o.rules) out.rules = { ...base.rules, ...o.rules };
+  const image = o.machineImage ?? base.machineImage;
+  if (image) out.machineImage = image;
   return out;
 }
 
@@ -110,9 +114,9 @@ function applyOverride(base: AirlockProjectOverride, o: AirlockProjectOverride):
  * The policy a project runs under: the org's, with the project's repository
  * override applied, then its project:<id> one. Allow and deny lists add to the
  * org's - an override cannot remove an org deny, and evaluation ranks a deny
- * over an allow - and each rule set wins (loosen or tighten). Mode, models and
- * the IOC list stay the org's, and no allow can reach a built-in metadata host.
- * The result carries no projects.
+ * over an allow - and each rule set wins (loosen or tighten), as does a machine
+ * image. Mode, models and the IOC list stay the org's, and no allow can reach a
+ * built-in metadata host. The result carries no projects.
  */
 export function effectivePolicyFor(
   policy: AirlockPolicy,
@@ -122,6 +126,7 @@ export function effectivePolicyFor(
   const keys = [airlockRepoKey(project.repo), project.projectId ? airlockRepoKey(`project:${project.projectId}`) : null];
   let hosts = org.hosts;
   let rules = org.rules;
+  let machineImage = org.machineImage;
   for (const key of keys) {
     const o = key ? projects?.[key] : undefined;
     if (!o) continue;
@@ -132,8 +137,9 @@ export function effectivePolicyFor(
       };
     }
     if (o.rules) rules = { ...rules, ...o.rules };
+    if (o.machineImage) machineImage = o.machineImage;
   }
-  return { ...org, hosts, rules };
+  return { ...org, hosts, rules, ...(machineImage ? { machineImage } : {}) };
 }
 
 export function normalizeAirlockPolicy(raw: unknown): AirlockPolicy {
@@ -161,6 +167,7 @@ export function normalizeAirlockPolicy(raw: unknown): AirlockPolicy {
     },
     rules: normalizedRules,
     ...(projects ? { projects } : {}),
+    ...(isAirlockImageRef(r.machineImage) ? { machineImage: r.machineImage } : {}),
   };
 }
 
@@ -194,8 +201,15 @@ function projectsErrors(raw: unknown): string[] {
       }
     }
     errors.push(...rulesErrors(`${field}.rules`, o.rules));
+    errors.push(...imageErrors(`${field}.machineImage`, o.machineImage));
   }
   return errors;
+}
+
+/** '' is no image: the field cleared. */
+function imageErrors(field: string, raw: unknown): string[] {
+  if (raw === undefined || raw === '' || isAirlockImageRef(raw)) return [];
+  return [`${field} must be an image reference, e.g. ghcr.io/org/image:tag or ghcr.io/org/image@sha256:<digest>`];
 }
 
 function hostListErrors(field: string, raw: unknown, isAllow: boolean): string[] {
@@ -264,5 +278,6 @@ export function airlockPolicyErrors(raw: unknown): string[] {
   }
   errors.push(...rulesErrors('rules', raw.rules));
   errors.push(...projectsErrors(raw.projects));
+  errors.push(...imageErrors('machineImage', raw.machineImage));
   return errors;
 }

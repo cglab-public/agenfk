@@ -10,7 +10,7 @@
  *  - the queue is sent in batches, every PROXY_REPORT_FLUSH_MS, each post
  *    aborted after PROXY_REPORT_TIMEOUT_MS, and a failed post is dropped (a
  *    server that is down loses the report, not the session);
- *  - a decision the server could not take (a host past ASRT's 255 characters,
+ *  - a decision the server could not take (a host past 255 characters,
  *    or outside a host's characters; a port out of range) is dropped here,
  *    not sent to cost the batch;
  *  - an identical decision within PROXY_REPORT_DEDUPE_MS is queued once, and
@@ -25,7 +25,7 @@ export const PROXY_REPORT_DEDUPE_MS = 10_000;
 /** The server's MAX_PROXY_DECISIONS: one batch is never larger. */
 export const PROXY_REPORT_MAX_QUEUE = 200;
 
-/** A host the server's decision log takes: what ASRT names a host, at most 255 characters. */
+/** A host the server's decision log takes: a DNS name, at most 255 characters. */
 const REPORTABLE_HOST = /^[A-Za-z0-9._:\[\]%-]{1,255}$/;
 const MAX_RULE = 256;
 

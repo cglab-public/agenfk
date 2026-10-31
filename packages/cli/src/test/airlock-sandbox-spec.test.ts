@@ -1,6 +1,6 @@
 /**
  * Airlock layer 2 (GH-294, L2-1): the sandbox spec built from the EFFECTIVE
- * policy the server serves. Pure: no file system, no network, no ASRT.
+ * policy the server serves. Pure: no file system, no network, no runtime.
  */
 import { describe, it, expect } from 'vitest';
 import { normalizeAirlockPolicy, BUILTIN_DENY_HOSTS, HOME_CREDENTIAL_STORES } from '@agenfk/core';
@@ -11,7 +11,7 @@ import {
   type SandboxSession,
 } from '../airlock/spec';
 
-// The launcher refuses Windows (AsrtRuntime.check, tested there), so these POSIX
+// The launcher refuses Windows (SmolvmRuntime.check, tested in airlock-smolvm-runtime.test.ts), so these POSIX
 // sandbox specs never run on it; their literal POSIX paths would not hold either.
 const describePosix = process.platform === 'win32' ? describe.skip : describe;
 
@@ -84,6 +84,19 @@ describe('buildSandboxSpec: network', () => {
     expect(spec.network.allow).not.toContain('127.0.0.1');
   });
 
+  // a9bc650c: a model server on the host's own loopback is reached through the machine's gateway.
+  it('names the inference endpoints on the host loopback, which the machine routes to the host', () => {
+    const spec = buildSandboxSpec(policy(), session({ inferenceHosts: ['127.0.0.1:18888', 'localhost:11434', 'llm.example.com:8443'] }));
+    expect(spec.loopbackInference).toEqual([{ host: '127.0.0.1', port: 18888 }, { host: 'localhost', port: 11434 }]);
+    expect(buildSandboxSpec(policy(), session()).loopbackInference).toEqual([]);
+  });
+
+  it('says an endpoint on the IPv6 loopback cannot be reached from the machine', () => {
+    const spec = buildSandboxSpec(policy(), session({ inferenceHosts: ['[::1]:9000'] }));
+    expect(spec.loopbackInference).toEqual([]);
+    expect(spec.skipped).toContainEqual({ entry: '[::1]:9000', reason: expect.stringMatching(/IPv4.*127\.0\.0\.1 or localhost/) });
+  });
+
   it('does not depend on anything but its inputs (same input, same spec)', () => {
     expect(buildSandboxSpec(policy(), session())).toEqual(buildSandboxSpec(policy(), session()));
   });
@@ -116,9 +129,28 @@ describePosix('buildSandboxSpec: filesystem', () => {
     expect(oc).not.toContain('/home/u/.pi/agent');
   });
 
+  // Story review 3: what the host runs next from the client's state - pi's launcher, its installed
+  // releases and packages, the settings that name packages to load; OpenCode's config (MCP
+  // commands, plugins), the LSP binaries and plugin packages it installs - stays unwritable.
+  it('keeps what the host runs from the client\'s state unwritable, and the rest of it writable', () => {
+    for (const agentDir of ['/home/u/.pi/agent', '/custom/pi']) {
+      const fsys = buildSandboxSpec(policy(), session({ client: 'pi', ...(agentDir === '/custom/pi' ? { piAgentDir: agentDir } : {}) })).filesystem;
+      for (const p of ['bin', 'install', 'npm', 'git', 'settings.json']) expect(fsys.denyWrite, `${agentDir} ${p}`).toContain(`${agentDir}/${p}`);
+      expect(fsys.allowWrite).toContain(agentDir);
+      expect(fsys.denyWrite).not.toContain(`${agentDir}/sessions`);
+      expect(fsys.denyWrite).not.toContain(`${agentDir}/models.json`);
+    }
+    const oc = buildSandboxSpec(policy(), session({ client: 'opencode' })).filesystem;
+    for (const p of ['/home/u/.config/opencode/opencode.json', '/home/u/.config/opencode/opencode.jsonc', '/home/u/.config/opencode/config.json',
+      '/home/u/.config/opencode/node_modules', '/home/u/.config/opencode/package.json',
+      '/home/u/.local/share/opencode/bin', '/home/u/.cache/opencode/node_modules', '/home/u/.cache/opencode/package.json']) {
+      expect(oc.denyWrite).toContain(p);
+    }
+  });
+
   it('protects the sandbox runtime package from writes', () => {
-    const spec = buildSandboxSpec(policy(), session({ runtimePackageDir: '/opt/agenfk/node_modules/@anthropic-ai/sandbox-runtime' }));
-    expect(spec.filesystem.denyWrite).toContain('/opt/agenfk/node_modules/@anthropic-ai/sandbox-runtime');
+    const spec = buildSandboxSpec(policy(), session({ runtimePackageDir: '/opt/agenfk/smolvm' }));
+    expect(spec.filesystem.denyWrite).toContain('/opt/agenfk/smolvm');
   });
 });
 
@@ -150,7 +182,7 @@ describe('buildSandboxSpec: environment and keys', () => {
 describe('writeRootHolding', () => {
   const spec = buildSandboxSpec(policy(), session());
   it('names the write root a path sits in', () => {
-    expect(writeRootHolding('/work/repo/node_modules/@anthropic-ai/sandbox-runtime', spec)).toBe('/work/repo');
+    expect(writeRootHolding('/work/repo/.tools/smolvm', spec)).toBe('/work/repo');
     expect(writeRootHolding('/work/repo', spec)).toBe('/work/repo');
   });
   it('is null outside every write root (a sibling with a common prefix is outside)', () => {

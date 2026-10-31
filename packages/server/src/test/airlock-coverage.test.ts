@@ -225,24 +225,26 @@ describe('PO-1 review: the marker names the launch\'s project', () => {
     expect(await airlockTreeCovered(storage, 't1')).toBe(false);
   });
 
-  it('a launch may not name a card of another project, nor any card when it has no project', async () => {
+  it('a launch reaches a card or project of any project, and one launched outside every project does too (da69b17a)', async () => {
     for (const project of ['q', null]) {
       const res = await request(app).post('/items/t1/validate').set(marked(project)).send({});
-      expect(res.status, String(project)).toBe(403);
-      expect(res.body.error).toBe('AIRLOCK_CROSS_PROJECT');
+      expect(res.status, String(project)).toBe(200);
     }
-    expect((await request(app).post('/gatekeeper').set(marked('q')).send({ itemId: 's2' })).status).toBe(403);
-    expect((await request(app).post('/gatekeeper').set(marked('q')).send({ projectId: 'p' })).status).toBe(403);
-    expect((await request(app).put('/projects/p').set(marked('q')).send({})).status).toBe(403);
-    expect(await airlockTreeCovered(storage, 't1')).toBe(false);
-    expect((await request(app).post('/items/t1/validate').set(marked('p')).send({})).status).toBe(200);
+    expect((await request(app).post('/gatekeeper').set(marked('q')).send({ itemId: 's2' })).status).toBe(200);
+    expect((await request(app).post('/gatekeeper').set(marked('q')).send({ projectId: 'p' })).status).toBe(200);
+    expect((await request(app).put('/projects/p').set(marked('q')).send({})).status).toBe(200);
+    // still recorded: the card's own commands run in the sandbox, whoever's launch touched it
+    expect(await airlockTreeCovered(storage, 't1')).toBe(true);
+    expect(await airlockTreeCovered(storage, 's2')).toBe(true);
   });
 
-  it('nor write one: a card created or moved into another project is refused before it is written', async () => {
-    expect((await request(app).post('/import').set(marked('q')).send({ titles: ['x'] })).status).toBe(500);
-    expect(await storage.getItem('imp-x')).toBeFalsy();
-    expect((await request(app).post('/items/bulk').set(marked('p')).send({ items: [{ id: 't2', updates: { projectId: 'q' } }] })).status).toBe(500);
-    expect((await storage.getItem('t2') as any).projectId).toBe('p');
+  it('and writes one: a card created or moved into another project is written, and covered (da69b17a)', async () => {
+    expect((await request(app).post('/import').set(marked('q')).send({ titles: ['x'] })).status).toBe(200);
+    expect(await storage.getItem('imp-x')).toBeTruthy();
+    expect(await airlockTreeCovered(storage, 'imp-x')).toBe(true);
+    expect((await request(app).post('/items/bulk').set(marked('p')).send({ items: [{ id: 't2', updates: { projectId: 'q' } }] })).status).toBe(200);
+    expect((await storage.getItem('t2') as any).projectId).toBe('q');
+    expect(await airlockTreeCovered(storage, 't2')).toBe(true);
   });
 });
 
@@ -270,20 +272,20 @@ describe('PO-1 review 3 (Codex gpt-6.1-sol 01a182d1)', () => {
     expect((await request(app).delete('/projects/p')).status).toBe(200);
   });
 
-  it('a run is reached through its card: a launch cannot touch another project\'s run', async () => {
+  it('a run is reached whatever project its card is in, and covers that card (da69b17a)', async () => {
     app.patch('/agent-runs/:id', echo2);
     app.post('/agent-runs/:id/events', echo2);
     await (storage as any).createAgentRun({ id: 'run-b', itemId: 's2', projectId: 'p', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'm', status: 'running', startedAt: new Date().toISOString() });
-    expect((await request(app).patch('/agent-runs/run-b').set(marked('q')).send({ status: 'done' })).status).toBe(403);
-    expect((await request(app).post('/agent-runs/run-b/events').set(marked('q')).send({})).status).toBe(403);
-    expect((await request(app).patch('/agent-runs/run-b').set(marked('p')).send({ status: 'done' })).status).toBe(200);
+    expect((await request(app).patch('/agent-runs/run-b').set(marked('q')).send({ status: 'done' })).status).toBe(200);
+    expect((await request(app).post('/agent-runs/run-b/events').set(marked(null)).send({})).status).toBe(200);
+    expect(await airlockTreeCovered(storage, 's2')).toBe(true);
   });
 
-  it('a run whose card is gone belongs to no launch', async () => {
+  it('a run whose card is gone is reached too: it covers nothing (da69b17a)', async () => {
     app.patch('/agent-runs/:id', echo2);
     await (storage as any).createAgentRun({ id: 'run-orphan', itemId: 'gone', projectId: 'p', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'm', status: 'running', startedAt: new Date().toISOString() });
     for (const project of ['p', 'q', null]) {
-      expect((await request(app).patch('/agent-runs/run-orphan').set(marked(project)).send({ status: 'done' })).status, String(project)).toBe(403);
+      expect((await request(app).patch('/agent-runs/run-orphan').set(marked(project)).send({ status: 'done' })).status, String(project)).toBe(200);
     }
   });
 });
@@ -306,6 +308,32 @@ describe('host terminals (BUG 794bb674, epic review)', () => {
   it('an unmarked request (the board, the CLI outside the sandbox) still reaches them', async () => {
     expect((await request(app).post('/herdr/panes/p1/keys').send({})).status).toBe(200);
     expect((await request(app).get('/terminal-sessions')).status).toBe(200);
+  });
+});
+
+describe('Airlock\'s own records (da69b17a review)', () => {
+  // Approvals and decisions carry other sessions' ids, and a grant is scoped by the session id the
+  // caller states: a launch that could list them could spend a grant a person gave another launch.
+  it('a marked request cannot list or answer approvals, read decisions or reach learning', async () => {
+    for (const r of ['/airlock/approvals', '/airlock/decisions', '/airlock/learning', '/airlock/approvals/k1/grant', '/airlock/learning/import', '/AIRLOCK/Decisions/']) app.all(r, echo2);
+    const cases: Array<[string, string]> = [
+      ['get', '/airlock/approvals'], ['head', '/airlock/approvals'], ['get', '/airlock/decisions?itemId=t1'], ['get', '/airlock/learning'],
+      ['post', '/airlock/approvals/k1/grant'], ['post', '/airlock/learning/import'], ['get', '/AIRLOCK/Decisions/'],
+    ];
+    for (const project of ['p', null]) {
+      for (const [m, p] of cases) {
+        const res = await (request(app) as any)[m](p).set(marked(project)).send();
+        expect(res.status, `${m} ${p}`).toBe(403);
+        if (m !== 'head') expect(res.body.error, `${m} ${p}`).toBe('AIRLOCK_RECORDS');
+      }
+    }
+  });
+
+  it('unmarked (the board, the CLI on the host) still reads them; a marked request still reaches evaluate', async () => {
+    app.get('/airlock/approvals', echo2); app.get('/airlock/decisions', echo2); app.post('/airlock/evaluate', echo2);
+    expect((await request(app).get('/airlock/approvals')).status).toBe(200);
+    expect((await request(app).get('/airlock/decisions')).status).toBe(200);
+    expect((await request(app).post('/airlock/evaluate').set(marked()).send({})).status).toBe(200);
   });
 });
 

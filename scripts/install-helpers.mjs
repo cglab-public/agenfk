@@ -423,3 +423,20 @@ export function serverProcessAlive(run, { platform = process.platform, root } = 
     return false;
   }
 }
+
+/**
+ * CGLAB-696: installs the pinned smolvm Airlock runs on, where Airlock is in use, with the CLI
+ * just installed (`agenfk airlock install --if-enabled`). A failure is warned about with how to
+ * retry, never thrown: the rest of AgEnFK works without it.
+ */
+export function installAirlockRuntime({ run, rootDir, node = process.execPath, warn, detail }) {
+  const cli = path.join(rootDir, 'packages/cli/bin/agenfk.js');
+  const r = run(node, [cli, 'airlock', 'install', '--if-enabled'], { encoding: 'utf8', windowsHide: true, timeout: 900_000 });
+  const said = `${r?.stdout ?? ''}${r?.stderr ?? ''}`.trim();
+  if (r?.status === 0) {
+    if (said) detail(`  ${said}`);
+    return;
+  }
+  const why = said || r?.error?.message || `exit ${r?.status}`;
+  warn(`Could not install smolvm for Airlock: ${why}. Install it with: agenfk airlock install`);
+}
