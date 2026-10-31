@@ -655,7 +655,7 @@ describe('runAirlockLaunch: a policy changed while the session runs (story revie
     const done = runAirlockLaunch('pi', ['--model', 'openai/x'], { keyEnv: [] }, d);
     await vi.waitFor(() => expect(live.applied.length).toBeGreaterThan(0), { timeout: 2000 });
     expect(live.applied.at(-1)!.network.deny).toContain('evil.example');
-    expect(live.runtime.updateNetwork.mock.calls.at(-1)![0]).toBe(CWD);
+    expect(live.runtime.updateNetwork.mock.calls.at(-1)![0]).toBe(path.resolve(CWD));
     expect(fetchedInside.length).toBeGreaterThan(0);
     expect(fetchedInside.every(Boolean)).toBe(true);
     live.end({ code: 0, signal: null });

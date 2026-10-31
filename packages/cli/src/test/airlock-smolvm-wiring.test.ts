@@ -19,7 +19,8 @@ import { registerAirlockCommands, defaultLaunchDeps, defaultExecDeps, smolvmPath
 // Fix review 3: the launcher reads the client's config (the project's opencode.json is the
 // workspace's, which a session writes) before anything else: never blocking, never unbounded.
 describe('the launcher\'s config reads', () => {
-  it('does not block on a FIFO, follows a link to a file, and reads nothing too large or not JSON', async () => {
+  // FIFOs and links as POSIX has them (Airlock refuses Windows).
+  it.skipIf(process.platform === 'win32')('does not block on a FIFO, follows a link to a file, and reads nothing too large or not JSON', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-readjson-'));
     try {
       const read = defaultLaunchDeps().readJson;
@@ -64,7 +65,7 @@ describe('the runtime the launcher and exec use', () => {
   });
 
   it('the desktop app\'s helper runs the smolvm bundled beside it; anything else the one AgEnFK installed', () => {
-    const bundled = path.join('/app', 'airlock', 'smolvm', 'smolvm');
+    const bundled = path.resolve('/app', 'airlock', 'smolvm', 'smolvm');
     expect(smolvmPathFor(path.join('/app', 'airlock', 'dist'), '/home/u', (p) => p === bundled)).toBe(bundled);
     expect(smolvmPathFor(path.join('/x', 'cli', 'dist', 'commands'), '/home/u', () => false)).toBe(smolvmBinary('/home/u'));
   });

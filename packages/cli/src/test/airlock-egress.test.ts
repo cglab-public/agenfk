@@ -35,6 +35,7 @@ import {
   type Route,
 } from '../airlock/egress';
 import { writeAll } from '../airlock/egressMain';
+import { vmTestBase } from './helpers/vmTestBase';
 
 const TOKEN = Buffer.alloc(32, 7);
 const MACHINE = Buffer.alloc(16, 1);
@@ -546,7 +547,8 @@ describe('EgressService: the decider on the host loopback', () => {
     expect(decisions.map((d) => d.host)).toContain('last.example.com');
   });
 
-  describe('routes: redirecting a flow to a service of the launcher', () => {
+  // Routes are Unix sockets: macOS and Linux only (Airlock refuses Windows).
+  describe.skipIf(process.platform === 'win32')('routes: redirecting a flow to a service of the launcher', () => {
     let upstream: net.Server;
     let sock: string;
     let got: Buffer;
@@ -799,7 +801,8 @@ describe('writeAll: the decision log line, whole or a failure', () => {
   });
 });
 
-describe('HelperEgressBroker: one decider per running machine, outliving the session that started it', () => {
+// The decider process, its private files and route sockets: macOS and Linux only (Airlock refuses Windows).
+describe.skipIf(process.platform === 'win32')('HelperEgressBroker: one decider per running machine, outliving the session that started it', () => {
   let stateDir: string;
   // /tmp, not os.tmpdir(): macOS's is long, and route sockets are Unix socket paths (at most ~100 bytes).
   beforeEach(() => { stateDir = fs.mkdtempSync(path.join('/tmp', 'agenfk-broker-')); });
@@ -1008,7 +1011,7 @@ const baseImage = process.env.AGENFK_AIRLOCK_TEST_IMAGE;
 describe.skipIf(!smolvmHere || !baseImage)('egress against the real smolvm (AGENFK_SMOLVM_TESTS=1, AGENFK_AIRLOCK_TEST_IMAGE, after npm run build)', () => {
   it('enforce: an allowed name works, an unlisted name does not resolve, an address is dropped, and each is reported', async () => {
     const { SmolvmRuntime } = await import('../airlock/smolvm');
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-egress-vm-')));
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(vmTestBase(), 'agenfk-egress-vm-')));
     const home = path.join(root, 'home');
     const workspace = path.join(root, 'repo');
     fs.mkdirSync(path.join(home, '.pi', 'agent'), { recursive: true });

@@ -83,7 +83,8 @@ describe('a tag-push run builds no image already published', () => {
     return { status: r.status, outputs };
   };
 
-  it('skips the build only when both platforms are published from this very commit', () => {
+  // The workflow step's bash, as a Linux runner runs it.
+  it.skipIf(process.platform === 'win32')('skips the build only when both platforms are published from this very commit', () => {
     expect(check).toBeDefined();
     expect(runCheck(imageOf({ 'linux/amd64': SHA, 'linux/arm64': SHA }))).toEqual({ status: 0, outputs: 'skip=true\n' });
     // Not published; another commit's image under the same version; one platform only.

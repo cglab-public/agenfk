@@ -67,6 +67,63 @@ export interface EgressBroker {
 
 const hash16 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
 
+/**
+ * Where `pointer` leads from `dir`, walked as the filesystem walks it (review): component by
+ * component as written, `..` taken from where the walk has got to, a link followed only where
+ * `fixed` says nothing in the session could repoint it - one it could is returned as `{ link }`.
+ * The part that does not exist is taken as written. A loop of links leads nowhere (`{ link }`).
+ */
+function walkPointer(dir: string, pointer: string, fixed: (p: string) => boolean): { path: string } | { link: string } | { refused: string } {
+  const split = (p: string) => p.split(path.sep);
+  let at = path.isAbsolute(pointer) ? path.parse(pointer).root : dir;
+  const queue = split(path.isAbsolute(pointer) ? pointer.slice(at.length) : pointer);
+  let hops = 0;
+  while (queue.length) {
+    const c = queue.shift()!;
+    if (c === '' || c === '.') continue;
+    if (c === '..') { at = path.dirname(at); continue; }
+    const next = path.join(at, c);
+    let st: fs.Stats | null = null;
+    try {
+      st = fs.lstatSync(next);
+    } catch (e) {
+      // Only absence is taken as such: anything else could hide what git would reach.
+      if (!['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return { refused: `${next} cannot be examined` };
+    }
+    if (!st) {
+      // What is not there could be made a link later: a `..` after it is not taken on its text (review).
+      if (queue.includes('..')) return { refused: `${next} does not exist, and the path goes back up through it` };
+      at = next;
+      for (const r of queue) at = r === '' || r === '.' ? at : path.join(at, r);
+      return { path: at };
+    }
+    if (!st.isSymbolicLink()) {
+      // Git finds nothing past a file now; the session could make it a link to somewhere later (review).
+      if (!st.isDirectory() && queue.some((r) => r !== '' && r !== '.')) return { refused: `${next} is not a directory, and the path goes on through it` };
+      at = next;
+      continue;
+    }
+    if (!fixed(next) || ++hops > 40) return { link: next };
+    const to = fs.readlinkSync(next);
+    if (path.isAbsolute(to)) at = path.parse(to).root;
+    queue.unshift(...split(path.isAbsolute(to) ? to.slice(path.parse(to).root.length) : to));
+  }
+  return { path: at };
+}
+
+/** The git dir a `.git` file names, read as git reads one (setup.c): `gitdir: ` then the path, CR/LF ends dropped. */
+const MAX_GITFILE = 1 << 20;
+function gitfilePointer(file: string): string | null {
+  const bytes = readRegularFile(file, MAX_GITFILE);
+  let text: string;
+  // Git keeps a path's bytes: one that is not UTF-8 would be read here as another path (review).
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes ?? undefined); } catch { return null; }
+  if (!bytes || !text.startsWith('gitdir: ')) return null;
+  const p = text.slice('gitdir: '.length).replace(/[\r\n]+$/, '');
+  // Git reads a C string: a NUL ends the path where Node would not (review).
+  return p && !p.includes('\0') ? p : null;
+}
+
 /** The machine of a workspace folder: one name per folder, stable across sessions. */
 export function machineNameOf(workspace: string): string {
   return `agenfk-${hash16(path.resolve(workspace))}`;
@@ -328,7 +385,8 @@ const readGitConfig: GitConfigReader = (dir) => {
   // Null only for no git, or no repository; anything else (a broken config git reads first) refuses.
   if (top.error && (top.error as NodeJS.ErrnoException).code === 'ENOENT') return null;
   if (top.status !== 0) {
-    if (/not a git repository/i.test(top.stderr ?? '')) return null;
+    // A .git file pointing at no repository is none (Linux's git says so in other words than macOS's).
+    if (/not a git repository|gitfile does not point to a valid repository/i.test(top.stderr ?? '')) return null;
     throw unread((top.stderr || top.error?.message || 'git failed').trim());
   }
   // git expands the paths (`--type=path`); --get-regexp exits 1 when nothing matches.
@@ -752,12 +810,38 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   for (const g of nestedGitEntries(workspace)) {
     if (!mounted(g)) continue;
     // A pointer file (or a link, which the symbolic-link check below refuses).
-    if (kindOfPath(g) === 'file') readOnly.push(g);
-    else {
+    if (kindOfPath(g) === 'file') {
+      readOnly.push(g);
+      // A link is refused below (the session could replace the link itself): only a file is read.
+      if (fs.lstatSync(g).isFile()) checkPointer(g);
+    } else {
       pinned.push(g);
       held.push(...NESTED_GIT_PROTECTED.map((n) => path.join(g, n)));
     }
     repos.push(path.dirname(g));
+  }
+  function checkPointer(g: string): void {
+    // Its git dir, as git reaches it, must be where the session cannot make or change a repository -
+    // hooks and all: outside the mounts, or under what is held (a submodule's, in the git dir's
+    // modules). One git takes for none (missing, empty) is no exception, and a link on its way the
+    // session could repoint is refused whatever it leads to now: git follows the pointer on every run.
+    const pointer = gitfilePointer(g);
+    if (!pointer) throw new Error(`Airlock cannot read the git pointer ${g} as git does (no "gitdir: ", or too large), so it cannot protect what it names. Nothing was launched.`);
+    // Inside the mounts, only a submodule's place is safe: under a git dir's modules, protected as
+    // named (no pattern: `**` is a name too), and read-only by the deepest bind holding it - a linked
+    // worktree's own git dir is bound writable again (review).
+    const modules = held.map((h) => path.resolve(h)).filter((h) => path.basename(h) === 'modules' && !/[*?[\]{}]/.test(h));
+    const covered = (t: string) => modules.some((m) => inside(t, m)) && underReadOnly(t, modules, writable);
+    const reached = walkPointer(path.dirname(g), pointer, (l) => !mounted(l));
+    if ('refused' in reached) {
+      throw new Error(`Airlock cannot protect the repository the git pointer ${g} names: ${reached.refused}. Nothing was launched.`);
+    }
+    if ('link' in reached) {
+      throw new Error(`Airlock cannot protect the repository the git pointer ${g} names: ${reached.link} on its way is a link the session could repoint. Nothing was launched.`);
+    }
+    if (mounted(reached.path) && !covered(reached.path)) {
+      throw new Error(`Airlock cannot protect ${reached.path}: the git pointer ${g} names it as its repository, and the session could make or change one there that host git would run. Nothing was launched.`);
+    }
   }
   // What git's config adds to what host git runs, read wherever host git may run (git finds the
   // repository above a workspace with none of its own): the config files, the files includes name,
@@ -1255,7 +1339,8 @@ interface MachineInfo { name: string; state: string; labels?: Record<string, str
  */
 interface Prepared { plan: GuestPlan; ca: MachineCa; placeholders: Record<string, string>; commandSetup?: string }
 
-type HeldPlaceholder = Placeholder & { dev: number; ino: number; parent: string };
+/** `ctime`: when it was made, to the nanosecond - an inode number alone is reused at once (ext4: CI). */
+type HeldPlaceholder = Placeholder & { dev: number; ino: number; ctime?: string; parent: string };
 
 /** Creating a machine pulls its image, and starting it may install the workspace's dependencies: both take a while. */
 export const LOCK_TIMEOUT_MS = 900_000;
@@ -1405,8 +1490,8 @@ export class SmolvmRuntime implements AirlockRuntime {
       }
       if (p.kind === 'dir') fs.mkdirSync(p.path);
       else fs.writeFileSync(p.path, p.content, { flag: 'wx' });
-      const st = fs.lstatSync(p.path);
-      held.push({ ...p, dev: st.dev, ino: st.ino, parent: fs.realpathSync(path.dirname(p.path)) });
+      const st = fs.lstatSync(p.path, { bigint: true });
+      held.push({ ...p, dev: Number(st.dev), ino: Number(st.ino), ctime: st.ctimeNs.toString(), parent: fs.realpathSync(path.dirname(p.path)) });
       fs.writeFileSync(record, JSON.stringify(held));
     }
   }
@@ -1429,7 +1514,8 @@ export class SmolvmRuntime implements AirlockRuntime {
       try {
         if (fs.realpathSync(path.dirname(p.path)) !== p.parent) continue;
         const st = fs.lstatSync(p.path);
-        if (st.dev !== p.dev || st.ino !== p.ino) continue;
+        // The same object: a directory removed and made again can get the very inode number back.
+        if (st.dev !== p.dev || st.ino !== p.ino || (p.ctime && fs.lstatSync(p.path, { bigint: true }).ctimeNs.toString() !== p.ctime)) continue;
         if (p.kind === 'dir' && st.isDirectory()) fs.rmdirSync(p.path);
         else if (p.kind === 'file' && st.isFile() && fs.readFileSync(p.path, 'utf8') === p.content) fs.rmSync(p.path);
       } catch { /* gone, or not empty: left alone */ }

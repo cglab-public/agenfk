@@ -17,6 +17,7 @@ import crypto from 'crypto';
 import net from 'net';
 import https from 'https';
 import { machineCa, startKeyInjector, placeholderFor, upstreamTarget, leafFor, type MachineCa } from '../airlock/keyInjector';
+import { vmTestBase } from './helpers/vmTestBase';
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-inject-')); });
@@ -43,7 +44,8 @@ describe('machineCa', () => {
     const cert = new crypto.X509Certificate(a.certPem);
     expect(cert.ca).toBe(true);
     const keyFile = fs.readdirSync(dir).find((f) => f.endsWith('.key')) as string;
-    expect((fs.statSync(path.join(dir, keyFile)).mode & 0o777).toString(8)).toBe('600');
+    // Windows keeps no POSIX mode bits (Airlock does not run there).
+    if (process.platform !== 'win32') expect((fs.statSync(path.join(dir, keyFile)).mode & 0o777).toString(8)).toBe('600');
   });
 });
 
@@ -278,7 +280,8 @@ describe('startKeyInjector', () => {
     }
   });
 
-  it('listens on a Unix socket when given one', async () => {
+  // Unix sockets: the route the decider hands a flow to, on macOS and Linux only (Airlock refuses Windows).
+  it.skipIf(process.platform === 'win32')('listens on a Unix socket when given one', async () => {
     const sock = path.join('/tmp', `agenfk-inj-${process.pid}-${Date.now()}.sock`);
     const viaSocket = await startKeyInjector({ ca, routes: [{ host: 'api.inference.test', port: 443 }], secrets: [{ placeholder: PH, value: KEY }], socketPath: sock, connectUpstream: () => ({ protocol: 'http:', hostname: '127.0.0.1', port: upstreamPort }) });
     try {
@@ -322,13 +325,15 @@ describe('startKeyInjector', () => {
     }
   };
 
-  it('on its socket, sends a flow to the address the decider approved for it', async () => {
+  // Unix sockets: the route the decider hands a flow to, on macOS and Linux only (Airlock refuses Windows).
+  it.skipIf(process.platform === 'win32')('on its socket, sends a flow to the address the decider approved for it', async () => {
     const asked: string[] = [];
     expect(await viaSocketPreface('AGENFK-DEST 203.0.113.7\n', asked)).toBe(200);
     expect(asked).toEqual(['203.0.113.7']);
   });
 
-  it('on its socket, refuses a flow with no approved address, or one that is not an address', async () => {
+  // Unix sockets: the route the decider hands a flow to, on macOS and Linux only (Airlock refuses Windows).
+  it.skipIf(process.platform === 'win32')('on its socket, refuses a flow with no approved address, or one that is not an address', async () => {
     const before = seen.length;
     for (const preface of [null, 'AGENFK-DEST api.inference.test\n', 'HELLO 203.0.113.7\n']) {
       expect(await viaSocketPreface(preface, []), String(preface)).toBe(0);
@@ -346,7 +351,8 @@ describe('startKeyInjector', () => {
 
   // Review: the real upstream dial, not a stand-in - to the approved address, the certificate
   // checked for the route's name.
-  it('dials the approved address over TLS and checks the certificate for the host\'s name', async () => {
+  // Unix sockets: the route the decider hands a flow to, on macOS and Linux only (Airlock refuses Windows).
+  it.skipIf(process.platform === 'win32')('dials the approved address over TLS and checks the certificate for the host\'s name', async () => {
     const upCa = machineCa(fs.mkdtempSync(path.join(dir, 'up-')));
     const serve = (host: string) => new Promise<https.Server>((resolve) => {
       const leaf = leafFor(upCa, host);
@@ -382,7 +388,8 @@ describe('startKeyInjector', () => {
     expect(n).toBe(before + 1);
   });
 
-  it('on its socket, cuts a flow whose TLS handshake never completes', async () => {
+  // Unix sockets: the route the decider hands a flow to, on macOS and Linux only (Airlock refuses Windows).
+  it.skipIf(process.platform === 'win32')('on its socket, cuts a flow whose TLS handshake never completes', async () => {
     const sock = path.join('/tmp', `agenfk-inj-${process.pid}-${Date.now()}-h.sock`);
     const inj = await startKeyInjector({ ca, routes: [{ host: 'api.inference.test', port: 443 }], secrets: [{ placeholder: PH, value: KEY }], socketPath: sock, handshakeTimeoutMs: 100 });
     try {
@@ -415,7 +422,7 @@ describe.skipIf(!smolvmHere)('relay and key injection against the real smolvm (A
     const { SmolvmRuntime } = await import('../airlock/smolvm');
     const { buildSandboxSpec } = await import('../airlock/spec');
     const { normalizeAirlockPolicy } = await import('@agenfk/core');
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-inject-vm-')));
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(vmTestBase(), 'agenfk-inject-vm-')));
     const home = path.join(root, 'home');
     const workspace = path.join(root, 'repo');
     fs.mkdirSync(path.join(home, '.pi', 'agent'), { recursive: true });

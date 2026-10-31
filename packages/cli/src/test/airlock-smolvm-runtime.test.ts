@@ -18,6 +18,7 @@ import os from 'os';
 import path from 'path';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSession, type SandboxSpec } from '../airlock/spec';
+import { vmTestBase } from './helpers/vmTestBase';
 import type { ProxyDecision } from '../airlock/runtime';
 import { allowListArgs, EgressService, GATEWAY, networkKey, resolverTokenOf, type Route } from '../airlock/egress';
 import {
@@ -136,10 +137,14 @@ function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string
   return { run, calls, machines, mounts, verbs, execs };
 }
 
+// The smolvm runtime runs on macOS and Linux only (check() refuses Windows): what it does with Unix
+// sockets, sh and POSIX file modes is tested there.
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+
 function fakeEgress(): EgressBroker & { ensure: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; updateNetwork: ReturnType<typeof vi.fn>; watch: ReturnType<typeof vi.fn>; addRoute: ReturnType<typeof vi.fn>; emit(d: ProxyDecision): void; unwatched: number; routes: Route[] } {
   const listeners = new Set<(d: ProxyDecision) => void>();
   // Short: route sockets are Unix socket paths.
-  const sockets = fs.mkdtempSync(path.join('/tmp', 'agenfk-rs-'));
+  const sockets = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'agenfk-rs-'));
   let n = 0;
   const broker = {
     unwatched: 0,
@@ -202,7 +207,7 @@ const specOf = (over: Partial<SandboxSession> = {}): SandboxSpec =>
   buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }), session(over));
 
 beforeEach(() => {
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-smolvm-')));
+  root = fs.realpathSync(fs.mkdtempSync(path.join(vmTestBase(), 'agenfk-smolvm-')));
   home = path.join(root, 'home');
   workspace = path.join(root, 'work', 'repo');
   agentDir = path.join(home, '.pi', 'agent');
@@ -332,7 +337,7 @@ describe('machineNameOf', () => {
   });
 });
 
-describe('the machine of a workspace', () => {
+describePosix('the machine of a workspace', () => {
   it('is created on the first launch from the image, with mediated networking, labelled with its workspace and image', async () => {
     const { rt, smolvm, sp } = runtime();
     const launched = rt.launch(specOf(), cmd());
@@ -430,7 +435,7 @@ describe('the machine of a workspace', () => {
   });
 });
 
-describe('guestPlanOf: what the guest sees', () => {
+describePosix('guestPlanOf: what the guest sees', () => {
   const plan = (over: Partial<SandboxSession> = {}) => guestPlanOf(specOf(over), workspace);
 
   it('mounts the workspace and the client state read-write at their host paths, and no host temp dir', () => {
@@ -530,7 +535,7 @@ describe('guestPlanOf: what the guest sees', () => {
   });
 });
 
-describe('a session in the machine', () => {
+describePosix('a session in the machine', () => {
   it('joins a machine holding exactly its own mounts without mounting anything again', async () => {
     const name = machineNameOf(workspace);
     const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
@@ -764,6 +769,14 @@ describe.skipIf(process.platform === 'win32')('guestPlanOf: a linked git worktre
   });
   const plan = () => guestPlanOf(specOf({ workspace: wt, gitDir: null }), wt);
 
+  // CI fix review pass 6 (Codex): the worktree's own git dir is bound writable under the protected
+  // worktrees dir, so a nested pointer's repository there is the session's to make.
+  it('refuses a nested git pointer whose repository would be in the worktree\'s own, writable git dir', () => {
+    fs.mkdirSync(path.join(wt, 'sub'));
+    fs.writeFileSync(path.join(wt, 'sub', '.git'), `gitdir: ${path.join(wtGit, 'later')}\n`);
+    expect(() => plan()).toThrow(/later/);
+  });
+
   it('mounts the common git dir beside the worktree, and nothing else of the main checkout', () => {
     const roots = plan().mounts.map((m) => m.host);
     expect(roots).toEqual(expect.arrayContaining([wt, common]));
@@ -879,7 +892,7 @@ describe.skipIf(process.platform === 'win32')('guestPlanOf: a linked git worktre
  * node) cannot have them: enforce refuses, observe warns.
  */
 /** Story review: what several sessions of one repository share, and what a crash leaves. */
-describe('sessions sharing a machine, and crashes (CGLAB-696 story review)', () => {
+describePosix('sessions sharing a machine, and crashes (CGLAB-696 story review)', () => {
   it('a second session under the same policy joins, though its relay to the server has another port', async () => {
     const name = machineNameOf(workspace);
     const smolvm = fakeSmolvm({ machines: { [name]: running(name) } });
@@ -920,7 +933,7 @@ describe('sessions sharing a machine, and crashes (CGLAB-696 story review)', () 
  * own: root gives the session one it cannot write, holding the host's hook scripts, policy state
  * and workflow token; and marks the machine, which is how the adapters know they are inside one.
  */
-describe('the agenfk adapters in the machine (CGLAB-696 task 9)', () => {
+describePosix('the agenfk adapters in the machine (CGLAB-696 task 9)', () => {
   const agenfkDir = () => path.join(home, '.agenfk');
   // The running CLI's own hook scripts (its install's bin/), not whatever ~/.agenfk/bin holds: review.
   const hooksDir = () => path.join(root, 'install', 'bin');
@@ -1078,7 +1091,7 @@ describe('the agenfk adapters in the machine (CGLAB-696 task 9)', () => {
  * Story review 2 (DEL-1): OpenCode's config runs AgEnFK's MCP from the host's install, which the
  * machine does not have: the bundled MCP is put where that config says.
  */
-describe('AgEnFK\'s MCP for an OpenCode session in the machine (story review 2)', () => {
+describePosix('AgEnFK\'s MCP for an OpenCode session in the machine (story review 2)', () => {
   const installServer = () => path.join(root, 'install', 'packages', 'server', 'dist', 'index.js');
   const bundle = () => path.join(root, 'bundle', 'mcp-bundle.js');
   const writeConfig = (command: unknown) => {
@@ -1148,7 +1161,7 @@ describe('AgEnFK\'s MCP for an OpenCode session in the machine (story review 2)'
 });
 
 /** Story review 2 (LIFE-2): a policy changed while a session runs reaches its machine. */
-describe('a network policy changed while the session runs (story review 2)', () => {
+describePosix('a network policy changed while the session runs (story review 2)', () => {
   const policySpec = (hosts: { allow?: string[]; deny?: string[] }, mode: 'enforce' | 'observe' = 'enforce') =>
     buildSandboxSpec(normalizeAirlockPolicy({ mode, hosts: { allow: hosts.allow ?? ['api.github.com'], deny: hosts.deny ?? [] } }), session());
   const rootScripts = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.execs().filter((a) => flag(a, '-u') === 'root').map((a) => a[a.length - 1]);
@@ -1249,7 +1262,7 @@ describe('a network policy changed while the session runs (story review 2)', () 
 });
 
 // 6386d4ac: a session is its launcher, not just its pid: after a crash or a reboot the pid is reused.
-describe('which sessions are in the machine', () => {
+describePosix('which sessions are in the machine', () => {
   const record = (rec: Record<string, unknown>) => {
     const dir = path.join(stateDir, 'machines', machineNameOf(workspace), 'sessions');
     fs.mkdirSync(dir, { recursive: true });
@@ -1285,7 +1298,7 @@ describe('which sessions are in the machine', () => {
   });
 });
 
-describe('the machine\'s resolver (CGLAB-696 task 8)', () => {
+describePosix('the machine\'s resolver (CGLAB-696 task 8)', () => {
   const rootScripts = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.execs().filter((a) => flag(a, '-u') === 'root').map((a) => a[a.length - 1]);
 
   it('is set up by root, with the policy\'s denied names, before the session starts', async () => {
@@ -1350,7 +1363,7 @@ describe('the machine\'s resolver (CGLAB-696 task 8)', () => {
   });
 });
 
-describe('guestPlanOf: what the session cannot move aside or plant', () => {
+describePosix('guestPlanOf: what the session cannot move aside or plant', () => {
   it('pins the workspace .git, so it cannot be renamed and replaced around its read-only hooks and config', () => {
     const p = guestPlanOf(specOf(), workspace);
     expect(p.pinned).toContain(path.join(workspace, '.git'));
@@ -1710,6 +1723,62 @@ describe('guestPlanOf: what the session cannot move aside or plant', () => {
       expect(p.readOnly).toContain(path.join(workspace, 'sub', '.git'));
     });
 
+    // CI fix review (Codex): a pointer naming no repository yet is one the session could create, hooks and all.
+    it('refuses a nested .git pointer to a repository the session could create', () => {
+      fs.mkdirSync(path.join(workspace, 'sub'));
+      fs.writeFileSync(path.join(workspace, 'sub', '.git'), 'gitdir: ../later\n');
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/later/);
+      // An empty directory there is no repository to git either; nor is one reached through a link.
+      fs.mkdirSync(path.join(workspace, 'later'));
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/later/);
+      fs.rmdirSync(path.join(workspace, 'later'));
+      fs.symlinkSync(path.join(workspace, 'nowhere'), path.join(workspace, 'later'));
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/later|nowhere/);
+      // Nor one reached through a link the session could repoint, though it leads somewhere protected now.
+      fs.rmSync(path.join(workspace, 'later'));
+      fs.mkdirSync(path.join(workspace, '.git', 'modules', 'sub'), { recursive: true });
+      fs.symlinkSync(path.join(workspace, '.git', 'modules', 'sub'), path.join(workspace, 'later'));
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/later.*link/);
+    });
+
+    // CI fix review pass 4 (Codex): read and walked as git and the filesystem do, not as normalised text.
+    it('walks a git pointer as the filesystem does: `..` after a link the session could repoint is refused', () => {
+      fs.mkdirSync(path.join(workspace, '.git', 'modules', 'sub'), { recursive: true });
+      fs.mkdirSync(path.join(workspace, 'escape', 'deep'), { recursive: true });
+      fs.symlinkSync(path.join(workspace, 'escape', 'deep'), path.join(workspace, 'alias'));
+      fs.mkdirSync(path.join(workspace, 'sub'));
+      fs.writeFileSync(path.join(workspace, 'sub', '.git'), 'gitdir: ../alias/../.git/modules/sub\n');
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/alias.*link/);
+      // Nor `..` after what is not there yet: the session could make it a link later (review pass 5).
+      fs.writeFileSync(path.join(workspace, 'sub', '.git'), 'gitdir: ../missing/../.git/modules/sub\n');
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/missing.*goes back up/);
+      // Nor on through a file, which the session could make a link later (review pass 6).
+      fs.writeFileSync(path.join(workspace, 'blocker'), '');
+      fs.writeFileSync(path.join(workspace, 'sub', '.git'), 'gitdir: ../blocker/../.git/modules/sub\n');
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/blocker.*not a directory/);
+    });
+
+    it('reads a git pointer as git does: a leading space is part of the path, and one too large refuses', () => {
+      fs.mkdirSync(path.join(workspace, 'sub'));
+      // Git reads " /outside" relative to sub: inside the workspace, where the session could make it.
+      fs.writeFileSync(path.join(workspace, 'sub', '.git'), 'gitdir:  /outside\n');
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/outside/);
+      fs.writeFileSync(path.join(workspace, 'sub', '.git'), `gitdir: ../.git/modules/sub${' '.repeat(2 << 20)}\n`);
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/too large/);
+      // Git reads a C string: the path ends at a NUL, where Node's would not.
+      fs.writeFileSync(path.join(workspace, 'sub', '.git'), 'gitdir: ../later\0/../.git/modules/sub\n');
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/as git does/);
+      // Nor bytes that are not UTF-8: git keeps them, a decoder would not (review pass 7).
+      fs.writeFileSync(path.join(workspace, 'sub', '.git'), Buffer.concat([Buffer.from('gitdir: ../alias'), Buffer.from([0xff]), Buffer.from('/../.git/modules/sub\n')]));
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/as git does/);
+    });
+
+    it('takes no deny pattern for a protection a pointer\'s repository is under: `**` is a name too', () => {
+      fs.mkdirSync(path.join(workspace, 'sub'));
+      fs.writeFileSync(path.join(workspace, 'sub', '.git'), 'gitdir: ../**/.agenfk/later\n');
+      expect(() => guestPlanOf(specOf(), workspace)).toThrow(/later/);
+    });
+
     it('refuses a nested .git that is a symbolic link', () => {
       fs.mkdirSync(path.join(workspace, 'elsewhere'));
       fs.mkdirSync(path.join(workspace, 'sub'));
@@ -1826,7 +1895,7 @@ describe('guestPlanOf: what the session cannot move aside or plant', () => {
   });
 });
 
-describe('placeholders are taken back only as they were made', () => {
+describePosix('placeholders are taken back only as they were made', () => {
   it('holds a missing .git/config with an empty file, which git reads as no settings', () => {
     fs.rmSync(path.join(workspace, '.git', 'config'));
     expect(guestPlanOf(specOf(), workspace).placeholders).toContainEqual({ path: path.join(workspace, '.git', 'config'), kind: 'file', content: '' });
@@ -1883,6 +1952,23 @@ describe('placeholders are taken back only as they were made', () => {
     expect(fs.existsSync(worktrees)).toBe(true);
   });
 
+  // CI (ext4): a directory removed and made again got the very inode number back, and was taken for the placeholder.
+  it('leaves a placeholder dir made again under the same inode number', async () => {
+    const { rt, sp } = runtime();
+    const worktrees = path.join(workspace, '.git', 'worktrees');
+    const launched = await rt.launch(specOf(), cmd());
+    await new Promise((r) => setTimeout(r, 5));
+    fs.rmdirSync(worktrees);
+    fs.mkdirSync(worktrees);
+    // As ext4 does: the record names the new directory's inode number.
+    const record = path.join(stateDir, 'machines', machineNameOf(workspace), 'placeholders.json');
+    const held = JSON.parse(fs.readFileSync(record, 'utf8')).map((h: { path: string; ino: number }) => (h.path === worktrees ? { ...h, ino: fs.lstatSync(worktrees).ino } : h));
+    fs.writeFileSync(record, JSON.stringify(held));
+    sp.children[0].finish(0);
+    await launched.exited;
+    expect(fs.existsSync(worktrees)).toBe(true);
+  });
+
   it('leaves a placeholder file that was changed', async () => {
     const { rt, sp } = runtime();
     const conf = path.join(workspace, '.git', 'config.worktree');
@@ -1894,7 +1980,7 @@ describe('placeholders are taken back only as they were made', () => {
   });
 });
 
-describe('sessions starting and leaving at once', () => {
+describePosix('sessions starting and leaving at once', () => {
   it('two launches at once make one machine and start it once', async () => {
     const smolvm = fakeSmolvm();
     const egress = fakeEgress();
@@ -2103,7 +2189,7 @@ describe('sessions starting and leaving at once', () => {
   });
 });
 
-describe('signalling through a pid file the session owns', () => {
+describePosix('signalling through a pid file the session owns', () => {
   it('bounds the signalling exec and accepts nothing but a pid from the file', async () => {
     const { rt, smolvm } = runtime();
     const launched = await rt.launch(specOf(), cmd());
@@ -2128,7 +2214,7 @@ describe('signalling through a pid file the session owns', () => {
   });
 });
 
-describe('the AgEnFK server and the model key, from inside the machine', () => {
+describePosix('the AgEnFK server and the model key, from inside the machine', () => {
   const keySession = (over: Partial<SandboxSession> = {}) => specOf({ serverUrl: 'http://127.0.0.1:3123', maskedEnv: ['OPENAI_API_KEY'], ...over });
 
   type Started = { routes: unknown; secrets: Array<{ placeholder: string; value: string }>; ca: { certPem: string }; socketPath?: string };
@@ -2365,7 +2451,7 @@ describe('the AgEnFK server and the model key, from inside the machine', () => {
   });
 });
 
-describe('the image of the machine (CGLAB-696 task 4)', () => {
+describePosix('the image of the machine (CGLAB-696 task 4)', () => {
   const OTHER = 'ghcr.io/acme/app-airlock:3';
 
   it('is the spec\'s machineImage when it names one: created from it and labelled with it', async () => {
@@ -2393,7 +2479,7 @@ describe('the image of the machine (CGLAB-696 task 4)', () => {
   });
 });
 
-describe('guestPlanOf: the guest\'s own platform dirs (CGLAB-696 task 4)', () => {
+describePosix('guestPlanOf: the guest\'s own platform dirs (CGLAB-696 task 4)', () => {
   const plan = () => guestPlanOf(specOf(), workspace);
   const write = (rel: string, content = '{}') => {
     fs.mkdirSync(path.dirname(path.join(workspace, rel)), { recursive: true });
@@ -2538,7 +2624,7 @@ describe('guestPlanOf: the guest\'s own platform dirs (CGLAB-696 task 4)', () =>
   });
 });
 
-describe('guestSetupScript: the platform dirs', () => {
+describePosix('guestSetupScript: the platform dirs', () => {
   it('binds a platform dir only where the guest resolves it to itself: root never binds through a link (third review 1)', () => {
     // Run by sh, with mount and its helpers stubbed: one real dir, and one the session made a link to /usr/bin.
     const real = path.join(workspace, 'node_modules');
@@ -2564,7 +2650,7 @@ describe('guestSetupScript: the platform dirs', () => {
   });
 });
 
-describe('guestSetupScript: the session user', () => {
+describePosix('guestSetupScript: the session user', () => {
   it('gives the session\'s uid and gid a passwd and group entry when the image has none: ssh refuses a user it cannot look up', () => {
     const script = guestSetupScript(guestPlanOf(specOf(), workspace), 503, 20, undefined, '/home/u');
     expect(script).toContain("getent group 20 >/dev/null || echo 'agenfk:x:20:' >> /etc/group");
@@ -2604,7 +2690,7 @@ describe('platformInstallOf: what installs the guest\'s dependencies', () => {
   });
 });
 
-describe('CONTAINED_INSTALL, run by sh with a stand-in cgroup (story review 3)', () => {
+describePosix('CONTAINED_INSTALL, run by sh with a stand-in cgroup (story review 3)', () => {
   // Lifecycle scripts the install runs are the repository's: one that daemonizes must not outlive
   // it. Root makes the cgroup, a child moves itself in before it becomes the session user, and
   // everything still in it is killed once the install ends - root's shell is not in it.
@@ -2668,7 +2754,7 @@ describe('CONTAINED_INSTALL, run by sh with a stand-in cgroup (story review 3)',
   });
 });
 
-describe('PLATFORM_INSTALL_SCRIPT, run by sh', () => {
+describePosix('PLATFORM_INSTALL_SCRIPT, run by sh', () => {
   // The script as the guest runs it: sh -c SCRIPT <stamp> <hash> <command...>, in the workspace.
   let bin: string;
   let log: string;
@@ -2731,7 +2817,7 @@ describe('PLATFORM_INSTALL_SCRIPT, run by sh', () => {
   });
 });
 
-describe('a session in a machine with dependencies to install', () => {
+describePosix('a session in a machine with dependencies to install', () => {
   const lock = '{"lockfileVersion":3}';
   beforeEach(() => {
     fs.writeFileSync(path.join(workspace, 'package.json'), '{}');
@@ -2873,7 +2959,7 @@ describe('a session in a machine with dependencies to install', () => {
   });
 });
 
-describe('airlock reset', () => {
+describePosix('airlock reset', () => {
   it('deletes the workspace\'s machine', async () => {
     const name = machineNameOf(workspace);
     const smolvm = fakeSmolvm({ machines: { [name]: { state: 'running', image: IMAGE, labels: { 'agenfk.workspace': workspace, 'agenfk.image': IMAGE } } } });
@@ -2937,7 +3023,7 @@ describe('buildSandboxSpec, for a runtime that mounts', () => {
  * decision 2026-10-30): not a boundary - through the session's /proc view the command reaches what
  * the session does, its relay to the AgEnFK server included.
  */
-describe('a command the server runs, in the workspace machine (CGLAB-696 task 5)', () => {
+describePosix('a command the server runs, in the workspace machine (CGLAB-696 task 5)', () => {
   const commandSpec = (): SandboxSpec => buildSandboxSpec(
     normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['registry.npmjs.org'] } }),
     session({ purpose: 'command', inferenceHosts: [], serverPort: 0, piAgentDir: undefined }),
@@ -3141,7 +3227,7 @@ describe.skipIf(process.platform === 'win32')('COMMAND_IN_NAMESPACE, run by sh',
  * a host-side `smolvm machine exec` that dies leaves its command running in the guest (measured).
  * A watchdog of its own, outside that group, ends the guest command when the launcher is gone.
  */
-describe('a launcher killed outright (review 01a18ca1)', () => {
+describePosix('a launcher killed outright (review 01a18ca1)', () => {
   it('starts a watchdog that, once this process is gone, has the session reaped (story review 2)', async () => {
     const { rt, sp, watchdog } = runtime();
     await rt.launch(specOf(), cmd());

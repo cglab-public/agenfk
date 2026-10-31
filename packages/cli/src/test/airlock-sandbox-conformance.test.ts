@@ -22,6 +22,7 @@ import { SmolvmRuntime, SMOLVM_VERSION, machineNameOf } from '../airlock/smolvm'
 import { GATEWAY } from '../airlock/egress';
 import type { ProxyDecision } from '../airlock/runtime';
 import { realBroker, smolvmTestsEnabled } from './fixtures/smolvm-real';
+import { vmTestBase } from './helpers/vmTestBase';
 
 const IMAGE = process.env.AGENFK_AIRLOCK_TEST_IMAGE;
 const SMOLVM = process.env.AGENFK_SMOLVM_PATH ?? 'smolvm';
@@ -86,7 +87,7 @@ it.runIf(process.env.AGENFK_REQUIRE_SMOLVM_TESTS === '1' && !enabled)('the confo
 
 describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM_TESTS=1, AGENFK_AIRLOCK_TEST_IMAGE)', () => {
   beforeAll(async () => {
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-conformance-')));
+    root = fs.realpathSync(fs.mkdtempSync(path.join(vmTestBase(), 'agenfk-conformance-')));
     home = path.join(root, 'home');
     ws = path.join(root, 'work', 'repo');
     stateDir = path.join(root, 'state');
