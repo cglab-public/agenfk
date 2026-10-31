@@ -4,6 +4,21 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.9] — 2026-10-31
+
+**Airlock**
+
+- **Home access is a policy setting** (#301). The org's Airlock policy chooses what of the home folder a sandboxed
+  session's machine sees: *protect credentials* (the default, as before), *home folder read-only*, or *home folder
+  read-write*. It is set on the hub admin page or the standalone board; a hub-joined installation follows the hub and
+  cannot open more locally. AgEnFK's own files stay unwritable and Airlock's records unreadable in every mode. The
+  open modes let a pi provider whose key is read from `auth.json` work inside the sandbox. Read-write is labelled as
+  able to run code on the machine: git, ssh and shell config, login agents and both agents' configs stay protected,
+  other projects' hooks and unlisted tool configs do not. A policy that narrows home access ends running sessions.
+- **`agenfk airlock pi|opencode` passes every argument after the client's name to it as typed**, `--help` and `--`
+  included. AgEnFK's own `--key-env NAME` now goes before the client's name: `agenfk airlock --key-env NAME pi ...`.
+- A session that ignores SIGTERM is ended through its cgroup, which it cannot redirect.
+
 ## [2.1.0-beta.8] — 2026-10-31
 
 **Airlock**
