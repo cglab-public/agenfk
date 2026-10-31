@@ -147,6 +147,12 @@ export interface GuestPlan {
   writable: string[];
   /** Paths inside the mounts bound read-only in the guest. */
   readOnly: string[];
+  /**
+   * The home folder the policy opens read-only (homeAccess): made read-only before every other bind.
+   * Not among readOnly, whose trees are searched for what links out of them: a home folder is not
+   * a protected tree, only a read-only one (review 01a193dc-38d2).
+   */
+  homeReadOnly?: string;
   /** Paths inside the mounts the guest cannot read. */
   hidden: Array<{ path: string; kind: 'file' | 'dir' }>;
   /** Protected paths that do not exist yet, held for the session so nothing can be planted there. */
@@ -169,6 +175,9 @@ const FILE_PLACEHOLDERS: Record<string, string> = {
   commondir: '.\n', 'config.worktree': '', config: '',
   // A client's settings held while missing: a file its client reads as empty, never a dir it cannot read.
   'settings.json': '{}\n', 'opencode.json': '{}\n', 'opencode.jsonc': '{}\n', 'config.json': '{}\n', 'package.json': '{}\n',
+  // What a read-write home folder holds of git's and the shells' (HOST_RUN_CONFIGS): empty files, which
+  // they read as nothing, never directories they would fail on.
+  ...Object.fromEntries(['.gitconfig', '.profile', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout', '.zshrc', '.zshenv', '.zprofile', '.zlogin', '.zlogout'].map((f) => [f, ''])),
 };
 
 /** In the workspace's .git: unwritable, and held when missing. */
@@ -770,15 +779,26 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     const over = guarded.find((g) => inside(r, g));
     if (over) throw new Error(`Airlock will not mount ${r}: it is inside ${over}, which the session may not write. Launch it from a project folder. Nothing was launched.`);
   }
-
+  // The home folder the policy opens (homeAccess, story 525cd331) is a mount of its own, read-only or
+  // read-write; the write roots in it come through it, each bound writable on its own - a mount point,
+  // so the session cannot rename one away. What is protected below is protected as before.
+  const writeRoots = [...roots];
   const readOnly: string[] = [];
+  const writable: string[] = [];
+  const homeMount = spec.filesystem.homeMount && home ? home : null;
+  if (homeMount) {
+    writable.push(...roots.filter((r) => inside(r, homeMount)));
+    roots.splice(0, roots.length, homeMount, ...roots.filter((r) => !inside(r, homeMount)));
+  }
+  // Where the session could make what is missing: a write root, or anywhere in a read-write home folder.
+  const creatable = (p: string) => (spec.filesystem.homeMount === 'rw' ? mounted(p) : writeRoots.some((r) => inside(p, r)));
+
   const pinned: string[] = [];
   const placeholders: Placeholder[] = [];
   const dotGit = path.resolve(workspace, '.git');
   const gitKind = mounted(dotGit) ? kindOf(dotGit) : null;
   // A linked worktree's pointer names the git dir host git uses: read-only. Its own git dir stays
   // writable (index, HEAD), pinned with the common dir; what else names git config is protected.
-  const writable: string[] = [];
   const worktreeHeld: string[] = [];
   const worktreesHidden: string[] = [];
   if (gitKind === 'file' && linked) {
@@ -799,7 +819,7 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   if (gitKind === 'dir') pinned.push(dotGit);
   // No repository here: an empty, read-only .git keeps one from being planted for host git (which
   // passes over an empty .git, measured), for as long as a session runs.
-  if (!gitKind && roots.includes(workspace)) {
+  if (!gitKind && writeRoots.includes(workspace)) {
     placeholders.push({ path: dotGit, kind: 'dir' });
     readOnly.push(dotGit);
   }
@@ -840,7 +860,7 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     if ('link' in reached) {
       throw new Error(`Airlock cannot protect the repository the git pointer ${g} names: ${reached.link} on its way is a link the session could repoint. Nothing was launched.`);
     }
-    if (mounted(reached.path) && !covered(reached.path)) {
+    if (creatable(reached.path) && !covered(reached.path)) {
       throw new Error(`Airlock cannot protect ${reached.path}: the git pointer ${g} names it as its repository, and the session could make or change one there that host git would run. Nothing was launched.`);
     }
   }
@@ -853,12 +873,12 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   for (const repo of repos) {
     const git = gitConfigDependencies(repo, readConfig);
     for (const p of [...git.hooksPaths, ...git.includes]) {
-      if (mounted(p) && !kindOfPath(p)) {
+      if (creatable(p) && !kindOfPath(p)) {
         throw new Error(`Airlock cannot protect ${p}: git's config (core.hooksPath or an include) names it, it does not exist, and the session could create it. Nothing was launched.`);
       }
     }
     for (const prog of git.programs) {
-      if (mounted(prog.path) && !kindOfPath(prog.path)) {
+      if (creatable(prog.path) && !kindOfPath(prog.path)) {
         throw new Error(`Airlock cannot protect ${prog.path}: git's config (${prog.key}) names it as a program to run, it does not exist, and the session could create it. Nothing was launched.`);
       }
     }
@@ -875,10 +895,29 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     // the guest cannot swap any of them for a link while a session runs (each is a mount point), so
     // creating the placeholder cannot be steered out of the mounts.
     const parent = path.dirname(p);
-    if (!held.some((h) => path.resolve(h) === p) || !(roots.includes(parent) || pinned.includes(parent) || writable.includes(parent))) continue;
-    const base = path.basename(p);
-    placeholders.push(base in FILE_PLACEHOLDERS ? { path: p, kind: 'file', content: FILE_PLACEHOLDERS[base] } : { path: p, kind: 'dir' });
-    readOnly.push(p);
+    if (!held.some((h) => path.resolve(h) === p)) continue;
+    if (roots.includes(parent) || pinned.includes(parent) || writable.includes(parent)) {
+      const base = path.basename(p);
+      placeholders.push(base in FILE_PLACEHOLDERS ? { path: p, kind: 'file', content: FILE_PLACEHOLDERS[base] } : { path: p, kind: 'dir' });
+      readOnly.push(p);
+      continue;
+    }
+    // Deeper, where the session could make it (a read-write home folder, a write root holding a
+    // client's config: review 01a193dc-38d2): the highest missing directory on its way is held, empty
+    // and read-only; the directories above it are pinned with the rest below, so it cannot be moved
+    // aside. A link or a file on its way could take what is planted elsewhere: refused, never skipped.
+    if (!creatable(p)) continue;
+    const root = roots.find((r) => inside(p, r)) as string;
+    let top = p;
+    while (path.dirname(top) !== root && inside(path.dirname(top), root) && !kindOf(path.dirname(top))) top = path.dirname(top);
+    const above = path.dirname(top);
+    if (kindOf(above) !== 'dir' || fs.lstatSync(above).isSymbolicLink()) {
+      throw new Error(`Airlock cannot protect ${p}: ${above} on its way is ${fs.lstatSync(above).isSymbolicLink() ? 'a symbolic link' : 'not a directory'}, and the session could make it there. Nothing was launched.`);
+    }
+    if (readOnly.includes(top)) continue;
+    const base = path.basename(top);
+    placeholders.push(top === p && base in FILE_PLACEHOLDERS ? { path: top, kind: 'file', content: FILE_PLACEHOLDERS[base] } : { path: top, kind: 'dir' });
+    readOnly.push(top);
   }
 
   // What a protected tree links to is protected with it, and what that links to, to a fixed point.
@@ -952,6 +991,7 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
 
   return {
     mounts: roots.map((r) => ({ host: r, guest: r, readOnly: false as const })), pinned, writable, readOnly, hidden, placeholders, platform,
+    ...(homeMount && spec.filesystem.homeMount === 'ro' ? { homeReadOnly: homeMount } : {}),
     ...(fromLockfiles.incomplete ? { platformIncomplete: fromLockfiles.incomplete } : {}),
   };
 }
@@ -1042,6 +1082,8 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
     // The guest's own platform dirs, before the pins: a pin over a directory carries the binds inside it.
     ...(plan.platform.length ? [`mkdir -p ${GUEST_PLATFORM_STAMPS} ${GUEST_PLATFORM_CACHE}`, `chown ${uid}:${gid} ${GUEST_PLATFORM_STAMPS} ${GUEST_PLATFORM_CACHE}`] : []),
     ...platformBindLines(plan.platform, uid, gid),
+    // A home folder opened read-only first: everything else is bound inside it.
+    ...(plan.homeReadOnly ? [`ro ${quote(plan.homeReadOnly)} ${quote(mountinfoPath(plan.homeReadOnly))}`] : []),
     // Hidden first, then pins and read-only binds outer first.
     ...plan.hidden.map((h) => `hide_${h.kind} ${quote(h.path)} ${quote(mountinfoPath(h.path))}`),
     ...[...plan.pinned.map((p) => ['pin', p] as const), ...plan.readOnly.map((p) => ['ro', p] as const), ...plan.writable.map((p) => ['rw', p] as const)]
@@ -1662,7 +1704,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       const machine = await this.ensureMachine(name, workspace, spec.machineImage ?? this.d.image);
       const network = path.join(this.machineDir(name), 'network.json');
       const protections = path.join(this.machineDir(name), 'protections.json');
-      const applied = JSON.stringify({ pinned: plan.pinned, writable: plan.writable, readOnly: plan.readOnly, hidden: plan.hidden });
+      const applied = JSON.stringify({ pinned: plan.pinned, writable: plan.writable, readOnly: plan.readOnly, hidden: plan.hidden, ...(plan.homeReadOnly ? { homeReadOnly: plan.homeReadOnly } : {}) });
       const recorded = (file: string): string | null => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } };
       // The machine's policy, not the session's relay port (each launch has its own): story review.
       if (shared && !joining && recorded(network) !== networkKey(spec.network)) {
@@ -1766,7 +1808,14 @@ export class SmolvmRuntime implements AirlockRuntime {
       `if ! mounted ${quote(mountinfoPath(dir))}; then`,
       '  rootdir "$D"',
       '  mount -t tmpfs -o size=4m,mode=0755 tmpfs "$D"',
+      // A home folder the policy opens (homeAccess) brings the host's ~/.agenfk, bound read-only: a
+      // mount point the session can neither rename nor replace, covered by the session's own.
+      `elif ! P=${quote(mountinfoPath(dir))} awk '$5 == ENVIRON["P"] { for (i = 7; i < NF; i++) if ($i == "-") { t = $(i + 1); break } } END { exit t != "tmpfs" }' /proc/self/mountinfo; then`,
+      '  mount -t tmpfs -o size=4m,mode=0755 tmpfs "$D"',
       'fi',
+      // A later session's setup binds the protected ~/.agenfk read-only, the session's own on top of
+      // it included (review 01a193dc-38d2): root writes it again; it stays root's, 0755.
+      'mount -o remount,rw "$D"',
       'mkdir -p "$D/bin"',
     ].join('\n')], 'give the session its ~/.agenfk in the machine');
     const regular = (p: string) => { try { return fs.lstatSync(p).isFile(); } catch { return false; } };
@@ -2008,6 +2057,9 @@ export class SmolvmRuntime implements AirlockRuntime {
       const sig = signal.replace(/^SIG/, '');
       if (!/^[A-Z0-9]+$/.test(sig)) return false;
       void inGuest(`kill -${sig} -$pid`);
+      // The pid file is the session's own, so it can point the signal elsewhere (review 01a193dc-38d2):
+      // SIGKILL also ends the session's cgroup, as root, which the session cannot leave or redirect.
+      if (sig === 'KILL') void this.killCgroup(name, id);
       return true;
     };
     let finishing: Promise<void> | null = null;

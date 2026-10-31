@@ -164,6 +164,51 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
     expect(fs.readFileSync(path.join(ws, 'made-in-guest'), 'utf8')).toBe('ok\n');
   }, TIMEOUT);
 
+  // Story 525cd331 (user decisions 2026-10-31): the policy's homeAccess opens the home folder,
+  // read-only or read-write; AgEnFK's control paths stay unwritable and Airlock's records hidden.
+  it.each([['home-read-only', false], ['home-read-write', true]] as const)('files under %s: the home folder there (writable: %s), Airlock\'s records hidden, AgEnFK\'s control paths unwritable', async (homeAccess, homeWritable) => {
+    for (const d of [path.join(home, '.agenfk', 'airlock'), path.join(home, '.agenfk-system'), path.join(home, '.pi', 'agent', 'extensions')]) fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(home, '.agenfk', 'airlock', 'report-token'), 'not-a-token\n');
+    fs.rmSync(path.join(home, `made-${homeAccess}`), { force: true });
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', homeAccess }), session());
+    const r = await inMachine(spec, [
+      `grep -q fake ${path.join(home, '.ssh', 'id_fake')} && echo ssh-readable`,
+      `grep -q not-a-key ${path.join(home, '.pi', 'agent', 'auth.json')} && echo auth-readable`,
+      `grep -q not-a-token ${path.join(home, '.agenfk', 'airlock', 'report-token')} 2>/dev/null && echo airlock-records-readable`,
+      `{ echo x > ${path.join(home, `made-${homeAccess}`)}; } 2>/dev/null && echo home-writable`,
+      `{ echo x > ${path.join(home, '.agenfk', 'planted')}; } 2>/dev/null && echo agenfk-writable`,
+      `{ echo x > ${path.join(home, '.agenfk-system', 'planted')}; } 2>/dev/null && echo install-writable`,
+      `{ echo x > ${path.join(home, '.pi', 'agent', 'extensions', 'planted.ts')}; } 2>/dev/null && echo extensions-writable`,
+      `{ echo x > ${path.join(home, '.pi', 'agent', 'session-made')}; } 2>/dev/null && echo agent-state-writable`,
+      `{ echo x > ${path.join(ws, '.agenfk', 'planted')}; } 2>/dev/null && echo project-agenfk-writable`,
+      'echo ok > made-in-guest && echo workspace-writable',
+    ].join('; '));
+    expect(r.out.sort()).toEqual([
+      'agent-state-writable', 'auth-readable', ...(homeWritable ? ['home-writable'] : []), 'ssh-readable', 'workspace-writable',
+    ]);
+    expect(fs.existsSync(path.join(home, `made-${homeAccess}`))).toBe(homeWritable);
+  }, TIMEOUT);
+
+  // Review 01a193dc-38d2: a second session's setup binds the protected ~/.agenfk read-only, the first
+  // session's own on top of it included; root must still give the second its copies.
+  it('two overlapping sessions under an open home folder: the second gets its ~/.agenfk, the first keeps working', async () => {
+    const g = path.join(home, '.agenfk');
+    fs.mkdirSync(path.join(g, 'airlock'), { recursive: true });
+    fs.writeFileSync(path.join(g, 'airlock-state.json'), JSON.stringify({ mode: 'enforce' }));
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', homeAccess: 'home-read-write' }), session());
+    const rt = new SmolvmRuntime({ image: IMAGE!, smolvmPath: SMOLVM, egress: realBroker(path.join(stateDir, 'airlock')), stateDir, isTTY: false, hostEnv: {} });
+    const first = path.join(ws, `first-${Date.now()}.txt`);
+    try {
+      const a = await rt.launch(spec, { file: 'sh', args: ['-c', `sleep 20; echo "first $(cat ${g}/airlock-state.json)" > ${first}`], cwd: ws });
+      const r = await inMachine(spec, `echo "second $(cat ${g}/airlock-state.json)"; test -f ${g}/bin/agenfk-airlock.mjs && echo second-has-hooks; { echo x > ${g}/planted; } 2>/dev/null && echo agenfk-writable`);
+      expect(r.out).toEqual(['second {"mode":"enforce"}', 'second-has-hooks']);
+      await a.exited;
+      expect(fs.readFileSync(first, 'utf8')).toBe('first {"mode":"enforce"}\n');
+    } finally {
+      await rt.dispose();
+    }
+  }, TIMEOUT);
+
   // CGLAB-696 task 9: the SHIPPED adapter script, run by node in the guest as the session.
   it('the agenfk adapters work inside: confinement proven, ~/.agenfk there and unwritable, the CLI reaches the server through the relay with its token', async () => {
     const g = path.join(home, '.agenfk');

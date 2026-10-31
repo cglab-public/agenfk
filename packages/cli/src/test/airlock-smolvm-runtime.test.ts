@@ -632,6 +632,19 @@ describePosix('a session in the machine', () => {
     expect(flag(kill!, '-u', '--user')).toBe('503:20');
   });
 
+  it('SIGKILL also ends the session\'s cgroup as root: the session\'s own pid file cannot steer it away (review 01a193dc-38d2)', async () => {
+    const { rt, smolvm, sp } = runtime();
+    const launched = await rt.launch(specOf(), cmd());
+    const id = path.basename((sp.spawn.mock.calls[0][1] as string[]).find((a) => a.startsWith('/run/agenfk/sessions/'))!, '.pid');
+    const before = smolvm.execs().filter((a) => a.join(' ').includes('cgroup.kill')).length;
+    expect(launched.kill('SIGKILL')).toBe(true);
+    await settle();
+    const ends = smolvm.execs().filter((a) => a.join(' ').includes('cgroup.kill'));
+    expect(ends.length).toBe(before + 1);
+    expect(flag(ends.at(-1)!, '-u')).toBe('root');
+    expect(ends.at(-1)!.join(' ')).toContain(`/sys/fs/cgroup/agenfk/${id}`);
+  });
+
   // Story review 2 (LIFE-1): a process can leave its process group (setsid), never its cgroup.
   it('contains the session in a cgroup of its own: root moves its leader in, and the leader waits for that before it runs anything', async () => {
     const { rt, smolvm, sp } = runtime();
@@ -1881,16 +1894,18 @@ describePosix('guestPlanOf: what the session cannot move aside or plant', () => 
     for (const n of ['.vscode', '.idea', '.mcp.json', '.gitmodules']) expect(held).not.toContain(path.join(workspace, n));
   });
 
-  it('holds nothing outside the mounts, and nothing through a linked parent', () => {
+  // Review 01a193dc-38d2: a protected path the session could make behind a link was skipped
+  // silently, and so left plantable; now the launch is refused.
+  it('holds nothing outside the mounts, and refuses one the session could make behind a linked parent', () => {
     const outside = path.join(root, 'outside');
     fs.mkdirSync(outside);
     fs.rmSync(path.join(agentDir, 'extensions'), { recursive: true });
     fs.symlinkSync(outside, path.join(workspace, 'linked'));
     const spec = specOf();
-    const p = guestPlanOf({ ...spec, filesystem: { ...spec.filesystem, denyWrite: [...spec.filesystem.denyWrite, path.join(workspace, 'linked', 'x'), path.join(home, '.config', 'x')] } }, workspace);
-    const held = p.placeholders.map((x) => x.path);
-    expect(held).not.toContain(path.join(workspace, 'linked', 'x'));
-    expect(held).not.toContain(path.join(home, '.config', 'x'));
+    const outsideOnly = guestPlanOf({ ...spec, filesystem: { ...spec.filesystem, denyWrite: [...spec.filesystem.denyWrite, path.join(home, '.config', 'x')] } }, workspace);
+    expect(outsideOnly.placeholders.map((x) => x.path)).not.toContain(path.join(home, '.config', 'x'));
+    expect(() => guestPlanOf({ ...spec, filesystem: { ...spec.filesystem, denyWrite: [...spec.filesystem.denyWrite, path.join(workspace, 'linked', 'x')] } }, workspace))
+      .toThrow(/linked on its way is a symbolic link/);
   });
 
   it('binds the pinned .git before what is inside it: a bind over a directory hides binds already in it', async () => {
@@ -1910,12 +1925,16 @@ describePosix('placeholders are taken back only as they were made', () => {
     expect(guestPlanOf(specOf(), workspace).placeholders).toContainEqual({ path: path.join(workspace, '.git', 'config'), kind: 'file', content: '' });
   });
 
-  it('holds only directly in a mount root or the pinned .git, never deeper', () => {
+  // Review 01a193dc-38d2: a missing protected path deeper in a write root was left plantable; it is
+  // held by its highest missing directory now, the directories above it pinned so it cannot be moved.
+  it('holds a missing protected path deeper in a write root by its highest missing directory, its parents pinned', () => {
     fs.mkdirSync(path.join(workspace, 'sub'));
     const spec = specOf();
-    const deeper = path.join(workspace, 'sub', 'held');
+    const deeper = path.join(workspace, 'sub', 'cfg', 'held');
     const p = guestPlanOf({ ...spec, filesystem: { ...spec.filesystem, denyWrite: [...spec.filesystem.denyWrite, deeper] } }, workspace);
-    expect(p.placeholders.map((x) => x.path)).not.toContain(deeper);
+    expect(p.placeholders).toContainEqual({ path: path.join(workspace, 'sub', 'cfg'), kind: 'dir' });
+    expect(p.readOnly).toContain(path.join(workspace, 'sub', 'cfg'));
+    expect(p.pinned).toContain(path.join(workspace, 'sub'));
   });
 
   it('recovers from a launcher that crashed: its placeholders are taken back and held again, and the session starts', async () => {
@@ -4027,4 +4046,124 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('SmolvmRuntime against the rea
       process.env.HOME = sandboxHome;
     }
   }, 180_000);
+});
+
+// Story 525cd331 (user decisions 2026-10-31): the policy's homeAccess mounts the whole home folder,
+// read-only or read-write. AgEnFK's control paths stay read-only and Airlock's records hidden.
+describePosix('guestPlanOf: the home folder the policy opens', () => {
+  const specWith = (homeAccess: string, over: Partial<SandboxSession> = {}): SandboxSpec =>
+    buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] }, homeAccess }), session(over));
+  beforeEach(() => {
+    for (const d of [path.join(home, '.agenfk', 'airlock'), path.join(home, '.agenfk-system'), path.join(home, 'notes')]) fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(home, '.agenfk', 'airlock', 'report-token'), 'fake\n');
+    fs.writeFileSync(path.join(home, '.agenfk', 'verify-token'), 'fake\n');
+  });
+
+  it.each([['home-read-only', true], ['home-read-write', false]] as const)('%s mounts the home folder, read-only: %s', (homeAccess, readOnly) => {
+    const p = guestPlanOf(specWith(homeAccess), workspace);
+    const hosts = p.mounts.map((m) => m.host);
+    expect(hosts).toContain(home);
+    // The client's state comes through the home folder, and stays writable as a bind of its own.
+    expect(hosts).not.toContain(agentDir);
+    expect(p.writable).toContain(agentDir);
+    // A workspace outside the home folder is mounted on its own, as before.
+    expect(hosts).toContain(workspace);
+    expect(p.homeReadOnly === home).toBe(readOnly);
+    // Not a protected tree: nothing in the home folder is searched as one.
+    expect(p.readOnly).not.toContain(home);
+  });
+
+  it.each(['home-read-only', 'home-read-write'])('%s: credentials readable, Airlock\'s records hidden, AgEnFK\'s control paths read-only', (homeAccess) => {
+    const p = guestPlanOf(specWith(homeAccess), workspace);
+    const hidden = p.hidden.map((h) => h.path);
+    expect(hidden).toEqual([path.join(home, '.agenfk', 'airlock')]);
+    expect(hidden.some((h) => h.startsWith(path.join(home, '.ssh')) || h.endsWith('auth.json'))).toBe(false);
+    for (const ro of [path.join(home, '.agenfk'), path.join(home, '.agenfk-system'), path.join(agentDir, 'extensions'), path.join(workspace, '.agenfk')]) {
+      expect(p.readOnly, ro).toContain(ro);
+    }
+  });
+
+  it('a workspace inside the home folder keeps every protection it has without one', () => {
+    const inHome = path.join(home, 'src', 'app');
+    fs.mkdirSync(path.join(inHome, '.agenfk'), { recursive: true });
+    const over = { workspace: inHome, gitDir: null } as Partial<SandboxSession>;
+    const closed = guestPlanOf(specOf(over), inHome);
+    for (const homeAccess of ['home-read-only', 'home-read-write']) {
+      const open = guestPlanOf(specWith(homeAccess, over), inHome);
+      // Bound writable on its own, so it is a mount point the session cannot rename away.
+      expect(open.writable, homeAccess).toContain(inHome);
+      expect(open.placeholders, homeAccess).toEqual(expect.arrayContaining(closed.placeholders));
+      for (const ro of closed.readOnly) expect(open.readOnly, `${homeAccess}: ${ro}`).toContain(ro);
+    }
+  });
+
+  it('refuses a missing hooks dir only where the session could create it', () => {
+    const missing = path.join(home, 'notes', 'hooks');
+    const hooks = `file:${path.join(workspace, '.git', 'config')}\0core.hookspath\n${missing}\0`;
+    const read = () => ({ list: '', included: hooks, hooks, top: workspace });
+    // Read-only, nothing outside the write roots can be made there.
+    expect(() => guestPlanOf(specWith('home-read-only'), workspace, read)).not.toThrow();
+    expect(() => guestPlanOf(specWith('home-read-write'), workspace, read)).toThrow(/core\.hooksPath/);
+  });
+
+  it('still refuses to launch from the home folder itself', () => {
+    expect(() => guestPlanOf(specWith('home-read-write', { workspace: home, gitDir: null }), home)).toThrow(/holds the whole home folder/);
+  });
+});
+
+// Codex review 01a193dc-38d2: what a read-write home folder still keeps from the agent.
+describePosix('guestPlanOf: a read-write home folder holds what host programs run', () => {
+  const specRw = (over: Partial<SandboxSession> = {}): SandboxSpec =>
+    buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', homeAccess: 'home-read-write' }), session(over));
+  beforeEach(() => { fs.mkdirSync(path.join(home, '.agenfk', 'airlock'), { recursive: true }); fs.mkdirSync(path.join(home, '.config'), { recursive: true }); });
+
+  it('holds a missing ~/.gitconfig and shell startup file as empty files, read-only', () => {
+    const p = guestPlanOf(specRw(), workspace);
+    for (const f of ['.gitconfig', '.zshrc', '.bashrc']) {
+      expect(p.placeholders).toContainEqual({ path: path.join(home, f), kind: 'file', content: '' });
+      expect(p.readOnly).toContain(path.join(home, f));
+    }
+  });
+
+  it('keeps an existing one read-only', () => {
+    fs.writeFileSync(path.join(home, '.gitconfig'), '[user]\n');
+    const p = guestPlanOf(specRw(), workspace);
+    expect(p.readOnly).toContain(path.join(home, '.gitconfig'));
+    expect(p.placeholders.map((x) => x.path)).not.toContain(path.join(home, '.gitconfig'));
+  });
+
+  it('holds the other client\'s missing config by its highest missing directory, its parents pinned', () => {
+    // pi session; OpenCode's config dir is missing, ~/.config exists.
+    const p = guestPlanOf(specRw(), workspace);
+    const dir = path.join(home, '.config', 'opencode');
+    expect(p.placeholders).toContainEqual({ path: dir, kind: 'dir' });
+    expect(p.readOnly).toContain(dir);
+    expect(p.pinned).toContain(path.join(home, '.config'));
+    // Nothing deeper is held separately: the empty read-only directory holds it all.
+    expect(p.placeholders.some((x) => x.path.startsWith(dir + path.sep))).toBe(false);
+  });
+
+  it('a read-only home folder holds nothing outside the write roots: nothing can be made there', () => {
+    const ro = guestPlanOf(buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', homeAccess: 'home-read-only' }), session()), workspace);
+    expect(ro.placeholders.some((x) => x.path === path.join(home, '.gitconfig') || x.path.startsWith(path.join(home, '.config')))).toBe(false);
+  });
+});
+
+describePosix('guestPlanOf: a read-write home folder with a linked config dir (review 01a193dc-38d2)', () => {
+  it('refuses to launch when a protected path the session could make lies behind a link, rather than leave it plantable', () => {
+    fs.mkdirSync(path.join(home, '.agenfk', 'airlock'), { recursive: true });
+    fs.mkdirSync(path.join(home, 'dotconfig'));
+    fs.symlinkSync(path.join(home, 'dotconfig'), path.join(home, '.config'));
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', homeAccess: 'home-read-write' }), session());
+    expect(() => guestPlanOf(spec, workspace)).toThrow(/\.config on its way is a symbolic link/);
+  });
+
+  it('holds a client\'s missing config inside a workspace that contains it', () => {
+    const cfg = path.join(home, '.config');
+    fs.mkdirSync(cfg, { recursive: true });
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ workspace: cfg, gitDir: null }));
+    const p = guestPlanOf(spec, cfg);
+    expect(p.placeholders).toContainEqual({ path: path.join(cfg, 'opencode'), kind: 'dir' });
+    expect(p.readOnly).toContain(path.join(cfg, 'opencode'));
+  });
 });
