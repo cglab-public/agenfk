@@ -174,6 +174,17 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub airlock policy (%s)', (backe
       expect('machineImage' in (await install(keyA)).body.policy).toBe(false);
     });
 
+    it('the home access the admin sets is delivered to installations; a save without it protects credentials again (story 525cd331)', async () => {
+      const put1 = await adminPut({ policy: { ...POLICY, homeAccess: 'home-read-write' } });
+      expect(put1.status, JSON.stringify(put1.body)).toBe(200);
+      expect((await install(keyA)).body.policy.homeAccess).toBe('home-read-write');
+      await adminPut({ policy: POLICY });
+      expect('homeAccess' in (await install(keyA)).body.policy).toBe(false);
+      const bad = await adminPut({ policy: { ...POLICY, homeAccess: 'everything' } });
+      expect(bad.status).toBe(400);
+      expect(bad.body.errors.join(' ')).toMatch(/homeAccess/);
+    });
+
     it('a PUT naming something other than an image reference as the machine image is 400 and nothing is stored', async () => {
       const r = await adminPut({ policy: { ...POLICY, machineImage: 'ghcr.io/acme/airlock:1 --trust-host-certs' } });
       expect(r.status).toBe(400);
