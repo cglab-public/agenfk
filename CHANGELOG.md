@@ -4,6 +4,38 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.7] — 2026-10-31
+
+Airlock runs sandboxed agents in smolvm microVMs (#299, CGLAB-696).
+
+**Airlock**
+
+- **Sandboxed sessions run in a smolvm microVM, one per workspace, in place of ASRT.** AgEnFK installs the pinned
+  smolvm itself (`agenfk airlock install`; install and upgrade do it where Airlock is on) and builds the machine
+  from the AgEnFK base image. Linked git worktrees, crash recovery, `agenfk airlock reset`, and server-run commands
+  (`airlock exec`) all work in the machine.
+- **Every outbound connection is decided on the host**, by the policy: by address, port, TLS server name or HTTP
+  Host. Denied and IOC names do not resolve inside the machine. Every decision reaches the session's report,
+  including the lookups the machine's resolver refuses. A policy changed while a session runs reaches it.
+- **Model keys never enter the machine.** The guest gets a placeholder, and the host puts the key in on the way out
+  to the approved inference host. A key for a plain-http endpoint cannot be masked: it reaches the session as
+  launch warns, never on a command line.
+- **A model server on your machine's loopback** (an ssh tunnel, ollama: `http://127.0.0.1:<port>`, `localhost`)
+  is reached from inside the machine. An IPv6 loopback endpoint is not: use 127.0.0.1 or localhost.
+- **What the host runs next is read-only to the agent**: pi's launcher, installs and settings, OpenCode's
+  config, plugins and LSP binaries, git hooks and config (nested repositories too), and `~/.agenfk`. `npm ci`
+  lifecycle scripts cannot leave processes running after the install.
+- **Project isolation is gone**: a sandboxed agent can read and change cards in any project. Airlock blocks
+  harmful behaviour, such as uploads to outside sites; it does not separate AgEnFK projects. Airlock's own
+  records (approvals, decisions, learning) stay out of a sandbox's reach, and a grant is spent only by the launch
+  it was given to.
+- Launch refuses (it says why):
+  - a protected client config that is a symbolic link (a dotfiles-managed `~/.pi/agent/settings.json`,
+    `opencode.json`);
+  - a nested `.git` pointer that leads anywhere but a protected submodule folder.
+- Sessions and locks know a reused process id from the process that held it, and the smolvm install takes the
+  same lock as the machine.
+
 ## [2.1.0-beta.6] — 2026-10-29
 
 Fixes from the beta.5 post-release tests (#297, CGLAB-694).
