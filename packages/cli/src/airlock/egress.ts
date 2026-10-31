@@ -51,7 +51,9 @@ export const INJECT_PREFACE = 'AGENFK-DEST ';
 
 export type Route =
   | { kind: 'relay'; port: number; socket: string }
-  | { kind: 'inject'; host: string; port: number; socket: string };
+  | { kind: 'inject'; host: string; port: number; socket: string }
+  /** An inference endpoint on the host loopback (a9bc650c): a flow to the gateway on its port, carried there. */
+  | { kind: 'forward'; host: string; port: number; socket: string };
 
 /** A route as read back from a file: anything else is no route. */
 export function asRoute(v: unknown): Route | null {
@@ -62,6 +64,9 @@ export function asRoute(v: unknown): Route | null {
   if (r?.kind === 'relay' && port(r.port)) return { kind: 'relay', port: r.port as number, socket };
   if (r?.kind === 'inject' && typeof r.host === 'string' && asHostname(r.host) === r.host && port(r.port)) {
     return { kind: 'inject', host: r.host, port: r.port as number, socket };
+  }
+  if (r?.kind === 'forward' && typeof r.host === 'string' && onLoopback(r.host) && port(r.port)) {
+    return { kind: 'forward', host: r.host, port: r.port as number, socket };
   }
   return null;
 }
@@ -225,6 +230,7 @@ export function decideFlow(flow: { names: string[]; claimed?: string | null; ip:
 }
 
 const LOOPBACK = ['127.0.0.0/8', '::1', 'localhost', '*.localhost'];
+const onLoopback = (host: string): boolean => matchHost(host, LOOPBACK);
 /** Reaches nothing (TEST-NET-1): keeps an enforce list from being empty, which smolvm reads as every host. */
 const NOTHING = '192.0.2.1/32';
 
@@ -526,6 +532,23 @@ export class EgressService {
         // The gateway is the launchers' alone: a session's relay port, or nothing.
         const relays = routes.filter((x) => x.kind === 'relay' && x.port === flow.port).map((x) => x.socket);
         if (relays.length) { this.redirect(sock, flow, relays); return; }
+        // An inference endpoint on the host loopback (the guest's loopback port is redirected here),
+        // then carried by the key injector, or as it is. The route is the allow: its session's own
+        // model, allowed at its launch (sessions sharing the machine may each have one); the policy's
+        // deny side, which can change while the machine runs, holds.
+        const loopback = routes.filter((x): x is Exclude<Route, { kind: 'relay' }> => x.kind !== 'relay' && x.port === flow.port && onLoopback(x.host));
+        if (loopback.length) {
+          const host = loopback[0].host;
+          const ip = isIp(host) ? host : '127.0.0.1';
+          const network = { ...this.network, allow: [...this.network.allow, `${host}:${flow.port}`] };
+          const d = decideFlow({ names: isIp(host) ? [] : [host], ip, port: flow.port }, network);
+          const injectors = loopback.filter((x) => x.kind === 'inject').map((x) => x.socket);
+          const forwards = loopback.filter((x) => x.kind === 'forward').map((x) => x.socket);
+          this.answer(sock, d, injectors.length
+            ? () => this.redirect(sock, flow, injectors, Buffer.from(`${INJECT_PREFACE}${ip}\n`))
+            : () => this.redirect(sock, flow, forwards));
+          return;
+        }
         this.answer(sock, { host: GATEWAY, port: flow.port, decision: 'deny', rule: 'host-not-relayed' });
         return;
       }

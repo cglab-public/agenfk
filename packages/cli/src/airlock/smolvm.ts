@@ -1063,6 +1063,28 @@ function withoutPlatform(plan: GuestPlan): GuestPlan {
   return { ...plan, platform: [], placeholders: plan.placeholders.filter((h) => !platform.has(h.path)) };
 }
 
+/**
+ * The root script that sends the guest's own loopback port of each inference endpoint on the host
+ * loopback (a9bc650c) to the gateway, where the decider carries it to the host: the client's URL
+ * names 127.0.0.1 or localhost, which in the machine is the machine. Packets from loopback may then
+ * leave (route_localnet), as the guest's own address. localhost's IPv6 answer is reset, so a client
+ * trying it first falls back at once. Idempotent; the rules last as long as the machine runs.
+ */
+export function loopbackRouteScript(endpoints: Array<{ host: string; port: number }>): string {
+  const lines = [
+    'set -e',
+    'rule() { t="$1"; tb="$2"; ch="$3"; shift 3; "$t" -t "$tb" -C "$ch" "$@" 2>/dev/null || "$t" -t "$tb" -A "$ch" "$@"; }',
+    'sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null',
+  ];
+  for (const { host, port } of endpoints) {
+    const ip = net.isIPv4(host) ? host : '127.0.0.1';
+    lines.push(`rule iptables nat OUTPUT -p tcp -d ${ip} --dport ${port} -j DNAT --to-destination ${GATEWAY}:${port}`);
+    lines.push(`rule iptables nat POSTROUTING -p tcp -s 127.0.0.0/8 -d ${GATEWAY} --dport ${port} -j MASQUERADE`);
+    if (!net.isIP(host)) lines.push(`rule ip6tables filter OUTPUT -p tcp -d ::1 --dport ${port} -j REJECT --reject-with tcp-reset`);
+  }
+  return lines.join('\n');
+}
+
 /** The relay's URL as the guest reaches it: through the gateway, where the decider relays it. */
 const throughGateway = (url: string): string => url.replace(/^(https?:\/\/)(?:127\.0\.0\.1|localhost|\[::1\])(?=[:/]|$)/, `$1${GATEWAY}`);
 
@@ -1640,6 +1662,9 @@ export class SmolvmRuntime implements AirlockRuntime {
       if (!joining) {
         await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid, ca.certPem, this.homeOf(spec))], 'protect the session\'s files in the machine');
         await this.startResolver(name, workspace, spec);
+        if (spec.loopbackInference?.length) {
+          await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', loopbackRouteScript(spec.loopbackInference)], 'route the session\'s model server on the host loopback');
+        }
         if (spec.purpose !== 'command') await this.provisionAgenfk(name, spec);
         if (spec.env[AIRLOCK_SANDBOX_MARKER] === 'opencode') await this.provisionMcp(name, spec);
       }
@@ -1982,29 +2007,21 @@ export class SmolvmRuntime implements AirlockRuntime {
   private async routeSession(name: string, spec: SandboxSpec, ca: MachineCa, placeholders: Record<string, string>,
     undo: Array<() => void | Promise<void>>): Promise<string[]> {
     if (spec.relayPort) {
-      const relayPort = spec.relayPort;
-      const socket = this.d.egress.routeSocket(name);
       // The relay itself listens on the loopback (the launcher's, SX-1): carried to it from its socket.
-      const open = new Set<net.Socket>();
-      const forwarder = net.createServer((c) => {
-        const t = net.connect(relayPort, '127.0.0.1');
-        for (const x of [c, t]) { open.add(x); x.on('close', () => open.delete(x)); }
-        c.on('error', () => t.destroy());
-        t.on('error', () => c.destroy());
-        c.on('close', () => t.destroy());
-        t.on('close', () => c.destroy());
-        c.pipe(t);
-        t.pipe(c);
-      });
-      await new Promise<void>((resolve, reject) => { forwarder.once('error', reject); forwarder.listen(socket, () => resolve()); });
-      // Cut what is still open (another session may hold a connection to it): close() waits for it otherwise.
-      undo.push(() => new Promise<void>((r) => { for (const x of open) x.destroy(); forwarder.close(() => r()); }));
-      undo.push(this.d.egress.addRoute(name, { kind: 'relay', port: relayPort, socket }));
+      const socket = await this.forwardSocket(name, spec.relayPort, '127.0.0.1', undo);
+      undo.push(this.d.egress.addRoute(name, { kind: 'relay', port: spec.relayPort, socket }));
     }
     const secrets = spec.maskedEnv.flatMap((m) => {
       const value = this.d.hostEnv[m.name];
       return value ? [{ name: m.name, placeholder: placeholders[m.name], value, hosts: m.injectHosts }] : [];
     });
+    // A model server on the host loopback (a9bc650c) the injector does not take: carried as it is.
+    const injected = new Set(secrets.flatMap((s) => s.hosts));
+    for (const e of spec.loopbackInference ?? []) {
+      if (injected.has(e.host)) continue;
+      const socket = await this.forwardSocket(name, e.port, e.host, undo);
+      undo.push(this.d.egress.addRoute(name, { kind: 'forward', host: e.host, port: e.port, socket }));
+    }
     if (!secrets.length) return [];
     // An inference endpoint on its own port keeps it (the spec's allow entry `host:port`).
     const portOf = (host: string) => {
@@ -2017,6 +2034,28 @@ export class SmolvmRuntime implements AirlockRuntime {
     undo.push(() => injector.close());
     for (const r of routes) undo.push(this.d.egress.addRoute(name, { kind: 'inject', host: r.host, port: r.port, socket }));
     return secrets.map((s) => `${s.name}=${s.placeholder}`);
+  }
+
+  /**
+   * A route socket of the session's that carries each connection to `host:port` on the host loopback;
+   * closed by `undo`, cutting what is still open (another session may hold a connection through it).
+   */
+  private async forwardSocket(name: string, port: number, host: string, undo: Array<() => void | Promise<void>>): Promise<string> {
+    const socket = this.d.egress.routeSocket(name);
+    const open = new Set<net.Socket>();
+    const forwarder = net.createServer((c) => {
+      const t = net.connect({ port, host, autoSelectFamily: true });
+      for (const x of [c, t]) { open.add(x); x.on('close', () => open.delete(x)); }
+      c.on('error', () => t.destroy());
+      t.on('error', () => c.destroy());
+      c.on('close', () => t.destroy());
+      t.on('close', () => c.destroy());
+      c.pipe(t);
+      t.pipe(c);
+    });
+    await new Promise<void>((resolve, reject) => { forwarder.once('error', reject); forwarder.listen(socket, () => resolve()); });
+    undo.push(() => new Promise<void>((r) => { for (const x of open) x.destroy(); forwarder.close(() => r()); }));
+    return socket;
   }
 
   /** Deletes the workspace's machine (`agenfk airlock reset`). Refused while a session is in it. */

@@ -84,6 +84,19 @@ describe('buildSandboxSpec: network', () => {
     expect(spec.network.allow).not.toContain('127.0.0.1');
   });
 
+  // a9bc650c: a model server on the host's own loopback is reached through the machine's gateway.
+  it('names the inference endpoints on the host loopback, which the machine routes to the host', () => {
+    const spec = buildSandboxSpec(policy(), session({ inferenceHosts: ['127.0.0.1:18888', 'localhost:11434', 'llm.example.com:8443'] }));
+    expect(spec.loopbackInference).toEqual([{ host: '127.0.0.1', port: 18888 }, { host: 'localhost', port: 11434 }]);
+    expect(buildSandboxSpec(policy(), session()).loopbackInference).toEqual([]);
+  });
+
+  it('says an endpoint on the IPv6 loopback cannot be reached from the machine', () => {
+    const spec = buildSandboxSpec(policy(), session({ inferenceHosts: ['[::1]:9000'] }));
+    expect(spec.loopbackInference).toEqual([]);
+    expect(spec.skipped).toContainEqual({ entry: '[::1]:9000', reason: expect.stringMatching(/IPv4.*127\.0\.0\.1 or localhost/) });
+  });
+
   it('does not depend on anything but its inputs (same input, same spec)', () => {
     expect(buildSandboxSpec(policy(), session())).toEqual(buildSandboxSpec(policy(), session()));
   });

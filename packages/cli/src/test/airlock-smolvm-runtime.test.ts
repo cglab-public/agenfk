@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { spawn, spawnSync } from 'child_process';
 import crypto from 'crypto';
+import http from 'http';
 import net from 'net';
 import fs from 'fs';
 import os from 'os';
@@ -18,10 +19,11 @@ import path from 'path';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { buildSandboxSpec, type SandboxSession, type SandboxSpec } from '../airlock/spec';
 import type { ProxyDecision } from '../airlock/runtime';
-import { allowListArgs, GATEWAY, networkKey, type Route } from '../airlock/egress';
+import { allowListArgs, EgressService, GATEWAY, networkKey, type Route } from '../airlock/egress';
 import {
   SmolvmRuntime,
   SMOLVM_VERSION,
+  loopbackRouteScript,
   machineNameOf,
   guestPlanOf,
   guestSetupScript,
@@ -2096,6 +2098,50 @@ describe('the AgEnFK server and the model key, from inside the machine', () => {
     }
   });
 
+  // a9bc650c: a model server on the host's own loopback (an ssh tunnel, ollama) is reached through the gateway.
+  it('routes a loopback inference endpoint to the host loopback: a forward route whose socket reaches it, gone with the session', async () => {
+    let got = '';
+    const model = net.createServer((c) => c.on('data', (d) => { got += d; }));
+    await new Promise<void>((r) => model.listen(0, '127.0.0.1', () => r()));
+    const port = (model.address() as net.AddressInfo).port;
+    try {
+      const egress = fakeEgress();
+      const { rt, sp } = runtime({ egress, ...injectorDeps() });
+      const launched = await rt.launch(specOf({ inferenceHosts: [`127.0.0.1:${port}`] }), cmd());
+      const route = egress.routes.find((r) => r.kind === 'forward') as Extract<Route, { kind: 'forward' }>;
+      expect(route).toMatchObject({ kind: 'forward', host: '127.0.0.1', port });
+      await new Promise<void>((r) => { const c = net.connect(route.socket, () => { c.end('GET /v1/models'); r(); }); });
+      await vi.waitFor(() => expect(got).toBe('GET /v1/models'));
+      sp.children[0].finish(0);
+      await launched.exited;
+      expect(egress.routes.filter((r) => r.kind === 'forward')).toEqual([]);
+    } finally {
+      await new Promise<void>((r) => model.close(() => r()));
+    }
+  });
+
+  it('redirects the guest\'s loopback port to the gateway, as root, before the session starts', async () => {
+    const { rt, smolvm } = runtime(injectorDeps());
+    await rt.launch(specOf({ inferenceHosts: ['localhost:18888'] }), cmd());
+    const script = loopbackRouteScript([{ host: 'localhost', port: 18888 }]);
+    const ran = smolvm.calls.filter((c) => c.args[1] === 'exec' && flag(c.args, '-u', '--user') === 'root' && c.args.at(-1) === script);
+    expect(ran).toHaveLength(1);
+  });
+
+  it('changes no guest routing for a session without a loopback endpoint', async () => {
+    const { rt, smolvm } = runtime(injectorDeps());
+    await rt.launch(specOf(), cmd());
+    expect(smolvm.calls.some((c) => c.args[1] === 'exec' && String(c.args.at(-1)).includes('route_localnet'))).toBe(false);
+  });
+
+  it('hands a keyed loopback endpoint to the key injector, not a plain forward', async () => {
+    const egress = fakeEgress();
+    const { rt } = runtime({ egress, ...injectorDeps() });
+    await rt.launch(keySession({ inferenceHosts: ['localhost:18888'] }), cmd());
+    expect(egress.routes.filter((r) => r.kind !== 'relay').map((r) => [r.kind, (r as { host: string }).host, (r as { port: number }).port]))
+      .toEqual([['inject', 'localhost', 18888]]);
+  });
+
   it('gives the guest a placeholder for the key, and the injector the real one: the key is on no command line', async () => {
     const egress = fakeEgress();
     const inj = injectorDeps();
@@ -3171,6 +3217,37 @@ describe('a launcher killed outright (review 01a18ca1)', () => {
  * WATCHDOG, run by sh: it watches the launcher through its stdin, a pipe the launcher alone holds
  * open - closed however the launcher ends, before any reaping, whatever pid comes next.
  */
+// a9bc650c: the guest's rules, run by sh against stand-ins that log what they are asked.
+describe.skipIf(process.platform === 'win32')('loopbackRouteScript, run by sh', () => {
+  it('sends the endpoint\'s loopback port to the gateway, once, and resets its IPv6 loopback', () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ipt-'));
+    try {
+      const log = path.join(bin, 'log');
+      // -C (is the rule there?) answers no the first time it is asked about a rule, yes after it was added.
+      const stub = (name: string) => fs.writeFileSync(path.join(bin, name),
+        `#!/bin/sh\necho "${name} $*" >> ${log}\nkey=$(echo "$*" | sed 's/ -[CA] / X /' | cksum | cut -d' ' -f1)\n`
+        + `case "$*" in *" -C "*) [ -e ${bin}/rule-$key ];; *" -A "*) touch ${bin}/rule-$key;; esac\n`, { mode: 0o755 });
+      for (const t of ['iptables', 'ip6tables', 'sysctl']) stub(t);
+      const script = loopbackRouteScript([{ host: 'localhost', port: 18888 }, { host: '127.0.0.2', port: 9000 }]);
+      for (let i = 0; i < 2; i++) {
+        const r = spawnSync('sh', ['-c', script], { encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin` } });
+        expect(r.status, r.stderr).toBe(0);
+      }
+      const added = fs.readFileSync(log, 'utf8').split('\n').filter((l) => / -A | -I /.test(l));
+      expect(added.sort()).toEqual([
+        `iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 18888 -j DNAT --to-destination ${GATEWAY}:18888`,
+        `iptables -t nat -A OUTPUT -p tcp -d 127.0.0.2 --dport 9000 -j DNAT --to-destination ${GATEWAY}:9000`,
+        `iptables -t nat -A POSTROUTING -p tcp -s 127.0.0.0/8 -d ${GATEWAY} --dport 18888 -j MASQUERADE`,
+        `iptables -t nat -A POSTROUTING -p tcp -s 127.0.0.0/8 -d ${GATEWAY} --dport 9000 -j MASQUERADE`,
+        'ip6tables -t filter -A OUTPUT -p tcp -d ::1 --dport 18888 -j REJECT --reject-with tcp-reset',
+      ].sort());
+      expect(fs.readFileSync(log, 'utf8')).toContain('sysctl -w net.ipv4.conf.all.route_localnet=1');
+    } finally {
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+});
+
 describe.skipIf(process.platform === 'win32')('SESSION_LEADER, run by sh', () => {
   // A grep stand-in answers for /proc/self/cgroup (the machine's kernel's) and plays the race.
   const run = (grepScript: string) => {
@@ -3579,6 +3656,46 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('SmolvmRuntime against the rea
       await rt.reset(workspace).catch(() => undefined);
       await rt.dispose();
       icpt.close();
+      process.env.HOME = sandboxHome;
+    }
+  }, 600_000);
+
+  // a9bc650c: the session reaches a model server on the host's loopback, by 127.0.0.1 and by
+  // localhost, through the real decider; nothing else on the host loopback is reachable.
+  it('reaches a model server on the host loopback, through the decider', async () => {
+    const model = http.createServer((_q, res) => res.end('model-here'));
+    await new Promise<void>((r) => model.listen(0, '127.0.0.1', () => r()));
+    const port = (model.address() as net.AddressInfo).port;
+    const other = http.createServer((_q, res) => res.end('not-for-you'));
+    await new Promise<void>((r) => other.listen(0, '127.0.0.1', () => r()));
+    const otherPort = (other.address() as net.AddressInfo).port;
+    const spec = specOf({ inferenceHosts: [`localhost:${port}`] });
+    const routes: Route[] = [];
+    const decisions: ProxyDecision[] = [];
+    const token = crypto.randomBytes(32).toString('hex');
+    const svc = new EgressService({ token, network: spec.network, auditPath: null, onDecision: (d) => decisions.push(d), routes: () => routes });
+    const address = await svc.listen();
+    const egress: EgressBroker = {
+      ensure: async () => ({ address, token }), watch: () => () => undefined, stop: async () => undefined,
+      routeSocket: () => path.join(fs.mkdtempSync(path.join('/tmp', 'agenfk-r-')), 's.sock'),
+      addRoute: (_m, r) => { routes.push(r); return () => { routes.splice(routes.indexOf(r), 1); }; },
+    };
+    const rt = new SmolvmRuntime({ image: baseImageArchive!, egress, stateDir, isTTY: false, hostEnv: {} });
+    const sandboxHome = process.env.HOME;
+    process.env.HOME = os.userInfo().homedir;
+    try {
+      const get = (url: string) => `node -e 'fetch(process.argv[1]).then((r) => r.text()).then((t) => console.log(t), (e) => console.log("failed"))' ${url}`;
+      const probe = [get(`http://127.0.0.1:${port}/v1`), get(`http://localhost:${port}/v1`), get(`http://127.0.0.1:${otherPort}/`)].join('; ');
+      const run = await rt.launch(spec, { file: 'sh', args: ['-c', `{ ${probe}; } > loop.out 2>&1`], cwd: workspace });
+      expect((await run.exited).code).toBe(0);
+      expect(fs.readFileSync(path.join(workspace, 'loop.out'), 'utf8').trim().split('\n')).toEqual(['model-here', 'model-here', 'failed']);
+      expect(decisions.filter((d) => d.port === port).map((d) => [d.host, d.decision])).toEqual([['localhost', 'allow'], ['localhost', 'allow']]);
+    } finally {
+      await rt.reset(workspace).catch(() => undefined);
+      await rt.dispose();
+      await svc.close();
+      model.close();
+      other.close();
       process.env.HOME = sandboxHome;
     }
   }, 600_000);

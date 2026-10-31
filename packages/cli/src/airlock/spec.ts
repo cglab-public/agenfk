@@ -91,6 +91,11 @@ export interface SandboxSpec {
   machineImage?: string;
   /** A client's relay to the AgEnFK server (SX-1), on the host loopback: a machine reaches it through its decider. */
   relayPort?: number;
+  /**
+   * Inference endpoints on the host's own loopback (an ssh tunnel, ollama), as allowed: a machine's
+   * loopback is its own, so a runtime that keeps one routes these through its decider to the host.
+   */
+  loopbackInference?: Array<{ host: string; port: number }>;
   maskedEnv: Array<{ name: string; injectHosts: string[] }>;
   /**
    * Host env vars the session gets as they are: a key for a plain-http inference endpoint, which no
@@ -248,6 +253,18 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     }
     if (addAllow(raw, 'inference host: ')) inference.push(classify(raw).value as string);
   }
+  // The machine reaches the host loopback over IPv4 alone (its gateway): `localhost` and 127.x are
+  // routed, an IPv6 or unspecified address cannot be.
+  const loopbackInference: Array<{ host: string; port: number }> = [];
+  for (const e of inference) {
+    const m = /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(e);
+    if (!m || !matchHost(m[1].replace(/^\[|\]$/g, ''), LOOPBACK)) continue;
+    if (m[1].startsWith('[') || m[1] === '0.0.0.0') {
+      skipped.push({ entry: e, reason: 'inference host: the machine reaches the host loopback over IPv4 only; name the endpoint 127.0.0.1 or localhost' });
+      continue;
+    }
+    loopbackInference.push({ host: m[1], port: Number(m[2]) });
+  }
   // A command the server runs does not talk to the server (SX-2); a client does, through the relay.
   if (session.purpose !== 'command') {
     addAllow(`127.0.0.1:${session.serverPort}`, 'the AgEnFK server: ', true);
@@ -325,6 +342,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     workspace: session.workspace,
     home,
     ...(command ? {} : { relayPort: session.serverPort }),
+    loopbackInference,
     maskedEnv,
     env: {
       [AIRLOCK_SANDBOX_MARKER]: command ? 'command' : session.client,

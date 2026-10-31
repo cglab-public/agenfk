@@ -642,6 +642,58 @@ describe('EgressService: the decider on the host loopback', () => {
       expect(r.reply).toBe('PONG');
     });
 
+    // a9bc650c: a model server on the host's loopback, reached from the machine through the gateway
+    // (the guest's loopback port is redirected there).
+    const withLoopback = (mode: 'observe' | 'enforce') => ({ ...network(mode), allow: [...network(mode).allow, 'localhost:18888'] });
+
+    it('carries a flow to the gateway on a loopback inference port to its route, and reports it allowed', async () => {
+      const routes: Route[] = [{ kind: 'forward', host: 'localhost', port: 18888, socket: sock }];
+      const { address, decisions } = await start('enforce', { network: withLoopback('enforce'), routes: () => routes });
+      const r = await redirected(address, frame({ ip: gw, port: 18888, payload: Buffer.from('GET /v1 ') }), 'PING');
+      expect(r.answer).toBe(2);
+      expect(r.reply).toBe('PONG');
+      expect(got.toString()).toBe('GET /v1 PING');
+      expect(decisions).toEqual([{ host: 'localhost', port: 18888, decision: 'allow', rule: 'allow-list' }]);
+    });
+
+    // The policy's deny side holds (it can change while the machine runs); the allow is the route's:
+    // its session's own model, allowed when it launched.
+    it('refuses a loopback inference flow the policy does not allow, and reports it', async () => {
+      const routes: Route[] = [{ kind: 'forward', host: 'localhost', port: 18888, socket: sock }];
+      const denying = { ...withLoopback('enforce'), deny: [...network('enforce').deny, 'localhost'] };
+      const { address, decisions } = await start('enforce', { network: denying, routes: () => routes });
+      expect(await ask(address, frame({ ip: gw, port: 18888, payload: Buffer.from('GET /v1 ') }))).toBe(1);
+      expect(got.length).toBe(0);
+      expect(decisions).toEqual([{ host: 'localhost', port: 18888, decision: 'deny', rule: 'deny-list' }]);
+    });
+
+    it('carries the loopback endpoint of a session that shares the machine, which the machine\'s network (another session\'s) does not name', async () => {
+      const routes: Route[] = [{ kind: 'forward', host: '127.0.0.1', port: 18889, socket: sock }];
+      const { address, decisions } = await start('enforce', { network: withLoopback('enforce'), routes: () => routes });
+      const r = await redirected(address, frame({ ip: gw, port: 18889, payload: Buffer.from('GET /v1 ') }), 'PING');
+      expect(r.answer).toBe(2);
+      expect(decisions).toEqual([{ host: '127.0.0.1', port: 18889, decision: 'allow', rule: 'allow-list' }]);
+    });
+
+    it('hands a keyed TLS flow to a loopback inference host to the key injector, told the host loopback', async () => {
+      const routes: Route[] = [{ kind: 'inject', host: 'localhost', port: 18888, socket: sock }];
+      const { address } = await start('enforce', { network: withLoopback('enforce'), routes: () => routes });
+      const hello = clientHello('localhost');
+      const r = await redirected(address, frame({ ip: gw, port: 18888, payload: hello }), 'PING');
+      expect(r.answer).toBe(2);
+      const preface = Buffer.from('AGENFK-DEST 127.0.0.1\n');
+      expect(got.subarray(0, preface.length).toString()).toBe(preface.toString());
+      expect(got.subarray(preface.length, preface.length + hello.length).equals(hello)).toBe(true);
+    });
+
+    it('does not hand a gateway flow to an inference host off the loopback on that port', async () => {
+      const routes: Route[] = [{ kind: 'inject', host: 'api.github.com', port: 18888, socket: sock }];
+      const { address, decisions } = await start('observe', { routes: () => routes });
+      expect(await ask(address, frame({ ip: gw, port: 18888, payload: Buffer.from('GET /v1 ') }))).toBe(1);
+      expect(got.length).toBe(0);
+      expect(decisions).toEqual([{ host: GATEWAY, port: 18888, decision: 'deny', rule: 'host-not-relayed' }]);
+    });
+
     it('does not redirect an inference host on another port', async () => {
       const routes: Route[] = [{ kind: 'inject', host: 'api.github.com', port: 443, socket: sock }];
       const { address } = await start('enforce', { routes: () => routes });
@@ -665,6 +717,19 @@ describe('readRoutes', () => {
       fs.writeFileSync(path.join(d, 'c.json'), JSON.stringify({ kind: 'inject', host: 'a.example', port: 443, socket: 'relative.sock' }));
       fs.writeFileSync(path.join(d, 'd.json'), 'nonsense');
       expect(readRoutes(d)).toEqual([{ kind: 'relay', port: 41000, socket: '/tmp/x.sock' }]);
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  // a9bc650c: a forward route reaches the host's loopback, and nothing else.
+  it('reads a forward route only to a loopback host', () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-routes-'));
+    try {
+      fs.writeFileSync(path.join(d, 'a.json'), JSON.stringify({ kind: 'forward', host: '127.0.0.1', port: 18888, socket: '/tmp/x.sock' }));
+      fs.writeFileSync(path.join(d, 'b.json'), JSON.stringify({ kind: 'forward', host: 'api.github.com', port: 443, socket: '/tmp/y.sock' }));
+      fs.writeFileSync(path.join(d, 'c.json'), JSON.stringify({ kind: 'forward', host: '10.0.0.1', port: 80, socket: '/tmp/z.sock' }));
+      expect(readRoutes(d)).toEqual([{ kind: 'forward', host: '127.0.0.1', port: 18888, socket: '/tmp/x.sock' }]);
     } finally {
       fs.rmSync(d, { recursive: true, force: true });
     }
