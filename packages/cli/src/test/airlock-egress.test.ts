@@ -195,6 +195,31 @@ describe('decideFlow', () => {
     expect(decideFlow({ names: ['www.cdn.example'], claimed: 'evil.cdn.example', ip: '93.184.216.34', port: 443 }, net)).toMatchObject({ decision: 'deny', rule: 'deny-list', host: 'evil.cdn.example' });
   });
 
+  // Story review 3: a flow that claims a name is allowed by that name, never by another name its
+  // address is also known by (a CDN address serves names off the list too).
+  it('a claimed name off the allow list is denied, whatever else its address is known by', () => {
+    const net = network('enforce', { allow: ['*.cdn.example'] });
+    // not confirmed: refused, and the flow is reported by the name its address is known by
+    expect(decideFlow({ names: ['www.cdn.example'], claimed: 'evil.other.example', ip: '93.184.216.34', port: 443 }, net))
+      .toEqual({ host: 'www.cdn.example', port: 443, decision: 'deny', rule: 'not-on-allow-list' });
+    // confirmed (it resolves to the address) and still off the list: denied all the same
+    expect(decideFlow({ names: ['evil.other.example', 'www.cdn.example'], claimed: 'evil.other.example', ip: '93.184.216.34', port: 443 }, net))
+      .toMatchObject({ host: 'evil.other.example', decision: 'deny', rule: 'not-on-allow-list' });
+    // observe reports a confirmed claim
+    expect(decideFlow({ names: ['evil.other.example', 'www.cdn.example'], claimed: 'evil.other.example', ip: '93.184.216.34', port: 443 }, network('observe', { allow: ['*.cdn.example'] })))
+      .toEqual({ host: 'evil.other.example', port: 443, decision: 'allow', rule: 'observe:not-on-allow-list' });
+  });
+
+  it('a claimed name on the allow list is allowed; an allowed address still admits any claim', () => {
+    const net = network('enforce', { allow: ['*.cdn.example', '10.1.2.3'] });
+    expect(decideFlow({ names: ['other.cdn.example', 'www.cdn.example'], claimed: 'www.cdn.example', ip: '93.184.216.34', port: 443 }, net))
+      .toEqual({ host: 'www.cdn.example', port: 443, decision: 'allow', rule: 'allow-list' });
+    // one it cannot confirm, on an address another name is known by: not allowed by that other name
+    expect(decideFlow({ names: ['other.cdn.example'], claimed: 'www.cdn.example', ip: '93.184.216.34', port: 443 }, net))
+      .toMatchObject({ host: 'other.cdn.example', decision: 'deny', rule: 'not-on-allow-list' });
+    expect(decideFlow({ names: [], claimed: 'anything.example', ip: '10.1.2.3', port: 22 }, net)).toMatchObject({ decision: 'allow' });
+  });
+
   it('denies everything under a deny of *', () => {
     expect(decideFlow(at('api.github.com', 443), { ...network('enforce'), deny: ['*'] }).decision).toBe('deny');
   });
@@ -426,6 +451,39 @@ describe('EgressService: the decider on the host loopback', () => {
     await vi.waitFor(() => expect(decisions.map((d) => d.host)).toContain('github.com'));
     // What the audit held before the service started is not this machine run's.
     expect(decisions.map((d) => d.host)).not.toContain('old.example.com');
+  });
+
+  // Story review 3: the host resolving a name the guest chose is a lookup the guest's DNS policy
+  // never sees - an exfiltration channel (<secret>.attacker.example). Only a name the policy could
+  // allow is resolved.
+  it('never resolves a claimed name the policy cannot allow: not denied ones, not ones off the list', async () => {
+    const asked: string[] = [];
+    const { address, decisions } = await start('enforce', { resolve: async (n: string) => { asked.push(n); return n === 'api.github.com' ? ['93.184.216.34'] : []; } });
+    for (const name of ['c2VjcmV0.attacker.example', 'x.evil.example.net', 'evil.example.net']) {
+      expect(await ask(address, frame({ payload: clientHello(name) }))).toBe(1);
+      expect(await ask(address, frame({ payload: Buffer.from(`GET / HTTP/1.1\r\nHost: ${name}\r\n\r\n`) }))).toBe(1);
+    }
+    expect(asked.filter((n) => /attacker|evil/.test(n))).toEqual([]);
+    expect(decisions.map((d) => d.decision)).toEqual(Array(6).fill('deny'));
+    // an allowed claim is still checked against where the flow goes
+    expect(await ask(address, frame({ payload: clientHello('api.github.com') }))).toBe(0);
+    expect(asked).toContain('api.github.com');
+  });
+
+  it('observe: reports a claimed name without resolving it on the host', async () => {
+    const asked: string[] = [];
+    const { address, decisions } = await start('observe', { resolve: async (n: string) => { asked.push(n); return []; } });
+    expect(await ask(address, frame({ payload: clientHello('c2VjcmV0.attacker.example') }))).toBe(0);
+    expect(asked.filter((n) => /attacker/.test(n))).toEqual([]);
+    expect(decisions[0]).toMatchObject({ host: 'c2vjcmv0.attacker.example', decision: 'allow' });
+  });
+
+  it('a TLS server name off the list is refused on an address an allowed name shares', async () => {
+    const { address, decisions } = await start('enforce', { resolve: async (n: string) => (['api.github.com', 'evil.cdn.example'].includes(n) ? ['93.184.216.34'] : []) });
+    // the guest looked up the allowed name, then claims another one served at the same address
+    fs.appendFileSync(path.join(dir, 'audit.jsonl'), `${JSON.stringify({ transport: 'dns', action: 'allow', destination: 'api.github.com', reason: 'local_policy' })}\n`);
+    expect(await ask(address, frame({ payload: clientHello('evil.cdn.example') }))).toBe(1);
+    expect(decisions[0]).toMatchObject({ host: 'api.github.com', decision: 'deny', rule: 'not-on-allow-list' });
   });
 
   it('does not believe a claimed name that resolves elsewhere: it cannot borrow another allowed name\'s port', async () => {

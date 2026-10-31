@@ -187,28 +187,39 @@ function admits(entry: string, name: string | null, ip: string, port: number): b
 /**
  * The decision for one flow. `names` are the names it is known by for sure: names the guest looked
  * up that resolve to its address, a claimed name that does, and port-restricted allowed hosts that
- * do. A deny on any wins; one allowed name allows. `claimed` is a name the flow claims (TLS, HTTP)
- * that could not be confirmed (a CDN answers the host and the guest differently): used only when
- * nothing else names the flow, it can be denied but is allowed only by an entry without a port, so
- * it never borrows a port-restricted entry (in enforce mode smolvm already holds the address to
- * one of an allowed name).
+ * do. A deny on any wins. `claimed` is a name the flow claims (TLS, HTTP): when there is one, it is
+ * what the flow is for, so it alone can allow it (story review 3) - another name its address is
+ * known by would let a CDN address serve a name off the list. A claim that is not among `names`
+ * (not confirmed: a CDN answers the host and the guest differently) can allow only when nothing
+ * else names the flow, and only by an entry without a port, so it never borrows a port-restricted
+ * entry. Without a claim, one allowed name allows (in enforce mode smolvm already holds the
+ * address to one of an allowed name).
  */
 export function decideFlow(flow: { names: string[]; claimed?: string | null; ip: string; port: number }, network: Network): ProxyDecision {
   const { ip, port } = flow;
-  const weak = !flow.names.length && flow.claimed ? flow.claimed : null;
-  // (A confirmed claim is among `names` already.)
-  const names = weak ? [weak] : flow.names;
-  // A claimed name is the guest's word, too weak to allow by but never ignored for a deny.
-  const denied = [...names, ...(flow.claimed ? [flow.claimed] : [])].find((n) => matchHost(n, network.deny));
+  const claim = flow.claimed ?? null;
+  const confirmed = !!claim && flow.names.includes(claim);
+  // A confirmed claim names the flow first; an unconfirmed one, only when nothing else does.
+  const names = !claim ? flow.names : confirmed ? [claim, ...flow.names.filter((n) => n !== claim)] : [...flow.names, claim];
+  const denied = names.find((n) => matchHost(n, network.deny));
   if (network.denyResolved.length && matchHost(ip, network.denyResolved)) return { host: names[0] ?? ip, port, decision: 'deny', rule: 'denied-address' };
   if (network.deny.includes('*') || matchHost(ip, network.deny) || denied) {
     return { host: denied ?? names[0] ?? ip, port, decision: 'deny', rule: 'deny-list' };
   }
-  const entries = weak ? network.allow.filter((e) => entryOf(e).port === null) : network.allow;
-  const allowedAs = names.find((n) => entries.some((e) => admits(e, n, ip, port)))
-    ?? (network.allow.some((e) => admits(e, null, ip, port)) ? ip : null);
+  const byAddress = network.allow.some((e) => admits(e, null, ip, port)) ? ip : null;
+  let allowedAs: string | null;
+  let refused: string;
+  if (claim) {
+    const entries = confirmed ? network.allow : flow.names.length ? [] : network.allow.filter((e) => entryOf(e).port === null);
+    allowedAs = entries.some((e) => admits(e, claim, ip, port)) ? claim : byAddress;
+    // Judged by the names its address is known by when there are any; by an unconfirmed claim alone, unverified.
+    refused = !confirmed && !flow.names.length && network.allow.some((e) => admits(e, claim, ip, port)) ? 'unverified-name' : 'not-on-allow-list';
+  } else {
+    allowedAs = names.find((n) => network.allow.some((e) => admits(e, n, ip, port))) ?? byAddress;
+    refused = names.length ? 'not-on-allow-list' : 'unknown-host';
+  }
   const host = allowedAs ?? names[0] ?? ip;
-  const rule = allowedAs ? 'allow-list' : weak ? 'unverified-name' : names.length ? 'not-on-allow-list' : 'unknown-host';
+  const rule = allowedAs ? 'allow-list' : refused;
   if (network.mode === 'observe') return { host, port, decision: 'allow', rule: `observe:${rule}` };
   return { host, port, decision: allowedAs ? 'allow' : 'deny', rule };
 }
@@ -466,6 +477,13 @@ export class EgressService {
     }
   }
 
+  /** Could the policy allow a flow by this name (not denied, and named by an allow entry)? */
+  private mayAllow(name: string): boolean {
+    const n = this.network;
+    if (n.deny.includes('*') || matchHost(name, n.deny)) return false;
+    return n.allow.some((e) => { const h = entryOf(e).host; return !isIp(h) && matchHost(name, [h]); });
+  }
+
   private async decide(flow: Flow): Promise<ProxyDecision> {
     // The lookup that preceded this flow may not have been read yet.
     this.readAudit();
@@ -473,7 +491,9 @@ export class EgressService {
     // A name the flow claims (TLS, HTTP) is the guest's word: believed only when it resolves to
     // where the flow goes, so it cannot borrow another allowed name's ports.
     const claimed = serverNameOf(flow.payload);
-    const confirmed = !!claimed && (known.includes(claimed) || (await this.names.resolvesTo(claimed, flow.ip)));
+    // Resolving it here is a lookup the guest's own DNS policy never sees (<secret>.attacker.example,
+    // story review 3): only a name the policy could allow is resolved.
+    const confirmed = !!claimed && (known.includes(claimed) || (this.mayAllow(claimed) && (await this.names.resolvesTo(claimed, flow.ip))));
     const names = confirmed ? [claimed as string, ...known.filter((n) => n !== claimed)] : [...known];
     // A port-restricted allowed host at this address names the flow too, so its ports hold whatever
     // the flow claims.
