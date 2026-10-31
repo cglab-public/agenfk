@@ -92,6 +92,11 @@ export interface SandboxSpec {
   /** A client's relay to the AgEnFK server (SX-1), on the host loopback: a machine reaches it through its decider. */
   relayPort?: number;
   maskedEnv: Array<{ name: string; injectHosts: string[] }>;
+  /**
+   * Host env vars the session gets as they are: a key for a plain-http inference endpoint, which no
+   * injector can mask (story review 3). Names only; the runtime reads the values from the host.
+   */
+  plainEnv?: string[];
   /** Set for the sandboxed process, over the runtime's own. */
   env: Record<string, string>;
   allowPty: boolean;
@@ -282,13 +287,23 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     : [j(home, '.local', 'share', 'opencode'), j(home, '.local', 'state', 'opencode'), j(home, '.cache', 'opencode'), j(home, '.config', 'opencode')];
   const allowWrite = uniq([session.workspace, ...session.tempDirs, ...clientState]);
 
+  // What the host runs next from a client's own state (story review 3): pi's launcher, its installed
+  // releases and packages and the settings that name packages to load; OpenCode's config (MCP
+  // commands, plugins), the LSP binaries and the plugin packages it installs. The rest of that
+  // state (sessions, models.json) stays writable.
+  const piHostCode = (dir: string) => ['extensions', 'bin', 'install', 'npm', 'git', 'settings.json'].map((p) => j(dir, p));
   const denyWrite = uniq([
     j(home, '.agenfk'),
     ...session.installDirs,
-    j(home, '.pi', 'agent', 'extensions'),
-    ...(session.piAgentDir ? [j(session.piAgentDir, 'extensions')] : []),
+    ...piHostCode(j(home, '.pi', 'agent')),
+    ...(session.piAgentDir ? piHostCode(session.piAgentDir) : []),
     j(home, '.config', 'opencode', 'plugins'),
     j(home, '.config', 'opencode', 'plugin'),
+    // (OpenCode installs plugin packages into its config dir too.)
+    ...['opencode.json', 'opencode.jsonc', 'config.json', 'node_modules', 'package.json'].map((f) => j(home, '.config', 'opencode', f)),
+    j(home, '.local', 'share', 'opencode', 'bin'),
+    j(home, '.cache', 'opencode', 'node_modules'),
+    j(home, '.cache', 'opencode', 'package.json'),
     j(session.workspace, '.agenfk'),
     ...(session.projectAgenfkDirs ?? []),
     ...(session.gitDir ? ['commondir', 'config.worktree', 'modules', 'worktrees'].map((n) => j(session.gitDir!, n)) : []),

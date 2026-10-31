@@ -116,6 +116,25 @@ describePosix('buildSandboxSpec: filesystem', () => {
     expect(oc).not.toContain('/home/u/.pi/agent');
   });
 
+  // Story review 3: what the host runs next from the client's state - pi's launcher, its installed
+  // releases and packages, the settings that name packages to load; OpenCode's config (MCP
+  // commands, plugins), the LSP binaries and plugin packages it installs - stays unwritable.
+  it('keeps what the host runs from the client\'s state unwritable, and the rest of it writable', () => {
+    for (const agentDir of ['/home/u/.pi/agent', '/custom/pi']) {
+      const fsys = buildSandboxSpec(policy(), session({ client: 'pi', ...(agentDir === '/custom/pi' ? { piAgentDir: agentDir } : {}) })).filesystem;
+      for (const p of ['bin', 'install', 'npm', 'git', 'settings.json']) expect(fsys.denyWrite, `${agentDir} ${p}`).toContain(`${agentDir}/${p}`);
+      expect(fsys.allowWrite).toContain(agentDir);
+      expect(fsys.denyWrite).not.toContain(`${agentDir}/sessions`);
+      expect(fsys.denyWrite).not.toContain(`${agentDir}/models.json`);
+    }
+    const oc = buildSandboxSpec(policy(), session({ client: 'opencode' })).filesystem;
+    for (const p of ['/home/u/.config/opencode/opencode.json', '/home/u/.config/opencode/opencode.jsonc', '/home/u/.config/opencode/config.json',
+      '/home/u/.config/opencode/node_modules', '/home/u/.config/opencode/package.json',
+      '/home/u/.local/share/opencode/bin', '/home/u/.cache/opencode/node_modules', '/home/u/.cache/opencode/package.json']) {
+      expect(oc.denyWrite).toContain(p);
+    }
+  });
+
   it('protects the sandbox runtime package from writes', () => {
     const spec = buildSandboxSpec(policy(), session({ runtimePackageDir: '/opt/agenfk/smolvm' }));
     expect(spec.filesystem.denyWrite).toContain('/opt/agenfk/smolvm');
