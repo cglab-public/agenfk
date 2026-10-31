@@ -827,10 +827,11 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     // session could repoint is refused whatever it leads to now: git follows the pointer on every run.
     const pointer = gitfilePointer(g);
     if (!pointer) throw new Error(`Airlock cannot read the git pointer ${g} as git does (no "gitdir: ", or too large), so it cannot protect what it names. Nothing was launched.`);
-    // Inside the mounts, only a submodule's place is safe: under a git dir's modules, protected as
+    // Inside the mounts, only a submodule's or a linked worktree's place is safe: under a git dir's
+    // modules or worktrees (a worktree checked out inside the workspace: BUG 9bdd4d45), protected as
     // named (no pattern: `**` is a name too), and read-only by the deepest bind holding it - a linked
     // worktree's own git dir is bound writable again (review).
-    const modules = held.map((h) => path.resolve(h)).filter((h) => path.basename(h) === 'modules' && !/[*?[\]{}]/.test(h));
+    const modules = held.map((h) => path.resolve(h)).filter((h) => ['modules', 'worktrees'].includes(path.basename(h)) && !/[*?[\]{}]/.test(h));
     const covered = (t: string) => modules.some((m) => inside(t, m)) && underReadOnly(t, modules, writable);
     const reached = walkPointer(path.dirname(g), pointer, (l) => !mounted(l));
     if ('refused' in reached) {
