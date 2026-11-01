@@ -9,6 +9,7 @@ import {
 import { registerPeopleCommands } from '../hubAdmin/people';
 import { registerFleetCommands } from '../hubAdmin/fleet';
 import { registerPolicyCommands } from '../hubAdmin/policies';
+import { registerHubSettingsCommands } from '../hubAdmin/hubSettings';
 
 /**
  * `agenfk hub admin …` (CGLAB-702): what the hub's admin pages do, from the
@@ -149,5 +150,18 @@ export function registerHubAdminCommands(hub: Command, deps: HubAdminDeps): Comm
   registerPeopleCommands(admin);
   registerFleetCommands(admin);
   registerPolicyCommands(admin);
+  registerHubSettingsCommands(admin);
+  refuseExcessArguments(admin);
   return admin;
+}
+
+/**
+ * Commander accepts and ignores extra arguments by default, so a secret typed
+ * where stdin was meant (`federation join TOKEN --token-stdin`) would be
+ * silently dropped after landing in shell history. Every admin command takes
+ * exactly the arguments it declares.
+ */
+function refuseExcessArguments(cmd: Command): void {
+  cmd.allowExcessArguments(false);
+  for (const sub of cmd.commands) refuseExcessArguments(sub);
 }
