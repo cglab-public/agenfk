@@ -17,14 +17,26 @@ import { BUILTIN_DENY_HOSTS, HOME_CREDENTIAL_STORES, matchHost, type AirlockClie
 
 /**
  * What host programs read and run from the home folder: git's config, ssh's, the shells' startup
- * files, login agents and services. Unwritable under a read-write home (homeAccess); the clients'
- * own code and config are protected in every mode below.
+ * files, login agents and services, the other coding agents' config (their hooks, commands and MCP
+ * servers run on the host: BUG 66fbc056). Unwritable under a read-write
+ * home (homeAccess); pi's and OpenCode's own code and config are protected in every mode below.
  */
 export const HOST_RUN_CONFIGS = Object.freeze([
   '.gitconfig', path.join('.config', 'git'), '.ssh',
   '.profile', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout',
   '.zshrc', '.zshenv', '.zprofile', '.zlogin', '.zlogout', path.join('.config', 'fish'),
   path.join('Library', 'LaunchAgents'), path.join('.config', 'systemd'), path.join('.config', 'autostart'),
+  // Each agent's entry points, never its whole dir: its data holds links the session could steer
+  // (a cache in ~/.claude refused every launch: review 01a19539), and it can be huge.
+  ...['settings.json', 'settings.local.json', 'hooks', 'commands', 'agents', 'skills', 'plugins', 'rules', 'CLAUDE.md'].map((f) => path.join('.claude', f)),
+  '.claude.json',
+  ...['config.toml', 'hooks.json', 'skills', 'prompts', 'AGENTS.md'].map((f) => path.join('.codex', f)),
+  ...['mcp.json', 'hooks.json', 'hooks', 'rules', 'skills', 'agents'].map((f) => path.join('.cursor', f)),
+  ...['mcp.json', 'rules'].map((f) => path.join('.config', 'cursor', f)),
+  ...['settings.json', 'commands', 'extensions', 'skills', 'GEMINI.md'].map((f) => path.join('.gemini', f)),
+  // Skills every agent loads (the installer's ~/.agents/skills). Not the bin dirs on PATH: they are
+  // links into tools' installs, which the session could steer, so holding them refused every launch.
+  '.agents',
 ]);
 
 /** Set inside the sandbox to the client's name; the launch gate (L2-3) looks for it. */

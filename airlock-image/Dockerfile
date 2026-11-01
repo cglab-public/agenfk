@@ -41,7 +41,7 @@ ARG MONGOSH_VERSION=2.5.8
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl git openssh-client \
+      ca-certificates curl git openssh-client jq \
       postgresql-client default-mysql-client redis-tools \
       python3 python3-venv python3-pip \
       procps util-linux mount iptables \

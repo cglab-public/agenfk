@@ -175,6 +175,10 @@ const FILE_PLACEHOLDERS: Record<string, string> = {
   commondir: '.\n', 'config.worktree': '', config: '',
   // A client's settings held while missing: a file its client reads as empty, never a dir it cannot read.
   'settings.json': '{}\n', 'opencode.json': '{}\n', 'opencode.jsonc': '{}\n', 'config.json': '{}\n', 'package.json': '{}\n',
+  // The coding agents' config under a read-write home (HOST_RUN_CONFIGS): read by them on the host
+  // too while the session holds it, so each is a file they parse.
+  '.claude.json': '{}\n', 'settings.local.json': '{}\n', 'hooks.json': '{}\n', 'mcp.json': '{}\n', 'config.toml': '',
+  'CLAUDE.md': '', 'AGENTS.md': '', 'GEMINI.md': '',
   // What a read-write home folder holds of git's and the shells' (HOST_RUN_CONFIGS): empty files, which
   // they read as nothing, never directories they would fail on.
   ...Object.fromEntries(['.gitconfig', '.profile', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout', '.zshrc', '.zshenv', '.zprofile', '.zlogin', '.zlogout'].map((f) => [f, ''])),

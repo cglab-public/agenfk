@@ -3616,7 +3616,9 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('the AgEnFK base image in a re
     try {
       const out = path.join(workspace, 'probe.out');
       const probe = [
-        'for c in node pi opencode agenfk git psql mysql redis-cli mongosh python3 yarn pnpm; do command -v $c >/dev/null || echo "missing $c"; done',
+        'for c in node pi opencode agenfk git psql mysql redis-cli mongosh python3 yarn pnpm jq; do command -v $c >/dev/null || echo "missing $c"; done',
+        // A pi provider resolving its key with `!jq ...` (BUG 66fbc056).
+        '[ "$(echo \'{"k":"v"}\' | jq -r .k)" = v ] || echo jq-failed',
         'ssh -V 2>&1 | grep -q OpenSSH || echo "ssh: $(ssh -V 2>&1)"',
         // The image's ENV reaches the session: pnpm and yarn run from the corepack home it prepared.
         '[ "$COREPACK_HOME" = /usr/local/share/corepack ] || echo "COREPACK_HOME=$COREPACK_HOME"',
@@ -4123,6 +4125,33 @@ describePosix('guestPlanOf: a read-write home folder holds what host programs ru
       expect(p.placeholders).toContainEqual({ path: path.join(home, f), kind: 'file', content: '' });
       expect(p.readOnly).toContain(path.join(home, f));
     }
+  });
+
+  // BUG 66fbc056: a missing config file is held by one its agent parses, never an empty dir.
+  it('holds the agents\' missing config files as files they parse, and their dirs read-only', () => {
+    fs.mkdirSync(path.join(home, '.claude'));
+    fs.mkdirSync(path.join(home, '.codex'));
+    const p = guestPlanOf(specRw(), workspace);
+    for (const [f, content] of [['.claude.json', '{}\n'], ['.claude/settings.json', '{}\n'], ['.claude/settings.local.json', '{}\n'],
+      ['.claude/CLAUDE.md', ''], ['.codex/config.toml', ''], ['.codex/hooks.json', '{}\n'], ['.codex/AGENTS.md', '']] as const) {
+      expect(p.placeholders).toContainEqual({ path: path.join(home, f), kind: 'file', content });
+      expect(p.readOnly).toContain(path.join(home, f));
+    }
+    expect(p.placeholders).toContainEqual({ path: path.join(home, '.claude', 'hooks'), kind: 'dir' });
+    // ~/.cursor is missing: held by its highest missing directory.
+    expect(p.placeholders).toContainEqual({ path: path.join(home, '.cursor'), kind: 'dir' });
+  });
+
+  // Review 01a19539: the whole ~/.claude was held, and a cache link in it refused every launch.
+  it('launches with a link the session could steer in an agent\'s data, outside its entry points', () => {
+    fs.mkdirSync(path.join(home, 'tools', 'py'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'tools', 'py'), path.join(home, 'tools', 'current'));
+    fs.mkdirSync(path.join(home, '.claude', 'jobs', 'j1'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'tools', 'current'), path.join(home, '.claude', 'jobs', 'j1', 'python'));
+    // A tool's launcher on PATH, through the same kind of link (~/.local/bin/codex on a real machine).
+    fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'tools', 'current'), path.join(home, '.local', 'bin', 'tool'));
+    expect(() => guestPlanOf(specRw(), workspace)).not.toThrow();
   });
 
   it('keeps an existing one read-only', () => {

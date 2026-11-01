@@ -362,4 +362,20 @@ describePosix('buildSandboxSpec: home access (story 525cd331)', () => {
       : [...HOST_RUN_CONFIGS.map((p) => `/home/u/${p}`), ...closed.denyWrite]);
     expect(open.allowWrite).toEqual(closed.allowWrite);
   });
+
+  // Real-session test of beta.9 (BUG 66fbc056): every agent's config the host runs from, and the bin dirs on PATH.
+  // Each agent's entry points, never its whole dir: ~/.claude holds caches with links the session
+  // could steer, which refused every launch (review 01a19539).
+  it('holds every coding agent\'s config and the user\'s bin dirs under a read-write home', () => {
+    const { denyWrite } = buildSandboxSpec(policy({ homeAccess: 'home-read-write' }), session()).filesystem;
+    for (const p of [
+      '.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/commands', '.claude/agents', '.claude/skills', '.claude/plugins', '.claude/rules', '.claude/CLAUDE.md', '.claude.json',
+      '.codex/config.toml', '.codex/hooks.json', '.codex/skills', '.codex/prompts', '.codex/AGENTS.md',
+      '.cursor/mcp.json', '.cursor/hooks.json', '.cursor/hooks', '.cursor/rules', '.cursor/skills', '.cursor/agents', '.config/cursor/mcp.json', '.config/cursor/rules',
+      '.gemini/settings.json', '.gemini/commands', '.gemini/extensions', '.gemini/skills', '.gemini/GEMINI.md',
+      '.agents',
+    ]) expect(denyWrite).toContain(`/home/u/${p}`);
+    // Never a whole agent dir, nor a bin dir: both hold links the session could steer.
+    for (const p of ['.claude', '.codex', '.local/bin', 'bin']) expect(denyWrite).not.toContain(`/home/u/${p}`);
+  });
 });
