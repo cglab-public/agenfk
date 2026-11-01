@@ -398,7 +398,7 @@ export function registerAirlockCommands(
 
   airlock
     .command('learn')
-    .description('Learning mode (TEL-3): feed the proposed allowlist. --import-pi-sessions reads pi session logs here and sends only host names and counts. Accepting the proposal is a person\'s, on the board (or the hub). Writes no policy.')
+    .description('Learning mode: add to the proposed allowlist. --import-pi-sessions reads the pi session logs on this machine and sends only host names and counts. A person accepts the proposal on the board, or on the hub for a hub-joined installation. Writes no policy.')
     .option('--import-pi-sessions', 'Import the hosts existing pi sessions reached')
     .option('--dir <dir>', 'Where the pi session logs are (default ~/.pi/agent/sessions)')
     .option('--json', 'Print the result as JSON')
@@ -423,11 +423,11 @@ export function registerAirlockCommands(
 
   const dataset = airlock
     .command('dataset')
-    .description('The Airlock dataset (DS-3): your organization\'s hub keeps full tool calls, secrets removed, to train Airlock\'s scorer, while an org admin has it switched on.');
+    .description('The Airlock dataset: your organization\'s hub keeps full tool calls, secrets removed, to train Airlock\'s scorer, while an org admin has it switched on.');
 
   dataset
     .command('status')
-    .description('Whether your organization\'s hub has the Airlock dataset switched on, as the hub says now (BUG 4f2e0354).')
+    .description('Whether your organization\'s hub has the Airlock dataset switched on, as the hub says now.')
     .option('--json', 'Print the server answer as JSON')
     .action(async (options) => {
       try {

@@ -216,7 +216,7 @@ function parseArgs(args: string[], valueOpts: ReadonlySet<string>): Parsed {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--') {
-      positionals.push(...args.slice(i + 1));
+      for (const rest of args.slice(i + 1)) positionals.push(rest);
       break;
     }
     if (a.startsWith('--')) {
@@ -290,7 +290,8 @@ function commandOf(words: string[]): Resolved | null {
     while (i < words.length && (ASSIGNMENT.test(words[i]) || KEYWORDS.has(words[i]))) i++;
     if (i >= words.length) return null;
     const name = basename(words[i]);
-    const valueOpts = WRAPPERS[name];
+    // Own entries only: `constructor` or `toString` in a heredoc is a command word too.
+    const valueOpts = Object.hasOwn(WRAPPERS, name) ? WRAPPERS[name] : undefined;
     if (!valueOpts) return { name, args: words.slice(i + 1), offset: i + 1 };
     i++;
     let split: string | null = null;
@@ -303,7 +304,7 @@ function commandOf(words: string[]): Resolved | null {
       else if (valueOpts.has(w)) i++;
     }
     if (split !== null) return { split: [split, ...words.slice(i)].join(' ') };
-    i += WRAPPER_POSITIONALS[name] ?? 0;
+    i += Object.hasOwn(WRAPPER_POSITIONALS, name) ? WRAPPER_POSITIONALS[name] : 0;
   }
 }
 
@@ -429,9 +430,9 @@ function curlTransfers(args: string[]): NetResult {
   for (let i = 0; i <= args.length; i++) {
     if (i < args.length && args[i] !== '--next' && args[i] !== '-:') continue;
     const t = transfer(args.slice(start, i), true);
-    out.contacted.push(...t.contacted);
+    for (const h of t.contacted) out.contacted.push(h);
     if (t.destinations) out.destinations = [...(out.destinations ?? []), ...t.destinations];
-    out.outputs.push(...t.outputs.map((at) => start + at));
+    for (const at of t.outputs) out.outputs.push(start + at);
     start = i + 1;
   }
   return out;
@@ -900,7 +901,7 @@ function merge(into: CommandAnalysis, from: CommandAnalysis): void {
   addAll(into.commands, from.commands);
   addAll(into.hosts, from.hosts);
   addAll(into.credentialPaths, from.credentialPaths);
-  into.uploads.push(...from.uploads);
+  for (const u of from.uploads) into.uploads.push(u);
   into.network ||= from.network;
   into.namespaceEscape ??= from.namespaceEscape;
   into.cloudMutation ??= from.cloudMutation;
@@ -934,7 +935,7 @@ function analyse(src: string, depth: number): CommandAnalysis {
       addAll(result.commands, [name]);
       if (NAMESPACE_ESCAPE.has(name)) result.namespaceEscape ??= name;
       result.cloudMutation ??= cloudMutation(name, args);
-      nested.push(...runnerCommands(name, args));
+      for (const c of runnerCommands(name, args)) nested.push(c);
       const publish = publishOf(name, args);
       if (publish) {
         result.publish ??= publish;

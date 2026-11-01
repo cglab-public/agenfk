@@ -81,6 +81,8 @@ export interface CollectOptions {
   maxLineBytes?: number;
   maxHosts?: number;
   env?: NodeJS.ProcessEnv;
+  /** How one line is tallied (core's tallyPiSessionLine); a test passes one that fails. */
+  tally?: typeof tallyPiSessionLine;
 }
 
 export interface CollectResult {
@@ -90,6 +92,8 @@ export interface CollectResult {
   longLines: number;
   /** Sightings of new hosts past the distinct-host cap, left out. */
   droppedHosts: number;
+  /** Lines the tally failed on, skipped: one line never ends the import. */
+  unreadableLines: number;
 }
 
 /** The hosts the tool calls in every pi session log under `dir` reached, within the caps. */
@@ -97,14 +101,20 @@ export async function collectPiSessionHosts(dir: string, opts: CollectOptions = 
   const hosts = new Map<string, AirlockImportTally>();
   const stats = { droppedHosts: 0 };
   let longLines = 0;
+  let unreadableLines = 0;
+  const tally = opts.tally ?? tallyPiSessionLine;
   const screen = importScreen(opts.env);
   const files = sessionFiles(dir);
   for (const file of files) {
     for await (const line of linesOf(file, opts.maxLineBytes ?? MAX_LINE_BYTES, () => { longLines++; })) {
-      tallyPiSessionLine(line, hosts, { screen, maxHosts: opts.maxHosts ?? MAX_IMPORT_HOSTS, stats });
+      try {
+        tally(line, hosts, { screen, maxHosts: opts.maxHosts ?? MAX_IMPORT_HOSTS, stats });
+      } catch {
+        unreadableLines++;
+      }
     }
   }
-  return { files: files.length, hosts, longLines, droppedHosts: stats.droppedHosts };
+  return { files: files.length, hosts, longLines, droppedHosts: stats.droppedHosts, unreadableLines };
 }
 
 export interface ImportBatch {
@@ -152,13 +162,15 @@ export interface LearnImportResult {
   excluded: number;
   longLines: number;
   droppedHosts: number;
+  unreadableLines: number;
 }
 
 export async function runLearnImport(opts: { dir?: string } & CollectOptions, deps: LearnImportDeps): Promise<LearnImportResult> {
   const dir = opts.dir ?? defaultPiSessionsDir();
-  const { files, hosts, longLines, droppedHosts } = await collectPiSessionHosts(dir, { ...opts, env: opts.env ?? deps.env });
+  const { files, hosts, longLines, droppedHosts, unreadableLines } = await collectPiSessionHosts(dir, { ...opts, env: opts.env ?? deps.env });
   deps.log(`Read ${files} pi session log${files === 1 ? '' : 's'} under ${dir}: ${hosts.size} host${hosts.size === 1 ? '' : 's'}.`);
   if (longLines) deps.log(`Skipped ${longLines} line${longLines === 1 ? '' : 's'} longer than ${MAX_LINE_BYTES} bytes.`);
+  if (unreadableLines) deps.log(`Skipped ${unreadableLines} line${unreadableLines === 1 ? '' : 's'} that could not be read.`);
   if (droppedHosts) deps.log(`Left out ${droppedHosts} sighting${droppedHosts === 1 ? '' : 's'} of hosts past the ${opts.maxHosts ?? MAX_IMPORT_HOSTS}-host limit.`);
   let recorded = 0;
   let invalid = 0;
@@ -181,5 +193,5 @@ export async function runLearnImport(opts: { dir?: string } & CollectOptions, de
     excluded += data?.excluded ?? 0;
   };
   for (const batch of importBatches(hosts)) await send(batch);
-  return { files, hosts: hosts.size, recorded, invalid, excluded, longLines, droppedHosts };
+  return { files, hosts: hosts.size, recorded, invalid, excluded, longLines, droppedHosts, unreadableLines };
 }

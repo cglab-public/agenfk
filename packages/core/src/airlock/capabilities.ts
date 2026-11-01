@@ -32,7 +32,7 @@ export function capabilitiesOf(args: Record<string, unknown>): Capability[] {
   }
   const access = WRITE_KEYS.some((k) => k in args) ? 'write' : 'read';
   const paths: unknown[] = PATH_KEYS.map((k) => args[k]);
-  if (Array.isArray(args.paths)) paths.push(...args.paths);
+  if (Array.isArray(args.paths)) for (const p of args.paths) paths.push(p);
   for (const p of paths) {
     if (!nonEmpty(p)) continue;
     const local = localPath(p);
