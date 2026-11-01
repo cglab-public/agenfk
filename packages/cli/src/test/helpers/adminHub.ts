@@ -41,27 +41,46 @@ export interface AdminHub {
 
 /** `extra` is merged into the hub's config, e.g. a `releaseExists` stub so no test reaches GitHub. */
 export async function startAdminHub(home: string, name: string, extra: Record<string, unknown> = {}): Promise<AdminHub> {
-  const dbPath = path.join(os.tmpdir(), `agenfk-cli-${name}-${process.pid}.sqlite`);
-  const rmDb = () => { for (const s of ['', '-wal', '-shm']) fs.rmSync(dbPath + s, { force: true }); };
-  rmDb();
+  // A fresh directory per hub: nothing is ever deleted while a hub may hold it
   fs.rmSync(path.join(home, '.agenfk'), { recursive: true, force: true });
+  // open (no-open-db-unlink.xplat.test.ts), and it is removed after the close.
+  const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), `agenfk-cli-${name}-`));
+  const dbPath = path.join(dbDir, 'hub.sqlite');
 
-  const hub = await createHubApp({ dbPath, secretKey: 'a'.repeat(64), sessionSecret: 'test-session-secret', defaultOrgId: 'org', ...extra } as any);
-  const server = hub.app.listen(0, '127.0.0.1');
-  await new Promise<void>(r => server.once('listening', () => r()));
-  const url = `http://127.0.0.1:${(server.address() as any).port}`;
-  await createPasswordUser(hub.ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
-  const cookie = await loginAs(server, 'admin@x', 'longenough1');
+  // Setup is undone if any of it fails: otherwise no close() reaches the caller,
+  // and the hub's DB stays open in a directory nobody removes.
+  let hub: Awaited<ReturnType<typeof createHubApp>> | undefined;
+  let server: http.Server | undefined;
+  // The DB is closed even if draining fails, and the directory goes only once
+  // the DB is closed: removing it under an open handle is EBUSY on Windows.
+  const teardown = async () => {
+    try { if (server) await drainApp(server); } finally {
+      if (hub) await hub.ctx.db.close();
+      fs.rmSync(dbDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  };
+  let url: string, cookie: string, poll: any;
+  try {
+    hub = await createHubApp({ dbPath, secretKey: 'a'.repeat(64), sessionSecret: 'test-session-secret', defaultOrgId: 'org', ...extra } as any);
+    server = hub.app.listen(0, '127.0.0.1');
+    await new Promise<void>(r => server!.once('listening', () => r()));
+    url = `http://127.0.0.1:${(server.address() as any).port}`;
+    await createPasswordUser(hub.ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
+    cookie = await loginAs(server, 'admin@x', 'longenough1');
 
-  // Sign the CLI in the way `hub admin login` does, minus the wait for a person.
-  const start = await supertest(server).post('/hub/admin-device/start').send({});
-  await supertest(server).post('/hub/admin-device/approve').set('Cookie', cookie).send({ userCode: start.body.userCode });
-  const poll = await supertest(server).post('/hub/admin-device/poll').send({ deviceCode: start.body.deviceCode });
-  expect(poll.body.status).toBe('approved');
-  fs.mkdirSync(path.join(home, '.agenfk'), { recursive: true });
-  fs.writeFileSync(path.join(home, '.agenfk', 'hub-admin.json'), JSON.stringify({
-    url, token: poll.body.token, orgId: poll.body.orgId, email: 'admin@x', role: 'admin', expiresAt: poll.body.expiresAt,
-  }), { mode: 0o600 });
+    // Sign the CLI in the way `hub admin login` does, minus the wait for a person.
+    const start = await supertest(server).post('/hub/admin-device/start').send({});
+    await supertest(server).post('/hub/admin-device/approve').set('Cookie', cookie).send({ userCode: start.body.userCode });
+    poll = await supertest(server).post('/hub/admin-device/poll').send({ deviceCode: start.body.deviceCode });
+    expect(poll.body.status).toBe('approved');
+    fs.mkdirSync(path.join(home, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.agenfk', 'hub-admin.json'), JSON.stringify({
+      url, token: poll.body.token, orgId: poll.body.orgId, email: 'admin@x', role: 'admin', expiresAt: poll.body.expiresAt,
+    }), { mode: 0o600 });
+  } catch (e) {
+    await teardown();
+    throw e;
+  }
 
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as any);
   const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -79,13 +98,11 @@ export async function startAdminHub(home: string, name: string, extra: Record<st
   };
 
   return {
-    server, app: hub.app, url, ctx: hub.ctx, cookie, run, out, err, clear,
+    server: server!, app: hub!.app, url: url!, ctx: hub!.ctx, cookie: cookie!, run, out, err, clear,
     json: async (args) => { clear(); await run([...args, '--json']); return JSON.parse(out()); },
     close: async () => {
       vi.restoreAllMocks();
-      await drainApp(server);
-      await hub.ctx.db.close();
-      rmDb();
+      await teardown();
     },
   };
 }

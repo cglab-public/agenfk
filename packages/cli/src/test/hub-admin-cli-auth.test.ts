@@ -37,7 +37,8 @@ vi.mock('@agenfk/telemetry', async (importOriginal) => ({
 const AGENFK_DIR = path.join(sandboxHome, '.agenfk');
 const ADMIN_CREDS = path.join(AGENFK_DIR, 'hub-admin.json');
 const HUB_CONFIG = path.join(AGENFK_DIR, 'hub.json');
-const TEST_DB = path.join(os.tmpdir(), `agenfk-cli-hub-admin-${process.pid}.sqlite`);
+// A fresh directory per test: nothing is ever deleted while a hub may hold it open.
+let dbDir: string;
 
 let server: http.Server;
 let hubUrl: string;
@@ -72,8 +73,8 @@ async function login(extra: string[] = ['--url', hubUrl], cookie = () => adminCo
 
 beforeEach(async () => {
   fs.rmSync(AGENFK_DIR, { recursive: true, force: true });
-  for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
-  const hub = await createHubApp({ dbPath: TEST_DB, secretKey: 'a'.repeat(64), sessionSecret: 'test-session-secret', defaultOrgId: 'org' });
+  dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-cli-hub-admin-'));
+  const hub = await createHubApp({ dbPath: path.join(dbDir, 'hub.sqlite'), secretKey: 'a'.repeat(64), sessionSecret: 'test-session-secret', defaultOrgId: 'org' });
   ctx = hub.ctx;
   server = hub.app.listen(0, '127.0.0.1');
   await new Promise<void>(r => server.once('listening', () => r()));
@@ -89,9 +90,14 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await drainApp(server);
-  await ctx.db.close();
-  for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+  // Each step only if setup got that far, so a failed setup still removes its directory.
+  // The DB is closed even if draining fails; the directory goes only after the close succeeded.
+  try {
+    try { if (server?.listening) await drainApp(server); } finally { if (ctx) await ctx.db.close(); }
+    if (dbDir) fs.rmSync(dbDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } finally {
+    server = undefined as any; ctx = undefined; dbDir = undefined as any;
+  }
 });
 
 describe('hub admin login', () => {
