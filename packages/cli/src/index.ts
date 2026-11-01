@@ -4433,7 +4433,7 @@ program
 
 const reviewCmd = program
   .command('review')
-  .description('Record independent reviews (CGLAB-381)');
+  .description('Record independent reviews');
 
 reviewCmd
   .command('record <id>')
@@ -4481,7 +4481,7 @@ reviewCmd
 
 reviewCmd
   .command('brief <id>')
-  .description('Print the brief for an independent reviewer of a card on its review step (CGLAB-457): the range, the files changed, the tree\'s warnings, the author\'s evidence as claims, the tests already run, what leaving the step runs, and the rules that keep the reviewer independent. Give its text to the reviewer as its prompt. Read-only. MCP: review_brief.')
+  .description('Print the brief for an independent reviewer of a card on its review step: the range, the files changed, the tree\'s warnings, the author\'s evidence as claims, the tests already run, what leaving the step runs, and the rules that keep the reviewer independent. Give its text to the reviewer as its prompt. Read-only. MCP: review_brief.')
   .option('--json', 'Print the whole brief as JSON')
   .action(async (id, options) => {
     try {

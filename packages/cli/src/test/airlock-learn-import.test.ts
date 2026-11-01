@@ -13,7 +13,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Command } from 'commander';
 import { collectPiSessionHosts, importBatches, runLearnImport, MAX_IMPORT_BATCH, MAX_LINE_BYTES } from '../airlock/learnImport';
-import { AIRLOCK_IMPORT_MAX_BYTES } from '@agenfk/core';
+import { AIRLOCK_IMPORT_MAX_BYTES, tallyPiSessionLine } from '@agenfk/core';
 import { registerAirlockCommands } from '../commands/airlock';
 
 const SAMPLES = path.join(__dirname, 'fixtures', 'airlock-pi-sessions');
@@ -66,14 +66,14 @@ describe('what is sent', () => {
     const result = await runLearnImport({ dir: SAMPLES }, { post, apiUrl: 'http://api.test', log });
     expect(post).toHaveBeenCalledTimes(1);
     expect(post.mock.calls[0][0]).toBe('http://api.test/airlock/learning/import');
-    expect(result).toEqual({ files: 2, hosts: 6, recorded: 6, invalid: 0, excluded: 0, longLines: 0, droppedHosts: 0 });
+    expect(result).toEqual({ files: 2, hosts: 6, recorded: 6, invalid: 0, excluded: 0, longLines: 0, droppedHosts: 0, unreadableLines: 0 });
   });
 
   it('nothing to send is not a request', async () => {
     const post = vi.fn();
     const result = await runLearnImport({ dir: path.join(SAMPLES, 'missing') }, { post, apiUrl: 'http://api.test', log: () => {} });
     expect(post).not.toHaveBeenCalled();
-    expect(result).toEqual({ files: 0, hosts: 0, recorded: 0, invalid: 0, excluded: 0, longLines: 0, droppedHosts: 0 });
+    expect(result).toEqual({ files: 0, hosts: 0, recorded: 0, invalid: 0, excluded: 0, longLines: 0, droppedHosts: 0, unreadableLines: 0 });
   });
 });
 
@@ -119,6 +119,32 @@ describe('bounds and screening (review findings 2 and 5)', () => {
     const post = vi.fn(async (_u: string, body: any) => ({ data: { recorded: body.hosts.length, invalid: 0 } }));
     await runLearnImport({ dir }, { post, apiUrl: 'http://api.test', log: () => {}, env: { MY_API_TOKEN: 'abcdefgh' } });
     expect(post.mock.calls.flatMap(c => (c[1] as any).hosts.map((h: any) => h.host))).toEqual(['ok.example.com']);
+  });
+
+  it('a heredoc writing a JavaScript class does not stop the import: the hosts around it still count', async () => {
+    write('s.jsonl', [
+      call('curl https://before.example.com/'),
+      call("cat > a.ts <<'EOF'\nclass A {\n  constructor() { this.x = 1; }\n}\nEOF\ncurl https://same-call.example.com/"),
+      call('curl https://after.example.com/'),
+    ]);
+    const out = await collectPiSessionHosts(dir);
+    expect([...out.hosts.keys()].sort()).toEqual(['after.example.com', 'before.example.com', 'same-call.example.com']);
+    expect(out.unreadableLines).toBe(0);
+  });
+
+  it('a line the tally cannot read is skipped and counted, and the lines around it still count', async () => {
+    write('s.jsonl', [call('curl https://before.example.com/'), call('curl https://broken.example.com/'), call('curl https://after.example.com/')]);
+    const tally: typeof tallyPiSessionLine = (line, hosts, opts) => {
+      if (line.includes('broken.example.com')) throw new TypeError('cannot read this line');
+      return tallyPiSessionLine(line, hosts, opts);
+    };
+    const out = await collectPiSessionHosts(dir, { tally });
+    expect(out.unreadableLines).toBe(1);
+    expect([...out.hosts.keys()].sort()).toEqual(['after.example.com', 'before.example.com']);
+
+    const logs: string[] = [];
+    await runLearnImport({ dir, tally }, { post: vi.fn(async () => ({ data: { recorded: 2 } })), apiUrl: 'http://api.test', log: (m) => logs.push(m) });
+    expect(logs.join('\n')).toMatch(/Skipped 1 line .*could not be read/);
   });
 
   it('a line over the size cap is skipped and counted, and the lines around it still count', async () => {

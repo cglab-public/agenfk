@@ -190,7 +190,7 @@ export function hostsOfPiRecord(record: unknown, screen?: AirlockHostScreen): st
     if (Array.isArray(args.urls)) {
       for (const u of args.urls) if (typeof u === 'string' && u.trim()) caps.push({ kind: 'url', url: u });
     }
-    out.push(...hostsOfCapabilities(caps, screen));
+    for (const h of hostsOfCapabilities(caps, screen)) out.push(h);
   }
   return out;
 }
