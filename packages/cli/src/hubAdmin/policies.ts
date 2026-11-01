@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import * as fs from 'fs';
 import {
-  AdminCliError, adminAction, adminRequest, covers, emit, printTable, requireYes,
+  AdminCliError, adminAction, adminDownload, adminRequest, covers, emit, printTable, requireYes,
 } from './client';
 
 /**
@@ -153,13 +153,8 @@ export function registerPolicyCommands(admin: Command): void {
   dataset.command('export').description('Export the dataset as JSON lines')
     .option('--out <file>', 'Write to this file (default: stdout)')
     .action(adminAction(async (opts: { out?: string }) => {
-      const text = await adminRequest<string>('GET', '/v1/admin/airlock/dataset/export', { responseType: 'text' });
-      if (opts.out) {
-        fs.writeFileSync(opts.out, text);
-        console.error(chalk.green(`✓ Wrote ${text ? text.split('\n').filter(Boolean).length : 0} line(s) to ${opts.out}.`));
-      } else {
-        process.stdout.write(text);
-      }
+      const bytes = await adminDownload('/v1/admin/airlock/dataset/export', {}, opts.out);
+      if (opts.out) console.error(chalk.green(`✓ Wrote the dataset (${bytes} bytes) to ${opts.out}.`));
     }));
 
   const learning = airlock.command('learning').description('Hosts sandboxes keep asking for, proposed for the allow list');

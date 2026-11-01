@@ -3,6 +3,8 @@ import chalk from 'chalk';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { pipeline } from 'stream/promises';
+import { once } from 'events';
 
 /**
  * The admin CLI's credential and its one way of talking to the hub (CGLAB-702).
@@ -158,3 +160,81 @@ export function printTable<T>(rows: T[], cols: Record<string, (r: T) => unknown>
 const COVERED = new Set<string>();
 export function covers(...routes: string[]): void { for (const r of routes) COVERED.add(r); }
 export function coveredRoutes(): string[] { return [...COVERED].sort(); }
+
+/**
+ * A download from the hub, streamed to `outFile` (or stdout) as it arrives: an
+ * export can be far larger than is sensible to hold in memory. Errors are
+ * mapped as adminRequest maps them; a download cut short fails, it does not
+ * leave a silently truncated file looking complete.
+ */
+export interface DownloadLimits {
+  /** How long the hub may take to start answering. */
+  headersMs?: number;
+  /** How long the download may go without a byte before it is given up. */
+  idleMs?: number;
+}
+
+export async function adminDownload(
+  urlPath: string, params: Record<string, unknown>, outFile?: string,
+  { headersMs = 30_000, idleMs = 60_000 }: DownloadLimits = {},
+): Promise<number> {
+  const creds = requireAdminCreds();
+  // No overall deadline - a large export may take a long time - but neither a
+  // hub that never answers nor one that stalls mid-file hangs the command.
+  const abort = new AbortController();
+  let stalled: string | null = null;
+  const giveUp = (why: string) => { stalled = why; abort.abort(); };
+  const headerTimer = setTimeout(() => giveUp(`no answer within ${headersMs / 1000}s`), headersMs);
+  let res;
+  try {
+    res = await axios.request({
+      method: 'GET', url: `${creds.url}${urlPath}`, params, responseType: 'stream', signal: abort.signal,
+      headers: { Authorization: `Bearer ${creds.token}` },
+    });
+  } catch (e: any) {
+    if (stalled) throw new AdminCliError(`The download from ${creds.url}${urlPath} failed: ${stalled}.`);
+    // An error reply arrives as a stream too: read it, so the hub's words reach the admin.
+    const body = e?.response?.data;
+    if (body && typeof body.on === 'function') {
+      const text = await new Promise<string>((resolve) => {
+        let d = ''; body.on('data', (c: Buffer) => { d += c; }); body.on('end', () => resolve(d)); body.on('error', () => resolve(d));
+      });
+      try { e.response.data = JSON.parse(text); } catch { e.response.data = { error: text }; }
+    }
+    throw toAdminCliError(e, creds.url);
+  } finally {
+    clearTimeout(headerTimer);
+  }
+  let idle: NodeJS.Timeout | undefined;
+  const touch = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => { stalled = `nothing received for ${idleMs / 1000}s`; res.data.destroy(new Error(stalled)); }, idleMs);
+  };
+  let bytes = 0;
+  touch();
+  try {
+    if (outFile) {
+      res.data.on('data', (c: Buffer) => { bytes += c.length; touch(); });
+      await pipeline(res.data, fs.createWriteStream(outFile));
+    } else {
+      // stdout stays open after the download, so it is written to, not piped
+      // into and ended. Counted here: a 'data' listener would compete with the loop.
+      for await (const chunk of res.data as AsyncIterable<Buffer>) {
+        bytes += chunk.length;
+        touch();
+        if (!process.stdout.write(chunk)) {
+          // Waiting on our own reader, not the hub: the network idle deadline
+          // is paused, so a slow pipe never reads as a stalled hub.
+          clearTimeout(idle);
+          await once(process.stdout, 'drain');
+          touch();
+        }
+      }
+    }
+  } catch (e: any) {
+    throw new AdminCliError(`The download from ${creds.url}${urlPath} was cut short: ${stalled ?? e?.message ?? e}${outFile ? ` (${outFile} is incomplete)` : ''}`);
+  } finally {
+    clearTimeout(idle);
+  }
+  return bytes;
+}
