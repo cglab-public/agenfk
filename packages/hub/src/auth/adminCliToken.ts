@@ -15,7 +15,7 @@ import { hashToken } from './apiKey.js';
 export const ADMIN_CLI_TOKEN_PREFIX = 'agka_';
 export const ADMIN_CLI_TOKEN_TTL_HOURS = 12;
 
-export interface AdminCliTokenRow { id: string; orgId: string; userId: string }
+export interface AdminCliTokenRow { id: string; orgId: string; userId: string; expiresAt: string }
 
 export function isAdminCliToken(token: string): boolean {
   return token.startsWith(ADMIN_CLI_TOKEN_PREFIX);
@@ -45,7 +45,7 @@ export async function findAdminCliToken(db: DB, token: string): Promise<AdminCli
   if (!row || row.revoked_at) return null;
   // Postgres hands back a Date, SQLite the ISO string we wrote: compare in JS.
   if (new Date(row.expires_at).getTime() <= Date.now()) return null;
-  return { id: row.id, orgId: row.org_id, userId: row.user_id };
+  return { id: row.id, orgId: row.org_id, userId: row.user_id, expiresAt: new Date(row.expires_at).toISOString() };
 }
 
 /** Revokes one token of `orgId`. Returns whether a live one was revoked. */
@@ -63,3 +63,4 @@ export function bearerOf(authorization: string | undefined): string | null {
   const t = authorization.slice('Bearer '.length).trim();
   return t || null;
 }
+

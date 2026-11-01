@@ -117,8 +117,11 @@ export function registerHubAdminCommands(hub: Command, deps: HubAdminDeps): Comm
       } catch (e: any) {
         // The local copy goes regardless: keeping a credential the user asked to drop is worse.
         clearAdminCreds();
-        console.error(chalk.yellow(`Removed the local credential, but the hub could not be reached (${e?.message ?? e}), so the token was NOT revoked.`));
-        console.error(chalk.yellow(`It stays valid until ${new Date(creds.expiresAt).toLocaleString()}, or until an admin revokes it (\`agenfk hub admin sessions revoke\`).`));
+        // Exit 1: a script must not read "signed out" while a copy of the token still works.
+        throw new AdminCliError(
+          `Removed the local credential, but the hub could not be reached (${e?.message ?? e}), so the token was NOT revoked.\n`
+          + `It stays valid until ${new Date(creds.expiresAt).toLocaleString()}, or until an admin revokes it (\`agenfk hub admin sessions revoke\`).`,
+        );
       }
     }));
 

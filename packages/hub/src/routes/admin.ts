@@ -158,7 +158,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // queries, so bound them too rather than relying on the guard alone.
   // Keyed by the signed-in user, not the address: the hub is reached through
   // shared corporate egress, and an IP bucket would be an office-wide cap.
-  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret, ctx.db), message: 'Too many requests, slow down.' }));
   const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   const activeAdmins = (orgId: string) => ctx.db.all<SignInAdmin>(ACTIVE_ADMINS_SQL, [orgId]);

@@ -41,7 +41,7 @@ the board. Changes made from the CLI appear in the audit log with source `cli`.
 - **`--yes`** is required for what is destructive, fleet- or group-wide, or
   hard to take back: deleting, deactivating, demoting, revoking, retiring,
   merging, dispatching, upgrading, moving the fleet's address, changing the
-  org-wide flow, the Airlock policy or IOC list, trusting every installation's
+  org-wide flow or a flow's definition, the Airlock policy or IOC list, trusting every installation's
   receipts, enforcing receipts, letting identities be shared, replacing the
   JIRA app, joining or leaving a federation. Without it the command says what it
   would do and sends nothing. Granting access to one person (`users invite`,
@@ -62,7 +62,7 @@ the board. Changes made from the CLI appear in the audit log with source `cli`.
 ```bash
 agenfk hub admin users invite dev@acme.com --role viewer
 printf %s "$PASSWORD" | agenfk hub admin users set-password dev@acme.com --password-stdin
-agenfk hub admin flows get <id> --out flow.json && $EDITOR flow.json && agenfk hub admin flows update <id> --file flow.json
+agenfk hub admin flows get <id> --out flow.json && $EDITOR flow.json && agenfk hub admin flows update <id> --file flow.json --yes
 agenfk hub admin upgrades start 2.1.0 --installation <id> --yes
 agenfk hub admin airlock policy show --out policy.json   # edit, then:
 agenfk hub admin airlock policy set --file policy.json --yes

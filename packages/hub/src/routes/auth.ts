@@ -46,7 +46,7 @@ export function authRouter(ctx: HubServerContext): Router {
   const meRateLimit = rateLimit({
     windowMs: LOGIN_WINDOW_MS,
     max: 300,
-    keyFn: sessionUserKey(ctx.config.sessionSecret),
+    keyFn: sessionUserKey(ctx.config.sessionSecret, ctx.db),
     message: 'Too many requests, slow down.',
   });
   const loginFailures = new FailedAttemptTracker(/* maxFailures */ 5, LOGIN_WINDOW_MS, /* lockMs */ LOGIN_WINDOW_MS);

@@ -80,9 +80,13 @@ export function registerFleetCommands(admin: Command): void {
     }));
 
   flows.command('update <id>').description('Replace a flow\'s definition from a file')
-    .requiredOption('--file <file>', 'Flow definition (JSON)').option('--json', 'Print as JSON')
-    .action(adminAction(async (id: string, opts: Json & { file: string }) => {
-      const r = await adminRequest('PUT', `/v1/admin/flows/${enc(id)}`, { body: { definition: readDefinition(opts.file) } });
+    .requiredOption('--file <file>', 'Flow definition (JSON)')
+    .option('--yes', 'Confirm: every org, repo, project or installation that runs this flow follows the new definition')
+    .option('--json', 'Print as JSON')
+    .action(adminAction(async (id: string, opts: Json & { file: string; yes?: boolean }) => {
+      const definition = readDefinition(opts.file);
+      requireYes(opts, `replace the definition of flow ${id} for everything that runs it`);
+      const r = await adminRequest('PUT', `/v1/admin/flows/${enc(id)}`, { body: { definition } });
       emit(r, opts, f => console.log(chalk.green(`✓ Updated ${f.name} to v${f.version}.`)));
     }));
 

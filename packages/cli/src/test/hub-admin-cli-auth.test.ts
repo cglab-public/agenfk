@@ -187,7 +187,8 @@ describe('hub admin logout', () => {
     await login();
     const creds = JSON.parse(fs.readFileSync(ADMIN_CREDS, 'utf8'));
     fs.writeFileSync(ADMIN_CREDS, JSON.stringify({ ...creds, url: 'http://127.0.0.1:9' }), { mode: 0o600 });
-    await run(['hub', 'admin', 'logout']);
+    // Exit 1: a script must not read "signed out" while a copied credential still works.
+    await expect(run(['hub', 'admin', 'logout'])).rejects.toThrow(/exit 1/);
     expect(fs.existsSync(ADMIN_CREDS)).toBe(false);
     expect(err()).toMatch(/not revoked/i);
   }, 30_000);

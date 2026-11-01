@@ -321,3 +321,42 @@ describe('admins manage CLI sessions', () => {
     expect((await req().delete('/v1/admin/cli-sessions/nope').set('Cookie', adminCookie)).status).toBe(404);
   });
 });
+
+describe('rate limits', () => {
+  it('two admins\' CLI sessions behind one address have their own budgets, as board sessions do', async () => {
+    const a = (await signInCli()).token;
+    const b = (await signInCli(await loginAs(server, 'admin2@x', 'longenough1'))).token;
+    // Spend admin A's budget on the admin routes (300 a minute).
+    let limited = false;
+    for (let i = 0; i < 320 && !limited; i++) {
+      limited = (await req().get('/v1/admin/users').set(bearer(a))).status === 429;
+    }
+    expect(limited).toBe(true);
+    // Admin B, same address, is not charged for A's script.
+    expect((await req().get('/v1/admin/users').set(bearer(b))).status).toBe(200);
+  }, 60_000);
+
+  it('a revoked token cannot spend its former owner\'s budget', async () => {
+    const { token: old } = await signInCli();
+    await req().post('/auth/logout').set(bearer(old));
+    for (let i = 0; i < 310; i++) await req().get('/v1/admin/users').set(bearer(old));
+    // The owner's live board session is untouched by the revoked token's flood.
+    expect((await req().get('/v1/admin/users').set('Cookie', adminCookie)).status).toBe(200);
+  }, 60_000);
+
+  it('a valid token is charged to its user even when the address\'s budget is spent', async () => {
+    for (let i = 0; i < 310; i++) await req().get('/v1/admin/users').set(bearer('agka_' + String(i).padStart(64, '0')));
+    expect((await req().get('/v1/admin/users').set(bearer('agka_' + '9'.repeat(64)))).status).toBe(429);
+    // A token never seen before (no warm-up) still gets through on its user's budget.
+    const { token } = await signInCli();
+    expect((await req().get('/v1/admin/users').set(bearer(token))).status).toBe(200);
+  }, 60_000);
+
+  it('a made-up CLI token is charged to the address, not given a bucket of its own', async () => {
+    let limited = false;
+    for (let i = 0; i < 320 && !limited; i++) {
+      limited = (await req().get('/v1/admin/users').set(bearer('agka_' + String(i).padStart(64, '0')))).status === 429;
+    }
+    expect(limited).toBe(true);
+  }, 60_000);
+});

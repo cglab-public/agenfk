@@ -74,7 +74,11 @@ describe('flows', () => {
     const def = JSON.parse(fs.readFileSync(out, 'utf8'));
     def.description = 'edited';
     fs.writeFileSync(out, JSON.stringify(def));
-    await hub.run(['hub', 'admin', 'flows', 'update', created.id, '--file', out]);
+    // Replacing a definition changes every scope that runs the flow: confirmation first.
+    await expect(hub.run(['hub', 'admin', 'flows', 'update', created.id, '--file', out])).rejects.toThrow(/exit 1/);
+    expect(hub.err()).toContain('--yes');
+    expect((await board('get', `/v1/admin/flows/${created.id}`)).body.definition.description).toBe('made from the CLI');
+    await hub.run(['hub', 'admin', 'flows', 'update', created.id, '--file', out, '--yes']);
     expect((await board('get', `/v1/admin/flows/${created.id}`)).body.definition.description).toBe('edited');
   });
 
