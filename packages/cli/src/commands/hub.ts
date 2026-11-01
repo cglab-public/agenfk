@@ -7,6 +7,7 @@ import * as path from 'path';
 import { execFileSync, execSync, spawn } from 'child_process';
 import { getApiUrl, getInstallationId } from '@agenfk/telemetry';
 import { registerHubAdminCommands } from './hubAdmin';
+import { registerHubSkillCommands } from '../hubAdmin/skill';
 import { openUrlInBrowser } from '../openUrl';
 import {
   parseDeadletterLines,
@@ -482,7 +483,9 @@ export function registerHubCommands(program: Command): void {
   const hub = program.command('hub').description('Corporate Hub: forward events to a self-hosted fleet metrics server');
 
   // `agenfk hub admin …`: the hub's admin pages from the command line (CGLAB-702).
-  registerHubAdminCommands(hub, { defaultHubUrl: () => readHubConfig()?.url ?? null, isHubEndpoint });
+  const admin = registerHubAdminCommands(hub, { defaultHubUrl: () => readHubConfig()?.url ?? null, isHubEndpoint });
+  // `agenfk hub skill …`: teaches coding agents those commands.
+  registerHubSkillCommands(hub, admin);
 
   hub
     .command('login')
