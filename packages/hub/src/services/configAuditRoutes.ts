@@ -292,6 +292,50 @@ export function mutatingRoutesOf(app: Express): string[] {
   return [...out].sort();
 }
 
+/** The names requireSession and requireAdmin give their guards (auth/session.ts). */
+const BOARD_GUARDS = new Set(['hubSessionGuard', 'hubAdminGuard']);
+
+/**
+ * Every route a signed-in person can reach - those behind the session or admin
+ * guard - as `METHOD /path`. This is the board's surface, which the admin CLI
+ * holds itself against (CGLAB-702).
+ */
+export function boardRoutesOf(app: Express): string[] {
+  const out = new Set<string>();
+  const isGuard = (layer: any) => BOARD_GUARDS.has(layer?.handle?.name ?? layer?.name);
+  // A guard counts on the route itself, or as middleware (app.use / router.use)
+  // that a request passes through on its way to the route. Such middleware
+  // guards a SCOPE - the path its stack is mounted at - and a scope found in
+  // one router carries on to later routers and routes under the same path, as
+  // a request falls through. Paths compare case-insensitively, as Express
+  // matches them by default (the hub does not turn on caseSensitive).
+  // Over-counting makes the parity guard ask for a command it may not need,
+  // which is loud; under-counting would be silent. Guards are recognised by
+  // name, so attach requireSession / requireAdmin directly: a wrapper under
+  // another name is not seen.
+  const under = (path: string, scope: string) => {
+    const p = path.toLowerCase(), s = scope.toLowerCase();
+    return s === '' || p === s || p.startsWith(s.endsWith('/') ? s : `${s}/`);
+  };
+  const walk = (stack: any[], prefix: string, inherited: string[]): string[] => {
+    const scopes = [...inherited];
+    for (const layer of stack ?? []) {
+      if (layer.route) {
+        const full = `${prefix}${layer.route.path === '/' ? '' : layer.route.path}` || '/';
+        if (!scopes.some(sc => under(full, sc)) && !layer.route.stack?.some(isGuard)) continue;
+        for (const m of Object.keys(layer.route.methods)) if (m !== '_all') out.add(`${m.toUpperCase()} ${full}`);
+      } else if (layer.name === 'router' && layer.handle?.stack) {
+        for (const sc of walk(layer.handle.stack, prefix + mountPathOf(layer), scopes)) if (!scopes.includes(sc)) scopes.push(sc);
+      } else if (isGuard(layer)) {
+        if (!scopes.includes(prefix)) scopes.push(prefix);
+      }
+    }
+    return scopes;
+  };
+  walk((app as any).router?.stack ?? [], '', []);
+  return [...out].sort();
+}
+
 const AUDIT_LAYER = 'configAuditLayer';
 
 /** Who made a request, from what its guard set on it. */

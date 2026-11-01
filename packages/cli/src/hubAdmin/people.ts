@@ -194,6 +194,18 @@ export function registerPeopleCommands(admin: Command): void {
       emit(r, opts, d => console.log(chalk.green(`✓ Retired ${id}; revoked ${d.revokedApiKeys ?? 0} API key(s).`)));
     }));
 
+  covers('POST /hub/device/approve');
+  inst.command('approve <code>').description('Approve the code a machine\'s `agenfk hub login` shows: it gets an API key bound to it')
+    .option('--yes', 'Confirm: only approve a code you know comes from a machine you trust').option('--json', 'Print as JSON')
+    .action(adminAction(async (code: string, opts: Json & { yes?: boolean }) => {
+      requireYes(opts, `give the machine showing code ${code} an API key for this hub`);
+      const r = await adminRequest('POST', '/hub/device/approve', { body: { userCode: code } });
+      emit(r, opts, d => {
+        const who = d.installation?.gitEmail ?? d.installation?.osUser ?? d.installation?.installationId;
+        console.log(chalk.green(`✓ Approved ${code}${who ? ` (${who})` : ''}; the machine picks up its key within a few seconds.`));
+      });
+    }));
+
   inst.command('unretire <id>').description('Bring a retired installation back').option('--json', 'Print as JSON')
     .action(adminAction(async (id: string, opts: Json) => {
       const r = await adminRequest('DELETE', `/v1/admin/installations/${enc(id)}/retire`);

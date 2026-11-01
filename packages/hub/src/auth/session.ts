@@ -68,7 +68,9 @@ export function clearSessionCookie(res: Response): void {
 export const SESSION_USER_SQL = 'SELECT role, active, org_id FROM users WHERE id = ?';
 
 export function requireSession(secret: string, db: DB) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  // Named, so a route walk can tell which routes a signed-in person reaches
+  // (boardRoutesOf, which the admin CLI's parity guard reads).
+  return function hubSessionGuard(req: Request, res: Response, next: NextFunction): void {
     // This promise is not returned to express, so nothing forwards its
     // rejection: catch it here, or a DB error leaves the request unanswered.
     resolveSession(req, secret, db).then(async (found) => {
@@ -115,7 +117,7 @@ async function resolveSession(req: Request, secret: string, db: DB): Promise<{ s
 
 export function requireAdmin(secret: string, db: DB) {
   const baseGuard = requireSession(secret, db);
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return function hubAdminGuard(req: Request, res: Response, next: NextFunction): void {
     baseGuard(req, res, (err?: any) => {
       if (err) return next(err);
       if (req.session?.role !== 'admin') { res.status(403).json({ error: 'Admin role required' }); return; }

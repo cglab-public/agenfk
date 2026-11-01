@@ -22,6 +22,8 @@ import { drainApp } from '../../../../hub/src/test/helpers/drainApp';
 
 export interface AdminHub {
   server: http.Server;
+  /** The hub's Express app, for route introspection. */
+  app: any;
   url: string;
   ctx: any;
   /** The board cookie of admin@x, for setting up state the way the UI would. */
@@ -77,7 +79,7 @@ export async function startAdminHub(home: string, name: string, extra: Record<st
   };
 
   return {
-    server, url, ctx: hub.ctx, cookie, run, out, err, clear,
+    server, app: hub.app, url, ctx: hub.ctx, cookie, run, out, err, clear,
     json: async (args) => { clear(); await run([...args, '--json']); return JSON.parse(out()); },
     close: async () => {
       vi.restoreAllMocks();

@@ -363,6 +363,10 @@ AgEnFK ships an optional self-hosted **Corporate Hub** (`packages/hub` + `packag
 
 The hub does not own your code, your local database, or your editor. Everything you do day-to-day still happens on your machine through your usual AI client + CLI; the hub is a read-mostly observer plus a central place to govern flows and roll out upgrades.
 
+### Administering the hub from the command line
+
+Everything the hub's admin pages do is also available as `agenfk hub admin <area> <verb>`: users and invites, sign-in, API keys, flows, upgrades, Airlock, repositories, models, federation, JIRA, the audit log, and the fleet's events and data. Sign in once with `agenfk hub admin login` (you approve a code in the browser; the session lasts 12 hours), then script against `--json`. See [`docs/HUB_ADMIN_CLI.md`](./docs/HUB_ADMIN_CLI.md).
+
 ### Where to read more
 
 [`HUB_ARCHITECTURE.md`](./HUB_ARCHITECTURE.md) is the operator-grade reference: data model, auth realms (admin sessions vs installation bearer keys), ingest contract, identity-provider setup walkthroughs for Google Cloud Console and Microsoft Entra, the full HTTP surface, and a quick-reference table for who-owns-what.

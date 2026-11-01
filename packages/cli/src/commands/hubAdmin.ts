@@ -88,6 +88,7 @@ export function registerHubAdminCommands(hub: Command, deps: HubAdminDeps): Comm
       console.log(chalk.gray(`  The session ends at ${new Date(approved.expiresAt).toLocaleString()}; \`agenfk hub admin logout\` ends it now.`));
     }));
 
+  covers('GET /auth/me');
   admin
     .command('whoami')
     .description('Who the admin CLI is signed in as, and where')

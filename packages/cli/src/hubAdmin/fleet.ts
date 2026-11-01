@@ -108,7 +108,14 @@ export function registerFleetCommands(admin: Command): void {
     }));
 
   // Assignments: which flow a scope (org / repo / project / installation) runs.
-  covers('GET /v1/admin/flow-assignments', 'PUT /v1/admin/flow-assignments');
+  covers('GET /v1/admin/flow-assignments', 'PUT /v1/admin/flow-assignments', 'GET /v1/admin/projects');
+  flows.command('projects').description('Projects seen in the fleet: the targets of --scope project').option('--json', 'Print as JSON')
+    .action(adminAction(async (opts: Json) => {
+      emit(await adminRequest<any[]>('GET', '/v1/admin/projects'), opts, rows => printTable(rows, {
+        PROJECT: r => r.projectId, LAST_SEEN: r => r.lastSeen,
+      }, 'No projects seen yet.'));
+    }));
+
   flows.command('assignments').description('Which flow each scope runs').option('--json', 'Print as JSON')
     .action(adminAction(async (opts: Json) => {
       emit(await adminRequest<any[]>('GET', '/v1/admin/flow-assignments'), opts, rows => printTable(rows, {
