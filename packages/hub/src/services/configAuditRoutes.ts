@@ -165,6 +165,8 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   { method: 'POST', path: '/v1/admin/ci-tokens', area: 'api-keys', action: 'ci-token.issue', target: (_p, req) => `CI token ${typeof req.body?.label === 'string' ? req.body.label : ''}`.trim() },
   { method: 'DELETE', path: '/v1/admin/ci-tokens/:tokenHashPreview', area: 'api-keys', action: 'ci-token.revoke', target: param('tokenHashPreview', 'CI token'), snapshot: ciTokenSnap },
   { method: 'POST', path: '/hub/device/approve', area: 'api-keys', action: 'device.approve', target: bodyField('userCode', 'device'), noBody: true },
+  { method: 'POST', path: '/hub/admin-device/approve', area: 'api-keys', action: 'admin-cli.approve', target: bodyField('userCode', 'admin CLI sign-in'), noBody: true },
+  { method: 'DELETE', path: '/v1/admin/cli-sessions/:id', area: 'api-keys', action: 'admin-cli.revoke', target: param('id', 'admin CLI session'), noBody: true },
   { method: 'POST', path: '/hub/invite/create', area: 'api-keys', action: 'invite.create', target: () => 'installation invite', noBody: true },
   { method: 'POST', path: '/hub/invite/redeem', area: 'api-keys', action: 'invite.redeem', target: () => 'installation invite', noBody: true, source: 'cli' },
   { method: 'POST', path: '/v1/admin/installations/:id/retire', area: 'installations', action: 'installation.retire', target: param('id', 'installation'), snapshot: installationSnap, link: '/admin/installations' },
@@ -246,6 +248,8 @@ export const AUDIT_EXEMPT_ROUTES: Record<string, string> = {
   'POST /v1/admin/system/pending/ack': 'dismisses a notice the hub showed; no setting changes',
   'POST /hub/device/start': 'a device asking to connect; nothing changes until an admin approves it (audited)',
   'POST /hub/device/poll': 'a device waiting for approval; read-only',
+  'POST /hub/admin-device/start': 'an admin CLI asking to sign in; nothing changes until an admin approves it (audited)',
+  'POST /hub/admin-device/poll': 'an admin CLI waiting for approval; read-only',
   'POST /v1/jira/oauth/start': "a person connecting their own JIRA account, not the org's configuration",
   'POST /v1/jira/oauth/complete': "a person connecting their own JIRA account, not the org's configuration",
   'POST /v1/jira/disconnect': "a person disconnecting their own JIRA account, not the org's configuration",
@@ -288,13 +292,57 @@ export function mutatingRoutesOf(app: Express): string[] {
   return [...out].sort();
 }
 
+/** The names requireSession and requireAdmin give their guards (auth/session.ts). */
+const BOARD_GUARDS = new Set(['hubSessionGuard', 'hubAdminGuard']);
+
+/**
+ * Every route a signed-in person can reach - those behind the session or admin
+ * guard - as `METHOD /path`. This is the board's surface, which the admin CLI
+ * holds itself against (CGLAB-702).
+ */
+export function boardRoutesOf(app: Express): string[] {
+  const out = new Set<string>();
+  const isGuard = (layer: any) => BOARD_GUARDS.has(layer?.handle?.name ?? layer?.name);
+  // A guard counts on the route itself, or as middleware (app.use / router.use)
+  // that a request passes through on its way to the route. Such middleware
+  // guards a SCOPE - the path its stack is mounted at - and a scope found in
+  // one router carries on to later routers and routes under the same path, as
+  // a request falls through. Paths compare case-insensitively, as Express
+  // matches them by default (the hub does not turn on caseSensitive).
+  // Over-counting makes the parity guard ask for a command it may not need,
+  // which is loud; under-counting would be silent. Guards are recognised by
+  // name, so attach requireSession / requireAdmin directly: a wrapper under
+  // another name is not seen.
+  const under = (path: string, scope: string) => {
+    const p = path.toLowerCase(), s = scope.toLowerCase();
+    return s === '' || p === s || p.startsWith(s.endsWith('/') ? s : `${s}/`);
+  };
+  const walk = (stack: any[], prefix: string, inherited: string[]): string[] => {
+    const scopes = [...inherited];
+    for (const layer of stack ?? []) {
+      if (layer.route) {
+        const full = `${prefix}${layer.route.path === '/' ? '' : layer.route.path}` || '/';
+        if (!scopes.some(sc => under(full, sc)) && !layer.route.stack?.some(isGuard)) continue;
+        for (const m of Object.keys(layer.route.methods)) if (m !== '_all') out.add(`${m.toUpperCase()} ${full}`);
+      } else if (layer.name === 'router' && layer.handle?.stack) {
+        for (const sc of walk(layer.handle.stack, prefix + mountPathOf(layer), scopes)) if (!scopes.includes(sc)) scopes.push(sc);
+      } else if (isGuard(layer)) {
+        if (!scopes.includes(prefix)) scopes.push(prefix);
+      }
+    }
+    return scopes;
+  };
+  walk((app as any).router?.stack ?? [], '', []);
+  return [...out].sort();
+}
+
 const AUDIT_LAYER = 'configAuditLayer';
 
 /** Who made a request, from what its guard set on it. */
 async function actorOf(db: DB, req: Request): Promise<{ orgId: string | null; source: AuditSource | null; actor: { userId: string | null; email: string | null } | null }> {
   if (req.session) {
     const u = await db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
-    return { orgId: req.session.orgId, source: 'board', actor: { userId: req.session.userId, email: u?.email ?? null } };
+    return { orgId: req.session.orgId, source: req.session.via === 'cli' ? 'cli' : 'board', actor: { userId: req.session.userId, email: u?.email ?? null } };
   }
   if (req.hubApiKey) return { orgId: req.hubApiKey.orgId, source: 'cli', actor: { userId: null, email: req.hubApiKey.installationId ? `installation ${req.hubApiKey.installationId}` : 'API key' } };
   if (req.hubFederation) return { orgId: req.hubFederation.orgId, source: 'federation', actor: { userId: null, email: `child hub ${req.hubFederation.childHubId}` } };

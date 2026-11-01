@@ -4,8 +4,10 @@ import axios from 'axios';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { exec, execFileSync, execSync, spawn } from 'child_process';
+import { execFileSync, execSync, spawn } from 'child_process';
 import { getApiUrl, getInstallationId } from '@agenfk/telemetry';
+import { registerHubAdminCommands } from './hubAdmin';
+import { openUrlInBrowser } from '../openUrl';
 import {
   parseDeadletterLines,
   deadletterReasonOf,
@@ -479,6 +481,9 @@ async function reloadServerHubConfig(): Promise<'reloaded' | 'unchanged' | 'unav
 export function registerHubCommands(program: Command): void {
   const hub = program.command('hub').description('Corporate Hub: forward events to a self-hosted fleet metrics server');
 
+  // `agenfk hub admin …`: the hub's admin pages from the command line (CGLAB-702).
+  registerHubAdminCommands(hub, { defaultHubUrl: () => readHubConfig()?.url ?? null, isHubEndpoint });
+
   hub
     .command('login')
     .description('Configure this installation to push events to a corporate Hub')
@@ -545,9 +550,8 @@ export function registerHubCommands(program: Command): void {
       console.log(chalk.bold('Device code: ') + chalk.cyan(start.userCode));
       console.log(chalk.gray('Open this URL in your browser to approve:'));
       console.log('  ' + chalk.underline(start.verificationUri));
-      if (opts.open !== false) {
-        const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start ""' : 'xdg-open';
-        exec(`${opener} ${JSON.stringify(start.verificationUri)}`, { windowsHide: true }, () => { /* best-effort */ });
+      if (opts.open !== false && !openUrlInBrowser(String(start.verificationUri))) {
+        console.log(chalk.yellow('Not opening that URL automatically (it is not http/https); check it before opening it yourself.'));
       }
 
       const interval = Math.max(1, Number(start.interval) || 2);

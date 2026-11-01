@@ -1,0 +1,108 @@
+/**
+ * A real hub on loopback for `agenfk hub admin …` tests (CGLAB-702), with an
+ * admin signed in. Each story's spec drives its commands against this, not a
+ * mocked axios: the commands exist to talk to the hub, and only the hub can
+ * say whether they ask it the right thing.
+ *
+ * The caller mocks `os.homedir()` (vi.mock is hoisted per file) and passes the
+ * sandbox home here, so the credential lands where the CLI will look for it.
+ */
+import { vi, expect } from 'vitest';
+import { Command } from 'commander';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import * as http from 'http';
+import supertest from 'supertest';
+import { registerHubCommands } from '../../commands/hub';
+import { createHubApp } from '../../../../hub/src/server';
+import { createPasswordUser } from '../../../../hub/src/auth/password';
+import { loginAs } from '../../../../hub/src/test/helpers/loginAs';
+import { drainApp } from '../../../../hub/src/test/helpers/drainApp';
+
+export interface AdminHub {
+  server: http.Server;
+  /** The hub's Express app, for route introspection. */
+  app: any;
+  url: string;
+  ctx: any;
+  /** The board cookie of admin@x, for setting up state the way the UI would. */
+  cookie: string;
+  /** Runs `agenfk <args>`; rejects with "exit N" when the command exits. */
+  run: (args: string[]) => Promise<void>;
+  /** Everything printed to stdout / stderr since the last clear. */
+  out: () => string;
+  err: () => string;
+  clear: () => void;
+  /** Runs `agenfk <args> --json` and parses what it printed. */
+  json: <T = any>(args: string[]) => Promise<T>;
+  close: () => Promise<void>;
+}
+
+/** `extra` is merged into the hub's config, e.g. a `releaseExists` stub so no test reaches GitHub. */
+export async function startAdminHub(home: string, name: string, extra: Record<string, unknown> = {}): Promise<AdminHub> {
+  // A fresh directory per hub: nothing is ever deleted while a hub may hold it
+  fs.rmSync(path.join(home, '.agenfk'), { recursive: true, force: true });
+  // open (no-open-db-unlink.xplat.test.ts), and it is removed after the close.
+  const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), `agenfk-cli-${name}-`));
+  const dbPath = path.join(dbDir, 'hub.sqlite');
+
+  // Setup is undone if any of it fails: otherwise no close() reaches the caller,
+  // and the hub's DB stays open in a directory nobody removes.
+  let hub: Awaited<ReturnType<typeof createHubApp>> | undefined;
+  let server: http.Server | undefined;
+  // The DB is closed even if draining fails, and the directory goes only once
+  // the DB is closed: removing it under an open handle is EBUSY on Windows.
+  const teardown = async () => {
+    try { if (server) await drainApp(server); } finally {
+      if (hub) await hub.ctx.db.close();
+      fs.rmSync(dbDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  };
+  let url: string, cookie: string, poll: any;
+  try {
+    hub = await createHubApp({ dbPath, secretKey: 'a'.repeat(64), sessionSecret: 'test-session-secret', defaultOrgId: 'org', ...extra } as any);
+    server = hub.app.listen(0, '127.0.0.1');
+    await new Promise<void>(r => server!.once('listening', () => r()));
+    url = `http://127.0.0.1:${(server.address() as any).port}`;
+    await createPasswordUser(hub.ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
+    cookie = await loginAs(server, 'admin@x', 'longenough1');
+
+    // Sign the CLI in the way `hub admin login` does, minus the wait for a person.
+    const start = await supertest(server).post('/hub/admin-device/start').send({});
+    await supertest(server).post('/hub/admin-device/approve').set('Cookie', cookie).send({ userCode: start.body.userCode });
+    poll = await supertest(server).post('/hub/admin-device/poll').send({ deviceCode: start.body.deviceCode });
+    expect(poll.body.status).toBe('approved');
+    fs.mkdirSync(path.join(home, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.agenfk', 'hub-admin.json'), JSON.stringify({
+      url, token: poll.body.token, orgId: poll.body.orgId, email: 'admin@x', role: 'admin', expiresAt: poll.body.expiresAt,
+    }), { mode: 0o600 });
+  } catch (e) {
+    await teardown();
+    throw e;
+  }
+
+  vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as any);
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const out = () => logSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n');
+  const err = () => errSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n');
+  const clear = () => { logSpy.mockClear(); errSpy.mockClear(); };
+
+  const run = async (args: string[]) => {
+    const p = new Command();
+    p.exitOverride();
+    registerHubCommands(p);
+    await p.parseAsync(args, { from: 'user' });
+  };
+
+  return {
+    server: server!, app: hub!.app, url: url!, ctx: hub!.ctx, cookie: cookie!, run, out, err, clear,
+    json: async (args) => { clear(); await run([...args, '--json']); return JSON.parse(out()); },
+    close: async () => {
+      vi.restoreAllMocks();
+      await teardown();
+    },
+  };
+}

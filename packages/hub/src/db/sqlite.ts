@@ -126,6 +126,39 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_device_codes_user_code ON device_codes(user_code);
 
+  -- Admin CLI sign-in (CGLAB-702). A code the CLI starts and a signed-in admin
+  -- approves in the browser; kept apart from device_codes so an admin code can
+  -- never be redeemed as an installation key, nor the other way round.
+  CREATE TABLE IF NOT EXISTS admin_device_codes (
+    device_code TEXT PRIMARY KEY,
+    user_code TEXT NOT NULL UNIQUE,
+    org_id TEXT,
+    user_id TEXT,
+    approved_at TEXT,
+    -- Set by the one poll that collects the grant; the token is minted then,
+    -- so no plaintext waits anywhere between approval and collection.
+    consumed_at TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- The admin CLI's bearer tokens: a second carrier for a user's session, held
+  -- as a hash. Whether its user may act, and as what, is read from users on
+  -- every request, as for the cookie.
+  CREATE TABLE IF NOT EXISTS admin_cli_tokens (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    -- The device grant that minted it. UNIQUE: one grant can never yield a
+    -- second token, whatever fails part-way through issuing the first.
+    grant_code TEXT UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_admin_cli_tokens_org ON admin_cli_tokens(org_id);
+
   CREATE TABLE IF NOT EXISTS used_invites (
     nonce TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,

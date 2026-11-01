@@ -160,7 +160,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
   // high enough that no legitimate dashboard hits it, low enough to bound abuse.
   // Keyed by the signed-in user, not the address: the hub is reached through
   // shared corporate egress, and an IP bucket would be an office-wide cap.
-  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret, ctx.db), message: 'Too many requests, slow down.' }));
   const guard = requireSession(ctx.config.sessionSecret, ctx.db);
 
   router.get('/users', guard, asyncRoute(async (req: Request, res: Response) => {

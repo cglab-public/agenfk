@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
+import { revokeAdminCliToken } from '../auth/adminCliToken.js';
 import { checkEmailAllowlist } from '../auth/oauth.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
@@ -157,7 +158,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // queries, so bound them too rather than relying on the guard alone.
   // Keyed by the signed-in user, not the address: the hub is reached through
   // shared corporate egress, and an IP bucket would be an office-wide cap.
-  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret, ctx.db), message: 'Too many requests, slow down.' }));
   const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   const activeAdmins = (orgId: string) => ctx.db.all<SignInAdmin>(ACTIVE_ADMINS_SQL, [orgId]);
@@ -225,6 +226,37 @@ export function adminRouter(ctx: HubServerContext): Router {
     const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
     if (!row) return res.status(404).json({ error: 'auth_config row missing for org' });
     res.json(publicAuthConfig(row));
+  }));
+
+  // ── Admin CLI sessions (CGLAB-702) ──────────────────────────────────────
+  // Live admin CLI tokens of this org, so an admin can end one (a lost laptop)
+  // without waiting out its 12 hours. Never the hash: an id is enough to revoke.
+  router.get('/cli-sessions', guard, asyncRoute(async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<any>(
+      `SELECT t.id, t.user_id, t.created_at, t.expires_at, u.email
+         FROM admin_cli_tokens t LEFT JOIN users u ON u.id = t.user_id
+        WHERE t.org_id = ? AND t.revoked_at IS NULL
+        ORDER BY t.created_at DESC`,
+      [req.session!.orgId],
+    );
+    const now = Date.now();
+    const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : String(v));
+    res.json(rows
+      .filter(r => new Date(r.expires_at).getTime() > now)
+      .map(r => ({
+        id: r.id,
+        userId: r.user_id,
+        userEmail: r.email ?? null,
+        createdAt: iso(r.created_at),
+        expiresAt: iso(r.expires_at),
+        current: req.session!.cliTokenId === r.id,
+      })));
+  }));
+
+  router.delete('/cli-sessions/:id', guard, asyncRoute(async (req: Request, res: Response) => {
+    const ok = await revokeAdminCliToken(ctx.db, req.session!.orgId, String(req.params.id));
+    if (!ok) { res.status(404).json({ error: 'No live admin CLI session with that id' }); return; }
+    res.json({ ok: true });
   }));
 
   // ── API keys (installation tokens) ───────────────────────────────────────
@@ -375,7 +407,9 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/hidden-users/:userKey', guard, asyncRoute(async (req: Request, res: Response) => {
-    const userKey = decodeURIComponent(String(req.params.userKey)).trim().toLowerCase();
+    // Express has already decoded the param; decoding again turned a key
+    // holding %40 into a different person's (and threw on a bare %).
+    const userKey = String(req.params.userKey).trim().toLowerCase();
     const r = await ctx.db.run(
       'DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?',
       [req.session!.orgId, userKey],
@@ -529,7 +563,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/models/meta/:model', guard, asyncRoute(async (req: Request, res: Response) => {
-    const model = validModelId(decodeURIComponent(String(req.params.model)));
+    const model = validModelId(String(req.params.model)) // Express has decoded it once already;
     if (!model) return res.status(400).json({ error: 'Invalid model id.' });
     const r = await ctx.db.run(
       'DELETE FROM model_meta WHERE org_id = ? AND model = ?',
@@ -599,7 +633,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/models/mappings/:aliasModel', guard, asyncRoute(async (req: Request, res: Response) => {
-    const aliasModel = validModelId(decodeURIComponent(String(req.params.aliasModel)));
+    const aliasModel = validModelId(String(req.params.aliasModel)) // Express has decoded it once already;
     if (!aliasModel) return res.status(400).json({ error: 'Invalid alias model id.' });
     const r = await ctx.db.run(
       'DELETE FROM model_mappings WHERE org_id = ? AND alias_model = ?',

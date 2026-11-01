@@ -58,7 +58,7 @@ export function jiraAdminRouter(ctx: HubServerContext): Router {
   const router = Router();
   router.use(rateLimit({
     windowMs: 60 * 1000, max: 120,
-    keyFn: sessionUserKey(ctx.config.sessionSecret),
+    keyFn: sessionUserKey(ctx.config.sessionSecret, ctx.db),
     message: 'Too many requests, slow down.',
   }));
   const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
