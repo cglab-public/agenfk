@@ -37,13 +37,14 @@ export interface AdminHub {
   close: () => Promise<void>;
 }
 
-export async function startAdminHub(home: string, name: string): Promise<AdminHub> {
+/** `extra` is merged into the hub's config, e.g. a `releaseExists` stub so no test reaches GitHub. */
+export async function startAdminHub(home: string, name: string, extra: Record<string, unknown> = {}): Promise<AdminHub> {
   const dbPath = path.join(os.tmpdir(), `agenfk-cli-${name}-${process.pid}.sqlite`);
   const rmDb = () => { for (const s of ['', '-wal', '-shm']) fs.rmSync(dbPath + s, { force: true }); };
   rmDb();
   fs.rmSync(path.join(home, '.agenfk'), { recursive: true, force: true });
 
-  const hub = await createHubApp({ dbPath, secretKey: 'a'.repeat(64), sessionSecret: 'test-session-secret', defaultOrgId: 'org' });
+  const hub = await createHubApp({ dbPath, secretKey: 'a'.repeat(64), sessionSecret: 'test-session-secret', defaultOrgId: 'org', ...extra } as any);
   const server = hub.app.listen(0, '127.0.0.1');
   await new Promise<void>(r => server.once('listening', () => r()));
   const url = `http://127.0.0.1:${(server.address() as any).port}`;
