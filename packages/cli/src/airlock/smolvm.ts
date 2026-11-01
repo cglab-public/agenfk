@@ -175,9 +175,6 @@ const FILE_PLACEHOLDERS: Record<string, string> = {
   commondir: '.\n', 'config.worktree': '', config: '',
   // A client's settings held while missing: a file its client reads as empty, never a dir it cannot read.
   'settings.json': '{}\n', 'opencode.json': '{}\n', 'opencode.jsonc': '{}\n', 'config.json': '{}\n', 'package.json': '{}\n',
-  // What a read-write home folder holds of git's and the shells' (HOST_RUN_CONFIGS): empty files, which
-  // they read as nothing, never directories they would fail on.
-  ...Object.fromEntries(['.gitconfig', '.profile', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout', '.zshrc', '.zshenv', '.zprofile', '.zlogin', '.zlogout'].map((f) => [f, ''])),
 };
 
 /** In the workspace's .git: unwritable, and held when missing. */
@@ -792,6 +789,9 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   }
   // Where the session could make what is missing: a write root, or anywhere in a read-write home folder.
   const creatable = (p: string) => (spec.filesystem.homeMount === 'rw' ? mounted(p) : writeRoots.some((r) => inside(p, r)));
+  // A read-write home folder is the session's, all of it (user decision 2026-11-01, BUG 725b994b):
+  // nothing of git's, the workspace's or AgEnFK's is held. Only Airlock's records stay hidden.
+  const keepsNothing = spec.filesystem.homeMount === 'rw';
 
   const pinned: string[] = [];
   const placeholders: Placeholder[] = [];
@@ -801,7 +801,7 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   // writable (index, HEAD), pinned with the common dir; what else names git config is protected.
   const worktreeHeld: string[] = [];
   const worktreesHidden: string[] = [];
-  if (gitKind === 'file' && linked) {
+  if (gitKind === 'file' && linked && !keepsNothing) {
     readOnly.push(dotGit);
     pinned.push(linked.common);
     writable.push(linked.gitDir);
@@ -816,18 +816,27 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
       if (name !== linked.name) worktreesHidden.push(path.join(linked.common, 'worktrees', name));
     }
   }
-  if (gitKind === 'dir') pinned.push(dotGit);
+  if (gitKind === 'dir' && !keepsNothing) pinned.push(dotGit);
+  // The session's own ~/.agenfk goes over the host's in the machine (provisionAgenfk), on a mount point
+  // the session cannot swap for a link first: pinned, and still writable.
+  if (keepsNothing && home) {
+    const agenfk = path.join(home, '.agenfk');
+    const under = writeRoots.find((r) => inside(r, agenfk));
+    if (under) throw new Error(`Airlock will not mount ${under}: it is inside ${agenfk}, which the session's own ~/.agenfk covers in the machine. Launch it from a project folder. Nothing was launched.`);
+    if (!kindOf(agenfk)) placeholders.push({ path: agenfk, kind: 'dir' });
+    pinned.push(agenfk);
+  }
   // No repository here: an empty, read-only .git keeps one from being planted for host git (which
   // passes over an empty .git, measured), for as long as a session runs.
-  if (!gitKind && writeRoots.includes(workspace)) {
+  if (!gitKind && writeRoots.includes(workspace) && !keepsNothing) {
     placeholders.push({ path: dotGit, kind: 'dir' });
     readOnly.push(dotGit);
   }
-  const held = [...spec.filesystem.denyWrite, ...(gitKind === 'dir' ? GIT_PROTECTED.map((p) => path.join(dotGit, p)) : []), ...worktreeHeld];
+  const held = [...spec.filesystem.denyWrite, ...(gitKind === 'dir' && !keepsNothing ? GIT_PROTECTED.map((p) => path.join(dotGit, p)) : []), ...worktreeHeld];
   // Repositories below the workspace: their metadata is protected as the top one's is, and a
   // pointer file (a submodule's) can never be redirected.
   const repos = [workspace];
-  for (const g of nestedGitEntries(workspace)) {
+  for (const g of keepsNothing ? [] : nestedGitEntries(workspace)) {
     if (!mounted(g)) continue;
     // A pointer file (or a link, which the symbolic-link check below refuses).
     if (kindOfPath(g) === 'file') {
@@ -870,7 +879,7 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
   // A linked worktree's main checkout: what its own config (its config.worktree too) pulls in is
   // in the mounted common dir, and host git reads it there (review 01a18d52).
   if (linked && path.basename(linked.common) === '.git' && kindOfPath(path.dirname(linked.common)) === 'dir') repos.push(path.dirname(linked.common));
-  for (const repo of repos) {
+  for (const repo of keepsNothing ? [] : repos) {
     const git = gitConfigDependencies(repo, readConfig);
     for (const p of [...git.hooksPaths, ...git.includes]) {
       if (creatable(p) && !kindOfPath(p)) {
@@ -884,7 +893,7 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     }
     held.push(...[...git.files, ...git.includes, ...git.hooksPaths, ...git.programs.map((prog) => prog.path)].filter((f) => mounted(f)));
   }
-  const existing = WORKSPACE_PROTECTED.map((p) => path.join(workspace, p));
+  const existing = keepsNothing ? [] : WORKSPACE_PROTECTED.map((p) => path.join(workspace, p));
   for (const p of [...new Set([...held, ...existing].flatMap(expand).map((x) => path.resolve(x)))]) {
     if (!mounted(p) || roots.includes(p) || readOnly.includes(p)) continue;
     if (kindOf(p)) {

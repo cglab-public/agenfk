@@ -8,7 +8,6 @@ import {
   buildSandboxSpec,
   writeRootHolding,
   AIRLOCK_SANDBOX_MARKER,
-  HOST_RUN_CONFIGS,
   type SandboxSession,
 } from '../airlock/spec';
 
@@ -353,13 +352,18 @@ describePosix('buildSandboxSpec: home access (story 525cd331)', () => {
     expect(denyRead).toEqual(['/home/u/.agenfk/airlock', '/home/u/.agenfk/verify-token']);
   });
 
-  it.each(['home-read-only', 'home-read-write'] as const)('keeps every AgEnFK control path unwritable under %s', (homeAccess) => {
-    const open = buildSandboxSpec(policy({ homeAccess }), session({ projectAgenfkDirs: ['/work/.agenfk'] })).filesystem;
+  it('keeps every AgEnFK control path unwritable under home-read-only', () => {
+    const open = buildSandboxSpec(policy({ homeAccess: 'home-read-only' }), session({ projectAgenfkDirs: ['/work/.agenfk'] })).filesystem;
     const closed = buildSandboxSpec(policy(), session({ projectAgenfkDirs: ['/work/.agenfk'] })).filesystem;
-    // Every one protected by default, and under a read-write home what host programs run from it too.
-    expect(open.denyWrite).toEqual(homeAccess === 'home-read-only'
-      ? closed.denyWrite
-      : [...HOST_RUN_CONFIGS.map((p) => `/home/u/${p}`), ...closed.denyWrite]);
+    expect(open.denyWrite).toEqual(closed.denyWrite);
+    expect(open.allowWrite).toEqual(closed.allowWrite);
+  });
+
+  // User decision 2026-11-01 (BUG 725b994b): read-write is read-write. Only Airlock's records stay hidden.
+  it('home-read-write leaves nothing unwritable', () => {
+    const open = buildSandboxSpec(policy({ homeAccess: 'home-read-write' }), session({ projectAgenfkDirs: ['/work/.agenfk'], piAgentDir: '/home/u/pi-agent' })).filesystem;
+    const closed = buildSandboxSpec(policy(), session({ projectAgenfkDirs: ['/work/.agenfk'], piAgentDir: '/home/u/pi-agent' })).filesystem;
+    expect(open.denyWrite).toEqual([]);
     expect(open.allowWrite).toEqual(closed.allowWrite);
   });
 });
