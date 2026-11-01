@@ -3616,7 +3616,9 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('the AgEnFK base image in a re
     try {
       const out = path.join(workspace, 'probe.out');
       const probe = [
-        'for c in node pi opencode agenfk git psql mysql redis-cli mongosh python3 yarn pnpm; do command -v $c >/dev/null || echo "missing $c"; done',
+        'for c in node pi opencode agenfk git psql mysql redis-cli mongosh python3 yarn pnpm jq; do command -v $c >/dev/null || echo "missing $c"; done',
+        // A pi provider resolving its key with `!jq ...` (BUG 66fbc056).
+        '[ "$(echo \'{"k":"v"}\' | jq -r .k)" = v ] || echo jq-failed',
         'ssh -V 2>&1 | grep -q OpenSSH || echo "ssh: $(ssh -V 2>&1)"',
         // The image's ENV reaches the session: pnpm and yarn run from the corepack home it prepared.
         '[ "$COREPACK_HOME" = /usr/local/share/corepack ] || echo "COREPACK_HOME=$COREPACK_HOME"',
@@ -4049,7 +4051,8 @@ describe.skipIf(!smolvmHere || !baseImageArchive)('SmolvmRuntime against the rea
 });
 
 // Story 525cd331 (user decisions 2026-10-31): the policy's homeAccess mounts the whole home folder,
-// read-only or read-write. AgEnFK's control paths stay read-only and Airlock's records hidden.
+// read-only or read-write. Airlock's records stay hidden; read-only keeps AgEnFK's control paths
+// read-only, read-write keeps nothing from the session (user decision 2026-11-01, BUG 725b994b).
 describePosix('guestPlanOf: the home folder the policy opens', () => {
   const specWith = (homeAccess: string, over: Partial<SandboxSession> = {}): SandboxSpec =>
     buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] }, homeAccess }), session(over));
@@ -4073,7 +4076,15 @@ describePosix('guestPlanOf: the home folder the policy opens', () => {
     expect(p.readOnly).not.toContain(home);
   });
 
-  it.each(['home-read-only', 'home-read-write'])('%s: credentials readable, Airlock\'s records hidden, AgEnFK\'s control paths read-only', (homeAccess) => {
+  it.each(['home-read-only', 'home-read-write'])('%s: credentials readable, Airlock\'s records hidden', (homeAccess) => {
+    const p = guestPlanOf(specWith(homeAccess), workspace);
+    const hidden = p.hidden.map((h) => h.path);
+    expect(hidden).toEqual([path.join(home, '.agenfk', 'airlock')]);
+    expect(hidden.some((h) => h.startsWith(path.join(home, '.ssh')) || h.endsWith('auth.json'))).toBe(false);
+  });
+
+  it('home-read-only: AgEnFK\'s control paths read-only', () => {
+    const homeAccess = 'home-read-only';
     const p = guestPlanOf(specWith(homeAccess), workspace);
     const hidden = p.hidden.map((h) => h.path);
     expect(hidden).toEqual([path.join(home, '.agenfk', 'airlock')]);
@@ -4083,12 +4094,12 @@ describePosix('guestPlanOf: the home folder the policy opens', () => {
     }
   });
 
-  it('a workspace inside the home folder keeps every protection it has without one', () => {
+  it('a workspace inside a read-only home folder keeps every protection it has without one', () => {
     const inHome = path.join(home, 'src', 'app');
     fs.mkdirSync(path.join(inHome, '.agenfk'), { recursive: true });
     const over = { workspace: inHome, gitDir: null } as Partial<SandboxSession>;
     const closed = guestPlanOf(specOf(over), inHome);
-    for (const homeAccess of ['home-read-only', 'home-read-write']) {
+    for (const homeAccess of ['home-read-only']) {
       const open = guestPlanOf(specWith(homeAccess, over), inHome);
       // Bound writable on its own, so it is a mount point the session cannot rename away.
       expect(open.writable, homeAccess).toContain(inHome);
@@ -4097,13 +4108,14 @@ describePosix('guestPlanOf: the home folder the policy opens', () => {
     }
   });
 
-  it('refuses a missing hooks dir only where the session could create it', () => {
+  it('refuses no missing hooks dir in the home folder: read-only cannot make it, read-write keeps nothing', () => {
     const missing = path.join(home, 'notes', 'hooks');
     const hooks = `file:${path.join(workspace, '.git', 'config')}\0core.hookspath\n${missing}\0`;
     const read = () => ({ list: '', included: hooks, hooks, top: workspace });
     // Read-only, nothing outside the write roots can be made there.
     expect(() => guestPlanOf(specWith('home-read-only'), workspace, read)).not.toThrow();
-    expect(() => guestPlanOf(specWith('home-read-write'), workspace, read)).toThrow(/core\.hooksPath/);
+    // Read-write keeps nothing from the session: nothing to refuse.
+    expect(() => guestPlanOf(specWith('home-read-write'), workspace, read)).not.toThrow();
   });
 
   it('still refuses to launch from the home folder itself', () => {
@@ -4111,36 +4123,57 @@ describePosix('guestPlanOf: the home folder the policy opens', () => {
   });
 });
 
-// Codex review 01a193dc-38d2: what a read-write home folder still keeps from the agent.
-describePosix('guestPlanOf: a read-write home folder holds what host programs run', () => {
+// User decision 2026-11-01 (BUG 725b994b): read-write is read-write. Nothing in the plan is kept
+// from the session but Airlock's records.
+describePosix('guestPlanOf: a read-write home folder keeps nothing from the session', () => {
   const specRw = (over: Partial<SandboxSession> = {}): SandboxSpec =>
     buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', homeAccess: 'home-read-write' }), session(over));
-  beforeEach(() => { fs.mkdirSync(path.join(home, '.agenfk', 'airlock'), { recursive: true }); fs.mkdirSync(path.join(home, '.config'), { recursive: true }); });
-
-  it('holds a missing ~/.gitconfig and shell startup file as empty files, read-only', () => {
-    const p = guestPlanOf(specRw(), workspace);
-    for (const f of ['.gitconfig', '.zshrc', '.bashrc']) {
-      expect(p.placeholders).toContainEqual({ path: path.join(home, f), kind: 'file', content: '' });
-      expect(p.readOnly).toContain(path.join(home, f));
-    }
-  });
-
-  it('keeps an existing one read-only', () => {
+  beforeEach(() => {
+    for (const d of [path.join(home, '.agenfk', 'airlock'), path.join(home, '.agenfk-system'), path.join(home, '.config'), path.join(home, '.claude'), path.join(workspace, '.agenfk'), path.join(workspace, '.vscode')]) fs.mkdirSync(d, { recursive: true });
     fs.writeFileSync(path.join(home, '.gitconfig'), '[user]\n');
-    const p = guestPlanOf(specRw(), workspace);
-    expect(p.readOnly).toContain(path.join(home, '.gitconfig'));
-    expect(p.placeholders.map((x) => x.path)).not.toContain(path.join(home, '.gitconfig'));
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{}\n');
+    fs.writeFileSync(path.join(workspace, '.mcp.json'), '{}\n');
   });
 
-  it('holds the other client\'s missing config by its highest missing directory, its parents pinned', () => {
-    // pi session; OpenCode's config dir is missing, ~/.config exists.
+  it('holds nothing read-only and makes no placeholder: git, shells, agents, the client, AgEnFK and the workspace\'s git are the session\'s', () => {
     const p = guestPlanOf(specRw(), workspace);
-    const dir = path.join(home, '.config', 'opencode');
-    expect(p.placeholders).toContainEqual({ path: dir, kind: 'dir' });
-    expect(p.readOnly).toContain(dir);
-    expect(p.pinned).toContain(path.join(home, '.config'));
-    // Nothing deeper is held separately: the empty read-only directory holds it all.
-    expect(p.placeholders.some((x) => x.path.startsWith(dir + path.sep))).toBe(false);
+    expect(p.readOnly).toEqual([]);
+    expect(p.placeholders).toEqual([]);
+    // Only a mount point for the session's own ~/.agenfk to go over, as writable as the rest.
+    expect(p.pinned).toEqual([path.join(home, '.agenfk')]);
+    expect(p.hidden.map((h) => h.path)).toEqual([path.join(home, '.agenfk', 'airlock')]);
+  });
+
+  // Codex review 01a1976d: the session's own ~/.agenfk would cover a workspace inside the host's.
+  it('refuses a workspace inside ~/.agenfk, which the session\'s own covers', () => {
+    const inside = path.join(home, '.agenfk', 'projects', 'app');
+    fs.mkdirSync(inside, { recursive: true });
+    expect(() => guestPlanOf(specRw({ workspace: inside, gitDir: null }), inside)).toThrow(/inside .*\.agenfk, which the session's own/);
+  });
+
+  it('a missing ~/.agenfk is made for the session\'s own to go over', () => {
+    fs.rmSync(path.join(home, '.agenfk'), { recursive: true });
+    const p = guestPlanOf(specRw(), workspace);
+    expect(p.placeholders).toEqual([{ path: path.join(home, '.agenfk'), kind: 'dir' }]);
+    expect(p.pinned).toEqual([path.join(home, '.agenfk')]);
+    expect(p.readOnly).toEqual([]);
+  });
+
+  it('launches with links anywhere in the home folder, a linked ~/.config included', () => {
+    fs.rmSync(path.join(home, '.config'), { recursive: true });
+    fs.mkdirSync(path.join(home, 'dotconfig'));
+    fs.symlinkSync(path.join(home, 'dotconfig'), path.join(home, '.config'));
+    fs.mkdirSync(path.join(home, 'tools', 'py'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'tools', 'py'), path.join(home, 'tools', 'current'));
+    fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'tools', 'current'), path.join(home, '.local', 'bin', 'tool'));
+    expect(() => guestPlanOf(specRw(), workspace)).not.toThrow();
+  });
+
+  it('launches when git\'s config names a missing include or program the session could create', () => {
+    const missing = path.join(home, 'notes', 'later.gitconfig');
+    const cfg = `file:${path.join(workspace, '.git', 'config')}\0include.path\n${missing}\0`;
+    expect(() => guestPlanOf(specRw(), workspace, () => ({ list: cfg, included: cfg, hooks: '', top: workspace }))).not.toThrow();
   });
 
   it('a read-only home folder holds nothing outside the write roots: nothing can be made there', () => {
@@ -4149,15 +4182,7 @@ describePosix('guestPlanOf: a read-write home folder holds what host programs ru
   });
 });
 
-describePosix('guestPlanOf: a read-write home folder with a linked config dir (review 01a193dc-38d2)', () => {
-  it('refuses to launch when a protected path the session could make lies behind a link, rather than leave it plantable', () => {
-    fs.mkdirSync(path.join(home, '.agenfk', 'airlock'), { recursive: true });
-    fs.mkdirSync(path.join(home, 'dotconfig'));
-    fs.symlinkSync(path.join(home, 'dotconfig'), path.join(home, '.config'));
-    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', homeAccess: 'home-read-write' }), session());
-    expect(() => guestPlanOf(spec, workspace)).toThrow(/\.config on its way is a symbolic link/);
-  });
-
+describePosix('guestPlanOf: a client\'s missing config in a workspace (review 01a193dc-38d2)', () => {
   it('holds a client\'s missing config inside a workspace that contains it', () => {
     const cfg = path.join(home, '.config');
     fs.mkdirSync(cfg, { recursive: true });

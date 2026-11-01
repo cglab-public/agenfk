@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/desktop",
-  "version": "2.1.0-beta.9",
+  "version": "2.1.0-beta.10",
   "license": "Apache-2.0",
   "private": true,
   "description": "AgEnFK Desktop — run agent orchestration as a native app",
@@ -19,8 +19,8 @@
     "bundle:airlock": "node scripts/bundle-airlock.mjs"
   },
   "dependencies": {
-    "@agenfk/core": "2.1.0-beta.9",
-    "@agenfk/telemetry": "2.1.0-beta.9",
+    "@agenfk/core": "2.1.0-beta.10",
+    "@agenfk/telemetry": "2.1.0-beta.10",
     "@lydell/node-pty": "1.2.0-beta.15"
   },
   "devDependencies": {

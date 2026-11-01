@@ -4,6 +4,17 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.10] — 2026-11-01
+
+**Airlock**
+
+- **Home folder read-write now means read-write** (#302). Under that policy the session may write anywhere in the
+  home folder and the workspace: git, ssh and shell config, login agents, every coding agent's config, AgEnFK's own
+  install and `.agenfk` folders and the workspace's git hooks and config are no longer held. Only Airlock's records
+  (`~/.agenfk/airlock`, the report token) stay hidden. *Protect credentials* and *home folder read-only* are
+  unchanged. A workspace inside `~/.agenfk` is refused in that mode, since the session's own `~/.agenfk` covers it.
+- **`jq` is in the Airlock base image**, so a pi provider whose key command pipes `auth.json` through it works.
+
 ## [2.1.0-beta.9] — 2026-10-31
 
 **Airlock**

@@ -165,11 +165,13 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
   }, TIMEOUT);
 
   // Story 525cd331 (user decisions 2026-10-31): the policy's homeAccess opens the home folder,
-  // read-only or read-write; AgEnFK's control paths stay unwritable and Airlock's records hidden.
-  it.each([['home-read-only', false], ['home-read-write', true]] as const)('files under %s: the home folder there (writable: %s), Airlock\'s records hidden, AgEnFK\'s control paths unwritable', async (homeAccess, homeWritable) => {
+  // read-only or read-write; Airlock's records stay hidden. Read-only keeps AgEnFK's control paths
+  // unwritable; read-write keeps nothing from the session (user decision 2026-11-01, BUG 725b994b) but
+  // the session's own ~/.agenfk, which is the machine's, not the host's.
+  it.each([['home-read-only', false], ['home-read-write', true]] as const)('files under %s: the home folder there (writable: %s), Airlock\'s records hidden', async (homeAccess, homeWritable) => {
     for (const d of [path.join(home, '.agenfk', 'airlock'), path.join(home, '.agenfk-system'), path.join(home, '.pi', 'agent', 'extensions')]) fs.mkdirSync(d, { recursive: true });
     fs.writeFileSync(path.join(home, '.agenfk', 'airlock', 'report-token'), 'not-a-token\n');
-    fs.rmSync(path.join(home, `made-${homeAccess}`), { force: true });
+    for (const f of [path.join(home, `made-${homeAccess}`), path.join(home, '.agenfk-system', 'planted'), path.join(home, '.pi', 'agent', 'extensions', 'planted.ts'), path.join(ws, '.agenfk', 'planted')]) fs.rmSync(f, { force: true });
     const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', homeAccess }), session());
     const r = await inMachine(spec, [
       `grep -q fake ${path.join(home, '.ssh', 'id_fake')} && echo ssh-readable`,
@@ -184,7 +186,8 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
       'echo ok > made-in-guest && echo workspace-writable',
     ].join('; '));
     expect(r.out.sort()).toEqual([
-      'agent-state-writable', 'auth-readable', ...(homeWritable ? ['home-writable'] : []), 'ssh-readable', 'workspace-writable',
+      'agent-state-writable', 'auth-readable',
+      ...(homeWritable ? ['extensions-writable', 'home-writable', 'install-writable', 'project-agenfk-writable'] : []), 'ssh-readable', 'workspace-writable',
     ]);
     expect(fs.existsSync(path.join(home, `made-${homeAccess}`))).toBe(homeWritable);
   }, TIMEOUT);
