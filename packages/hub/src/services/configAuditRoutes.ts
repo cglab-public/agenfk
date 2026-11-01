@@ -165,6 +165,8 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   { method: 'POST', path: '/v1/admin/ci-tokens', area: 'api-keys', action: 'ci-token.issue', target: (_p, req) => `CI token ${typeof req.body?.label === 'string' ? req.body.label : ''}`.trim() },
   { method: 'DELETE', path: '/v1/admin/ci-tokens/:tokenHashPreview', area: 'api-keys', action: 'ci-token.revoke', target: param('tokenHashPreview', 'CI token'), snapshot: ciTokenSnap },
   { method: 'POST', path: '/hub/device/approve', area: 'api-keys', action: 'device.approve', target: bodyField('userCode', 'device'), noBody: true },
+  { method: 'POST', path: '/hub/admin-device/approve', area: 'api-keys', action: 'admin-cli.approve', target: bodyField('userCode', 'admin CLI sign-in'), noBody: true },
+  { method: 'DELETE', path: '/v1/admin/cli-sessions/:id', area: 'api-keys', action: 'admin-cli.revoke', target: param('id', 'admin CLI session'), noBody: true },
   { method: 'POST', path: '/hub/invite/create', area: 'api-keys', action: 'invite.create', target: () => 'installation invite', noBody: true },
   { method: 'POST', path: '/hub/invite/redeem', area: 'api-keys', action: 'invite.redeem', target: () => 'installation invite', noBody: true, source: 'cli' },
   { method: 'POST', path: '/v1/admin/installations/:id/retire', area: 'installations', action: 'installation.retire', target: param('id', 'installation'), snapshot: installationSnap, link: '/admin/installations' },
@@ -246,6 +248,8 @@ export const AUDIT_EXEMPT_ROUTES: Record<string, string> = {
   'POST /v1/admin/system/pending/ack': 'dismisses a notice the hub showed; no setting changes',
   'POST /hub/device/start': 'a device asking to connect; nothing changes until an admin approves it (audited)',
   'POST /hub/device/poll': 'a device waiting for approval; read-only',
+  'POST /hub/admin-device/start': 'an admin CLI asking to sign in; nothing changes until an admin approves it (audited)',
+  'POST /hub/admin-device/poll': 'an admin CLI waiting for approval; read-only',
   'POST /v1/jira/oauth/start': "a person connecting their own JIRA account, not the org's configuration",
   'POST /v1/jira/oauth/complete': "a person connecting their own JIRA account, not the org's configuration",
   'POST /v1/jira/disconnect': "a person disconnecting their own JIRA account, not the org's configuration",
@@ -294,7 +298,7 @@ const AUDIT_LAYER = 'configAuditLayer';
 async function actorOf(db: DB, req: Request): Promise<{ orgId: string | null; source: AuditSource | null; actor: { userId: string | null; email: string | null } | null }> {
   if (req.session) {
     const u = await db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
-    return { orgId: req.session.orgId, source: 'board', actor: { userId: req.session.userId, email: u?.email ?? null } };
+    return { orgId: req.session.orgId, source: req.session.via === 'cli' ? 'cli' : 'board', actor: { userId: req.session.userId, email: u?.email ?? null } };
   }
   if (req.hubApiKey) return { orgId: req.hubApiKey.orgId, source: 'cli', actor: { userId: null, email: req.hubApiKey.installationId ? `installation ${req.hubApiKey.installationId}` : 'API key' } };
   if (req.hubFederation) return { orgId: req.hubFederation.orgId, source: 'federation', actor: { userId: null, email: `child hub ${req.hubFederation.childHubId}` } };

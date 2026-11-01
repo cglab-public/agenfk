@@ -3,8 +3,10 @@ import { randomBytes } from 'crypto';
 import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS, MAX_INVITE_TOKEN_LEN } from '../auth/inviteToken.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { HubServerContext } from '../server.js';
+import { DB } from '../db.js';
 import { requireSession, requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
+import { issueAdminCliToken } from '../auth/adminCliToken.js';
 import { upsertInstallation } from '../services/installations.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
@@ -42,6 +44,16 @@ function userCode(): string {
     }
   }
   return `${s.slice(0, 4)}-${s.slice(4)}`;
+}
+
+/** A user code not already pending in `table` (a few draws; the space is 32^8). */
+async function freshUserCode(db: DB, table: 'device_codes' | 'admin_device_codes'): Promise<string> {
+  let code = userCode();
+  for (let i = 0; i < 5; i++) {
+    if (!await db.get(`SELECT 1 AS x FROM ${table} WHERE user_code = ?`, [code])) break;
+    code = userCode();
+  }
+  return code;
 }
 
 function isoPlus(seconds: number): string {
@@ -120,12 +132,7 @@ export function connectRouter(ctx: HubServerContext): Router {
       return;
     }
     const deviceCode = randomBytes(32).toString('base64url');
-    let code = userCode();
-    for (let i = 0; i < 5; i++) {
-      const exists = await ctx.db.get('SELECT 1 AS x FROM device_codes WHERE user_code = ?', [code]);
-      if (!exists) break;
-      code = userCode();
-    }
+    const code = await freshUserCode(ctx.db, 'device_codes');
     // Persist the caller's identity alongside the pending code, so the token can
     // be BOUND to the installation when it is issued at approve time. An unbound
     // key is never handed a fleet directive, which made device-onboarded installs
@@ -246,6 +253,122 @@ export function connectRouter(ctx: HubServerContext): Router {
         gitName: bind.gitName,
         gitEmail: bind.gitEmail,
       },
+    });
+  }));
+
+  // ── Admin CLI sign-in (CGLAB-702) ─────────────────────────────────────────
+  //
+  // The same shape as the installation flow above, for a different credential:
+  // `agenfk hub admin login` starts a code, a signed-in admin approves it on
+  // /connect?kind=admin, and the CLI collects a 12-hour admin bearer token for
+  // THAT admin. Its own table, so neither kind of code redeems as the other.
+  //
+  // Approval only records WHO approved. The token is minted by the one poll
+  // that claims the approved grant, so no plaintext is held between the two
+  // requests: any hub process can answer the poll, a restart loses nothing,
+  // and a poll can never see "approved" without a token to hand over.
+
+  router.post('/admin-device/start', deviceStartRateLimit, asyncRoute(async (req: Request, res: Response) => {
+    const nowIso = new Date().toISOString();
+    await ctx.db.run('DELETE FROM admin_device_codes WHERE expires_at < ?', [nowIso]);
+    const pending = await ctx.db.get<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM admin_device_codes WHERE approved_at IS NULL AND expires_at > ?', [nowIso],
+    );
+    if (pending && Number(pending.n) >= MAX_PENDING_DEVICE_CODES) {
+      res.status(429).json({ error: 'Too many pending device codes, try again later.' });
+      return;
+    }
+    const deviceCode = randomBytes(32).toString('base64url');
+    const code = await freshUserCode(ctx.db, 'admin_device_codes');
+    await ctx.db.run(
+      'INSERT INTO admin_device_codes (device_code, user_code, expires_at, created_at) VALUES (?, ?, ?, ?)',
+      [deviceCode, code, isoPlus(DEVICE_CODE_TTL_S), nowIso],
+    );
+    res.json({
+      deviceCode,
+      userCode: code,
+      verificationUri: `${publicHubUrl(req)}/connect?code=${code}&kind=admin`,
+      expiresIn: DEVICE_CODE_TTL_S,
+      interval: DEVICE_POLL_INTERVAL_S,
+    });
+  }));
+
+  router.post('/admin-device/approve', adminGuard, asyncRoute(async (req: Request, res: Response) => {
+    // A CLI session may not approve the next one: approval is a person at the
+    // board, so a token cannot renew itself past its 12 hours.
+    if (req.session!.via === 'cli') {
+      res.status(403).json({ error: 'Approve admin CLI sign-ins from the board, signed in as yourself.' });
+      return;
+    }
+    const userCodeIn = String(req.body?.userCode ?? '').trim().toUpperCase();
+    if (!userCodeIn) { res.status(400).json({ error: 'userCode required' }); return; }
+    const row = await ctx.db.get<{ device_code: string; expires_at: string | Date; approved_at: unknown }>(
+      'SELECT device_code, expires_at, approved_at FROM admin_device_codes WHERE user_code = ?', [userCodeIn],
+    );
+    if (!row) { res.status(404).json({ error: 'unknown user code' }); return; }
+    if (new Date(row.expires_at).getTime() < Date.now()) { res.status(410).json({ error: 'code expired' }); return; }
+    if (row.approved_at) { res.status(409).json({ error: 'code already approved' }); return; }
+    const { orgId, userId } = req.session!;
+    // One statement sets all three, so a poll sees the grant whole or not at all;
+    // the condition makes concurrent approvals a single winner.
+    const claimed = await ctx.db.run(
+      'UPDATE admin_device_codes SET approved_at = ?, org_id = ?, user_id = ? WHERE device_code = ? AND approved_at IS NULL',
+      [new Date().toISOString(), orgId, userId, row.device_code],
+    );
+    if (claimed.changes === 0) { res.status(409).json({ error: 'code already approved' }); return; }
+    res.json({ ok: true, orgId });
+  }));
+
+  router.post('/admin-device/poll', asyncRoute(async (req: Request, res: Response) => {
+    const { deviceCode } = req.body ?? {};
+    if (typeof deviceCode !== 'string' || !deviceCode) { res.status(400).json({ error: 'deviceCode required' }); return; }
+    const row = await ctx.db.get<{ org_id: string | null; user_id: string | null; approved_at: unknown; consumed_at: unknown; expires_at: string | Date }>(
+      'SELECT org_id, user_id, approved_at, consumed_at, expires_at FROM admin_device_codes WHERE device_code = ?', [deviceCode],
+    );
+    if (!row) { res.status(404).json({ error: 'unknown device code' }); return; }
+    if (row.consumed_at) { res.status(410).json({ error: 'token already retrieved' }); return; }
+    if (new Date(row.expires_at).getTime() < Date.now()) { res.json({ status: 'expired' }); return; }
+    if (!row.approved_at || !row.org_id || !row.user_id) { res.json({ status: 'pending' }); return; }
+    const orgId = row.org_id, userId = row.user_id;
+
+    // The conditional UPDATE is the claim: exactly one poll gets changes = 1.
+    // Not a db.transaction: the SQLite adapter runs every transaction on one
+    // connection, and two polls interleaving their BEGINs would fail the second
+    // with a 500 instead of the 410 it is owed.
+    const claim = await ctx.db.run(
+      'UPDATE admin_device_codes SET consumed_at = ? WHERE device_code = ? AND consumed_at IS NULL',
+      [new Date().toISOString(), deviceCode],
+    );
+    const outcome = claim.changes === 0 ? { kind: 'taken' as const } : await (async () => {
+      try {
+        // The approver as they are NOW: demoted or deactivated since approving gets nothing.
+        const user = await ctx.db.get<{ email: string; role: string; active: number; org_id: string }>(
+          'SELECT email, role, active, org_id FROM users WHERE id = ?', [userId],
+        );
+        if (!user || !Number(user.active) || user.org_id !== orgId || user.role !== 'admin') return { kind: 'refused' as const };
+        const issued = await issueAdminCliToken(ctx.db, orgId, userId, deviceCode);
+        return { kind: 'issued' as const, issued, user };
+      } catch (err) {
+        // Minting failed after the claim: hand the grant back, so the CLI's
+        // next poll can still collect it. Safe even if the insert did land: the
+        // token's UNIQUE grant_code refuses a second token for this grant.
+        try {
+          await ctx.db.run('UPDATE admin_device_codes SET consumed_at = NULL WHERE device_code = ?', [deviceCode]);
+        } catch (undoErr) {
+          console.error(`[HUB] Admin CLI sign-in: could not reopen a grant after a failed issue; the CLI must sign in again: ${(undoErr as Error).message}`);
+        }
+        throw err;
+      }
+    })();
+    if (outcome.kind === 'taken') { res.status(410).json({ error: 'token already retrieved' }); return; }
+    if (outcome.kind === 'refused') { res.status(403).json({ error: 'The approving user is no longer an active admin.' }); return; }
+    res.json({
+      status: 'approved',
+      token: outcome.issued.token,
+      expiresAt: outcome.issued.expiresAt,
+      orgId,
+      user: { email: outcome.user.email, role: outcome.user.role },
+      hubUrl: publicHubUrl(req),
     });
   }));
 

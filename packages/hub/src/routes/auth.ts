@@ -18,6 +18,7 @@ import {
 import { rateLimit, FailedAttemptTracker, sessionUserKey } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 import { redeemAdminRecoveryToken } from '../auth/adminRecovery.js';
+import { bearerOf, findAdminCliToken, isAdminCliToken, revokeAdminCliToken } from '../auth/adminCliToken.js';
 
 // Brute-force defences for password login (Security: bug 210b3d34):
 //  - per-IP rate limit so one source can't fire unlimited attempts
@@ -135,10 +136,17 @@ export function authRouter(ctx: HubServerContext): Router {
     res.json({ id: user.id, email: user.email, role: user.role, orgId: user.org_id });
   }));
 
-  router.post('/logout', (_req: Request, res: Response) => {
+  router.post('/logout', asyncRoute(async (req: Request, res: Response) => {
     clearSessionCookie(res);
+    // The admin CLI signs out by presenting its token: revoke that token, so a
+    // copy of the credential file is worthless afterwards (CGLAB-702).
+    const bearer = bearerOf(req.headers.authorization);
+    if (bearer && isAdminCliToken(bearer)) {
+      const row = await findAdminCliToken(ctx.db, bearer);
+      if (row) await revokeAdminCliToken(ctx.db, row.orgId, row.id);
+    }
     res.json({ ok: true });
-  });
+  }));
 
   router.get('/me', meRateLimit, requireSession(ctx.config.sessionSecret, ctx.db), asyncRoute(async (req: Request, res: Response) => {
     // The session cookie carries ids only. Who the user actually IS — their

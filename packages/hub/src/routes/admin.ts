@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
+import { revokeAdminCliToken } from '../auth/adminCliToken.js';
 import { checkEmailAllowlist } from '../auth/oauth.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
@@ -228,6 +229,37 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   // ── API keys (installation tokens) ───────────────────────────────────────
+  // ── Admin CLI sessions (CGLAB-702) ──────────────────────────────────────
+  // Live admin CLI tokens of this org, so an admin can end one (a lost laptop)
+  // without waiting out its 12 hours. Never the hash: an id is enough to revoke.
+  router.get('/cli-sessions', guard, asyncRoute(async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<any>(
+      `SELECT t.id, t.user_id, t.created_at, t.expires_at, u.email
+         FROM admin_cli_tokens t LEFT JOIN users u ON u.id = t.user_id
+        WHERE t.org_id = ? AND t.revoked_at IS NULL
+        ORDER BY t.created_at DESC`,
+      [req.session!.orgId],
+    );
+    const now = Date.now();
+    const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : String(v));
+    res.json(rows
+      .filter(r => new Date(r.expires_at).getTime() > now)
+      .map(r => ({
+        id: r.id,
+        userId: r.user_id,
+        userEmail: r.email ?? null,
+        createdAt: iso(r.created_at),
+        expiresAt: iso(r.expires_at),
+        current: req.session!.cliTokenId === r.id,
+      })));
+  }));
+
+  router.delete('/cli-sessions/:id', guard, asyncRoute(async (req: Request, res: Response) => {
+    const ok = await revokeAdminCliToken(ctx.db, req.session!.orgId, String(req.params.id));
+    if (!ok) { res.status(404).json({ error: 'No live admin CLI session with that id' }); return; }
+    res.json({ ok: true });
+  }));
+
   router.get('/api-keys', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<any>(
       'SELECT token_hash, label, created_at, revoked_at, installation_id, os_user, git_name, git_email FROM api_keys WHERE org_id = ? ORDER BY created_at DESC',
