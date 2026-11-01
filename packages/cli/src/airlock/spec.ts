@@ -15,30 +15,6 @@ import path from 'path';
 import { isIPv4, isIPv6 } from 'net';
 import { BUILTIN_DENY_HOSTS, HOME_CREDENTIAL_STORES, matchHost, type AirlockClient, type AirlockPolicy } from '@agenfk/core';
 
-/**
- * What host programs read and run from the home folder: git's config, ssh's, the shells' startup
- * files, login agents and services, the other coding agents' config (their hooks, commands and MCP
- * servers run on the host: BUG 66fbc056). Unwritable under a read-write
- * home (homeAccess); pi's and OpenCode's own code and config are protected in every mode below.
- */
-export const HOST_RUN_CONFIGS = Object.freeze([
-  '.gitconfig', path.join('.config', 'git'), '.ssh',
-  '.profile', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout',
-  '.zshrc', '.zshenv', '.zprofile', '.zlogin', '.zlogout', path.join('.config', 'fish'),
-  path.join('Library', 'LaunchAgents'), path.join('.config', 'systemd'), path.join('.config', 'autostart'),
-  // Each agent's entry points, never its whole dir: its data holds links the session could steer
-  // (a cache in ~/.claude refused every launch: review 01a19539), and it can be huge.
-  ...['settings.json', 'settings.local.json', 'hooks', 'commands', 'agents', 'skills', 'plugins', 'rules', 'CLAUDE.md'].map((f) => path.join('.claude', f)),
-  '.claude.json',
-  ...['config.toml', 'hooks.json', 'skills', 'prompts', 'AGENTS.md'].map((f) => path.join('.codex', f)),
-  ...['mcp.json', 'hooks.json', 'hooks', 'rules', 'skills', 'agents'].map((f) => path.join('.cursor', f)),
-  ...['mcp.json', 'rules'].map((f) => path.join('.config', 'cursor', f)),
-  ...['settings.json', 'commands', 'extensions', 'skills', 'GEMINI.md'].map((f) => path.join('.gemini', f)),
-  // Skills every agent loads (the installer's ~/.agents/skills). Not the bin dirs on PATH: they are
-  // links into tools' installs, which the session could steer, so holding them refused every launch.
-  '.agents',
-]);
-
 /** Set inside the sandbox to the client's name; the launch gate (L2-3) looks for it. */
 export const AIRLOCK_SANDBOX_MARKER = 'AGENFK_AIRLOCK_SANDBOX';
 
@@ -342,10 +318,9 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   // commands, plugins), the LSP binaries and the plugin packages it installs. The rest of that
   // state (sessions, models.json) stays writable.
   const piHostCode = (dir: string) => ['extensions', 'bin', 'install', 'npm', 'git', 'settings.json'].map((p) => j(dir, p));
-  const denyWrite = uniq([
-    // A home folder the policy opens read-write (user decision 2026-10-31): what host programs run
-    // from it stays unwritable too, as far as it can be held. The rest of it is the agent's.
-    ...(homeMount === 'rw' ? HOST_RUN_CONFIGS.map((p) => j(home, p)) : []),
+  // A home folder the policy opens read-write is the session's, all of it (user decision 2026-11-01,
+  // BUG 725b994b): nothing is kept unwritable. Airlock's records stay hidden (denyRead above).
+  const denyWrite = homeMount === 'rw' ? [] : uniq([
     j(home, '.agenfk'),
     ...session.installDirs,
     ...piHostCode(j(home, '.pi', 'agent')),

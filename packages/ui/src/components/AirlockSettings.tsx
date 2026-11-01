@@ -504,7 +504,7 @@ function PolicyForm({
             ? 'Only the workspace and the agent’s own state are mounted; the credential stores (~/.ssh, ~/.aws, logins in auth.json) stay unreadable.'
             : draft.homeAccess === 'home-read-only'
               ? 'The whole home folder is mounted read-only: the agent can read your credentials (~/.ssh, ~/.aws, auth.json). The network policy is what keeps them in.'
-              : 'The whole home folder is mounted read-write: the agent can read your credentials (~/.ssh, ~/.aws, auth.json), and can change files programs on this machine run later (other projects’ git hooks, tools’ settings), so treat it as able to run code here. Still held from it: AgEnFK, this workspace’s git, git’s and ssh’s config, the shells’ startup files, login agents, the coding agents’ own configs (pi, OpenCode, Claude Code, Codex, Cursor, Gemini) and the skills they share.'}
+              : 'The whole home folder is mounted read-write: the agent can read your credentials (~/.ssh, ~/.aws, auth.json), and can change files programs on this machine run later (other projects’ git hooks, tools’ settings), so treat it as able to run code here. Nothing is held from it: only Airlock’s own records stay hidden.'}
         </p>
       </div>
 

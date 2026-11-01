@@ -8,7 +8,6 @@ import {
   buildSandboxSpec,
   writeRootHolding,
   AIRLOCK_SANDBOX_MARKER,
-  HOST_RUN_CONFIGS,
   type SandboxSession,
 } from '../airlock/spec';
 
@@ -353,29 +352,18 @@ describePosix('buildSandboxSpec: home access (story 525cd331)', () => {
     expect(denyRead).toEqual(['/home/u/.agenfk/airlock', '/home/u/.agenfk/verify-token']);
   });
 
-  it.each(['home-read-only', 'home-read-write'] as const)('keeps every AgEnFK control path unwritable under %s', (homeAccess) => {
-    const open = buildSandboxSpec(policy({ homeAccess }), session({ projectAgenfkDirs: ['/work/.agenfk'] })).filesystem;
+  it('keeps every AgEnFK control path unwritable under home-read-only', () => {
+    const open = buildSandboxSpec(policy({ homeAccess: 'home-read-only' }), session({ projectAgenfkDirs: ['/work/.agenfk'] })).filesystem;
     const closed = buildSandboxSpec(policy(), session({ projectAgenfkDirs: ['/work/.agenfk'] })).filesystem;
-    // Every one protected by default, and under a read-write home what host programs run from it too.
-    expect(open.denyWrite).toEqual(homeAccess === 'home-read-only'
-      ? closed.denyWrite
-      : [...HOST_RUN_CONFIGS.map((p) => `/home/u/${p}`), ...closed.denyWrite]);
+    expect(open.denyWrite).toEqual(closed.denyWrite);
     expect(open.allowWrite).toEqual(closed.allowWrite);
   });
 
-  // Real-session test of beta.9 (BUG 66fbc056): every agent's config the host runs from, and the bin dirs on PATH.
-  // Each agent's entry points, never its whole dir: ~/.claude holds caches with links the session
-  // could steer, which refused every launch (review 01a19539).
-  it('holds every coding agent\'s config and the user\'s bin dirs under a read-write home', () => {
-    const { denyWrite } = buildSandboxSpec(policy({ homeAccess: 'home-read-write' }), session()).filesystem;
-    for (const p of [
-      '.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/commands', '.claude/agents', '.claude/skills', '.claude/plugins', '.claude/rules', '.claude/CLAUDE.md', '.claude.json',
-      '.codex/config.toml', '.codex/hooks.json', '.codex/skills', '.codex/prompts', '.codex/AGENTS.md',
-      '.cursor/mcp.json', '.cursor/hooks.json', '.cursor/hooks', '.cursor/rules', '.cursor/skills', '.cursor/agents', '.config/cursor/mcp.json', '.config/cursor/rules',
-      '.gemini/settings.json', '.gemini/commands', '.gemini/extensions', '.gemini/skills', '.gemini/GEMINI.md',
-      '.agents',
-    ]) expect(denyWrite).toContain(`/home/u/${p}`);
-    // Never a whole agent dir, nor a bin dir: both hold links the session could steer.
-    for (const p of ['.claude', '.codex', '.local/bin', 'bin']) expect(denyWrite).not.toContain(`/home/u/${p}`);
+  // User decision 2026-11-01 (BUG 725b994b): read-write is read-write. Only Airlock's records stay hidden.
+  it('home-read-write leaves nothing unwritable', () => {
+    const open = buildSandboxSpec(policy({ homeAccess: 'home-read-write' }), session({ projectAgenfkDirs: ['/work/.agenfk'], piAgentDir: '/home/u/pi-agent' })).filesystem;
+    const closed = buildSandboxSpec(policy(), session({ projectAgenfkDirs: ['/work/.agenfk'], piAgentDir: '/home/u/pi-agent' })).filesystem;
+    expect(open.denyWrite).toEqual([]);
+    expect(open.allowWrite).toEqual(closed.allowWrite);
   });
 });

@@ -450,7 +450,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
           ? 'Every installation follows this; none can open more locally. A session\'s machine sees only its workspace and its agent\'s own state; the credential stores (~/.ssh, ~/.aws, logins in auth.json) stay unreadable.'
           : home === 'home-read-only'
             ? "Every installation follows this; none can open more locally. The whole home folder is mounted read-only: the agent can read your users' credentials (~/.ssh, ~/.aws, auth.json), and the network policy is what keeps them in. AgEnFK's own files stay unwritable and Airlock's records unreadable."
-            : "Every installation follows this; none can open more locally. The whole home folder is mounted read-write: the agent can read your users' credentials (~/.ssh, ~/.aws, auth.json), and can change files programs on their machines run later (other projects' git hooks, tools' settings), so treat it as able to run code there. Still held from it: AgEnFK, the workspace's git, git's and ssh's config, the shells' startup files, login agents, the coding agents' own configs (pi, OpenCode, Claude Code, Codex, Cursor, Gemini) and the skills they share."}
+            : "Every installation follows this; none can open more locally. The whole home folder is mounted read-write: the agent can read your users' credentials (~/.ssh, ~/.aws, auth.json), and can change files programs on their machines run later (other projects' git hooks, tools' settings), so treat it as able to run code there. Nothing is held from it: only Airlock's own records stay hidden."}
       </p>
 
       <div className="mt-3">
