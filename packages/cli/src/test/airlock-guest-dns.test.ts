@@ -200,10 +200,24 @@ describe('the resolver, on real sockets', () => {
       upstream!.send(reply, rinfo.port, rinfo.address);
     });
     await new Promise<void>((r) => upstream!.bind(0, '127.0.0.1', () => r()));
-    const sourcePort = await new Promise<number>((r) => { const t = dgram.createSocket('udp4'); t.bind(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => r(p)); }); });
-    resolver = await startResolver({ host: '127.0.0.1', port: 0, upstream: { host: '127.0.0.1', port: upstream.address().port }, upstreamSourcePort: sourcePort, deny: [] });
-    const a = await udpAsk(resolver.port, query('one.example', 0x0101));
-    const b = await tcpAsk(resolver.port, query('two.example', 0x0202));
+    // A free port is found and let go before the resolver binds it, and a test running beside this
+    // one can take it in between (EADDRINUSE on a loaded run): another free port is tried then.
+    let sourcePort = 0;
+    let a!: Buffer, b!: Buffer;
+    for (let attempt = 1; ; attempt++) {
+      sourcePort = await new Promise<number>((r) => { const t = dgram.createSocket('udp4'); t.bind(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => r(p)); }); });
+      try {
+        resolver = await startResolver({ host: '127.0.0.1', port: 0, upstream: { host: '127.0.0.1', port: upstream.address().port }, upstreamSourcePort: sourcePort, deny: [] });
+        a = await udpAsk(resolver.port, query('one.example', 0x0101));
+        b = await tcpAsk(resolver.port, query('two.example', 0x0202));
+        break;
+      } catch (e) {
+        await resolver?.close();
+        resolver = null;
+        seenPorts.length = 0;
+        if (!/EADDRINUSE/.test(String(e)) || attempt === 5) throw e;
+      }
+    }
     // Each answer carries the asker's own id, though another id went upstream.
     expect([a.readUInt16BE(0), b.readUInt16BE(0)]).toEqual([0x0101, 0x0202]);
     expect(seenPorts).toEqual([sourcePort, sourcePort]);

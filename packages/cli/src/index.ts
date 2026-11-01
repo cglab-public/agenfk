@@ -26,6 +26,7 @@ import { registryFlowToLocal } from './registryFlowFile.js';
 import { ghPrCreateArgs } from './prArgs.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
+import { HUB_ADMIN_SKILL } from './hubAdmin/skill.js';
 import { registerAirlockCommands } from './commands/airlock.js';
 import { registerCiCommands } from './commands/ci.js';
 import { toonEncode } from './toon.js';
@@ -3707,6 +3708,8 @@ function removeAgenfkSkillsFromDir(destDir: string): void {
   if (!fs.existsSync(destDir)) return;
   for (const entry of fs.readdirSync(destDir) as string[]) {
     if (!isAgenfkOwnedEntry(entry)) continue;
+    // Not the workflow's: `agenfk hub skill` installs and removes it (CGLAB-702).
+    if (shadowedName(entry) === HUB_ADMIN_SKILL) continue;
     const full = path.join(destDir, entry);
     // Remove SKILL.md inside the skill dir, then the dir itself
     // Recursive: a skill dir may hold more than SKILL.md (and an AppleDouble
