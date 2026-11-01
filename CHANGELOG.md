@@ -4,6 +4,22 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.12] — 2026-11-01
+
+**Airlock**
+
+- **Tool calls that write JavaScript or TypeScript classes are judged again** (#306). A command word such as
+  `constructor`, `toString` or `__proto__` (any heredoc writing a class has one) made Airlock's command analyser
+  fail. The server answered 500, which pi reads as "server unreachable": under `enforce` the call was refused with
+  the wrong reason, and under `observe` it went through unrecorded.
+- **A very long command no longer fails the analyser** (#306). A command with about 130,000 words did, the same way.
+- **`agenfk airlock learn --import-pi-sessions` reads every log** (#306). It stopped at the first line the analyser
+  failed on. A line it cannot read is now skipped and counted.
+
+**CLI**
+
+- Help text no longer carries internal ticket ids (`TEL-3`, `DS-3` and the like).
+
 ## [2.1.0-beta.11] — 2026-11-01
 
 **Hub**
