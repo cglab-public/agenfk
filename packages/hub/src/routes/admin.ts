@@ -228,7 +228,6 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json(publicAuthConfig(row));
   }));
 
-  // ── API keys (installation tokens) ───────────────────────────────────────
   // ── Admin CLI sessions (CGLAB-702) ──────────────────────────────────────
   // Live admin CLI tokens of this org, so an admin can end one (a lost laptop)
   // without waiting out its 12 hours. Never the hash: an id is enough to revoke.
@@ -260,6 +259,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json({ ok: true });
   }));
 
+  // ── API keys (installation tokens) ───────────────────────────────────────
   router.get('/api-keys', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<any>(
       'SELECT token_hash, label, created_at, revoked_at, installation_id, os_user, git_name, git_email FROM api_keys WHERE org_id = ? ORDER BY created_at DESC',
@@ -407,7 +407,9 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/hidden-users/:userKey', guard, asyncRoute(async (req: Request, res: Response) => {
-    const userKey = decodeURIComponent(String(req.params.userKey)).trim().toLowerCase();
+    // Express has already decoded the param; decoding again turned a key
+    // holding %40 into a different person's (and threw on a bare %).
+    const userKey = String(req.params.userKey).trim().toLowerCase();
     const r = await ctx.db.run(
       'DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?',
       [req.session!.orgId, userKey],

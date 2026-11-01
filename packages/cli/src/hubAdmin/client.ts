@@ -120,3 +120,41 @@ export function emit<T>(data: T, opts: { json?: boolean }, human: (d: T) => void
 export function requireYes(opts: { yes?: boolean }, what: string): void {
   if (!opts.yes) throw new AdminCliError(`Refusing to ${what} without --yes. Re-run with --yes to confirm.`);
 }
+
+/** Everything piped to stdin, without the trailing newline `echo` adds. For secrets: never a flag. */
+export async function readStdin(what: string): Promise<string> {
+  if (process.stdin.isTTY) throw new AdminCliError(`Pipe the ${what} on stdin (e.g. \`printf %s "$SECRET" | agenfk …\`).`);
+  const chunks: Buffer[] = [];
+  for await (const c of process.stdin) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c)));
+  const value = Buffer.concat(chunks).toString('utf8').replace(/\r?\n$/, '');
+  if (!value) throw new AdminCliError(`No ${what} on stdin.`);
+  return value;
+}
+
+/** `on`/`off` (and the usual synonyms) as a boolean. */
+export function onOff(value: string, flag: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (['on', 'true', 'yes', '1', 'enable', 'enabled'].includes(v)) return true;
+  if (['off', 'false', 'no', '0', 'disable', 'disabled'].includes(v)) return false;
+  throw new AdminCliError(`${flag} takes on or off, not "${value}".`);
+}
+
+/** Prints rows as aligned columns; `cols` maps a heading to how to read the cell. */
+export function printTable<T>(rows: T[], cols: Record<string, (r: T) => unknown>, empty = 'Nothing to show.'): void {
+  if (rows.length === 0) { console.log(empty); return; }
+  const heads = Object.keys(cols);
+  const cells = rows.map(r => heads.map(h => { const v = cols[h](r); return v === null || v === undefined ? '-' : String(v); }));
+  const widths = heads.map((h, i) => Math.max(h.length, ...cells.map(c => c[i].length)));
+  const line = (vals: string[]) => vals.map((v, i) => v.padEnd(widths[i])).join('  ').trimEnd();
+  console.log(chalk.bold(line(heads)));
+  for (const c of cells) console.log(line(c));
+}
+
+/**
+ * The hub routes each admin command calls, keyed `METHOD /path` as the hub
+ * serves them. The parity guard (S7) holds this against the hub's admin
+ * routes, so a route the board can reach and the CLI cannot does not ship.
+ */
+const COVERED = new Set<string>();
+export function covers(...routes: string[]): void { for (const r of routes) COVERED.add(r); }
+export function coveredRoutes(): string[] { return [...COVERED].sort(); }

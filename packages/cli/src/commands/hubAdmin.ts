@@ -3,9 +3,10 @@ import chalk from 'chalk';
 import axios from 'axios';
 import { openUrlInBrowser } from '../openUrl';
 import {
-  AdminCliError, adminAction, adminRequest, clearAdminCreds, emit, readAdminCreds, requireAdminCreds,
+  AdminCliError, adminAction, adminRequest, clearAdminCreds, covers, emit, readAdminCreds, requireAdminCreds,
   requireYes, writeAdminCreds,
 } from '../hubAdmin/client';
+import { registerPeopleCommands } from '../hubAdmin/people';
 
 /**
  * `agenfk hub admin …` (CGLAB-702): what the hub's admin pages do, from the
@@ -117,6 +118,7 @@ export function registerHubAdminCommands(hub: Command, deps: HubAdminDeps): Comm
     }));
 
   const sessions = admin.command('sessions').description('Admin CLI sessions of this org');
+  covers('GET /v1/admin/cli-sessions', 'DELETE /v1/admin/cli-sessions/:id');
 
   sessions
     .command('list')
@@ -142,5 +144,6 @@ export function registerHubAdminCommands(hub: Command, deps: HubAdminDeps): Comm
       console.log(chalk.green(`✓ Revoked admin CLI session ${id}.`));
     }));
 
+  registerPeopleCommands(admin);
   return admin;
 }
