@@ -4,6 +4,32 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.11] — 2026-11-01
+
+**Hub**
+
+- **Hub admin from the command line** (#303, CGLAB-702). `agenfk hub admin <area> <verb>` covers every hub admin
+  page: people and access, fleet (flows, upgrades, repoint), policies (Airlock, repos, models), hub settings and
+  data (events, audit, every board chart as JSON/CSV) - about 110 commands. `agenfk hub admin login` signs in with a
+  device flow an admin approves in the browser (12-hour token, stored on the hub only as a hash); `logout` and
+  `sessions list|revoke` end sessions. Configuration changes made from the CLI are audited with source `cli`. `--json` on commands
+  that returns data, `--yes` on destructive or fleet-wide changes, secrets only from stdin.
+- **Admin → Airlock is organised in tabs** (#304): Policy, Network, Sandbox, Projects, Activity and Learning. Policy,
+  Network and Sandbox edit one policy with one Save; unsaved edits survive switching tabs, and `?tab=` links to one.
+  Long lists (installations, recent denials, revision history, proposed hosts) scroll within the page.
+- **Airlock events name the policy revision and who** in a person's Recent events, instead of a dash.
+- **`agenfk hub skill install` teaches every coding agent to administer the hub** (#305). It installs an
+  `agenfk-hub-admin` skill for pi, Codex, OpenCode, Cursor and Gemini (`~/.agents/skills`) and Claude Code
+  (`~/.claude/skills`), or into the repository with `--project`: how to sign in (a person approves the code), when
+  to confirm with the user, and every `agenfk hub admin` command with its arguments and options, made from the
+  installed CLI. Install it again after an upgrade. `agenfk skills install` leaves it in place.
+
+**Worktrees**
+
+- **Windows: cards get their worktree again on long paths** (#298, #269). Worktree commands run with
+  `core.longpaths` (and the new worktree keeps it), so `Filename too long` no longer leaves a card on "no branch
+  yet"; a creation that still fails says what to do and cleans up after itself.
+
 ## [2.1.0-beta.10] — 2026-11-01
 
 **Airlock**
