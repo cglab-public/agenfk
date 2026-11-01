@@ -563,7 +563,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/models/meta/:model', guard, asyncRoute(async (req: Request, res: Response) => {
-    const model = validModelId(decodeURIComponent(String(req.params.model)));
+    const model = validModelId(String(req.params.model)) // Express has decoded it once already;
     if (!model) return res.status(400).json({ error: 'Invalid model id.' });
     const r = await ctx.db.run(
       'DELETE FROM model_meta WHERE org_id = ? AND model = ?',
@@ -633,7 +633,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/models/mappings/:aliasModel', guard, asyncRoute(async (req: Request, res: Response) => {
-    const aliasModel = validModelId(decodeURIComponent(String(req.params.aliasModel)));
+    const aliasModel = validModelId(String(req.params.aliasModel)) // Express has decoded it once already;
     if (!aliasModel) return res.status(400).json({ error: 'Invalid alias model id.' });
     const r = await ctx.db.run(
       'DELETE FROM model_mappings WHERE org_id = ? AND alias_model = ?',

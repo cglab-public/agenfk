@@ -8,6 +8,7 @@ import {
 } from '../hubAdmin/client';
 import { registerPeopleCommands } from '../hubAdmin/people';
 import { registerFleetCommands } from '../hubAdmin/fleet';
+import { registerPolicyCommands } from '../hubAdmin/policies';
 
 /**
  * `agenfk hub admin …` (CGLAB-702): what the hub's admin pages do, from the
@@ -147,5 +148,6 @@ export function registerHubAdminCommands(hub: Command, deps: HubAdminDeps): Comm
 
   registerPeopleCommands(admin);
   registerFleetCommands(admin);
+  registerPolicyCommands(admin);
   return admin;
 }
