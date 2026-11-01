@@ -14,6 +14,7 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { oneInFlight, readRemoteUrl, readAirlockRemoteUrl, remoteCacheLifetimeMs } from '../projectRemote';
 import { removeTempDir } from './helpers/tempDir';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 describe('readRemoteUrl()', () => {
   it('answers the origin URL, to be remembered', async () => {
@@ -123,7 +124,7 @@ describe('readRemoteUrl()', () => {
       fs.writeFileSync(path.join(dir, '.git'), `gitdir: ${other}\n`);
       expect(await readAirlockRemoteUrl(dir)).toEqual({ url: '', cacheable: false });
       fs.rmSync(path.join(dir, '.git'));
-      fs.symlinkSync(other, path.join(dir, '.git'));
+      linkDir(other, path.join(dir, '.git')); // a junction on Windows, where a symlink needs admin: lstat calls it a link too
       expect(await readAirlockRemoteUrl(dir)).toEqual({ url: '', cacheable: false });
     } finally {
       removeTempDir(dir);
