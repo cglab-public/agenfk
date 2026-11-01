@@ -47,6 +47,14 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('Admin → Airlock → Proposed hosts', () => {
+  // User 2026-11-01: a long list scrolls within the viewport.
+  it('scrolls the proposed hosts within the viewport', async () => {
+    renderCard();
+    const box = (await screen.findByRole('list', { name: 'Proposed hosts' })).closest('.overflow-y-auto');
+    expect(box).not.toBeNull();
+    expect(box!.className).toMatch(/max-h-\[/);
+  });
+
   it('lists each host once, with how many installations proposed it and what it rests on', async () => {
     renderCard();
     const list = await screen.findByRole('list', { name: 'Proposed hosts' });

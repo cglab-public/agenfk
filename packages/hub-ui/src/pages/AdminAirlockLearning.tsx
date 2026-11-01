@@ -2,7 +2,7 @@ import { useState, type Dispatch, type SetStateAction } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
-import { Callout, QueryError, buttonClass, cardClass } from '../components/ui';
+import { Callout, QueryError, buttonClass, cardClass, scrollClass } from '../components/ui';
 
 /**
  * Admin → Airlock → Proposed hosts (GH-294, TEL-3). Hub-joined installations
@@ -51,7 +51,7 @@ function ProposedHosts({ list, selected, setSelected }: {
   }
   return (
     <>
-      <ul className="mt-3 space-y-1.5" aria-label="Proposed hosts">
+      <ul className={`mt-3 space-y-1.5 ${scrollClass}`} aria-label="Proposed hosts">
         {list.hosts.map(h => (
           <li key={h.host} className="flex items-start gap-2 text-small">
             <input type="checkbox" className="mt-1" aria-label={h.host} checked={selected.has(h.host)} onChange={() => { accept.reset(); toggle(h.host); }} />

@@ -1,8 +1,9 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
-import { Callout, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
+import { Callout, QueryError, buttonClass, cardClass, controlClass, scrollClass } from '../components/ui';
 import { AirlockLearningCard } from './AdminAirlockLearning';
 
 /**
@@ -233,22 +234,53 @@ const invalidateAll = (qc: ReturnType<typeof useQueryClient>) => {
   }
 };
 
+/** The page's subjects (user 2026-11-01). Policy, Network and Sandbox edit one policy draft. */
+const TABS = [
+  { id: 'policy', label: 'Policy' }, { id: 'network', label: 'Network' }, { id: 'sandbox', label: 'Sandbox' },
+  { id: 'projects', label: 'Projects' }, { id: 'activity', label: 'Activity' }, { id: 'learning', label: 'Learning' },
+] as const;
+export type AirlockTab = typeof TABS[number]['id'];
+const POLICY_TABS: readonly AirlockTab[] = ['policy', 'network', 'sandbox'];
+
 export function AdminAirlock() {
   const airlock = useAirlock();
+  const [params, setParams] = useSearchParams();
+  const tab: AirlockTab = TABS.find(t => t.id === params.get('tab'))?.id ?? 'policy';
+  const choose = (t: AirlockTab) => setParams(p => { const n = new URLSearchParams(p); n.set('tab', t); return n; }, { replace: true });
   if (airlock.isError && !airlock.data) return <QueryError error={airlock.error} onRetry={() => airlock.refetch()} />;
   if (!airlock.data) return <p role="status" className="text-body text-ink-tertiary">Loading…</p>;
   const view = airlock.data;
+  // Every tab's cards stay mounted, hidden when another is open: a card keeps its unsaved edits.
   return (
     <div className="space-y-4">
-      {/* Not keyed by revision: a card keeps unsaved edits when the other one saves (useRevisionDraft). */}
-      <PolicyCard view={view} />
-      <ProjectOverridesCard view={view} />
-      <IocCard key={`ioc-${view.iocRevision}`} view={view} />
-      <DatasetCard />
-      <InstallationsCard />
-      <HistoryCard />
-      <DecisionsCard />
-      <AirlockLearningCard />
+      <div role="tablist" aria-label="Airlock sections" className="inline-flex flex-wrap gap-0.5 p-1 rounded-xl border border-border-soft bg-surface">
+        {TABS.map(t => (
+          <button
+            key={t.id} type="button" role="tab" id={`airlock-tab-${t.id}`} aria-selected={tab === t.id} aria-controls="airlock-panel"
+            onClick={() => choose(t.id)}
+            className={'px-3 py-1.5 rounded-lg text-small font-semibold transition-colors ' + (tab === t.id
+              ? 'bg-accent-fill text-accent-ink'
+              : 'text-ink-secondary hover:bg-accent-fill/50 hover:text-ink')}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" id="airlock-panel" aria-labelledby={`airlock-tab-${tab}`} className="space-y-4">
+        {/* Not keyed by revision: a card keeps unsaved edits when the other one saves (useRevisionDraft). */}
+        <div hidden={!POLICY_TABS.includes(tab)}><PolicyCard view={view} tab={tab} /></div>
+        <div hidden={tab !== 'network'}><IocCard key={`ioc-${view.iocRevision}`} view={view} /></div>
+        <div hidden={tab !== 'projects'}><ProjectOverridesCard view={view} /></div>
+        <div hidden={tab !== 'activity'} className="space-y-4">
+          <InstallationsCard />
+          <DecisionsCard />
+          <HistoryCard />
+        </div>
+        <div hidden={tab !== 'learning'} className="space-y-4">
+          <DatasetCard />
+          <AirlockLearningCard />
+        </div>
+      </div>
     </div>
   );
 }
@@ -324,7 +356,7 @@ const policyDraftOf = (v: AirlockView): PolicyDraft => ({
   home: v.policy?.homeAccess ?? 'protect-credentials',
 });
 
-function PolicyCard({ view }: { view: AirlockView }) {
+function PolicyCard({ view, tab }: { view: AirlockView; tab: AirlockTab }) {
   const qc = useQueryClient();
   const d = useRevisionDraft(view, policyDraftOf);
   const { mode, models, unknown, allow, deny, rules, image, home } = d.draft;
@@ -374,6 +406,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
         </p>
       )}
 
+      <div hidden={tab !== 'policy'}>
       <label className="block mt-3">
         <span className="eyebrow text-ink-tertiary">Mode</span>
         <select aria-label="Mode" className={`${controlClass} mt-1.5`} value={mode} onChange={(e) => setMode(e.target.value as Mode)}>
@@ -399,19 +432,6 @@ function PolicyCard({ view }: { view: AirlockView }) {
         Apply when a session's model cannot be told
       </label>
 
-      <label className="block mt-3">
-        <span className="eyebrow text-ink-tertiary">Allowed hosts</span>
-        <textarea aria-label="Allowed hosts" rows={4} className={`${controlClass} mt-1.5 font-mono`} value={allow} onChange={(e) => setAllow(e.target.value)} />
-      </label>
-      <label className="block mt-3">
-        <span className="eyebrow text-ink-tertiary">Denied hosts</span>
-        <textarea aria-label="Denied hosts" rows={3} className={`${controlClass} mt-1.5 font-mono`} value={deny} onChange={(e) => setDeny(e.target.value)} />
-      </label>
-      <p className="mt-1 text-small text-ink-tertiary">
-        One host per line: a name, *.wildcard or a CIDR range. Cloud metadata endpoints are always denied and cannot be
-        allowed.
-      </p>
-
       <fieldset className="mt-3 space-y-2">
         <legend className="eyebrow text-ink-tertiary">Rules</legend>
         {RULES.map(r => (
@@ -426,6 +446,25 @@ function PolicyCard({ view }: { view: AirlockView }) {
           </label>
         ))}
       </fieldset>
+      </div>
+
+      <div hidden={tab !== 'network'}>
+      <label className="block mt-3">
+        <span className="eyebrow text-ink-tertiary">Allowed hosts</span>
+        <textarea aria-label="Allowed hosts" rows={4} className={`${controlClass} mt-1.5 font-mono`} value={allow} onChange={(e) => setAllow(e.target.value)} />
+      </label>
+      <label className="block mt-3">
+        <span className="eyebrow text-ink-tertiary">Denied hosts</span>
+        <textarea aria-label="Denied hosts" rows={3} className={`${controlClass} mt-1.5 font-mono`} value={deny} onChange={(e) => setDeny(e.target.value)} />
+      </label>
+      <p className="mt-1 text-small text-ink-tertiary">
+        One host per line: a name, *.wildcard or a CIDR range. Cloud metadata endpoints are always denied and cannot be
+        allowed.
+      </p>
+
+      </div>
+
+      <div hidden={tab !== 'sandbox'}>
 
       <label className="block mt-3">
         <span className="eyebrow text-ink-tertiary">Machine image</span>
@@ -452,6 +491,7 @@ function PolicyCard({ view }: { view: AirlockView }) {
             ? "Every installation follows this; none can open more locally. The whole home folder is mounted read-only: the agent can read your users' credentials (~/.ssh, ~/.aws, auth.json), and the network policy is what keeps them in. AgEnFK's own files stay unwritable and Airlock's records unreadable."
             : "Every installation follows this; none can open more locally. The whole home folder is mounted read-write: the agent can read your users' credentials (~/.ssh, ~/.aws, auth.json), and can change files programs on their machines run later (other projects' git hooks, tools' settings), so treat it as able to run code there. Nothing is held from it: only Airlock's own records stay hidden."}
       </p>
+      </div>
 
       <div className="mt-3">
         <button type="submit" className={buttonClass('primary')} disabled={save.isPending}>
@@ -743,7 +783,7 @@ function InstallationsCard() {
               : 'No hub policy yet. '}
             Each installation reports the revision it applies after its sync; one behind is highlighted.
           </p>
-          <div className="mt-3 -mx-5 relative overflow-x-auto">
+          <div className={`mt-3 -mx-5 relative overflow-x-auto ${scrollClass}`}>
             <table aria-label="Installations" className="w-full text-body">
               <thead>
                 <tr className="eyebrow text-ink-tertiary">
@@ -807,7 +847,7 @@ function HistoryCard() {
         <p className="mt-1 text-small text-ink-tertiary">No changes yet.</p>
       ) : (
         <>
-          <ul aria-label="Revision history" className="mt-2 divide-y divide-border-soft">
+          <ul aria-label="Revision history" className={`mt-2 divide-y divide-border-soft ${scrollClass}`}>
             {entries.map(e => (
               <li key={e.id} className="py-2 text-small">
                 <span className="text-ink">{changeOf(e)}</span>
@@ -896,7 +936,7 @@ function DecisionsCard() {
         </p>
       ) : (
         <>
-          <div className="mt-3 -mx-5 relative overflow-x-auto">
+          <div className={`mt-3 -mx-5 relative overflow-x-auto ${scrollClass}`}>
             <table aria-label="Recent denials" className="w-full text-body">
               <thead>
                 <tr className="eyebrow text-ink-tertiary">

@@ -15,7 +15,8 @@ export interface EventRowLike {
   pr_url?: string | null;
   /** The stored event: `externalUrl` at its top level (sent by the spoke beside
    *  externalId), and its own `payload` holding the type-specific fields. */
-  payload: { externalUrl?: unknown; payload?: Record<string, unknown> } | null;
+  payload: { externalUrl?: unknown; actor?: { osUser?: unknown; gitName?: unknown } | null; payload?: Record<string, unknown> } | null;
+  user_key?: string;
 }
 
 /** Fields shown by name below, so the generic pass skips them. */
@@ -56,6 +57,20 @@ const sizeText = (sizing: unknown): string | null => {
     .map(([k, n]) => `${n} ${n === 1 ? k : PLURAL[k]}`);
   return parts.length ? parts.join(' · ') : null;
 };
+
+const text = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+/**
+ * A row's title for an event about no item: an Airlock event names the policy revision and who
+ * (user 2026-11-01), where the row would otherwise read '—'. Null for every other event.
+ */
+export function eventTitle(e: EventRowLike): string | null {
+  if (!e.type.startsWith('airlock.')) return null;
+  const revision = e.payload?.payload?.revision;
+  const who = text(e.payload?.actor?.gitName) ?? text(e.payload?.actor?.osUser) ?? text(e.user_key);
+  const parts = [typeof revision === 'number' ? `Policy revision ${revision}` : null, who].filter((p): p is string => !!p);
+  return parts.length ? parts.join(' · ') : null;
+}
 
 export function eventFields(e: EventRowLike): EventField[] {
   const p = (e.payload?.payload ?? {}) as Record<string, unknown>;

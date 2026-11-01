@@ -83,12 +83,13 @@ const installation = (over: Record<string, unknown>) => ({
 });
 
 let lastQc: QueryClient;
-const renderPage = () => {
+/** The page opened on one of its tabs (user 2026-11-01): the cards of the others are hidden. */
+const renderPage = (tab?: 'policy' | 'network' | 'sandbox' | 'projects' | 'activity' | 'learning') => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   lastQc = qc;
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/admin/airlock']}>
+      <MemoryRouter initialEntries={[tab ? `/admin/airlock?tab=${tab}` : '/admin/airlock']}>
         <Routes>
           <Route path="/admin" element={<AdminLayout />}>
             <Route path="airlock" element={<AdminAirlock />} />
@@ -98,6 +99,9 @@ const renderPage = () => {
     </QueryClientProvider>,
   );
 };
+
+/** Opens another of the page's tabs. */
+const goTo = (name: string) => fireEvent.click(screen.getByRole('tab', { name }));
 
 beforeEach(() => { get.mockReset(); put.mockReset(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -241,7 +245,7 @@ describe('Admin → Airlock', () => {
   it('saves the IOC host list through its own route', async () => {
     hubAnswers(STORED);
     put.mockResolvedValue({ data: { ...STORED, iocRevision: 3 } });
-    renderPage();
+    renderPage('network');
     const ioc = await screen.findByLabelText(/ioc hosts/i);
     expect((ioc as HTMLTextAreaElement).value).toBe('bad.example');
     fireEvent.change(ioc, { target: { value: 'bad.example\nworse.example' } });
@@ -281,7 +285,7 @@ describe('Admin → Airlock', () => {
 
     it('lists each installation with the revision it applied, against the current one', async () => {
       hubAnswers(STORED, FLEET);
-      renderPage();
+      renderPage('activity');
       const table = await screen.findByRole('table', { name: /installations/i });
       expect(within(table).getAllByRole('row')).toHaveLength(1 + 4);
       const alice = await rowOf(/alice@acme.test/);
@@ -294,7 +298,7 @@ describe('Admin → Airlock', () => {
 
     it('highlights the installations that are behind, and says so in words', async () => {
       hubAnswers(STORED, FLEET);
-      renderPage();
+      renderPage('activity');
       const bob = await rowOf(/bob@acme.test/);
       expect(bob).toHaveAttribute('data-behind', 'true');
       expect(bob).toHaveTextContent(/behind/i);
@@ -305,7 +309,7 @@ describe('Admin → Airlock', () => {
 
     it('names a refused policy and why', async () => {
       hubAnswers(STORED, FLEET);
-      renderPage();
+      renderPage('activity');
       const dan = await rowOf(/dan@acme.test/);
       expect(dan).toHaveTextContent(/refused revision 4 with IOC list 2/i);
       expect(dan).toHaveTextContent(/hosts\.allow: bad/);
@@ -313,7 +317,7 @@ describe('Admin → Airlock', () => {
 
     it('says when no installation has joined yet', async () => {
       hubAnswers(STORED);
-      renderPage();
+      renderPage('activity');
       expect(await screen.findByText(/no installation has joined/i)).toBeInTheDocument();
     });
   });
@@ -330,7 +334,7 @@ describe('Admin → Airlock', () => {
 
     it('lists who changed the policy, when, and from which revision to which, newest first', async () => {
       hubAnswers(STORED, NO_INSTALLATIONS, HISTORY);
-      renderPage();
+      renderPage('activity');
       const list = await screen.findByRole('list', { name: /revision history/i });
       const items = within(list).getAllByRole('listitem');
       expect(items).toHaveLength(3);
@@ -357,7 +361,7 @@ describe('Admin → Airlock', () => {
         }
         throw new Error(`unexpected GET ${url}`);
       });
-      renderPage();
+      renderPage('activity');
       const list = await screen.findByRole('list', { name: /revision history/i });
       expect(within(list).getAllByRole('listitem')).toHaveLength(1);
       fireEvent.click(screen.getByRole('button', { name: /load more/i }));
@@ -369,7 +373,7 @@ describe('Admin → Airlock', () => {
 
     it('says when the policy has no history yet', async () => {
       hubAnswers(NONE);
-      renderPage();
+      renderPage('activity');
       expect(await screen.findByText(/no changes yet/i)).toBeInTheDocument();
     });
   });
@@ -407,7 +411,7 @@ describe('Admin → Airlock', () => {
 
     it('lists the org denials newest first: when, who, client, what and the rule', async () => {
       hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
-      renderPage();
+      renderPage('activity');
       const rows = await rowsOf();
       expect(rows).toHaveLength(3);
       expect(rows[0]).toHaveTextContent('169.254.169.254');
@@ -423,7 +427,7 @@ describe('Admin → Airlock', () => {
 
     it('names an observe-mode denial as what enforce would have done', async () => {
       hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
-      renderPage();
+      renderPage('activity');
       const rows = await rowsOf();
       expect(rows[0]).toHaveTextContent(/observe: would deny/i);
       expect(rows[2]).not.toHaveTextContent(/observe/i);
@@ -431,7 +435,7 @@ describe('Admin → Airlock', () => {
 
     it('highlights an alert and names its category', async () => {
       hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
-      renderPage();
+      renderPage('activity');
       const rows = await rowsOf();
       expect(rows[0]).toHaveAttribute('data-alert', 'metadata-endpoint');
       expect(rows[0].className).toMatch(/bg-status-danger-bg/);
@@ -442,7 +446,7 @@ describe('Admin → Airlock', () => {
 
     it('asks the hub again with each filter chosen', async () => {
       hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
-      renderPage();
+      renderPage('activity');
       const s = await section();
       await waitFor(() => expect(within(s).getByRole('option', { name: 'bob@acme.test' })).toBeInTheDocument());
       fireEvent.change(within(s).getByLabelText(/^client$/i), { target: { value: 'pi' } });
@@ -459,7 +463,7 @@ describe('Admin → Airlock', () => {
 
     it('offers every alert category, and any alert', async () => {
       hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
-      renderPage();
+      renderPage('activity');
       const s = await section();
       const alert = within(s).getByLabelText(/^alert$/i);
       const values = within(alert).getAllByRole('option').map(o => (o as HTMLOptionElement).value);
@@ -478,7 +482,7 @@ describe('Admin → Airlock', () => {
         }
         throw new Error(`unexpected GET ${url}`);
       });
-      renderPage();
+      renderPage('activity');
       const s = await section();
       fireEvent.change(within(s).getByLabelText(/^source$/i), { target: { value: 'proxy' } });
       await waitFor(() => expect(get).toHaveBeenCalledWith('/v1/admin/airlock/decisions', { params: { source: 'proxy' } }));
@@ -491,7 +495,7 @@ describe('Admin → Airlock', () => {
 
     it('says when there is nothing to show', async () => {
       hubAnswers(STORED);
-      renderPage();
+      renderPage('activity');
       expect(await screen.findByText(/no denials or alerts/i)).toBeInTheDocument();
     });
   });
@@ -511,7 +515,7 @@ const WITH_OVERRIDES = {
 describe('Admin → Airlock: per-project overrides (PO-2)', () => {
   it('shows each stored override: its key, its hosts, and the rules it sets (the rest are the org\'s)', async () => {
     hubAnswers(WITH_OVERRIDES);
-    renderPage();
+    renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     expect((within(card).getByLabelText('Repository or project, override 1') as HTMLInputElement).value).toBe('github.com/acme/api');
     expect((within(card).getByLabelText('Allowed hosts, override 1') as HTMLTextAreaElement).value).toBe('pypi.org');
@@ -525,7 +529,7 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
   it('adds one and saves the org policy as stored, with the overrides, as the next revision', async () => {
     hubAnswers(WITH_OVERRIDES);
     put.mockResolvedValue({ data: { ...WITH_OVERRIDES, revision: 5 } });
-    renderPage();
+    renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     fireEvent.click(within(card).getByRole('button', { name: 'Add a project override' }));
     fireEvent.change(within(card).getByLabelText('Repository or project, override 3'), { target: { value: ' git@github.com:acme/web.git ' } });
@@ -549,7 +553,7 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
   it('shows and saves a project\'s own machine image; an empty one is left out (CGLAB-696)', async () => {
     hubAnswers({ ...STORED, policy: { ...STORED.policy, projects: { 'acme/api': { machineImage: 'ghcr.io/acme/api-airlock:2' }, 'acme/web': { rules: { cloudMutation: 'deny' } } } } });
     put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
-    renderPage();
+    renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     expect((within(card).getByLabelText('Machine image, override 1') as HTMLInputElement).value).toBe('ghcr.io/acme/api-airlock:2');
     fireEvent.change(within(card).getByLabelText('Machine image, override 2'), { target: { value: ' ghcr.io/acme/web-airlock:1 ' } });
@@ -566,7 +570,7 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
   it('a rule set back to the org\'s is left out of the override', async () => {
     hubAnswers({ ...STORED, policy: { ...STORED.policy, projects: { 'acme/api': { hosts: { allow: ['x.example'], deny: [] }, rules: { cloudMutation: 'deny' } } } } });
     put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
-    renderPage();
+    renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     fireEvent.change(within(card).getByLabelText(/^Change cloud resources.*, override 1$/), { target: { value: '' } });
     fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
@@ -577,7 +581,7 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
   it('removing the last override saves none ({}), which clears them on the hub', async () => {
     hubAnswers({ ...STORED, policy: { ...STORED.policy, projects: { 'acme/api': { rules: { cloudMutation: 'deny' } } } } });
     put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
-    renderPage();
+    renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     fireEvent.click(within(card).getByRole('button', { name: 'Remove override 1' }));
     fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
@@ -590,7 +594,7 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
       { projectId: 'https://github.com/acme/api.git', remoteUrl: 'https://github.com/acme/api.git', lastSeen: '2026-10-27T10:00:00.000Z' },
       { projectId: 'git@github.com:acme/web.git', remoteUrl: 'git@github.com:acme/web.git', lastSeen: '2026-10-26T10:00:00.000Z' },
     ]);
-    renderPage();
+    renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     const input = within(card).getByLabelText('Repository or project, override 1');
     const list = document.getElementById(input.getAttribute('list')!)!;
@@ -604,7 +608,7 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
       response: { status: 400, data: { error: 'Invalid Airlock policy', errors: ['projects["not a repo"]: the key must name a repository'] } },
       message: 'Request failed with status code 400',
     });
-    renderPage();
+    renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     fireEvent.change(within(card).getByLabelText('Repository or project, override 1'), { target: { value: 'not a repo' } });
     fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
@@ -613,7 +617,7 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
 
   it('offers no overrides until a policy exists', async () => {
     hubAnswers(NONE);
-    renderPage();
+    renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     expect(within(card).getByText(/overrides are part of the policy: save one first/i)).toBeInTheDocument();
     expect(within(card).queryByRole('button', { name: 'Save overrides' })).toBeNull();
@@ -640,11 +644,13 @@ describe('Admin → Airlock: PO-2 review (Codex gpt-6.1-sol 01a18308)', () => {
 
   it('saving the policy keeps the overrides card\'s unsaved edits, says so, and they save over the new revision', async () => {
     liveHub(WITH_OVERRIDES);
-    renderPage();
+    renderPage('projects');
     const overrides = await screen.findByRole('form', { name: 'Per-project overrides' });
     fireEvent.change(within(overrides).getByLabelText('Denied hosts, override 1'), { target: { value: 'tracker.example\nmore.example' } });
+    goTo('Policy');
     fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'observe' } });
     fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    goTo('Projects');
     expect(await within(overrides).findByText(/changed elsewhere \(it is now at revision 5\)/i)).toBeInTheDocument();
     expect((within(overrides).getByLabelText('Denied hosts, override 1') as HTMLTextAreaElement).value).toBe('tracker.example\nmore.example');
     fireEvent.click(within(overrides).getByRole('button', { name: 'Keep my edits and save them over revision 5' }));
@@ -658,7 +664,7 @@ describe('Admin → Airlock: PO-2 review (Codex gpt-6.1-sol 01a18308)', () => {
 
   it('saving the overrides keeps the policy card\'s unsaved edits; discarding them loads the new revision', async () => {
     liveHub(WITH_OVERRIDES);
-    renderPage();
+    renderPage('projects');
     const overrides = await screen.findByRole('form', { name: 'Per-project overrides' });
     fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'off' } });
     fireEvent.click(within(overrides).getByRole('button', { name: 'Remove override 2' }));
@@ -667,13 +673,14 @@ describe('Admin → Airlock: PO-2 review (Codex gpt-6.1-sol 01a18308)', () => {
     expect((screen.getByLabelText(/^mode$/i) as HTMLSelectElement).value).toBe('off');
     // its own save is not a change elsewhere
     expect(within(overrides).queryByText(/changed elsewhere/i)).toBeNull();
+    goTo('Policy');
     fireEvent.click(screen.getByRole('button', { name: 'Discard my edits and load revision 5' }));
     expect((screen.getByLabelText(/^mode$/i) as HTMLSelectElement).value).toBe('enforce');
   });
 
   it('two overrides naming one key are refused before anything is sent, saying which', async () => {
     hubAnswers(WITH_OVERRIDES);
-    renderPage();
+    renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     fireEvent.click(within(card).getByRole('button', { name: 'Add a project override' }));
     fireEvent.change(within(card).getByLabelText('Repository or project, override 3'), { target: { value: '  github.com/acme/api ' } });
@@ -726,12 +733,13 @@ describe('Admin → Airlock: PO-2 review 2 (Codex gpt-6.1-sol 01a18308)', () => 
       stored = { ...stored, revision: stored.revision + 1, policy: { ...stored.policy, ...body.policy, iocHosts: stored.policy.iocHosts } };
       return { data: stored };
     });
-    renderPage();
+    renderPage('projects');
     const overrides = await screen.findByRole('form', { name: 'Per-project overrides' });
     fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'off' } });
     fireEvent.click(within(overrides).getByRole('button', { name: 'Remove override 2' }));
     fireEvent.click(within(overrides).getByRole('button', { name: 'Save overrides' }));
     expect(await screen.findByText(/changed elsewhere \(it is now at revision 5\)/i)).toBeInTheDocument();
+    goTo('Policy');
     fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'enforce' } });
     await waitFor(() => expect(screen.queryByText(/changed elsewhere/i)).toBeNull());
     fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'observe' } });
@@ -761,11 +769,13 @@ describe('Admin → Airlock: PO-2 review 2, each guard on its own', () => {
 
   it('the other card learns of a save even when the reload fails, and saves against it', async () => {
     failingReloads();
-    renderPage();
+    renderPage('projects');
     const overrides = await screen.findByRole('form', { name: 'Per-project overrides' });
+    goTo('Policy');
     fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'observe' } });
     fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    goTo('Projects');
     fireEvent.click(within(overrides).getByRole('button', { name: 'Remove override 2' }));
     fireEvent.click(within(overrides).getByRole('button', { name: 'Save overrides' }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
@@ -848,7 +858,7 @@ describe('Admin → Airlock: the dataset (DS-2)', () => {
 
   it('says it is off, what it would capture, and its bounds', async () => {
     withDataset(DATASET_OFF);
-    renderPage();
+    renderPage('learning');
     const card = await screen.findByRole('form', { name: 'Airlock dataset' });
     const toggle = (await within(card).findByLabelText('Capture tool calls for the dataset')) as HTMLInputElement;
     expect(toggle.checked).toBe(false);
@@ -860,7 +870,7 @@ describe('Admin → Airlock: the dataset (DS-2)', () => {
   it('turns it on through its own route', async () => {
     withDataset(DATASET_OFF);
     put.mockResolvedValue({ data: { ...DATASET_OFF, enabled: true } });
-    renderPage();
+    renderPage('learning');
     const card = await screen.findByRole('form', { name: 'Airlock dataset' });
     fireEvent.click((await within(card).findByLabelText('Capture tool calls for the dataset')));
     await waitFor(() => expect(put).toHaveBeenCalledWith('/v1/admin/airlock/dataset', { enabled: true }));
@@ -868,7 +878,7 @@ describe('Admin → Airlock: the dataset (DS-2)', () => {
 
   it('shows what it holds, and offers the JSONL download', async () => {
     withDataset({ ...DATASET_OFF, enabled: true, rows: 1234, labels: 56, oldest: '2026-10-01T00:00:00.000Z', newest: '2026-10-28T00:00:00.000Z' });
-    renderPage();
+    renderPage('learning');
     const card = await screen.findByRole('form', { name: 'Airlock dataset' });
     expect(((await within(card).findByLabelText('Capture tool calls for the dataset')) as HTMLInputElement).checked).toBe(true);
     expect(card).toHaveTextContent(/1,234 rows/);
@@ -880,10 +890,113 @@ describe('Admin → Airlock: the dataset (DS-2)', () => {
 
   it('offers no download while it holds nothing', async () => {
     withDataset(DATASET_OFF);
-    renderPage();
+    renderPage('learning');
     const card = await screen.findByRole('form', { name: 'Airlock dataset' });
     await within(card).findByLabelText('Capture tool calls for the dataset');
     expect(card).toHaveTextContent(/0 rows/);
     expect(within(card).queryByRole('link', { name: /download jsonl/i })).toBeNull();
+  });
+});
+
+// User 2026-11-01: the page is organised in tabs, one per subject, and long lists scroll within the
+// viewport. Policy, Network and Sandbox edit one policy draft, saved by one Save.
+describe('Admin → Airlock tabs', () => {
+  const tabs = () => screen.getByRole('tablist', { name: /airlock sections/i });
+  const open = (name: RegExp) => fireEvent.click(within(tabs()).getByRole('tab', { name }));
+  const renderAt = (url: string) => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[url]}>
+          <Routes><Route path="/admin" element={<AdminLayout />}><Route path="airlock" element={<AdminAirlock />} /></Route></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  };
+
+  it('has six tabs, Policy first and open, showing mode, models and rules only', async () => {
+    hubAnswers(STORED);
+    renderPage();
+    await screen.findByText(/revision 4/i);
+    expect(within(tabs()).getAllByRole('tab').map(t => t.textContent)).toEqual(['Policy', 'Network', 'Sandbox', 'Projects', 'Activity', 'Learning']);
+    expect(within(tabs()).getByRole('tab', { name: 'Policy' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('combobox', { name: /^mode$/i })).toBeVisible();
+    expect(screen.getByRole('textbox', { name: /models/i })).toBeVisible();
+    expect(screen.getByRole('group', { name: /rules/i })).toBeVisible();
+    expect(screen.queryByRole('textbox', { name: /allowed hosts/i })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: /machine image/i })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /installations/i })).toBeNull();
+  });
+
+  it('Network holds the host lists and the IOC hosts; Sandbox the machine image and home access', async () => {
+    hubAnswers(STORED);
+    renderPage();
+    await screen.findByText(/revision 4/i);
+    open(/^network$/i);
+    expect(screen.getByRole('textbox', { name: /allowed hosts/i })).toBeVisible();
+    expect(screen.getByRole('textbox', { name: /denied hosts/i })).toBeVisible();
+    expect(screen.getByRole('heading', { name: /indicators of compromise/i })).toBeVisible();
+    expect(screen.queryByRole('combobox', { name: /^mode$/i })).toBeNull();
+    open(/^sandbox$/i);
+    expect(screen.getByRole('textbox', { name: /machine image/i })).toBeVisible();
+    expect(screen.getByRole('combobox', { name: /home access/i })).toBeVisible();
+    expect(screen.queryByRole('textbox', { name: /allowed hosts/i })).toBeNull();
+  });
+
+  it('keeps one policy draft across Policy, Network and Sandbox, saved by one Save', async () => {
+    hubAnswers(STORED);
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    await screen.findByText(/revision 4/i);
+    fireEvent.change(screen.getByRole('combobox', { name: /^mode$/i }), { target: { value: 'observe' } });
+    open(/^network$/i);
+    fireEvent.change(screen.getByRole('textbox', { name: /allowed hosts/i }), { target: { value: 'github.com\nexample.org' } });
+    open(/^sandbox$/i);
+    fireEvent.change(screen.getByRole('combobox', { name: /home access/i }), { target: { value: 'home-read-write' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const body = put.mock.calls[0][1];
+    expect(body.policy.mode).toBe('observe');
+    expect(body.policy.hosts.allow).toEqual(['github.com', 'example.org']);
+    expect(body.policy.homeAccess).toBe('home-read-write');
+  });
+
+  it('Projects, Activity and Learning hold their cards', async () => {
+    hubAnswers(STORED);
+    renderPage();
+    await screen.findByText(/revision 4/i);
+    open(/^projects$/i);
+    expect(screen.getByRole('heading', { name: /per-project overrides/i })).toBeVisible();
+    expect(screen.queryByRole('button', { name: /save policy/i })).toBeNull();
+    open(/^activity$/i);
+    for (const h of [/^installations$/i, /recent denials/i, /revision history/i]) expect(screen.getByRole('heading', { name: h })).toBeVisible();
+    open(/^learning$/i);
+    expect(screen.getByRole('heading', { name: /^dataset$/i })).toBeVisible();
+    expect(screen.getByRole('heading', { name: /proposed hosts/i })).toBeVisible();
+  });
+
+  it('opens the tab a link names', async () => {
+    hubAnswers(STORED);
+    renderAt('/admin/airlock?tab=activity');
+    expect(await screen.findByRole('tab', { name: 'Activity' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('heading', { name: /revision history/i })).toBeVisible();
+  });
+
+  it('scrolls long lists within the viewport: installations, recent denials, revision history', async () => {
+    const many = Array.from({ length: 40 }, (_, i) => installation({ installationId: `inst-${i}` }));
+    hubAnswers(STORED, { currentRevision: 4, currentIocRevision: 2, installations: many },
+      { next: null, entries: [{ id: 'h1', at: '2026-10-21T09:30:00.000Z', actorEmail: 'a@acme.test', source: 'board', action: 'airlock.update', before: null, after: { revision: 1, iocRevision: 0 } }] },
+      { next: null, decisions: [{ eventId: 'd1', at: '2026-10-27T10:00:00.000Z', userKey: 'a@acme.test', installationId: 'inst-0', client: 'pi', source: 'tool', tool: 'bash', target: 'curl x', decision: 'deny', rule: 'uploadToUnlistedHost', mode: 'enforce', alert: null }] });
+    renderPage();
+    await screen.findByText(/revision 4/i);
+    open(/^activity$/i);
+    for (const name of [/^installations$/i, /recent denials/i]) {
+      const box = (await screen.findByRole('table', { name })).closest('.overflow-y-auto');
+      expect(box, String(name)).not.toBeNull();
+      expect(box!.className).toMatch(/max-h-\[/);
+    }
+    const history = (await screen.findByRole('list', { name: /revision history/i })).closest('.overflow-y-auto');
+    expect(history).not.toBeNull();
+    expect(history!.className).toMatch(/max-h-\[/);
   });
 });

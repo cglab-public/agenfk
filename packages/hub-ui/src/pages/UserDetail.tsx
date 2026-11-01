@@ -13,7 +13,7 @@ import { Badge, Button, ChipRow, DateRange, LocalTime, Page, PeriodControl, Quer
 import { eventTone, itemTypeClass } from '../eventTone';
 import { shortRemote } from '../components/facetSearch';
 import { eventTypeLabel, mergeEventTypes } from '../eventTypes';
-import { eventFields } from '../eventDetails';
+import { eventFields, eventTitle } from '../eventDetails';
 import { EventTypeChips } from '../components/EventTypeChips';
 import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
@@ -407,7 +407,7 @@ export function UserDetailPage() {
                         </span>
                       )}
                       <span className="text-small text-ink truncate flex-1" title={e.item_id ?? undefined}>
-                        {e.item_title ?? <span className="text-ink-tertiary font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
+                        {e.item_title ?? eventTitle(e) ?? <span className="text-ink-tertiary font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
                       </span>
                       {e.reporting_version && (
                         <span
