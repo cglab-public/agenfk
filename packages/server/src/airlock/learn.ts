@@ -33,15 +33,17 @@
  *    never reaches an allow list this way.
  */
 import * as os from 'os';
+import { getDomain } from 'tldts';
 import {
   AIRLOCK_PROPOSAL_LIMIT,
-  hostsOfCapabilities,
+  sightingsOfCapabilities,
   learnableHost,
   learnRawHost,
   learningExclusionOf,
   type AirlockHostScreen,
   proposeAllowlist,
   withAcceptedHosts,
+  type AirlockAcceptedEntry,
   type AirlockHostObservation,
   type AirlockLearnSource,
   type AirlockPolicy,
@@ -57,6 +59,10 @@ export const MAX_LEARNING_IMPORT_HOSTS = 1000;
 /** The most one import entry may claim: a count, not a payload. */
 const MAX_IMPORT_HITS = 1_000_000_000;
 const CLIENTS: readonly string[] = ['pi', 'opencode'];
+const DIRECTIONS: readonly string[] = ['download', 'upload', 'both'];
+
+/** A host's registrable domain by the public suffix list, private section included (a vercel.app site is its own). */
+export const registrableDomain = (host: string): string | null => getDomain(host, { allowPrivateDomains: true });
 
 /** What the learning routes need of the policy view (routes.ts AirlockPolicyView). */
 interface PolicyView {
@@ -125,14 +131,19 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
   /** Hosts the policy would never propose are never stored either (they would only take room). */
   const notExcluded = (policy: AirlockPolicy) => (host: string) => learningExclusionOf(host, policy) === null;
 
-  const observe = async (hostsOf: () => readonly string[], source: AirlockLearnSource, client: string, itemId: string | null): Promise<void> => {
+  const observe = async (
+    sightingsOf: () => ReadonlyArray<{ host: string; upload: boolean }>, source: AirlockLearnSource, client: string, itemId: string | null,
+  ): Promise<void> => {
     try {
       const at = new Date(deps.now()).toISOString();
       const keep = notExcluded((await deps.resolvePolicy()).effective);
       const observations: AirlockHostObservation[] = [];
-      for (const raw of new Set(hostsOf())) {
+      const seen = new Set<string>();
+      for (const { host: raw, upload } of sightingsOf()) {
         const host = keepable(raw);
-        if (host && keep(host)) observations.push({ host, source, client, itemId, ts: at, receivedAt: at });
+        if (!host || seen.has(host) || !keep(host)) continue;
+        seen.add(host);
+        observations.push({ host, source, client, itemId, ts: at, receivedAt: at, ...(upload ? { uploads: 1 } : {}) });
       }
       if (observations.length) await deps.storage().recordAirlockHostObservations(observations);
     } catch (e) {
@@ -174,10 +185,55 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
     return picked;
   };
 
+  /**
+   * What a person accepts: `entries` ({ pattern, direction }), each a host or a
+   * wildcard the proposal offers - or `hosts`, both ways, as before. Answered
+   * with the entries and the proposed hosts they cover, or a 400 already sent.
+   */
+  const requestedEntries = async (req: any, res: any, view: PolicyView): Promise<{ entries: AirlockAcceptedEntry[]; hosts: AirlockProposedHost[] } | null> => {
+    const raw = req.body?.entries;
+    if (raw === undefined) {
+      const hosts = await requestedHosts(req, res, view);
+      return hosts && { entries: hosts.map(h => ({ pattern: h.host, direction: 'both' as const })), hosts };
+    }
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > AIRLOCK_PROPOSAL_LIMIT) {
+      res.status(400).json({ error: `entries (1 to ${AIRLOCK_PROPOSAL_LIMIT} of the proposed hosts or wildcards, each with a direction) is required` });
+      return null;
+    }
+    const learned = await deps.storage().listAirlockLearnedHosts();
+    const hostsBy = new Map(proposeAllowlist(learned, view.effective, { limit: Number.MAX_SAFE_INTEGER }).hosts.map(h => [h.host, h]));
+    // Wildcards as GET /airlock/learning offers them: over the capped list the person saw.
+    const wildcards = new Map(proposeAllowlist(learned, view.effective, { registrableDomain }).wildcards.map(w => [w.pattern, w]));
+    const entries: AirlockAcceptedEntry[] = [];
+    const covered = new Map<string, AirlockProposedHost>();
+    const refused: string[] = [];
+    for (const e of raw) {
+      const pattern = typeof e?.pattern === 'string' ? e.pattern.trim().toLowerCase() : '';
+      const direction = e?.direction;
+      const host = hostsBy.get(learnableHost(pattern) ?? '');
+      const wildcard = wildcards.get(pattern);
+      if (!DIRECTIONS.includes(direction) || (!host && !wildcard)) {
+        refused.push(String(e?.pattern ?? '').slice(0, 255));
+        continue;
+      }
+      entries.push({ pattern: host ? host.host : pattern, direction });
+      for (const h of host ? [host.host] : wildcard!.hosts) covered.set(h, hostsBy.get(h)!);
+    }
+    if (refused.length) {
+      res.status(400).json({
+        error: 'AIRLOCK_HOST_NOT_PROPOSED',
+        message: 'Only hosts and wildcards the proposal offers can be accepted, each for downloads, uploads or both.',
+        hosts: refused,
+      });
+      return null;
+    }
+    return { entries, hosts: [...covered.values()] };
+  };
+
   app.get('/airlock/learning', async (_req: any, res: any, next: any) => {
     try {
       const view = await deps.resolvePolicy();
-      const proposal = proposeAllowlist(await deps.storage().listAirlockLearnedHosts(), view.effective);
+      const proposal = proposeAllowlist(await deps.storage().listAirlockLearnedHosts(), view.effective, { registrableDomain });
       res.json({ proposal, revision: view.revision, source: view.source, hubManaged: view.hubManaged, hubJoined: deps.hubJoined() });
     } catch (e) { next(e); }
   });
@@ -190,7 +246,7 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
       const body = req.body ?? {};
       if (!CLIENTS.includes(body.client)) return res.status(400).json({ error: `client must be one of ${CLIENTS.join(', ')}` });
       const list = body.hosts;
-      if (!Array.isArray(list)) return res.status(400).json({ error: 'hosts (an array of { host, hits, firstSeen, lastSeen }) is required' });
+      if (!Array.isArray(list)) return res.status(400).json({ error: 'hosts (an array of { host, hits, uploads, firstSeen, lastSeen }) is required' });
       if (list.length > MAX_LEARNING_IMPORT_HOSTS) {
         return res.status(400).json({ error: `an import may carry at most ${MAX_LEARNING_IMPORT_HOSTS} hosts; this one has ${list.length}` });
       }
@@ -199,13 +255,15 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
       const observations: AirlockHostObservation[] = [];
       let invalid = 0;
       let excluded = 0;
-      // Only the four fields are read: whatever else an entry carries is never kept.
+      // Only the five fields are read: whatever else an entry carries is never kept.
       // The dates are the sender's: shown, clamped to now (mergeHostObservation),
       // never what retention goes by - that is receivedAt, this server's clock.
       for (const d of list) {
         const host = d && typeof d === 'object' ? keepable(d.host) : null;
         const hits = d?.hits;
-        if (!host || !Number.isInteger(hits) || hits < 1 || hits > MAX_IMPORT_HITS) {
+        // How many of the hits sent the host data: absent is none, never more than the hits.
+        const uploads = d?.uploads ?? 0;
+        if (!host || !Number.isInteger(hits) || hits < 1 || hits > MAX_IMPORT_HITS || !Number.isInteger(uploads) || uploads < 0 || uploads > hits) {
           invalid++;
           continue;
         }
@@ -214,13 +272,14 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
           continue;
         }
         const lastSeen = isoOrNull(d.lastSeen) ?? at;
-        observations.push({ host, source: 'import', client: body.client, ts: lastSeen, hits, firstSeen: isoOrNull(d.firstSeen) ?? lastSeen, receivedAt: at });
+        observations.push({ host, source: 'import', client: body.client, ts: lastSeen, hits, uploads, firstSeen: isoOrNull(d.firstSeen) ?? lastSeen, receivedAt: at });
       }
       if (observations.length) {
         await deps.storage().recordAirlockHostObservations(observations);
         deps.emit('airlock_learning_changed', { source: 'import' });
       }
-      res.json({ recorded: observations.length, invalid, excluded });
+      // hubJoined: the CLI names the next step, accepting here or sending to the hub.
+      res.json({ recorded: observations.length, invalid, excluded, hubJoined: deps.hubJoined() });
     } catch (e) { next(e); }
   });
 
@@ -240,9 +299,10 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
       if (typeof expected !== 'number' || !Number.isInteger(expected) || expected < 0) {
         return res.status(400).json({ error: 'expectedRevision (the policy revision the proposal was read at) is required' });
       }
-      const picked = await requestedHosts(req, res, view);
-      if (!picked) return;
-      const policy = withAcceptedHosts(view.effective, picked.map(h => h.host));
+      const asked = await requestedEntries(req, res, view);
+      if (!asked) return;
+      const { entries, hosts: picked } = asked;
+      const policy = withAcceptedHosts(view.effective, entries);
       let stored: StoredAirlockPolicy;
       try {
         stored = await storage.putAirlockPolicy({
@@ -265,10 +325,10 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
       }
       const after = await deps.resolvePolicy();
       const stateFile = deps.writeStateFile(after);
-      deps.recordHubEvent({ type: 'airlock.policy-changed', payload: { revision: stored.revision, mode: policy.mode, scope: 'local', via: 'learning', added: picked.length } });
+      deps.recordHubEvent({ type: 'airlock.policy-changed', payload: { revision: stored.revision, mode: policy.mode, scope: 'local', via: 'learning', added: entries.length } });
       deps.emit('airlock_policy_changed', { revision: after.revision, source: after.source });
       deps.emit('airlock_learning_changed', { accepted: picked.length });
-      res.json({ ...after, accepted: picked.map(h => h.host), stateFile });
+      res.json({ ...after, accepted: entries.map(e => e.pattern), covered: picked.map(h => h.host), stateFile });
     } catch (e) { next(e); }
   });
 
@@ -283,7 +343,7 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
       if (!picked) return;
       // Host names and counts only: no card ids, no commands, no URLs.
       const hosts = picked.map(h => ({
-        host: h.host, hits: h.hits, sources: h.sources, evidence: h.evidence, clients: h.clients,
+        host: h.host, hits: h.hits, uploads: h.uploads, sources: h.sources, evidence: h.evidence, clients: h.clients,
         firstSeen: h.firstSeen, lastSeen: h.lastSeen, cardCount: h.cards.length,
       }));
       deps.recordHubEvent({ type: 'airlock.learning-proposal', payload: { hosts, revision: view.revision } });
@@ -292,7 +352,8 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
   });
 
   return {
-    observeTool: (capabilities, client, itemId) => observe(() => hostsOfCapabilities(capabilities, carriesSecret), 'tool', client, itemId),
-    observeProxy: (hosts, client, itemId) => observe(() => hosts, 'proxy', client, itemId),
+    observeTool: (capabilities, client, itemId) => observe(() => sightingsOfCapabilities(capabilities, carriesSecret), 'tool', client, itemId),
+    // The proxy cannot see which way data goes.
+    observeProxy: (hosts, client, itemId) => observe(() => hosts.map(host => ({ host, upload: false })), 'proxy', client, itemId),
   };
 }

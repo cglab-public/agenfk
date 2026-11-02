@@ -29,6 +29,21 @@ const session = (over: Partial<SandboxSession> = {}): SandboxSession => ({
 const policy = (over: Record<string, unknown> = {}) =>
   normalizeAirlockPolicy({ mode: 'enforce', ...over });
 
+describe('buildSandboxSpec: network, with directions (2026-11-02)', () => {
+  it('reaches a host allowed for downloads only or uploads only: the network cannot see direction', () => {
+    const spec = buildSandboxSpec(policy({ hosts: { allow: [], deny: [], allowDownload: ['docs.vendor.io'], allowUpload: ['uploads.corp.io'] } }), session());
+    expect(spec.network.allow).toEqual(expect.arrayContaining(['docs.vendor.io', 'uploads.corp.io']));
+  });
+
+  it('a one-way block does not refuse the connection; a both-way block does', () => {
+    const spec = buildSandboxSpec(policy({ hosts: { allow: ['pastebin.com', 'evil.io'], deny: ['evil.io'], denyUpload: ['pastebin.com'] } }), session());
+    expect(spec.network.allow).toContain('pastebin.com');
+    expect(spec.network.deny).not.toContain('pastebin.com');
+    expect(spec.network.allow).not.toContain('evil.io');
+    expect(spec.network.deny).toContain('evil.io');
+  });
+});
+
 describe('buildSandboxSpec: network', () => {
   it('allows the policy hosts, the inference host and the local AgEnFK server on loopback only', () => {
     const spec = buildSandboxSpec(policy({ hosts: { allow: ['api.github.com', '*.npmjs.org'], deny: [] } }), session());

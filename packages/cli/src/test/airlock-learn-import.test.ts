@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Command } from 'commander';
-import { collectPiSessionHosts, importBatches, runLearnImport, MAX_IMPORT_BATCH, MAX_LINE_BYTES } from '../airlock/learnImport';
+import { collectPiSessionHosts, importBatches, runLearnImport, learnImportSummary, MAX_IMPORT_BATCH, MAX_LINE_BYTES } from '../airlock/learnImport';
 import { AIRLOCK_IMPORT_MAX_BYTES, tallyPiSessionLine } from '@agenfk/core';
 import { registerAirlockCommands } from '../commands/airlock';
 
@@ -26,7 +26,7 @@ describe('reading pi session logs', () => {
       '127.0.0.1', '169.254.169.254', 'api.example.com', 'docs.example.com', 'git.example.org', 'registry.example.net',
     ]);
     expect(out.hosts.get('api.example.com')).toEqual({
-      hits: 2, firstSeen: '2026-10-01T09:00:02.000Z', lastSeen: '2026-10-02T10:00:05.000Z',
+      hits: 2, uploads: 0, firstSeen: '2026-10-01T09:00:02.000Z', lastSeen: '2026-10-02T10:00:05.000Z',
     });
     // A user's message, a tool's result and a file that is not a session log are not tool calls.
     expect(out.hosts.has('user-typed.example.com')).toBe(false);
@@ -42,16 +42,25 @@ describe('reading pi session logs', () => {
 });
 
 describe('what is sent', () => {
-  it('host names, counts and first/last seen, and nothing else', async () => {
+  it('host names, counts, upload counts and first/last seen, and nothing else', async () => {
     const out = await collectPiSessionHosts(SAMPLES);
     const batches = [...importBatches(out.hosts)];
     expect(batches.length).toBe(1);
     expect(batches[0].client).toBe('pi');
-    for (const h of batches[0].hosts) expect(Object.keys(h).sort()).toEqual(['firstSeen', 'hits', 'host', 'lastSeen']);
+    for (const h of batches[0].hosts) expect(Object.keys(h).sort()).toEqual(['firstSeen', 'hits', 'host', 'lastSeen', 'uploads']);
     const wire = JSON.stringify(batches);
     for (const leak of ['SAMPLE_SECRET_VALUE', 'v1/items', 'token=', 'team/repo', 'curl', 'README', '/home/dev', 'guide/intro', 'lang=en', 'meta-data']) {
       expect(wire, leak).not.toContain(leak);
     }
+  });
+
+  it('a host the sessions uploaded to is sent with how many times', async () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-learn-up-'));
+    const call = (command: string) => JSON.stringify({ type: 'message', timestamp: '2026-10-01T09:00:00.000Z',
+      message: { role: 'assistant', content: [{ type: 'toolCall', name: 'bash', arguments: { command } }] } });
+    fs.writeFileSync(path.join(d, 's.jsonl'), [call('curl -T a.txt https://up.vendor.io/'), call('curl https://up.vendor.io/x')].join('\n') + '\n');
+    const out = await collectPiSessionHosts(d);
+    expect([...importBatches(out.hosts)][0].hosts).toEqual([{ host: 'up.vendor.io', hits: 2, uploads: 1, firstSeen: '2026-10-01T09:00:00.000Z', lastSeen: '2026-10-01T09:00:00.000Z' }]);
   });
 
   it('a large tally goes in batches the server accepts', () => {
@@ -66,14 +75,14 @@ describe('what is sent', () => {
     const result = await runLearnImport({ dir: SAMPLES }, { post, apiUrl: 'http://api.test', log });
     expect(post).toHaveBeenCalledTimes(1);
     expect(post.mock.calls[0][0]).toBe('http://api.test/airlock/learning/import');
-    expect(result).toEqual({ files: 2, hosts: 6, recorded: 6, invalid: 0, excluded: 0, longLines: 0, droppedHosts: 0, unreadableLines: 0 });
+    expect(result).toEqual({ files: 2, hosts: 6, recorded: 6, invalid: 0, excluded: 0, longLines: 0, droppedHosts: 0, unreadableLines: 0, hubJoined: false });
   });
 
   it('nothing to send is not a request', async () => {
     const post = vi.fn();
     const result = await runLearnImport({ dir: path.join(SAMPLES, 'missing') }, { post, apiUrl: 'http://api.test', log: () => {} });
     expect(post).not.toHaveBeenCalled();
-    expect(result).toEqual({ files: 0, hosts: 0, recorded: 0, invalid: 0, excluded: 0, longLines: 0, droppedHosts: 0, unreadableLines: 0 });
+    expect(result).toEqual({ files: 0, hosts: 0, recorded: 0, invalid: 0, excluded: 0, longLines: 0, droppedHosts: 0, unreadableLines: 0, hubJoined: false });
   });
 });
 
@@ -211,5 +220,33 @@ describe('the command', () => {
     expect(learn).toBeDefined();
     const flags = learn!.options.map(o => o.long);
     expect(flags).toEqual(expect.arrayContaining(['--import-pi-sessions', '--dir']));
+  });
+});
+
+describe('what the command says once the import is done', () => {
+  const BOARD = 'http://localhost:3000?settings=airlock';
+  const result = { files: 3, hosts: 4, recorded: 2, invalid: 0, excluded: 2, longLines: 0, droppedHosts: 0, unreadableLines: 0 };
+
+  it('standalone: the hosts are accepted on the board', () => {
+    expect(learnImportSummary({ ...result, hubJoined: false }, BOARD)).toEqual([
+      'Learned 2 hosts (2 never proposed: already listed, blocked, private, a metadata endpoint or a reserved name).',
+      `Accept the hosts you want allowed on the board: ${BOARD}`,
+    ]);
+  });
+
+  it('hub-joined: the hosts are sent to the hub from the board, and an org admin accepts them there', () => {
+    expect(learnImportSummary({ ...result, hubJoined: true }, BOARD)).toEqual([
+      'Learned 2 hosts (2 never proposed: already listed, blocked, private, a metadata endpoint or a reserved name).',
+      `Your organization's hub owns the Airlock policy: send the hosts you want allowed to the hub from the board: ${BOARD}`,
+      'An org admin accepts them on the hub (Admin -> Airlock, or agenfk hub admin airlock learning accept).',
+    ]);
+  });
+
+  it('runLearnImport reports whether the server is joined to a hub, as the server says', async () => {
+    const post = vi.fn(async (_url: string, body: any) => ({ data: { recorded: body.hosts.length, invalid: 0, excluded: 0, hubJoined: true } }));
+    const out = await runLearnImport({ dir: SAMPLES }, { post, apiUrl: 'http://api.test', log: () => {} });
+    expect(out.hubJoined).toBe(true);
+    const standalone = vi.fn(async (_url: string, body: any) => ({ data: { recorded: body.hosts.length, invalid: 0, excluded: 0, hubJoined: false } }));
+    expect((await runLearnImport({ dir: SAMPLES }, { post: standalone, apiUrl: 'http://api.test', log: () => {} })).hubJoined).toBe(false);
   });
 });

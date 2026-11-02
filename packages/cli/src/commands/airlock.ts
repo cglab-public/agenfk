@@ -18,7 +18,7 @@ import { smolvmBinary, installSmolvm, runAirlockInstall } from '../airlock/smolv
 import { defaultEgressBroker } from '../airlock/egress.js';
 import { baseImageFor, AIRLOCK_BASE_IMAGE } from '../airlock/image.js';
 import { PROXY_REPORT_TIMEOUT_MS } from '../airlock/proxyReport.js';
-import { runLearnImport, defaultPiSessionsDir } from '../airlock/learnImport.js';
+import { runLearnImport, learnImportSummary, defaultPiSessionsDir } from '../airlock/learnImport.js';
 import { runDatasetImport, defaultOpenCodeDb, DatasetImportError } from '../airlock/datasetImport.js';
 
 /**
@@ -415,9 +415,7 @@ export function registerAirlockCommands(
           log: (m) => { if (!options.json) console.log(chalk.gray(m)); },
         });
         if (options.json) { console.log(JSON.stringify(result, null, 2)); return; }
-        const notes = [result.invalid && `${result.invalid} refused`, result.excluded && `${result.excluded} already covered by the policy`].filter(Boolean).join(', ');
-        console.log(`Learned ${result.recorded} host${result.recorded === 1 ? '' : 's'}${notes ? ` (${notes})` : ''}.`);
-        console.log(`Review the proposed allowlist on the board: ${airlockBoardUrl()}`);
+        for (const line of learnImportSummary(result, airlockBoardUrl())) console.log(line);
       } catch (e) { fail(e); }
     });
 

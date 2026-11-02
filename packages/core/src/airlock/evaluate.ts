@@ -14,6 +14,7 @@
  */
 import { createHash } from 'node:crypto';
 import { matchHost, hostFromUrl } from './hosts';
+import { allowedFor, deniedFor } from './hostLists';
 import { analyseCommand, credentialPathsIn, UNKNOWN_HOST } from './shell';
 import {
   BUILTIN_DENY_HOSTS,
@@ -25,6 +26,7 @@ import {
   type AirlockRules,
   type AirlockVerdict,
   type Capability,
+  type HostDirection,
   type ModelSelector,
   type RuleAction,
 } from './types';
@@ -108,17 +110,26 @@ function modelSelected(policy: AirlockPolicy, input: AirlockInput): boolean {
   return policy.models.length === 0 || policy.models.some((s) => selectorMatches(s, input));
 }
 
-function hostFindings(policy: AirlockPolicy, host: string, cap: Capability): Finding[] {
+/**
+ * The blocks on a host, judged for the ways this call sends it data: `ways`
+ * empty is a call whose direction is not known, which any block stops.
+ */
+function hostFindings(policy: AirlockPolicy, host: string, cap: Capability, ways: readonly HostDirection[]): Finding[] {
   if (matchHost(host, BUILTIN_DENY_HOSTS)) {
     return [{ rule: 'builtin-metadata-deny', reason: `${host} is a cloud metadata endpoint`, target: host, caps: [cap] }];
   }
   if (matchHost(host, policy.iocHosts.hosts)) {
     return [{ rule: 'ioc-host', reason: `${host} is on the indicator-of-compromise list`, target: host, caps: [cap] }];
   }
-  if (matchHost(host, policy.hosts.deny)) {
-    return [{ rule: 'denied-host', reason: `${host} is on the deny list`, target: host, caps: [cap] }];
-  }
-  return [];
+  const blockedFor = (dir: HostDirection) => matchHost(host, deniedFor(policy.hosts, dir));
+  const both = blockedFor('download') && blockedFor('upload');
+  const hit = ways.length ? ways.find(blockedFor) : (['upload', 'download'] as const).find(blockedFor);
+  if (!hit) return [];
+  // A one-way block says which way, and why it stopped this call.
+  const reason = both
+    ? `${host} is on the deny list`
+    : ways.length ? `${host} is blocked for ${hit}s` : `${host} is blocked for ${hit}s, and this call's direction cannot be established`;
+  return [{ rule: 'denied-host', reason, target: host, caps: [cap] }];
 }
 
 function findingsOf(policy: AirlockPolicy, input: AirlockInput): Finding[] {
@@ -129,14 +140,53 @@ function findingsOf(policy: AirlockPolicy, input: AirlockInput): Finding[] {
   for (const cap of input.capabilities) {
     if (cap.kind === 'url') {
       const host = hostFromUrl(cap.url);
-      if (host) findings.push(...hostFindings(policy, host, cap));
+      if (host) findings.push(...hostFindings(policy, host, cap, ['download']));
       networkCaps.push(cap);
     } else if (cap.kind === 'path') {
       const [path] = cap.access === 'read' ? credentialPathsIn(cap.path) : [];
       if (path) credentials.push({ path: cap.path, cap });
     } else {
       const a = analyseCommand(cap.command);
-      for (const host of a.hosts) findings.push(...hostFindings(policy, host, cap));
+      // A git push to a remote alias goes somewhere this call does not name: while a one-way entry
+      // limits uploads (allowed for downloads only, or blocked for uploads), that may be one of them.
+      if (a.unresolvedPush && ((policy.hosts.allowDownload ?? []).length || (policy.hosts.denyUpload ?? []).length)) {
+        findings.push({
+          rule: 'upload-to-unlisted-host',
+          reason: 'git push names its remote by alias, and the policy limits uploads to some hosts: name the remote\'s URL so its direction can be judged',
+          target: UNKNOWN_HOST,
+          caps: [cap],
+        });
+      }
+      // An upload that follows redirects can be resent to a host the sandbox reaches but the policy limits
+      // uploads to (allowed for downloads only, or blocked for uploads).
+      if (a.redirectedUpload && ((policy.hosts.allowDownload ?? []).length || (policy.hosts.denyUpload ?? []).length)) {
+        findings.push({
+          rule: 'upload-to-unlisted-host',
+          reason: 'this upload follows redirects, and the policy limits uploads to some hosts: drop -L/--follow so it cannot be resent to one',
+          target: UNKNOWN_HOST,
+          caps: [cap],
+        });
+      }
+      const uploadsTo = new Set(a.uploads.flatMap((u) => u.hosts).filter((h) => h !== UNKNOWN_HOST));
+      const fetchedFrom = new Set(a.downloads);
+      for (const host of new Set([...a.hosts, ...uploadsTo])) {
+        // Every way the call reaches the host, each simple command on its own.
+        const ways: HostDirection[] = [...(fetchedFrom.has(host) ? ['download' as const] : []), ...(uploadsTo.has(host) ? ['upload' as const] : [])];
+        // In a call whose direction cannot be read (see CommandAnalysis.understood), or named without
+        // being transferred (a heredoc body, a header), the host's direction is unknown: fail closed.
+        const opaque = !a.understood || !ways.length;
+        findings.push(...hostFindings(policy, host, cap, opaque ? [] : ways));
+        // A host allowed for downloads only, reached in a way whose direction is not known (an
+        // interpreter, ssh), may be sent data: judge it as an upload.
+        if (opaque && matchHost(host, allowedFor(policy.hosts, 'download')) && !matchHost(host, allowedFor(policy.hosts, 'upload'))) {
+          findings.push({
+            rule: 'upload-to-unlisted-host',
+            reason: `${host} is allowed for downloads only, and this call's direction cannot be established: run the download as a call of its own`,
+            target: host,
+            caps: [cap],
+          });
+        }
+      }
       if (a.namespaceEscape) {
         findings.push({
           rule: 'namespace-escape',
@@ -146,11 +196,13 @@ function findingsOf(policy: AirlockPolicy, input: AirlockInput): Finding[] {
         });
       }
       for (const upload of a.uploads) {
-        const unlisted = upload.hosts.filter((h) => h === UNKNOWN_HOST || !matchHost(h, policy.hosts.allow));
+        const unlisted = upload.hosts.filter((h) => h === UNKNOWN_HOST || !matchHost(h, allowedFor(policy.hosts, 'upload')));
         for (const host of unlisted) {
           findings.push({
             rule: 'upload-to-unlisted-host',
-            reason: `${upload.tool} sends data to ${host}, which is not on the allow list`,
+            reason: host !== UNKNOWN_HOST && matchHost(host, allowedFor(policy.hosts, 'download'))
+              ? `${upload.tool} sends data to ${host}, which is allowed for downloads only`
+              : `${upload.tool} sends data to ${host}, which is not on the allow list`,
             target: host,
             caps: [cap],
           });

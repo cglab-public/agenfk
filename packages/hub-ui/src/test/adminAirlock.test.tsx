@@ -142,6 +142,24 @@ describe('Admin → Airlock', () => {
     expect((screen.getByLabelText(/models/i) as HTMLTextAreaElement).value).toBe('pi cloudflare-workers-ai');
   });
 
+  it('shows a one-way entry with its direction after it, and saves a direction written after a host (2026-11-02)', async () => {
+    hubAnswers({ ...STORED, policy: { ...STORED.policy, hosts: { allow: ['github.com'], deny: ['evil.example', 'pastebin.com'], allowDownload: ['*.datadoghq.com'], denyUpload: ['pastebin.com'] } } });
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    const allow = await screen.findByLabelText(/allowed hosts/i) as HTMLTextAreaElement;
+    expect(allow.value).toBe('github.com\n*.datadoghq.com download');
+    expect((screen.getByLabelText(/denied hosts/i) as HTMLTextAreaElement).value).toBe('evil.example\npastebin.com upload');
+    expect(screen.getAllByText(/add .download. or .upload. after it/i).length).toBeGreaterThan(0);
+    fireEvent.change(allow, { target: { value: 'github.com\n*.datadoghq.com download\nuploads.corp.io upload' } });
+    fireEvent.change(screen.getByLabelText(/denied hosts/i), { target: { value: 'evil.example\npastebin.com upload\nwarez.io download' } });
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect(put.mock.calls[0][1].policy.hosts).toEqual({
+      allow: ['github.com'], deny: ['evil.example', 'pastebin.com', 'warez.io'],
+      allowDownload: ['*.datadoghq.com'], allowUpload: ['uploads.corp.io'], denyUpload: ['pastebin.com'], denyDownload: ['warez.io'],
+    });
+  });
+
   it('saves an edit as the next revision, one host per line, blank lines dropped', async () => {
     hubAnswers(STORED);
     put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
@@ -564,6 +582,20 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
     expect(put.mock.calls[0][1].policy.projects).toEqual({
       'acme/api': { hosts: { allow: ['x.example'], deny: [] } },
       'acme/web': { rules: { cloudMutation: 'deny' }, machineImage: 'ghcr.io/acme/web-airlock:1' },
+    });
+  });
+
+  it('an override takes a direction after a host, like the policy (2026-11-02)', async () => {
+    hubAnswers({ ...STORED, policy: { ...STORED.policy, projects: { 'acme/api': { hosts: { allow: [], deny: [], allowDownload: ['pypi.org'] } } } } });
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage('projects');
+    const card = await screen.findByRole('form', { name: 'Per-project overrides' });
+    expect((within(card).getByLabelText('Allowed hosts, override 1') as HTMLTextAreaElement).value).toBe('pypi.org download');
+    fireEvent.change(within(card).getByLabelText('Denied hosts, override 1'), { target: { value: 'pastebin.com upload' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect(put.mock.calls[0][1].policy.projects).toEqual({
+      'acme/api': { hosts: { allow: [], deny: ['pastebin.com'], allowDownload: ['pypi.org'], denyUpload: ['pastebin.com'] } },
     });
   });
 

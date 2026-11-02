@@ -64,6 +64,49 @@ const modeReady = async (value = 'observe') => {
   return mode;
 };
 
+describe('Airlock panel: a direction per host (2026-11-02)', () => {
+  const DIRECTED = { ...POLICY, hosts: { allow: ['api.github.com'], deny: ['evil.example', 'pastebin.com'], allowDownload: ['*.datadoghq.com'], denyUpload: ['pastebin.com'] } };
+
+  it('shows a one-way entry with its direction after it; both ways has none', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(view({ effective: DIRECTED }) as never);
+    renderPanel();
+    await modeReady();
+    expect((screen.getByLabelText('Allowed hosts') as HTMLTextAreaElement).value).toBe('api.github.com\n*.datadoghq.com download');
+    expect((screen.getByLabelText('Denied hosts') as HTMLTextAreaElement).value).toBe('evil.example\npastebin.com upload');
+    expect(screen.getAllByText(/add .download. or .upload. after it/i).length).toBeGreaterThan(0);
+  });
+
+  it('saves a direction written after a host into the list for that direction', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(view({ effective: DIRECTED }) as never);
+    renderPanel();
+    await modeReady();
+    fireEvent.change(screen.getByLabelText('Allowed hosts'), { target: { value: 'api.github.com\n*.datadoghq.com download\nuploads.corp.io   UPLOAD\nboth.vendor.io both' } });
+    fireEvent.change(screen.getByLabelText('Denied hosts'), { target: { value: 'evil.example\npastebin.com upload\nwarez.io download' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveAirlockPolicy).mock.calls[0][0].policy.hosts).toEqual({
+      allow: ['api.github.com', 'both.vendor.io'], deny: ['evil.example', 'pastebin.com', 'warez.io'],
+      allowDownload: ['*.datadoghq.com'], allowUpload: ['uploads.corp.io'], denyUpload: ['pastebin.com'], denyDownload: ['warez.io'],
+    });
+  });
+
+  it('a project override takes directions the same way', async () => {
+    vi.mocked(api.getAirlockPolicy).mockResolvedValue(view({ effective: { ...POLICY, projects: {
+      'github.com/acme/api': { hosts: { allow: [], deny: ['pastebin.com'], allowDownload: ['pypi.org'], denyUpload: ['pastebin.com'] } },
+    } } }) as never);
+    renderPanel();
+    await modeReady();
+    expect((screen.getByLabelText('Allowed hosts, override 1') as HTMLTextAreaElement).value).toBe('pypi.org download');
+    expect((screen.getByLabelText('Denied hosts, override 1') as HTMLTextAreaElement).value).toBe('pastebin.com upload');
+    fireEvent.change(screen.getByLabelText('Allowed hosts, override 1'), { target: { value: 'pypi.org download\nfiles.vendor.io upload' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(api.saveAirlockPolicy).toHaveBeenCalledTimes(1));
+    expect((vi.mocked(api.saveAirlockPolicy).mock.calls[0][0].policy as any).projects['github.com/acme/api'].hosts).toEqual({
+      allow: [], deny: ['pastebin.com'], allowDownload: ['pypi.org'], allowUpload: ['files.vendor.io'], denyUpload: ['pastebin.com'],
+    });
+  });
+});
+
 describe('Airlock panel: standalone', () => {
   it('shows the policy in labelled, editable fields', async () => {
     renderPanel();

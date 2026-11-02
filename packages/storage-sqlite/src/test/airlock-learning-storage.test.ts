@@ -29,6 +29,32 @@ afterEach(async () => {
 const R = '2026-10-27T12:00:00.000Z';
 
 describe('airlock learned hosts', () => {
+  it('keeps how often each host was sent data, by source, across a restart', async () => {
+    await storage.recordAirlockHostObservations([
+      { host: 'up.vendor.io', source: 'tool', client: 'pi', ts: R, receivedAt: R, uploads: 1 },
+      { host: 'up.vendor.io', source: 'import', client: 'pi', ts: R, receivedAt: R, hits: 5, uploads: 2 },
+    ]);
+    await storage.shutdown();
+    storage = new SQLiteStorageProvider();
+    await storage.init({ path: dbPath });
+    expect((await storage.listAirlockLearnedHosts())[0].uploads).toEqual({ tool: 1, proxy: 0, import: 2 });
+  });
+
+  it('a database from before upload counts gains them, read as none', async () => {
+    await storage.shutdown();
+    const { DatabaseSync } = await import('node:sqlite');
+    const old = path.join(dir, 'old.sqlite');
+    const raw = new DatabaseSync(old);
+    raw.exec(`CREATE TABLE airlock_learned_hosts (host TEXT PRIMARY KEY, tool_hits INTEGER NOT NULL DEFAULT 0, proxy_hits INTEGER NOT NULL DEFAULT 0,
+      import_hits INTEGER NOT NULL DEFAULT 0, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, received_at TEXT NOT NULL DEFAULT '',
+      clients TEXT NOT NULL DEFAULT '[]', cards TEXT NOT NULL DEFAULT '[]')`);
+    raw.exec(`INSERT INTO airlock_learned_hosts (host, tool_hits, first_seen, last_seen, received_at) VALUES ('old.vendor.io', 3, '${R}', '${R}', '${R}')`);
+    raw.close();
+    storage = new SQLiteStorageProvider();
+    await storage.init({ path: old });
+    expect((await storage.listAirlockLearnedHosts())[0]).toMatchObject({ host: 'old.vendor.io', hits: { tool: 3 }, uploads: { tool: 0, proxy: 0, import: 0 } });
+  });
+
   it('starts empty', async () => {
     expect(await storage.listAirlockLearnedHosts()).toEqual([]);
   });
@@ -50,6 +76,7 @@ describe('airlock learned hosts', () => {
     expect(api).toEqual({
       host: 'api.example.com',
       hits: { tool: 1, proxy: 1, import: 4 },
+      uploads: { tool: 0, proxy: 0, import: 0 },
       firstSeen: '2026-08-01T00:00:00.000Z',
       lastSeen: '2026-10-27T11:00:00.000Z',
       receivedAt: R,

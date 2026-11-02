@@ -8,6 +8,31 @@ All notable changes to AgEnFK are documented here.
 
 - A stopped `git am` declines the close commit as "a git am session is in progress", not as a rebase (#309).
 
+## [2.1.0-beta.13] — 2026-11-02
+
+**Airlock** (#319)
+
+- **Every allowed and blocked host can be one way: download, upload or both.** On the board and on the hub, write
+  `download` or `upload` after a host (a name, `*.domain` or a CIDR) in the policy or a project override; a host
+  with neither is both ways, so existing policies keep their meaning. Direction is judged on tool calls: an upload
+  to a host allowed for downloads only is refused, and a host blocked for uploads can still be fetched from. A call
+  whose direction cannot be read (an interpreter, `ssh`, `awk`, a command piped to a shell - even `echo <url>`,
+  since `echo ... | sh` is one) is treated as an upload to a host allowed for downloads only, and any block stops
+  it; set "Upload to an unlisted host" to "Needs a person's approval" to approve such calls instead. While any host
+  is allowed for downloads only, a `git push` to a remote alias (`origin`) is refused the same way, since its
+  destination is not in the call: push to the remote's URL. The sandbox network cannot see direction: it reaches a host allowed either way and
+  refuses only one blocked both ways, so a host allowed for downloads is not a barrier against a deliberate leak
+  (a request still carries its URL and headers). An installation older than this release is never looser: it
+  ignores one-way allows and treats one-way blocks as both ways. `git clone`/`fetch`/`pull` are read as downloads
+  and `git push` to a URL as an upload.
+- **Learning shows which hosts were sent data, and proposes wildcards.** Each proposed host says whether a tool call
+  ever sent it data, and starts at Download or Both accordingly; hosts sharing a domain are offered as one
+  `*.domain` entry (never over shared hosting, tunnels, wildcard DNS or object storage). Accepting picks a direction
+  per entry, on the board, on the hub, and with `agenfk hub admin airlock learning accept --direction`.
+- **Learning no longer learns names that are not hosts**: query words such as `@session.id:abc`, `file://` paths, and
+  reserved names (`*.test`, `*.example`, `example.com`). `agenfk airlock learn --import-pi-sessions` now says, on a
+  hub-joined installation, that the hosts are sent to the hub from the board and accepted there by an org admin.
+
 ## [2.1.0-beta.12] — 2026-11-01
 
 **Airlock**

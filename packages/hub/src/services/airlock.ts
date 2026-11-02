@@ -23,6 +23,8 @@ import { decodeCursor, encodeCursor, listAudit } from './configAudit.js';
  */
 
 export const MAX_HOSTS_PER_LIST = 1000;
+/** Every host list a policy or project override carries, one-way ones included (core hostLists.ts). */
+const HOST_LIST_KEYS = ['allow', 'deny', 'allowDownload', 'allowUpload', 'denyUpload', 'denyDownload'] as const;
 export const MAX_IOC_HOSTS = 10_000;
 /** Per-project overrides (PO-1) one policy may carry; each host list has MAX_HOSTS_PER_LIST. */
 export const MAX_PROJECT_OVERRIDES = 500;
@@ -117,8 +119,7 @@ function policyCapErrors(body: unknown): string[] {
     }
   }
   if (b.hosts && typeof b.hosts === 'object') {
-    errors.push(...hostListCapErrors('hosts.allow', b.hosts.allow, MAX_HOSTS_PER_LIST));
-    errors.push(...hostListCapErrors('hosts.deny', b.hosts.deny, MAX_HOSTS_PER_LIST));
+    for (const k of HOST_LIST_KEYS) errors.push(...hostListCapErrors(`hosts.${k}`, b.hosts[k], MAX_HOSTS_PER_LIST));
   }
   if (b.projects && typeof b.projects === 'object' && !Array.isArray(b.projects)) {
     const entries = Object.entries(b.projects as Record<string, any>);
@@ -126,8 +127,7 @@ function policyCapErrors(body: unknown): string[] {
     else for (const [key, o] of entries) {
       if (!o || typeof o !== 'object' || !o.hosts || typeof o.hosts !== 'object') continue;
       const field = `projects[${JSON.stringify(key)}].hosts`;
-      errors.push(...hostListCapErrors(`${field}.allow`, o.hosts.allow, MAX_HOSTS_PER_LIST));
-      errors.push(...hostListCapErrors(`${field}.deny`, o.hosts.deny, MAX_HOSTS_PER_LIST));
+      for (const k of HOST_LIST_KEYS) errors.push(...hostListCapErrors(`${field}.${k}`, o.hosts[k], MAX_HOSTS_PER_LIST));
     }
   }
   return errors;

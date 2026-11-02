@@ -79,6 +79,9 @@ const STORAGE_DOMAINS: readonly { domain: string; left: (labels: string[]) => bo
   { domain: 'scw.cloud', left: (l) => l.length >= 2 && l[l.length - 2] === 's3' && /^[a-z]{2}-[a-z]{3}$/.test(l[l.length - 1]) },
 ];
 
+/** The domains object storage lives under, for code that must never reach across one (a learned wildcard). */
+export const CLOUD_STORAGE_DOMAINS: readonly string[] = Object.freeze(STORAGE_DOMAINS.map((d) => d.domain));
+
 export function isCloudStorageHost(raw: string): boolean {
   const host = normalizeHost(raw);
   if (!host || parseIp(host)) return false;
