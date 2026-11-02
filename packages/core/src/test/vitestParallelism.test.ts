@@ -1,8 +1,8 @@
 // The suite's parallelism must be what the config says it is (BUG c03aa92e).
 //
 // vitest.config.ts splits the suite into a `parallel` project (packages with no
-// shared filesystem state) and a `serial` one (server/hub/cli, which share a
-// single per-run HOME sandbox). Both projects resolved their own settings
+// shared filesystem state) and a `serial` one (server/hub/cli, which shared a
+// single per-run HOME sandbox until GH-274). Both projects resolved their own settings
 // correctly for months — and ran serially anyway, because the ROOT-LEVEL test
 // block set fileParallelism: false and the global wins over a project's value.
 // The optimisation was inert and nothing said so.
@@ -12,18 +12,19 @@
 // the check that passed all along while the suite ran serially.
 import { describe, it, expect } from 'vitest';
 import { createVitest } from 'vitest/node';
+import * as os from 'os';
 
 /** `fileParallelism` is present on the resolved config at runtime but missing
  *  from vitest's published ResolvedConfig type, so read it through this shape
  *  rather than casting the whole config to any — the other fields stay typed. */
-type Parallelism = { fileParallelism?: boolean; sequence?: { concurrent?: boolean } };
-const read = (c: unknown): { fileParallelism?: boolean; concurrent?: boolean } => {
+type Parallelism = { fileParallelism?: boolean; maxWorkers?: number; sequence?: { concurrent?: boolean } };
+const read = (c: unknown): { fileParallelism?: boolean; concurrent?: boolean; maxWorkers?: number } => {
   const p = c as Parallelism;
-  return { fileParallelism: p.fileParallelism, concurrent: p.sequence?.concurrent };
+  return { fileParallelism: p.fileParallelism, concurrent: p.sequence?.concurrent, maxWorkers: p.maxWorkers };
 };
 
-async function resolved() {
-  const v = await createVitest('test', { watch: false });
+async function resolved(cli: { maxWorkers?: number } = {}) {
+  const v = await createVitest('test', { watch: false, ...cli });
   try {
     return {
       global: read(v.config),
@@ -42,12 +43,24 @@ describe('root vitest parallelism', () => {
     expect(r.global.fileParallelism).toBe(true);
   });
 
-  it('keeps the serial project one-file-at-a-time', async () => {
-    // server/hub/cli share one HOME sandbox per run (scripts/vitest-home-pin.mjs),
-    // which exists because a test once wrote into the real ~/.agenfk. Running
-    // their files concurrently would put that back.
+  // GH-274: server/hub/cli ran one file at a time because every worker shared the
+  // run's HOME sandbox; each worker now has its own (scripts/vitest-home-pin.mjs).
+  // Their files spawn git and node children by the dozen, so the run takes a quarter of the CPUs.
+  it('runs the server/hub/cli files in parallel, on a quarter of the CPUs', async () => {
     const r = await resolved();
-    expect(r.projects.serial?.fileParallelism).toBe(false);
+    expect(r.projects.serial?.fileParallelism).toBe(true);
+    expect(r.global.maxWorkers).toBe(Math.max(2, Math.floor(os.availableParallelism() / 4)));
+  });
+
+  it('leaves the worker count to --maxWorkers when one is given, for every project', async () => {
+    // A project's own maxWorkers would win over the flag: the cap lives at the root.
+    // One more than the default, so the flag is told apart from the cap on any machine.
+    const flag = Math.max(2, Math.floor(os.availableParallelism() / 4)) + 1;
+    const r = await resolved({ maxWorkers: flag });
+    expect(r.global.maxWorkers).toBe(flag);
+    for (const [name, cfg] of Object.entries(r.projects)) {
+      expect(cfg.maxWorkers, `project ${name} sets its own worker count`).toBeFalsy();
+    }
   });
 
   it('runs files in parallel for the packages that have no shared state', async () => {

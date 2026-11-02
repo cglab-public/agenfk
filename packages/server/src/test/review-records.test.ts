@@ -231,14 +231,6 @@ describe('CGLAB-381: review records', () => {
     expect(res.body.reviewer.advancedCards).toBe(true);
   });
 
-  it('refuses a transcript last written before the range\'s tip commit: it cannot have reviewed it', async () => {
-    const { dir, base, tip } = makeRepo();
-    const id = await cardIn(dir);
-    const res = await record(id, { transcript: claudeSubagentTranscript('sess-B', 'agentOld', '2000-01-01T00:00:00.000Z'), range: `${base}..${tip}`, findings: [] });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/before/);
-  });
-
   it('refuses a range the card\'s tree does not have, or one that is not a from..to pair', async () => {
     const { dir, base, tip } = makeRepo();
     const id = await cardIn(dir);

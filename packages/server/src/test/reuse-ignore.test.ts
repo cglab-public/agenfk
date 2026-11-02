@@ -149,10 +149,12 @@ describe('capture reuse at the same content, docs aside', () => {
     expect(again.body.reusedFrom).toBeUndefined();
   });
 
-  it('a code edit still runs the suite', async () => {
-    const t = await setup();
+  // Kept end to end (GH-281 review): the matcher's own empty-list test cannot see the server
+  // falling back to the default globs when a project sets none.
+  it('an empty list turns it off: a Markdown edit runs the suite', async () => {
+    const t = await setup([]);
     expect((await t.capture()).status).toBe(200);
-    t.edit('a.js', 'module.exports = 2;\n');
+    t.edit('README.md', '# counted\n');
     await t.capture();
     expect(t.count()).toBe(2);
   });
@@ -164,14 +166,6 @@ describe('capture reuse at the same content, docs aside', () => {
     await t.capture();
     expect(t.count()).toBe(1);
     t.edit('README.md', '# now counted\n');
-    await t.capture();
-    expect(t.count()).toBe(2);
-  });
-
-  it('an empty list turns it off: a Markdown edit runs the suite', async () => {
-    const t = await setup([]);
-    expect((await t.capture()).status).toBe(200);
-    t.edit('README.md', '# counted\n');
     await t.capture();
     expect(t.count()).toBe(2);
   });

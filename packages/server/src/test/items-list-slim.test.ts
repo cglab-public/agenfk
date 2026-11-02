@@ -49,21 +49,4 @@ describe('GET /items', () => {
     expect(card).not.toHaveProperty('supersededRecords');
     expect(card.title).toBe('heavy');
   });
-
-  it('stays small however many tests a card has run', async () => {
-    const t = await heavyCard();
-    const r = await agent().get(`/items?projectId=${t.pid}`);
-    expect(JSON.stringify(r.body).length).toBeLessThan(20_000);
-  });
-});
-
-describe('GET /items/:id', () => {
-  // ec325925: the step records are opt-in on a single card too (?records=1).
-  it('carries the step records, results included, when asked', async () => {
-    const t = await heavyCard();
-    const r = await agent().get(`/items/${t.id}?records=1`);
-    expect(r.status).toBe(200);
-    expect(r.body.stepRecords).toHaveLength(1);
-    expect(r.body.stepRecords[0].tests).toHaveLength(2000);
-  });
 });

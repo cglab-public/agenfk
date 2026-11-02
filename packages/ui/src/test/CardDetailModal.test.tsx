@@ -1105,8 +1105,9 @@ describe('the create form is a draft, not a finished card', () => {
     expect((badge.firstElementChild as HTMLElement).className).toContain(ITEM_TYPE_VISUAL[ItemType.STORY].fill);
     // No `not.toMatch(/story-blue/)` here: the badge is one shared component
     // now, so that assertion would read a string this test's own dependency
-    // defines. The blanket rule lives in ItemTypeSquare.test.tsx, which reads
-    // the components directory and can see a surface this file never renders.
+    // defines. Every other surface that shows a type pins its own rendered
+    // square the same way (KanbanBoard, CardPicker, ProjectPage, AskAgenfk,
+    // ItemTypePicker and both import modals).
     // The CONTROL stays exclusive to the draft: a settled type is shown, not chosen.
     expect(screen.queryByTestId('new-item-type-square')).toBeNull();
     expect(screen.queryByRole('combobox', { name: /type/i })).toBeNull();

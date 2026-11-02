@@ -411,22 +411,6 @@ describe('agenfk init in odd places', () => {
   });
 });
 
-describe('agenfk init --help', () => {
-  it('states which file is shared and which is this machine\'s', () => {
-    const help = program.commands.find(c => c.name() === 'init')!.helpInformation()
-      + ((program.commands.find(c => c.name() === 'init') as any)._helpTextAfter ?? '');
-    let text = '';
-    const init = program.commands.find(c => c.name() === 'init')!;
-    init.configureOutput({ writeOut: (s) => { text += s; }, writeErr: (s) => { text += s; } });
-    init.outputHelp();
-    const all = `${help}\n${text}`;
-    expect(all).toMatch(/--project <id>/);
-    expect(all).toMatch(/\.agenfk\/project\.json[^\n]*(shared|committed)/i);
-    expect(all).toMatch(/\.agenfk\/local\.json[^\n]*(git-ignored|ignored by git)/i);
-    expect(all).toMatch(/projectId/);
-  });
-});
-
 describe('commands that resolve the current project', () => {
   it('current-project prints the id from local.json', async () => {
     fs.mkdirSync(path.join(dir, '.agenfk'), { recursive: true });

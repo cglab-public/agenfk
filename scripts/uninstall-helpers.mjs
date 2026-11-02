@@ -88,6 +88,7 @@ export const OPENCODE_PLUGIN_VARIANTS = [
   'agenfk-gatekeeper',
   'agenfk-mcp-enforcer',
   'agenfk-pr-hook',
+  'agenfk-airlock',
 ];
 
 // Opencode plugin filenames the installer copies into ~/.config/opencode/plugins.

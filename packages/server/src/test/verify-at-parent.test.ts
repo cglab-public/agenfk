@@ -187,13 +187,6 @@ describe("verifyAt: 'parent'", () => {
     expect(runCount()).toBe(1);
   });
 
-  it('a deferred child does not need a verifyCommand of its own', async () => {
-    const { pid } = await project('parent', { command: false });
-    const parent = await card(pid);
-    const child = await card(pid, 'WORK', { parentId: parent });
-    const res = await validate(child);
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-  });
 });
 
 describe("verifyAt: 'leaf' (the default)", () => {
@@ -469,18 +462,8 @@ describe('verifyAtScope', () => {
     expect(refused.body.message).toContain(child.slice(0, 8));
   });
 
-  it("'worktree' said explicitly behaves as before: a child in another worktree runs its own", async () => {
-    const { pid, dir, runCount } = await project('parent', { flowExtra: { verifyAtScope: 'worktree' } });
-    const wt = childWorktree(dir, 'scope-e');
-    const parent = await card(pid);
-    const child = await card(pid, 'WORK', { parentId: parent });
-    await storage.updateItem(child, { worktreePath: wt } as any);
-    const res = await validate(child);
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body.message).not.toMatch(/deferred/);
-    expect(runCount()).toBe(1);
-  });
-
+  // 'worktree' (the default) keeps a worktree child running its own: "a child whose work is in ANOTHER worktree runs its own",
+  // and set explicitly on the project, "...and 'worktree' on the project keeps a worktree child running its own on a 'project' flow".
   it("the project's own scope wins over the flow's: 'project' on the project defers a worktree child on a 'worktree' flow", async () => {
     const { pid, dir, runCount } = await project('parent', { projectExtra: { verifyAtScope: 'project' } });
     const wt = childWorktree(dir, 'scope-f');

@@ -394,8 +394,10 @@ describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
     // "learn only when there is no root" would keep it for good. The STORED
     // value's own validity decides whether it may be replaced.
     const wt = linkedWorktree('feat/was-recorded');
-    const set = await internal(agent().put(`/projects/${projectId}/project-root`)).send({ projectRoot: wt });
-    expect(set.status, JSON.stringify(set.body)).toBe(200);
+    // Planted in the store, as a record from before CGLAB-366 is: the route that sets a
+    // root refuses a linked worktree now (story c6af1eb0), which is the point of this fix.
+    await storage.updateProject(projectId, { projectRoot: wt } as any);
+    expect(await projectRoot()).toBe(wt);
     const task = await newItem('TASK', 'verified from the real root');
 
     await validate(task.id, { cwd: repo });

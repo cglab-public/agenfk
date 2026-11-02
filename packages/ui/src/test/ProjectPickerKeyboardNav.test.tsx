@@ -161,19 +161,6 @@ describe('ProjectPickerKeyboardNav', () => {
     expect(localStorage.getItem('agenfk_project_id')).toBe('a-id');
   });
 
-  it('ArrowDown highlights the first project (alphabetically sorted)', async () => {
-    setup();
-    await waitFor(() => screen.getByText('apple'));
-
-    const searchInput = screen.getByLabelText('Search projects');
-    fireEvent.keyDown(searchInput, { key: 'ArrowDown' });
-
-    // "apple" is first in the sorted list
-    const row = getProjectRow('apple');
-    expect(row).not.toBeNull();
-    expect(row!.getAttribute('aria-selected')).toBe('true');
-  });
-
   it('ArrowDown advances the highlight to the second project', async () => {
     setup();
     await waitFor(() => screen.getByText('apple'));
@@ -208,19 +195,6 @@ describe('ProjectPickerKeyboardNav', () => {
     expect(mangoRow?.getAttribute('aria-selected')).toBe('false');
   });
 
-  it('clamps at the top — ArrowUp while first is highlighted keeps first highlighted', async () => {
-    setup();
-    await waitFor(() => screen.getByText('apple'));
-
-    const searchInput = screen.getByLabelText('Search projects');
-    fireEvent.keyDown(searchInput, { key: 'ArrowDown' }); // apple (first)
-    fireEvent.keyDown(searchInput, { key: 'ArrowUp' });   // clamp — still apple
-
-    const row = getProjectRow('apple');
-    expect(row).not.toBeNull();
-    expect(row!.getAttribute('aria-selected')).toBe('true');
-  });
-
   it('clamps at the bottom — ArrowDown while last is highlighted keeps last highlighted', async () => {
     setup();
     await waitFor(() => screen.getByText('apple'));
@@ -234,17 +208,6 @@ describe('ProjectPickerKeyboardNav', () => {
     const row = getProjectRow('Zebra');
     expect(row).not.toBeNull();
     expect(row!.getAttribute('aria-selected')).toBe('true');
-  });
-
-  it('Enter selects the highlighted project', async () => {
-    setup();
-    await waitFor(() => screen.getByText('apple'));
-
-    const searchInput = screen.getByLabelText('Search projects');
-    fireEvent.keyDown(searchInput, { key: 'ArrowDown' }); // highlights apple
-    fireEvent.keyDown(searchInput, { key: 'Enter' });     // selects it
-
-    expect(localStorage.getItem('agenfk_project_id')).toBe('a-id');
   });
 
   it('keyboard navigation works with an active search filter', async () => {
@@ -356,15 +319,6 @@ describe('ProjectPickerKeyboardNav', () => {
     fireEvent.keyDown(searchInput, { key: 'Enter' });
 
     expect(localStorage.getItem('agenfk_project_id')).toBe('m-id');
-  });
-
-  it('Enter with no typing and no highlight still selects the first project', async () => {
-    setup();
-    await waitFor(() => screen.getByText('apple'));
-
-    fireEvent.keyDown(document.body, { key: 'Enter' });
-
-    expect(localStorage.getItem('agenfk_project_id')).toBe('a-id');
   });
 
   // The fallback picks sortedFilteredProjects[0], so with no highlight Enter

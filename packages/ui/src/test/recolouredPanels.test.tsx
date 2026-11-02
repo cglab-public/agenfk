@@ -16,6 +16,7 @@ import { BoardSettingsDialog } from '../components/BoardSettingsDialog';
 import { Switch } from '../components/ui/switch';
 import { DOT, STATE_LABEL } from '../components/sessionPresentation';
 import { guardTokens } from './helpers/tokenGuard';
+import { paintedTypes } from './helpers/typeGrammar';
 
 vi.mock('../api', () => ({
   api: {
@@ -53,6 +54,16 @@ describe('GitHubImportModal on tokens', () => {
     await screen.findByText('Crash on start');
     fireEvent.click(screen.getAllByRole('checkbox').find(c => c.closest('li')?.textContent?.includes('Crash on start'))!);
     expect(await screen.findByText(/Next \(1 selected\)/)).toBeTruthy();
+  });
+
+  it("paints each issue's type square from the grammar, and repaints it when the type changes", async () => {
+    withQuery(<GitHubImportModal open onClose={() => {}} projectId="p1" />);
+    await screen.findByText('Crash on start');
+    const row = () => screen.getByText('Crash on start').closest('li')!;
+    fireEvent.click(row().querySelector('input[type="checkbox"]')!);
+    expect(paintedTypes(row())).toEqual(['TASK']);
+    fireEvent.change(row().querySelector('select')!, { target: { value: 'EPIC' } });
+    expect(paintedTypes(row())).toEqual(['EPIC']);
   });
 
   it('renders the confirm step', async () => {

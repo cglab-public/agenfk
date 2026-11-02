@@ -42,6 +42,9 @@ function run(script: string, args: string[], home: string, opts: { cwd?: string;
     // behaviour under test depends on it.
     env: {
       HOME: home, USERPROFILE: home, PATH: '', NODE_ENV: 'production', VITEST: '1',
+      // Never the developer's running AgEnFK server (default port): the installer asks it whether
+      // Airlock is in use (CGLAB-696), and would then download smolvm into the throwaway HOME.
+      AGENFK_API_URL: 'http://127.0.0.1:9',
       ...(opts.extraEnv || {}),
     },
   });

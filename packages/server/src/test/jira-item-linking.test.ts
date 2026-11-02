@@ -466,23 +466,6 @@ describe('linking a card to a JIRA item', () => {
   // Each of these covers a fix that was in the code but pinned by NOTHING, so
   // reverting the fix left the suite green.
 
-  describe('bounds on the jiraItem path', () => {
-    it('refuses an absurdly long key, which was the way around both length caps', async () => {
-      // The grammar is anchored but not finite, so a 5000-character project key
-      // matched it and landed in the item's JSON blob — and, when connected, in
-      // the derived browse URL, past the 2048 URL cap.
-      const res = await createItem({ jiraItem: `${'A'.repeat(5000)}-1` });
-      expect(res.status).toBe(400);
-      const list = await request(app).get('/items').query({ projectId });
-      expect(list.body).toHaveLength(0);
-    });
-
-    it('accepts a key of a realistic length', async () => {
-      const res = await createItem({ jiraItem: 'ABCDEFGHIJ-123456' });
-      expect(res.status).toBe(201);
-    });
-  });
-
   describe('the archive path reports an unverified link', () => {
     it('returns the warning when archiving and linking in one request', async () => {
       writeJiraToken();

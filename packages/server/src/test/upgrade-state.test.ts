@@ -25,12 +25,10 @@ describe('upgradeState — file-backed persistence', () => {
     expect(readUpgradeState(dbDir)).toBeNull();
   });
 
-  it('round-trips a started state', () => {
+  it('round-trips each outcome: started, succeeded with resultVersion, failed with error', () => {
     writeUpgradeState(dbDir, { lastDirectiveId: 'd-1', outcome: 'started' });
     expect(readUpgradeState(dbDir)).toEqual({ lastDirectiveId: 'd-1', outcome: 'started' });
-  });
 
-  it('round-trips a succeeded state with resultVersion', () => {
     writeUpgradeState(dbDir, {
       lastDirectiveId: 'd-2',
       outcome: 'succeeded',
@@ -44,14 +42,8 @@ describe('upgradeState — file-backed persistence', () => {
       resultVersion: '0.3.1',
       finishedAt: '2026-05-05T20:00:00Z',
     });
-  });
 
-  it('round-trips a failed state with error', () => {
-    writeUpgradeState(dbDir, {
-      lastDirectiveId: 'd-3',
-      outcome: 'failed',
-      error: 'install.mjs exit 1',
-    });
+    writeUpgradeState(dbDir, { lastDirectiveId: 'd-3', outcome: 'failed', error: 'install.mjs exit 1' });
     expect(readUpgradeState(dbDir)?.outcome).toBe('failed');
     expect(readUpgradeState(dbDir)?.error).toBe('install.mjs exit 1');
   });
@@ -77,14 +69,5 @@ describe('upgradeState — file-backed persistence', () => {
 
   it('clearUpgradeState is a no-op when the file does not exist', () => {
     expect(() => clearUpgradeState(dbDir)).not.toThrow();
-  });
-
-  it('writes atomically via tmp+rename (no half-written file on crash)', () => {
-    // Hard to assert atomicity in a unit test directly, but we can at least
-    // verify the helper does NOT leave a tmp file lying around in the
-    // happy path (a sentinel that the rename happened).
-    writeUpgradeState(dbDir, { lastDirectiveId: 'd-x', outcome: 'started' });
-    const entries = fs.readdirSync(dbDir);
-    expect(entries.filter(n => n.endsWith('.tmp'))).toEqual([]);
   });
 });

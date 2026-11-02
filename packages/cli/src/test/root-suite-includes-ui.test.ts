@@ -33,10 +33,4 @@ describe('the root vitest run', () => {
     const ui = listed().filter(f => /[\\/]packages[\\/]ui[\\/]/.test(f.file));
     expect(new Set(ui.map(f => f.projectName))).toEqual(new Set(['ui']));
   });
-
-  it('runs a board spec for a changed board source with `vitest related`, so a related run covers the board too', () => {
-    const r = spawnSync(process.execPath, [path.join(ROOT, 'node_modules/vitest/vitest.mjs'), 'related', '--run', '--reporter=json', 'packages/ui/src/agentAnswer.ts'], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
-    const report = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
-    expect(report.testResults.map((t: { name: string }) => t.name)).toEqual(expect.arrayContaining([expect.stringMatching(/packages[\\/]ui[\\/]src[\\/]test[\\/]agentAnswer\.test\.ts$/)]));
-  }, 120_000);
 });

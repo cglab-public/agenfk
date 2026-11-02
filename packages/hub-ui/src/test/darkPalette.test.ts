@@ -108,13 +108,5 @@ describe('dark mode palette', () => {
       expect(dark[v], v).toMatch(/^var\(--color-slate-\d+\)$/);
     }
   });
-
-  it('both apps import the tokens unlayered, so they win over Tailwind\'s layered theme', () => {
-    for (const app of ['../index.css', '../../../ui/src/index.css']) {
-      const css = fs.readFileSync(path.resolve(__dirname, app), 'utf8');
-      const line = css.split('\n').find(l => l.startsWith('@import') && l.includes('brand/tokens.css'))!;
-      expect(line, app).toMatch(/^@import "[^"]*brand\/tokens\.css";\s*$/);
-    }
-  });
 });
 

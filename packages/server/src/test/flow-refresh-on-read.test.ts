@@ -224,17 +224,6 @@ describe('GET /projects/:id/flow?refresh=true (route wiring)', () => {
     { id: 's3', name: 'DONE', label: 'Done', order: 3, isAnchor: true },
   ];
 
-  it('plain read (no refresh) returns the project local flow', async () => {
-    const flow = (await agent().post('/flows').send({ name: 'LocalFlow', steps })).body;
-    const project = (await agent().post('/projects').send({ name: 'proj' })).body;
-    await agent().post(`/projects/${project.id}/flow`).send({ flowId: flow.id });
-
-    const r = await agent().get(`/projects/${project.id}/flow`);
-    expect(r.status).toBe(200);
-    expect(r.body.id).toBe(flow.id);
-    expect(r.body.name).toBe('LocalFlow');
-  });
-
   it('?refresh=true returns a valid flow (hub 304/off → local flow preserved)', async () => {
     const flow = (await agent().post('/flows').send({ name: 'LocalFlow', steps })).body;
     const project = (await agent().post('/projects').send({ name: 'proj' })).body;

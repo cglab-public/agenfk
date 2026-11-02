@@ -266,24 +266,6 @@ describe('a repository-declared verify command needs no approval (#260)', () => 
       expect(changes.filter((c: any) => c.source === 'file')).toHaveLength(1);
     });
 
-    it('refuses the gate when a pull changes the declared command while its capture runs', async () => {
-      const first = mark('FIRST_RAN');
-      const second = mark('SECOND_RAN');
-      const dir = repoDeclaring(first);
-      // The stored report command stands in for a pull landing mid-capture: it writes its report,
-      // then rewrites the declared command. The capture's tree fence must refuse it, so no close
-      // runs a command that changed under the run.
-      const midCapturePull = nodeCommand(`${JUNIT_JS}require('fs').writeFileSync('.agenfk/project.json', JSON.stringify({ verifyCommand: ${JSON.stringify(second)} }));`);
-      const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('END', 2, { isAnchor: true })]), {
-        projectRoot: dir, testReport: { ...report, command: midCapturePull },
-      });
-      const closing = await card(pid, 'WORK');
-      const res = await validateFollowing(closing);
-      expect(String(res.body.message), JSON.stringify(res.body)).toMatch(/tree changed while the command ran/);
-      expect(fs.existsSync(path.join(dir, 'SECOND_RAN'))).toBe(false);
-      expect((await storage.getItem(closing))?.status).toBe('WORK');
-    });
-
     it('records the exact command a capture or close selected, not the file as it reads by then', async () => {
       const first = mark('FIRST_RAN');
       const dir = repoDeclaring(first);

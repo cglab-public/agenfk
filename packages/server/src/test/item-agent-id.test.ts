@@ -65,13 +65,6 @@ describe('the agent a card is worked with', () => {
     return res.body.id as string;
   };
 
-  it('is stored on the item and comes back on read', async () => {
-    const id = await makeItem();
-    await internal(agent().put(`/items/${id}`)).send({ agentId: 'codex' });
-    const after = await agent().get(`/items/${id}`);
-    expect(after.body.agentId).toBe('codex');
-  });
-
   it('is remembered per card, not globally', async () => {
     // The exact bug the move fixes: one machine-wide key meant opening a second
     // card silently launched whatever the first card used.

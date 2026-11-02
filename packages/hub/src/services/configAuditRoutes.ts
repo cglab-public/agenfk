@@ -1,6 +1,9 @@
 import type { Request, Response, NextFunction, Express, RequestHandler } from 'express';
 import type { DB } from '../db.js';
+import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { recordAudit, type AuditSource } from './configAudit.js';
+import { airlockAuditSnapshot } from './airlock.js';
+import { airlockDatasetAuditSnapshot } from './airlockDataset.js';
 
 /**
  * Which hub routes change configuration, and how each is audited (STORY
@@ -80,6 +83,16 @@ const installationSnap: Snapshot = async (db, orgId, p) =>
   (await db.get('SELECT * FROM installations WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
 // The handler takes the preview in any case and revokes the one LIVE key it names (BUG 915f76ed): the snapshot
 // finds that key the same way before, and by its full hash after, once it is revoked.
+const ciTokenSnap: Snapshot = async (db, orgId, p, req) => {
+  const known = (req as any)._auditCiTokenHash as string | undefined;
+  const row = known
+    ? await db.get<any>('SELECT token_hash, label, remote_url, created_at, revoked_at FROM ci_tokens WHERE org_id = ? AND token_hash = ?', [orgId, known])
+    : await db.get<any>('SELECT token_hash, label, remote_url, created_at, revoked_at FROM ci_tokens WHERE org_id = ? AND lower(token_hash) LIKE ? AND revoked_at IS NULL', [orgId, `${String(p.tokenHashPreview ?? '').toLowerCase()}%`]);
+  if (!row) return null;
+  (req as any)._auditCiTokenHash = row.token_hash;
+  const { token_hash: _hash, ...rest } = row;
+  return rest;
+};
 const apiKeySnap: Snapshot = async (db, orgId, p, req) => {
   const known = (req as any)._auditApiKeyHash as string | undefined;
   const row = known
@@ -93,6 +106,50 @@ const apiKeySnap: Snapshot = async (db, orgId, p, req) => {
 const jiraSnap: Snapshot = async (db, orgId) =>
   (await db.get('SELECT client_id, client_secret_enc, updated_at FROM org_jira WHERE org_id = ?', [orgId])) ?? null;
 
+/**
+ * A repository's settings as an audit row (RFC-002).
+ *
+ * The repo is named in the request body, in whatever spelling the caller
+ * typed, and stored under the canonical URL — so the snapshot canonicalises
+ * the same way before reading, or every row would read as a creation. A repo
+ * with no record yet snapshots to null, which is the truth: there was nothing
+ * to change. Producers ride along, since that is the list the producer route
+ * moves, and `receipts_mode` would otherwise say nothing about it; so does
+ * `producer_mode`, whether that list or every live installation decides.
+ */
+const repoSettingsSnap: Snapshot = async (db, orgId, _p, req) => {
+  try {
+    const remote = sanitizeRemoteUrl(String(req.body?.repo ?? '').trim());
+    if (!remote) return null;
+    const row = await db.get<any>(
+      `SELECT remote_url, verify_command, revision, receipts_mode, shadow_threshold, producer_mode, created_at, updated_at
+       FROM repo_settings WHERE org_id = ? AND remote_url = ?`,
+      [orgId, remote],
+    );
+    if (!row) return null;
+    const producers = await db.all<{ installation_id: string }>(
+      'SELECT installation_id FROM repo_producers WHERE org_id = ? AND remote_url = ? ORDER BY installation_id',
+      [orgId, remote],
+    );
+    return {
+      ...row,
+      revision: Number(row.revision),
+      shadow_threshold: row.shadow_threshold === null ? null : Number(row.shadow_threshold),
+      producers: producers.map(x => x.installation_id),
+    };
+  } catch {
+    return null;
+  }
+};
+
+/** The org's Airlock policy (GH-294): the view the admin reads, so the row says from what policy to what. */
+const airlockSnap: Snapshot = async (db, orgId) => airlockAuditSnapshot(db, orgId);
+const airlockDatasetSnap: Snapshot = async (db, orgId) => airlockDatasetAuditSnapshot(db, orgId);
+
+/** The repo a repository-settings request names (the caller's own spelling). */
+const repoTarget = (_p: Params, req: Request) =>
+  (typeof req.body?.repo === 'string' && req.body.repo.trim() ? req.body.repo.trim() : 'repository');
+
 const param = (k: string, label: string) => (p: Params) => `${label} ${p[k] ?? ''}`.trim();
 const bodyField = (k: string, label: string) => (_p: Params, req: Request) => (typeof req.body?.[k] === 'string' ? `${label} ${req.body[k]}` : label);
 
@@ -104,7 +161,12 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   // API keys and installations
   { method: 'POST', path: '/v1/admin/api-keys', area: 'api-keys', action: 'api-key.issue', target: bodyField('label', 'API key'), noBody: true },
   { method: 'DELETE', path: '/v1/admin/api-keys/:tokenHashPreview', area: 'api-keys', action: 'api-key.revoke', target: param('tokenHashPreview', 'API key'), snapshot: apiKeySnap },
+  // CI read tokens (RFC-002). The issue keeps the request (label, scope, repo) as `after`: it never holds the token, which only the reply carries.
+  { method: 'POST', path: '/v1/admin/ci-tokens', area: 'api-keys', action: 'ci-token.issue', target: (_p, req) => `CI token ${typeof req.body?.label === 'string' ? req.body.label : ''}`.trim() },
+  { method: 'DELETE', path: '/v1/admin/ci-tokens/:tokenHashPreview', area: 'api-keys', action: 'ci-token.revoke', target: param('tokenHashPreview', 'CI token'), snapshot: ciTokenSnap },
   { method: 'POST', path: '/hub/device/approve', area: 'api-keys', action: 'device.approve', target: bodyField('userCode', 'device'), noBody: true },
+  { method: 'POST', path: '/hub/admin-device/approve', area: 'api-keys', action: 'admin-cli.approve', target: bodyField('userCode', 'admin CLI sign-in'), noBody: true },
+  { method: 'DELETE', path: '/v1/admin/cli-sessions/:id', area: 'api-keys', action: 'admin-cli.revoke', target: param('id', 'admin CLI session'), noBody: true },
   { method: 'POST', path: '/hub/invite/create', area: 'api-keys', action: 'invite.create', target: () => 'installation invite', noBody: true },
   { method: 'POST', path: '/hub/invite/redeem', area: 'api-keys', action: 'invite.redeem', target: () => 'installation invite', noBody: true, source: 'cli' },
   { method: 'POST', path: '/v1/admin/installations/:id/retire', area: 'installations', action: 'installation.retire', target: param('id', 'installation'), snapshot: installationSnap, link: '/admin/installations' },
@@ -156,6 +218,19 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   { method: 'POST', path: '/hub/federation/invite/create', area: 'federation', action: 'child-hub.invite', target: () => 'child hub invite', noBody: true },
   { method: 'POST', path: '/v1/federation/enroll', area: 'federation', action: 'child-hub.join', target: (_p, req) => `child hub ${req.body?.name ?? ''}`.trim(), noBody: true, source: 'federation' },
   { method: 'POST', path: '/v1/federation/release-request', area: 'federation', action: 'child-hub.leave-request', target: () => 'child hub', noBody: true },
+  // Repositories (RFC-002): the verify command one repo is verified by, how
+  // its CI receipts count, and which installations may send them.
+  { method: 'POST', path: '/v1/repo-settings/init', area: 'repositories', action: 'repo.command-init', target: repoTarget, snapshot: repoSettingsSnap },
+  { method: 'PUT', path: '/v1/admin/repos/command', area: 'repositories', action: 'repo.command-revise', target: repoTarget, snapshot: repoSettingsSnap },
+  { method: 'PUT', path: '/v1/admin/repos/mode', area: 'repositories', action: 'repo.mode', target: repoTarget, snapshot: repoSettingsSnap },
+  { method: 'PUT', path: '/v1/admin/repos/producers', area: 'repositories', action: 'repo.producer', target: repoTarget, snapshot: repoSettingsSnap },
+  { method: 'PUT', path: '/v1/admin/repos/producer-mode', area: 'repositories', action: 'repo.producer-mode', target: repoTarget, snapshot: repoSettingsSnap },
+  // Airlock (GH-294): the org's policy every joined installation adopts, and its IOC host list.
+  { method: 'PUT', path: '/v1/admin/airlock', area: 'airlock', action: 'airlock.update', target: () => "the org's Airlock policy", snapshot: airlockSnap },
+  { method: 'PUT', path: '/v1/admin/airlock/ioc', area: 'airlock', action: 'airlock.ioc', target: () => "the org's Airlock IOC host list", snapshot: airlockSnap },
+  { method: 'POST', path: '/v1/admin/airlock/learning/accept', area: 'airlock', action: 'airlock.learning-accept', target: () => "the org's Airlock policy (proposed hosts allowed)", snapshot: airlockSnap },
+  // Its own area: the policy's revision history reads area 'airlock' as revisions.
+  { method: 'PUT', path: '/v1/admin/airlock/dataset', area: 'airlock-dataset', action: 'airlock.dataset', target: () => "the org's Airlock dataset capture", snapshot: airlockDatasetSnap },
   // JIRA (the org's app) and the org itself
   { method: 'PUT', path: '/v1/admin/jira', area: 'jira', action: 'jira.update', target: () => "the org's JIRA app", snapshot: jiraSnap },
   { method: 'POST', path: '/v1/admin/jira/disconnect-all', area: 'jira', action: 'jira.disconnect-all', target: () => 'every JIRA connection', noBody: true },
@@ -167,11 +242,14 @@ export const AUDIT_EXEMPT_ROUTES: Record<string, string> = {
   'POST /auth/login': 'a sign-in, not a change to any setting',
   'POST /auth/logout': 'a sign-out, not a change to any setting',
   'POST /v1/events': "installations' activity events, the hub's data, not its configuration",
+  'POST /v1/receipts': 'receipts are what installations report, the hub\'s data, not its configuration',
   'POST /v1/admin/flows/contract': 'describes a draft flow and stores nothing',
   'POST /v1/admin/rollups/recompute': 'rebuilds derived statistics from the events; no setting changes',
   'POST /v1/admin/system/pending/ack': 'dismisses a notice the hub showed; no setting changes',
   'POST /hub/device/start': 'a device asking to connect; nothing changes until an admin approves it (audited)',
   'POST /hub/device/poll': 'a device waiting for approval; read-only',
+  'POST /hub/admin-device/start': 'an admin CLI asking to sign in; nothing changes until an admin approves it (audited)',
+  'POST /hub/admin-device/poll': 'an admin CLI waiting for approval; read-only',
   'POST /v1/jira/oauth/start': "a person connecting their own JIRA account, not the org's configuration",
   'POST /v1/jira/oauth/complete': "a person connecting their own JIRA account, not the org's configuration",
   'POST /v1/jira/disconnect': "a person disconnecting their own JIRA account, not the org's configuration",
@@ -214,13 +292,57 @@ export function mutatingRoutesOf(app: Express): string[] {
   return [...out].sort();
 }
 
+/** The names requireSession and requireAdmin give their guards (auth/session.ts). */
+const BOARD_GUARDS = new Set(['hubSessionGuard', 'hubAdminGuard']);
+
+/**
+ * Every route a signed-in person can reach - those behind the session or admin
+ * guard - as `METHOD /path`. This is the board's surface, which the admin CLI
+ * holds itself against (CGLAB-702).
+ */
+export function boardRoutesOf(app: Express): string[] {
+  const out = new Set<string>();
+  const isGuard = (layer: any) => BOARD_GUARDS.has(layer?.handle?.name ?? layer?.name);
+  // A guard counts on the route itself, or as middleware (app.use / router.use)
+  // that a request passes through on its way to the route. Such middleware
+  // guards a SCOPE - the path its stack is mounted at - and a scope found in
+  // one router carries on to later routers and routes under the same path, as
+  // a request falls through. Paths compare case-insensitively, as Express
+  // matches them by default (the hub does not turn on caseSensitive).
+  // Over-counting makes the parity guard ask for a command it may not need,
+  // which is loud; under-counting would be silent. Guards are recognised by
+  // name, so attach requireSession / requireAdmin directly: a wrapper under
+  // another name is not seen.
+  const under = (path: string, scope: string) => {
+    const p = path.toLowerCase(), s = scope.toLowerCase();
+    return s === '' || p === s || p.startsWith(s.endsWith('/') ? s : `${s}/`);
+  };
+  const walk = (stack: any[], prefix: string, inherited: string[]): string[] => {
+    const scopes = [...inherited];
+    for (const layer of stack ?? []) {
+      if (layer.route) {
+        const full = `${prefix}${layer.route.path === '/' ? '' : layer.route.path}` || '/';
+        if (!scopes.some(sc => under(full, sc)) && !layer.route.stack?.some(isGuard)) continue;
+        for (const m of Object.keys(layer.route.methods)) if (m !== '_all') out.add(`${m.toUpperCase()} ${full}`);
+      } else if (layer.name === 'router' && layer.handle?.stack) {
+        for (const sc of walk(layer.handle.stack, prefix + mountPathOf(layer), scopes)) if (!scopes.includes(sc)) scopes.push(sc);
+      } else if (isGuard(layer)) {
+        if (!scopes.includes(prefix)) scopes.push(prefix);
+      }
+    }
+    return scopes;
+  };
+  walk((app as any).router?.stack ?? [], '', []);
+  return [...out].sort();
+}
+
 const AUDIT_LAYER = 'configAuditLayer';
 
 /** Who made a request, from what its guard set on it. */
 async function actorOf(db: DB, req: Request): Promise<{ orgId: string | null; source: AuditSource | null; actor: { userId: string | null; email: string | null } | null }> {
   if (req.session) {
     const u = await db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
-    return { orgId: req.session.orgId, source: 'board', actor: { userId: req.session.userId, email: u?.email ?? null } };
+    return { orgId: req.session.orgId, source: req.session.via === 'cli' ? 'cli' : 'board', actor: { userId: req.session.userId, email: u?.email ?? null } };
   }
   if (req.hubApiKey) return { orgId: req.hubApiKey.orgId, source: 'cli', actor: { userId: null, email: req.hubApiKey.installationId ? `installation ${req.hubApiKey.installationId}` : 'API key' } };
   if (req.hubFederation) return { orgId: req.hubFederation.orgId, source: 'federation', actor: { userId: null, email: `child hub ${req.hubFederation.childHubId}` } };

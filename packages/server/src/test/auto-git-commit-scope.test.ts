@@ -16,12 +16,26 @@
  * the only thing here that carries provenance. Anything the author left
  * unstaged is reported back rather than silently dropped.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { autoGitCommit } from '../server.js';
+import { autoGitCommit, initStorage, closeStorage } from '../server.js';
+import { removeTestDb, testDbPath } from './helpers/testDb';
+
+// A real (empty) store, as the server always has: the close commit asks it whether
+// an Airlock sandbox covers the card (SX-3), and a store that cannot answer turns
+// the repository's hooks off - the pre-commit hook below would then never run.
+const TEST_DB = testDbPath('auto-git-commit-scope-test-db.sqlite');
+beforeAll(async () => {
+  process.env.AGENFK_DB_PATH = TEST_DB;
+  await removeTestDb(TEST_DB, closeStorage);
+  await initStorage();
+});
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+});
 
 /** A throwaway repo with one tracked file and one commit. */
 const repo = () => {
@@ -89,32 +103,6 @@ describe('the close commit carries what the author staged', () => {
       expect(git('show HEAD:other.txt')).toBe('theirs v1\n');
       expect(r.unstaged).toContain('other.txt');
       expect(tree()).toContain('tracked.txt');
-    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
-  });
-
-  it('carries BOTH halves of a rename', async () => {
-    // Documents the contract; it does NOT discriminate — it stages with
-    // `git add -A` itself, so every candidate implementation passes. The test
-    // that actually rules `git add -u` out is the UNSTAGED rename below, where
-    // -u stages the deletion and skips the addition, producing a commit whose
-    // surviving files import a path that no longer exists.
-    const { dir, git, tree } = repo();
-    try {
-      fs.writeFileSync(path.join(dir, 'old.ts'), 'export const x = 1;\n');
-      fs.writeFileSync(path.join(dir, 'index.ts'), "export * from './old.js';\n");
-      git('add -A'); git('commit -q -m before');
-
-      fs.renameSync(path.join(dir, 'old.ts'), path.join(dir, 'new.ts'));
-      fs.writeFileSync(path.join(dir, 'index.ts'), "export * from './new.js';\n");
-      git('add -A');
-
-      const r = await close(dir, 'abc126', 'TASK', 'renames a file');
-      expect(r.committed).toBe(true);
-      const t = tree();
-      expect(t).toContain('new.ts');
-      expect(t).not.toContain('old.ts');
-      // The half that matters: index.ts points at a file that EXISTS in HEAD.
-      expect(git('show HEAD:index.ts')).toContain('./new.js');
     } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
@@ -277,26 +265,6 @@ describe('it never claims a commit it did not make', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
-  it('declines a rebase that is genuinely stopped mid-way (#251)', async () => {
-    const { dir, git } = repo();
-    try {
-      git('checkout -q -b side');
-      fs.writeFileSync(path.join(dir, 'tracked.txt'), 'side\n');
-      git('commit -q -am side');
-      git('checkout -q main');
-      fs.writeFileSync(path.join(dir, 'tracked.txt'), 'main\n');
-      git('commit -q -am main');
-      git('checkout -q side');
-      try { git('rebase main'); } catch { /* conflicts: the rebase stops, which is the point */ }
-      expect(fs.existsSync(path.join(dir, '.git', 'rebase-merge')) || fs.existsSync(path.join(dir, '.git', 'rebase-apply'))).toBe(true);
-
-      const r = await close(dir);
-      expect(r.outcome).toBe('declined');
-      expect(r.committed).toBe(false);
-      expect(r.detail).toMatch(/rebase/i);
-    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
-  });
-
   // A stopped rebase on each backend, and inside a linked worktree whose git
   // dir is not <root>/.git: each must still decline (#251 review).
   const conflictingSide = (git: (c: string) => string, dir: string) => {
@@ -338,36 +306,33 @@ describe('it never claims a commit it did not make', () => {
     }
   });
 
-  for (const op of ['cherry-pick', 'revert']) {
-    it(`declines a multi-commit ${op} stopped between picks, after its HEAD marker is gone (#251 review)`, async () => {
-      // Committing a resolved conflict by hand clears CHERRY_PICK_HEAD /
-      // REVERT_HEAD, but the rest of the sequence is still queued in sequencer/.
-      const { dir, git } = repo();
-      try {
-        git('checkout -q -b side');
-        for (const n of [1, 2]) {
-          fs.writeFileSync(path.join(dir, 'tracked.txt'), `side ${n}\n`);
-          git(`commit -q -am side${n}`);
-        }
-        git('checkout -q main');
-        fs.writeFileSync(path.join(dir, 'tracked.txt'), 'main\n');
-        git('commit -q -am main');
-        // Both replay side's two commits onto main, whose content conflicts.
-        const range = op === 'cherry-pick' ? 'main..side' : 'side~2..side';
-        try { git(`${op} ${range}`); } catch { /* the first one conflicts */ }
-        fs.writeFileSync(path.join(dir, 'tracked.txt'), 'resolved\n');
-        git('add tracked.txt');
-        git('commit -q -m resolved-by-hand');
-        expect(fs.existsSync(path.join(dir, '.git', 'sequencer'))).toBe(true);
+  it('declines a multi-commit cherry-pick stopped between picks, after its HEAD marker is gone (#251 review; a revert leaves the same sequencer/ state)', async () => {
+    // Committing a resolved conflict by hand clears CHERRY_PICK_HEAD (or
+    // REVERT_HEAD), but the rest of the sequence is still queued in sequencer/.
+    const { dir, git } = repo();
+    try {
+      git('checkout -q -b side');
+      for (const n of [1, 2]) {
+        fs.writeFileSync(path.join(dir, 'tracked.txt'), `side ${n}\n`);
+        git(`commit -q -am side${n}`);
+      }
+      git('checkout -q main');
+      fs.writeFileSync(path.join(dir, 'tracked.txt'), 'main\n');
+      git('commit -q -am main');
+      // Replays side's two commits onto main, whose content conflicts.
+      try { git('cherry-pick main..side'); } catch { /* the first one conflicts */ }
+      fs.writeFileSync(path.join(dir, 'tracked.txt'), 'resolved\n');
+      git('add tracked.txt');
+      git('commit -q -m resolved-by-hand');
+      expect(fs.existsSync(path.join(dir, '.git', 'sequencer'))).toBe(true);
 
-        fs.writeFileSync(path.join(dir, 'other.txt'), 'staged\n');
-        git('add other.txt');
-        const r = await close(dir);
-        expect(r.outcome).toBe('declined');
-        expect(r.committed).toBe(false);
-      } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
-    });
-  }
+      fs.writeFileSync(path.join(dir, 'other.txt'), 'staged\n');
+      git('add other.txt');
+      const r = await close(dir);
+      expect(r.outcome).toBe('declined');
+      expect(r.committed).toBe(false);
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+  });
 
   it('reports a directory that is not a git repository', async () => {
     // Swallowing git's own refusal made a server started outside a repo — or

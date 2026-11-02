@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/server",
-  "version": "2.0.0",
+  "version": "2.1.0-beta.13",
   "description": "MCP Server for AgenFK Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,13 +9,13 @@
   },
   "scripts": {
     "prebuild": "node ../../scripts/clean-dist.mjs",
-    "build": "tsc",
+    "build": "tsc && node scripts/bundle-mcp.mjs",
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@agenfk/core": "2.0.0",
-    "@agenfk/storage-sqlite": "2.0.0",
-    "@agenfk/telemetry": "2.0.0",
+    "@agenfk/core": "2.1.0-beta.13",
+    "@agenfk/storage-sqlite": "2.1.0-beta.13",
+    "@agenfk/telemetry": "2.1.0-beta.13",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "axios": "^1.21.0",
     "body-parser": "^2.4.0",
@@ -23,6 +23,7 @@
     "express": "^5.3.0",
     "express-rate-limit": "^8.7.2",
     "socket.io": "^4.8.4",
+    "tldts": "^7.0.23",
     "uuid": "^14.0.3",
     "zod": "^4.6.7"
   },
@@ -31,6 +32,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^20.11.16",
+    "esbuild": "0.28.1",
     "typescript": "^5.3.3"
   },
   "keywords": [

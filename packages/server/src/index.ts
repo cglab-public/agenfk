@@ -487,6 +487,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "airlock_status",
+        description: "The Airlock policy in force (GH-294): its mode (off / observe / enforce), which sessions it covers, where it comes from (hub or local), its revision and whether the hub manages it. Read-only: there is no MCP tool that changes the policy - a person changes it on the board, or an org admin on the hub. CLI: agenfk airlock status.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "airlock_check",
+        description: "Ask Airlock what it would decide for one command, path or URL (GH-294), without running it and without logging it (a dry run). Returns the verdict (allow / deny / needs-human-approval), its rule and reason. Read-only. CLI: agenfk airlock check.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            client: { type: "string", enum: ["pi", "opencode"], description: "The agent client whose policy coverage to judge by." },
+            model: { type: "string", description: "The session's model as provider/model, e.g. cloudflare-workers-ai/@cf/zai-org/glm-5.2. Omit when unknown." },
+            command: { type: "string", description: "A shell command to judge." },
+            path: { type: "string", description: "A file path to judge." },
+            url: { type: "string", description: "A URL to judge." },
+          },
+          required: ["client"],
+        },
+      },
+      {
         name: "add_comment",
         description: "Add a comment to an item to log progress or steps.",
         inputSchema: {
@@ -1118,6 +1138,34 @@ async function callToolHandler(request: any): Promise<any> {
         if (args.limit) params.limit = args.limit;
         const { data } = await api.get('/token-events', { params });
         return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+      }
+      case "airlock_status": {
+        try {
+          const { data } = await api.get('/airlock/policy');
+          return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
+        }
+      }
+      case "airlock_check": {
+        const { client, model, command, path: filePath, url } = z.object({
+          client: z.enum(["pi", "opencode"]), model: z.string().optional(),
+          command: z.string().optional(), path: z.string().optional(), url: z.string().optional(),
+        }).parse(request.params.arguments);
+        const args: Record<string, string> = {};
+        if (command) args.command = command;
+        if (filePath) args.path = filePath;
+        if (url) args.url = url;
+        if (!Object.keys(args).length) {
+          return { isError: true, content: [{ type: "text", text: "Pass at least one of command, path or url." }] };
+        }
+        try {
+          // dryRun: judged, never logged. The evaluate route writes nothing else.
+          const { data } = await api.post('/airlock/evaluate', { client, model, toolName: 'airlock_check', args, dryRun: true });
+          return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
+        }
       }
       case "review_brief": {
         const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);

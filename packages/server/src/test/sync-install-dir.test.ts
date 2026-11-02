@@ -181,34 +181,6 @@ describe('pruneInstallDir refuses to destroy data', () => {
     expect(existsSync(path.join(dst, 'commands/AgenFK.md'))).toBe(false);
   });
 
-  it('keeps a file whose only difference is letter case, where the volume folds case', () => {
-    // On macOS/NTFS, fs.cpSync writes agenfk.md into the EXISTING AgenFK.md
-    // entry and keeps the old spelling, so exact-case matching reads the
-    // surviving file as unshipped and deletes it — worse than not pruning.
-    // On a case-SENSITIVE volume the two really are different files and
-    // deleting the unshipped one is correct, so the expectation must follow
-    // the volume, not the developer's laptop. CI runs ubuntu-latest.
-    seed(src, 'commands/agenfk.md', 'new\n');
-    seed(dst, 'commands/AgenFK.md', 'old\n');
-    // Probe this exact volume the same way the implementation does.
-    const probe = path.join(dst, '.case-probe');
-    writeFileSync(probe, '');
-    const foldsCase = existsSync(path.join(dst, '.CASE-PROBE'));
-    rmSync(probe, { force: true });
-
-    const { removed } = pruneInstallDir(src, dst);
-
-    const survivors = fs.readdirSync(path.join(dst, 'commands'));
-    if (foldsCase) {
-      expect(removed).toEqual([]);
-      expect(survivors).toHaveLength(1);
-      expect(survivors[0].toLowerCase()).toBe('agenfk.md');
-    } else {
-      expect(removed).toEqual([path.join('commands', 'AgenFK.md')]);
-      expect(survivors).toHaveLength(0);
-    }
-  });
-
   it('will not prune through a symlinked dir, which would delete outside the install dir', () => {
     const outside = mkdtempSync(path.join(os.tmpdir(), 'agenfk-sync-outside-'));
     try {

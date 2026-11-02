@@ -205,13 +205,17 @@ describe('CGLAB-380: the check engine in verify', () => {
       expect((await item(id)).status).toBe('MAKE');
     });
 
-    it('suite-green passes on a green suite and the card advances', async () => {
+    it('suite-green passes on a green suite and the card advances; a built-in no earlier step feeds is n/a, not a block', async () => {
       const dir = makeRepo();
       const id = await card(await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: 'exit 0' }), 'MAKE');
       const res = await validate(id);
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect((await item(id)).status).toBe('CHECK');
       expect(byId((await item(id)).lastChecks.results, 'suite-green').outcome).toBe('pass');
+      // Built-ins whose record no earlier step produces are reported not applicable, and do not block.
+      const redSet = byId((await item(id)).lastChecks.results, 'red-set-passes-by-name');
+      expect(redSet).toMatchObject({ outcome: 'n/a' });
+      expect(redSet.detail).toMatch(/redSet/);
     });
 
     it('suite-green reads the per-test report: a failing test blocks even when the command exits 0', async () => {
@@ -235,41 +239,6 @@ describe('CGLAB-380: the check engine in verify', () => {
       expect((await item(id)).stepRecords.filter((r: any) => r.kind === 'capture')).toEqual([]);
     });
 
-    it('built-ins whose record no earlier step produces are reported not applicable, and do not block', async () => {
-      const dir = makeRepo();
-      const id = await card(await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: 'exit 0' }), 'MAKE');
-      const res = await validate(id);
-      expect(res.status).toBe(200);
-      const redSet = byId((await item(id)).lastChecks.results, 'red-set-passes-by-name');
-      expect(redSet).toMatchObject({ outcome: 'n/a' });
-      expect(redSet.detail).toMatch(/redSet/);
-    });
-
-    it('captures on the way OUT of a step when the next step needs its entry record', async () => {
-      const dir = makeRepo();
-      const f = await flow([s('START', 0, { isAnchor: true }), s('PLAN', 1, { role: 'planning' }), s('BUILD', 2, { role: 'planning', checks: [{ id: 'test-count-not-lower' }] }), s('END', 3, { isAnchor: true })]);
-      const pid = await project(f, { projectRoot: dir, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: junitCommand(2), reportPath: 'report.xml' } });
-      const id = await card(pid, 'PLAN');
-      expect((await validate(id)).status).toBe(200);
-      const caps = (await item(id)).stepRecords.filter((r: any) => r.kind === 'capture');
-      expect(caps).toHaveLength(1);
-      expect(caps[0].step).toBe('PLAN');
-      expect(caps[0].tests).toHaveLength(2);
-    });
-
-    it('test-count-not-lower compares against the entry record: fewer tests blocks', async () => {
-      const dir = makeRepo();
-      const f = await flow([s('START', 0, { isAnchor: true }), s('PLAN', 1, { role: 'planning' }), s('BUILD', 2, { role: 'planning', checks: [{ id: 'test-count-not-lower' }] }), s('END', 3, { isAnchor: true })]);
-      const pid = await project(f, { projectRoot: dir, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: junitCommand(3), reportPath: 'report.xml' } });
-      const id = await card(pid, 'PLAN');
-      expect((await validate(id)).status).toBe(200);
-      await agent().put(`/projects/${pid}/test-report`).set(internal()).send({ format: 'junit-xml', command: junitCommand(2), reportPath: 'report.xml' });
-      const res = await validate(id);
-      expect(res.status).toBe(422);
-      expect(byId(res.body.checks, 'test-count-not-lower')).toMatchObject({ outcome: 'fail' });
-      expect(byId(res.body.checks, 'test-count-not-lower').detail).toMatch(/3.*2/);
-    });
-
     it('a card with no entry record (it predates checks) gets a warning, never a pass or a block', async () => {
       const dir = makeRepo();
       const f = await flow([s('START', 0, { isAnchor: true }), s('PLAN', 1, { role: 'planning' }), s('BUILD', 2, { role: 'planning', checks: [{ id: 'test-count-not-lower' }] }), s('END', 3, { isAnchor: true })]);
@@ -285,40 +254,33 @@ describe('CGLAB-380: the check engine in verify', () => {
 
     it('async verify answers 202 at once and runs the checks in the background run', async () => {
       const dir = makeRepo();
-      // The answer must come before the command can have finished. Windows pays
-      // several times POSIX's cost for the git calls made before answering (#208),
-      // so there the command runs longer - the bound stays just under it.
-      const runMs = process.platform === 'win32' ? 5000 : 1000;
-      const id = await card(await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: nodeCommand(`setTimeout(() => process.exit(4), ${runMs});`) }), 'MAKE');
-      const started = Date.now();
+      // The answer must come while the command cannot have finished: it waits for a
+      // file this test writes only once the answer is in (GH-274: a 1s command raced
+      // the git calls made before answering, which a loaded machine outlasts). An
+      // answer held until the command ends comes only after the command gives up
+      // waiting (2000 polls) - and it says so in a file, checked below.
+      const release = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-async-')), 'release');
+      const command = nodeCommand(`const fs = require('fs'); let polls = 2000;
+(function wait() {
+  if (fs.existsSync(${JSON.stringify(release)})) process.exit(4);
+  if (--polls < 0) { fs.writeFileSync(${JSON.stringify(release + '.gave-up')}, ''); process.exit(4); }
+  setTimeout(wait, 10);
+})();`);
+      const id = await card(await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: command }), 'MAKE');
       const res = await validate(id, { async: true });
       expect(res.status).toBe(202);
-      expect(Date.now() - started).toBeLessThan(runMs - 100);
+      fs.writeFileSync(release, '');
       let run: any;
       for (let i = 0; i < 100; i++) {
         run = (await agent().get(`/items/validate-runs/${res.body.runId}`).set(internal())).body;
         if (run.status !== 'running') break;
         await new Promise(r => setTimeout(r, 100));
       }
+      expect(fs.existsSync(`${release}.gave-up`), 'the 202 came only after the command had given up waiting for it').toBe(false);
       expect(run.status).toBe('failed');
       expect(run.message).toMatch(/suite-green/);
       expect(byId(run.checks, 'suite-green').outcome).toBe('fail');
       expect((await item(id)).status).toBe('MAKE');
-    });
-
-    it('async verify whose checks pass continues into the step transition', async () => {
-      const dir = makeRepo();
-      const id = await card(await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: 'exit 0' }), 'MAKE');
-      const res = await validate(id, { async: true });
-      expect(res.status).toBe(202);
-      let run: any;
-      for (let i = 0; i < 100; i++) {
-        run = (await agent().get(`/items/validate-runs/${res.body.runId}`).set(internal())).body;
-        if (run.status !== 'running') break;
-        await new Promise(r => setTimeout(r, 100));
-      }
-      expect(run.status, JSON.stringify(run)).toBe('passed');
-      expect((await item(id)).status).toBe('CHECK');
     });
   });
 

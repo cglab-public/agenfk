@@ -131,8 +131,9 @@ export interface AuditFilter {
 export const AUDIT_PAGE_MAX = 200;
 const AUDIT_PAGE_DEFAULT = 50;
 
-const encodeCursor = (at: string, id: string) => Buffer.from(JSON.stringify([at, id]), 'utf8').toString('base64url');
-function decodeCursor(c: string): [string, string] | null {
+/** A newest-first page's resume point, (time, id) of its last row; also the Airlock decisions list's. */
+export const encodeCursor = (at: string, id: string) => Buffer.from(JSON.stringify([at, id]), 'utf8').toString('base64url');
+export function decodeCursor(c: string): [string, string] | null {
   try {
     const v = JSON.parse(Buffer.from(c, 'base64url').toString('utf8'));
     return Array.isArray(v) && v.length === 2 && v.every(x => typeof x === 'string') ? [v[0], v[1]] : null;

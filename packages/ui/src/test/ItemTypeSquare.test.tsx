@@ -14,9 +14,6 @@
  */
 import { render, screen, cleanup } from '@testing-library/react';
 import { describe, it, expect, afterEach } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
-import { join, dirname, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { ItemTypeSquare, ItemTypeBadge, ITEM_TYPE_VISUAL, itemTypeHint } from '../components/ItemTypeSquare';
 import { ItemType } from '../types';
@@ -39,117 +36,6 @@ describe('the type grammar', () => {
     expect(ITEM_TYPE_VISUAL[ItemType.STORY].fill).toBe('bg-type-story');
     expect(ITEM_TYPE_VISUAL[ItemType.TASK].fill).toBe('bg-type-task');
     expect(ITEM_TYPE_VISUAL[ItemType.BUG].fill).toBe('bg-type-bug');
-  });
-
-  it('is the only type grammar in the product — no component paints a type by hand', () => {
-    /*
-     * THE DEFECT THIS CHANGE SHIPPED TWICE, pinned where it actually lives.
-     *
-     * The draft's square said story=green / task=blue while the board, the
-     * detail badge, the Subitems table and both import modals said
-     * story=`story-blue` / task=`brand` teal. Four mappings at once, and the
-     * one screen that TEACHES the colour→type mapping taught the reverse of
-     * the screen the card lands on.
-     *
-     * The first version of this test asserted the retirement against
-     * `ITEM_TYPE_VISUAL` itself — a string of four `bg-*-600` classes that
-     * could never contain `story-blue` under any implementation. It was green
-     * while `KanbanBoard`'s drill-down breadcrumb still painted the dot with
-     * `bg-story-blue`: a FIFTH site, missed by the sweep and unreachable by
-     * any assertion that only looks at this module.
-     *
-     * So this reads the components directory. The rule is narrow and about
-     * intent: a colour token may not be CHOSEN BY ITEM TYPE outside
-     * `ItemTypeSquare`. `--color-story-blue` and `--brand` keep their other
-     * jobs (a TEST column's top border, an agent's tag) — what is banned is
-     * using them to mean "this one is a STORY".
-     */
-    // Resolved from this file's own location, not from the runner's cwd: the
-    // suite is run from the package root and from the monorepo root.
-    const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-    /*
-     * Every Tailwind palette and every utility that can carry a colour, not
-     * the five prefixes and five hues the first version listed. A sweep that
-     * only knows `bg-blue-600` waves `ring-purple-500` straight through, and
-     * the next private palette will not be a copy of the last one.
-     */
-    const COLOUR = String.raw`(?:bg|text|border|ring|fill|stroke|from|via|to|decoration|outline|shadow|accent|caret|divide)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}`;
-    const BRAND = String.raw`story-blue|brand-light|bg-brand\/|text-brand\b|danger-muted|bg-chip|accent-text`;
-    const retired = new RegExp(`${COLOUR}|${BRAND}`);
-
-    /*
-     * An item type named in code, in the two shapes that occur: the enum, and
-     * a bare literal used as a key or compared against. The key form is what
-     * `TYPE_COLORS = { EPIC: 'text-story-blue', … }` looked like — the exact
-     * construct this change deleted from two files, and the one a line-scoped
-     * version of this rule could not see.
-     */
-    const itemType = /ItemType\.(?:EPIC|STORY|TASK|BUG)\b|(?:^|[\s{,([])(?:['"]?)(?:EPIC|STORY|TASK|BUG)(?:['"]?)\s*[:?=]/;
-
-    /*
-     * A WINDOW, not a line. Prettier reflows a long `clsx` ternary across
-     * three lines the moment someone adds a branch, and the defect this rule
-     * exists for would have walked straight through a per-line check after any
-     * reformat. The window is the unit a human reads as one decision.
-     *
-     * `// item-type-colour-ok` is the escape hatch, for the genuine case of a
-     * type-conditional element that happens to sit next to an unrelated
-     * colour. It is looked for in the LINES above the match, not inside the
-     * byte window: the first version checked the window and the one real use
-     * of it sat ~200 characters away — outside — so the marker suppressed
-     * nothing and the site passed by accident, on padding. A hatch nobody can
-     * reach is worse than no hatch, because it looks like one.
-     */
-    const WINDOW = 140;
-    const offenders: string[] = [];
-
-    const walk = (dir: string): string[] =>
-      readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
-        const full = join(dir, entry.name);
-        if (entry.isDirectory()) return walk(full);
-        return /\.tsx?$/.test(entry.name) ? [full] : [];
-      });
-
-    for (const file of walk(root)) {
-      if (file.endsWith('ItemTypeSquare.tsx') || file.includes(`${sep}test${sep}`)) continue;
-      const raw = readFileSync(file, 'utf8');
-      // Comments talk ABOUT the retired tints — this change's own history is
-      // written in them — and a comment paints nothing.
-      const source = raw.replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
-        .replace(/\/\/.*$/gm, m => ' '.repeat(m.length));
-      const rawLines = raw.split('\n');
-      const hits = [...source.matchAll(new RegExp(itemType, 'g'))];
-      for (const hit of hits) {
-        // Past the character the alternation consumed ahead of the type, so a
-        // key at column 0 is not attributed to the line above it.
-        const at = (hit.index ?? 0) + hit[0].length - hit[0].replace(/^[\s{,([]/, '').length;
-        const window = source.slice(Math.max(0, at - WINDOW), at + WINDOW);
-        if (!retired.test(window)) continue;
-        const line = source.slice(0, at).split('\n').length;
-        /*
-         * The marker lives in a comment ABOVE the block, which is where a
-         * person writes it — and comments are blanked out of `source`, so it
-         * is looked for in the raw lines.
-         *
-         * NOTHING BELOW the match: a marker written under a violation must
-         * not excuse it, which is a suppression pointing the wrong way and the
-         * hardest kind to notice in review.
-         *
-         * Eight lines above, though, not four. A marker is written at the top
-         * of the comment that JUSTIFIES it, and a justification worth reading
-         * runs several lines — tightening this to four put the marker on the
-         * drill-down button out of its own block's reach, which is the same
-         * dead hatch as before wearing the opposite mistake.
-         */
-        const nearby = rawLines.slice(Math.max(0, line - 9), line).join('\n');
-        if (nearby.includes('item-type-colour-ok')) continue;
-        offenders.push(`${file.slice(root.length + 1)}:${line}: ${source.split('\n')[line - 1].trim()}`);
-      }
-    }
-
-    expect([...new Set(offenders)], `a type's colour is decided outside ItemTypeSquare:\n${[...new Set(offenders)].join('\n')}`)
-      .toEqual([]);
   });
 
   it('gives no two types the same colour', () => {

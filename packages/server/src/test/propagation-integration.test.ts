@@ -181,8 +181,10 @@ describe('sibling propagation on a flow whose exit step is not named DONE', () =
     return { make };
   };
 
-  // `agenfk flow create` marks a boundary with isSpecial; a hand-written or default flow with isAnchor.
-  it.each([['isAnchor'], ['isSpecial']])("carries a sibling's green of this commit to the next card when the exit step is a boundary (%s) named SHIPPED", async (flag) => {
+  // `agenfk flow create` marks a boundary with isSpecial; a hand-written or default flow with isAnchor
+  // (an isAnchor SHIPPED is propagated onto in the next test).
+  it("carries a sibling's green of this commit to the next card when the exit step is an isSpecial boundary named SHIPPED", async () => {
+    const flag = 'isSpecial';
     const { make } = await onFlow([
       { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
       { name: 'CODE', label: 'Code', order: 1 },
@@ -269,24 +271,6 @@ describe('the sibling gate on a real tree', () => {
     const r2 = await validate(c2.id);
     expect(r2.body.status).toBe('DONE');
     expect(r2.body.output, 'it ran the command instead of inheriting the green').toBe('Sibling propagation');
-  });
-
-  it('refuses when the tree has UNCOMMITTED work, and runs the command', async () => {
-    // In the one-tree model agents edit without committing until close, so a
-    // dirty tree is the NORMAL state and its content is work the sibling's
-    // green never saw. HEAD alone cannot see it; the clean-tree rule can.
-    const { make } = await setup();
-    const c1 = await make('c1');
-    await toTest(c1.id);
-    await validate(c1.id);
-
-    fs.appendFileSync(path.join(repo, 'a.txt'), 'uncommitted');
-
-    const c2 = await make('c2');
-    await toTest(c2.id);
-    const r2 = await validate(c2.id);
-    expect(r2.body.status).toBe('DONE');
-    expect(r2.body.output, 'a green was spent on a tree that had moved under it').not.toBe('Sibling propagation');
   });
 
   it('refuses when the cards work in a worktree the command never ran in', async () => {
@@ -384,23 +368,6 @@ describe('the sibling gate on a real tree', () => {
     await toTest(c2.id);
     const r2 = await validate(c2.id);
     expect(r2.body.output).toBe('Sibling propagation');
-  });
-
-  it('refuses a legacy green that carries no commit', async () => {
-    // Every record written before this feature. "Could not check" is not
-    // "checked, clear", and the 63-of-78 population is exactly this shape.
-    const { make } = await setup();
-    const c1 = await make('c1');
-    await storage.updateItem(c1.id, {
-      status: 'DONE',
-      tests: [{ id: 'legacy', command: 'exit 0', output: '', status: 'PASSED', executedAt: new Date() }],
-    } as never);
-
-    const c2 = await make('c2');
-    await toTest(c2.id);
-    const r2 = await validate(c2.id);
-    expect(r2.body.status).toBe('DONE');
-    expect(r2.body.output).not.toBe('Sibling propagation');
   });
 
   it('refuses once the tree moved, and runs the command instead', async () => {

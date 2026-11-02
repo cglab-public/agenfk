@@ -103,6 +103,77 @@ describe('DataTable', () => {
   });
 });
 
+describe('DataTable without fillViewport (GH-273)', () => {
+  it('leaves its height to the page', () => {
+    render(<DataTable caption="People" columns={COLS} rows={ROWS} rowKey={r => r.name} />);
+    const table = screen.getByRole('table', { name: 'People' });
+    const box = table.parentElement as HTMLElement;
+    expect(box.style.maxHeight).toBe('');
+    expect(box.style.overflowY).toBe('');
+    expect(within(table).getAllByRole('columnheader')[0]).not.toHaveClass('sticky');
+  });
+});
+
+// GH-273, Codex review: the table sits in the app shell's scrolling pane
+// (<main data-scroll-root>), which keeps its scroll between admin pages and
+// can grow a banner above the page after the table has measured itself.
+describe('DataTable with fillViewport, inside the scrolling pane (GH-273)', () => {
+  let tableTop: number;
+  const ROOT_TOP = 50;
+  const PANE_HEIGHT = 800;
+  const mountInPane = () => {
+    const out = render(
+      <main data-scroll-root style={{ paddingBottom: '32px' }}>
+        <section style={{ paddingBottom: '20px', borderBottomWidth: '1px', borderBottomStyle: 'solid' }}>
+          <DataTable caption="People" columns={COLS} rows={ROWS} rowKey={r => r.name} fillViewport />
+        </section>
+      </main>,
+    );
+    const root = out.container.querySelector('[data-scroll-root]') as HTMLElement;
+    return { root, box: () => screen.getByRole('table', { name: 'People' }).parentElement as HTMLElement };
+  };
+  beforeEach(() => {
+    tableTop = 350;
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return { top: this.hasAttribute('data-scroll-root') ? ROOT_TOP : tableTop } as DOMRect;
+    });
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-scroll-root') ? PANE_HEIGHT : 0;
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('ends at the bottom of the pane, less the padding and border below it', () => {
+    const { box } = mountInPane();
+    // 300px down the pane's content; 32 + 20 + 1 below it.
+    expect(box().style.maxHeight).toBe(`${PANE_HEIGHT - 300 - 53}px`);
+    expect(box().style.overflowY).toBe('auto');
+  });
+
+  it('measures the same when the pane was left scrolled down', () => {
+    // The pane arrives scrolled 600px, as it does from a long admin page.
+    const { root, box } = mountInPane();
+    root.scrollTop = 600;
+    tableTop = 350 - 600;
+    fireEvent(window, new Event('resize'));
+    expect(box().style.maxHeight).toBe(`${PANE_HEIGHT - 300 - 53}px`);
+  });
+
+  it('measures again when something appears above it in the pane', async () => {
+    const { root, box } = mountInPane();
+    tableTop = 450;
+    const banner = document.createElement('div');
+    root.insertBefore(banner, root.firstChild);
+    await waitFor(() => expect(box().style.maxHeight).toBe(`${PANE_HEIGHT - 400 - 53}px`));
+  });
+
+  it('keeps its header in view while the rows scroll', () => {
+    mountInPane();
+    const table = screen.getByRole('table', { name: 'People' });
+    for (const th of within(table).getAllByRole('columnheader')) expect(th).toHaveClass('sticky');
+  });
+});
+
 describe('Org Users is a sortable, searchable table', () => {
   beforeEach(() => {
     get.mockImplementation(async (url: string) => {

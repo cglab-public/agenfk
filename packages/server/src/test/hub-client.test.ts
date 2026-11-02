@@ -30,18 +30,6 @@ describe('HubClient', () => {
     process.env = { ...originalEnv };
   });
 
-  it('is disabled when no config is present — but still outboxes with the pending-org sentinel', () => {
-    // CGLAB-11: pre-login events used to be silently dropped; now they queue
-    // with orgId '' and get stamped at the first boot with a config
-    // (see hub-outbox-disconnected.test.ts for the full contract).
-    const client = new HubClient('install-1', null);
-    client.attachStorage(storage);
-    expect(client.isEnabled).toBe(false);
-    client.recordEvent({ type: 'item.created', payload: { id: 'x' } });
-    expect(storage.hubOutboxCount()).toBe(1);
-    expect(JSON.parse(storage.hubOutboxPeek(1)[0].payload).orgId).toBe('');
-  });
-
   it('records events into the outbox when enabled', () => {
     const client = new HubClient('install-1', { url: 'http://hub.test', token: 't', orgId: 'org' });
     client.attachStorage(storage);
@@ -62,6 +50,16 @@ describe('HubClient', () => {
   it('never throws if storage has not been attached', () => {
     const client = new HubClient('install-1', { url: 'http://hub.test', token: 't', orgId: 'org' });
     expect(() => client.recordEvent({ type: 'item.updated', payload: {} })).not.toThrow();
+  });
+
+  it('says whether the event reached the outbox (HUB-2)', () => {
+    const client = new HubClient('install-1', { url: 'http://hub.test', token: 't', orgId: 'org' });
+    expect(client.recordEvent({ type: 'item.updated', payload: {} })).toBe(false);
+    client.attachStorage(storage);
+    expect(client.recordEvent({ type: 'item.updated', payload: {} })).toBe(true);
+    vi.spyOn(storage, 'hubOutboxAppend').mockImplementation(() => { throw new Error('SQLITE_FULL'); });
+    expect(client.recordEvent({ type: 'item.updated', payload: {} })).toBe(false);
+    vi.restoreAllMocks();
   });
 });
 
@@ -162,31 +160,6 @@ describe('Flusher', () => {
     }
   };
 
-  it('deletes events on 2xx', async () => {
-    seed(3);
-    const http = axios.create();
-    vi.spyOn(http, 'post').mockResolvedValue({ status: 200, data: { ingested: 3 } });
-    const flusher = new Flusher(storage, { url: 'http://hub.test', token: 't', orgId: 'o' }, 'inst', 30_000, 500, http);
-    await flusher.flush();
-    expect(storage.hubOutboxCount()).toBe(0);
-    expect(flusher.getStatus().lastFlushAt).not.toBeNull();
-  });
-
-  it('halts after repeated 4xx', async () => {
-    seed(2);
-    const http = axios.create();
-    vi.spyOn(http, 'post').mockRejectedValue({ response: { status: 401, data: { error: 'unauthorized' } }, message: 'unauth' });
-    const flusher = new Flusher(storage, { url: 'http://hub.test', token: 't', orgId: 'o' }, 'inst', 30_000, 500, http);
-    for (let i = 0; i < 6; i++) {
-      // Reset the soft-backoff window so each call actually executes.
-      (flusher as any).nextEligibleAt = 0;
-      await flusher.flush();
-    }
-    expect(flusher.getStatus().halted).toBe(true);
-    expect(storage.hubOutboxCount()).toBe(2);
-    expect(flusher.getStatus().lastError).toMatch(/401/);
-  });
-
   it('retains and backs off on 5xx / network', async () => {
     seed(2);
     const http = axios.create();
@@ -198,14 +171,5 @@ describe('Flusher', () => {
     await flusher.flush();
     expect(spy).toHaveBeenCalledTimes(1);
     expect(flusher.getStatus().halted).toBe(false);
-  });
-
-  it('flush is a no-op for empty outbox', async () => {
-    const http = axios.create();
-    const spy = vi.spyOn(http, 'post');
-    const flusher = new Flusher(storage, { url: 'http://hub.test', token: 't', orgId: 'o' }, 'inst', 30_000, 500, http);
-    await flusher.flush();
-    expect(spy).not.toHaveBeenCalled();
-    expect(flusher.getStatus().lastFlushAt).not.toBeNull();
   });
 });

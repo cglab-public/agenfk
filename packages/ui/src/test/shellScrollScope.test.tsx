@@ -24,7 +24,7 @@ import App from '../App';
 
 vi.mock('../components/KanbanBoard', () => ({ KanbanBoard: () => <div>board</div> }));
 vi.mock('../components/AppShell', () => ({ AppShell: ({ children }: any) => <div>{children}</div> }));
-vi.mock('../SocketContext', () => ({ SocketProvider: ({ children }: any) => <>{children}</> }));
+vi.mock('../SocketContext', () => ({ SocketProvider: ({ children }: any) => <>{children}</>, useSocketEvent: () => {} }));
 vi.mock('../ActiveProject', () => ({ ActiveProjectProvider: ({ children }: any) => <>{children}</> }));
 
 const { isDesktop } = vi.hoisted(() => ({ isDesktop: vi.fn() }));

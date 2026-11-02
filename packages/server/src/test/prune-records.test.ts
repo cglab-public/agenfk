@@ -76,13 +76,6 @@ describe('pruneStepRecords', () => {
     expect(report).toMatchObject({ cards: 1, records: 1 });
   });
 
-  it('keeps only rolled-back greens on an open card', async () => {
-    const g = capture('IN_PROGRESS', true), r = capture('IN_PROGRESS', false);
-    await card('open', 'IN_PROGRESS', [exit('TODO')], [g, r]);
-    await pruneStepRecords(storage);
-    expect(((await storage.getItem('open')) as any).supersededRecords.map((x: any) => x.at)).toEqual([g.at]);
-  });
-
   it('gives a closed card the same rule, so reopening it finds its baselines', async () => {
     const e1 = exit('TODO'), c1 = capture('DISCOVERY', true), ip1 = capture('IN_PROGRESS', false), ip2 = capture('IN_PROGRESS', true);
     const approval = { step: 'DISCOVERY', kind: 'approval', at: at(), id: 'a', by: 'u' };

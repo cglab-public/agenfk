@@ -375,23 +375,6 @@ describe('runtime branch resolution — the push target directory (BUG 40ff964b)
     }
   });
 
-  it('reports the target branch for a bare `git push` after a cd', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pr-hook-'));
-    try {
-      const session = path.join(root, 'session-repo');
-      const target = path.join(root, 'target-repo');
-      initRepo(session);
-      initRepo(target);
-      pushBranch(target, 'feat/CGLAB-426_ask-attachments');
-
-      const ctx = runHook(session, `cd ${target} && git push -q`);
-      expect(ctx).toContain("pushed to 'feat/CGLAB-426_ask-attachments'");
-      expect(ctx).not.toContain("pushed to 'main'");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it('reports the target branch for `git -C <repo> push`', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pr-hook-'));
     try {

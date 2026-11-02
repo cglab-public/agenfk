@@ -129,18 +129,12 @@ describe('a36047ea: a code change runs only the tests it affects', () => {
     const res = await validate(t.id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(t.runs().slice(1)).toEqual([{ related: ['lib.js'], ran: ['a.test.js'] }]);
+    // The reply says it ran only the affected tests.
+    expect(res.body.message).toMatch(/ran the 1 test file\(s\) affected by 1 changed file\(s\)/);
     const rec = await captureAt(t.id, 'BUILD');
     expect(rec).toMatchObject({ available: true, lazy: true, related: true, ranFiles: ['a.test.js'] });
     // The parser names a test by its file and title.
     expect(verdicts(rec.tests)).toEqual(['a.test.js:a.test.js > adds=passed', 'a.test.js:a.test.js > subtracts=passed', 'b.test.js:b.test.js > other works=passed', 'c.test.js:c.test.js > spaced works=passed']);
-  });
-
-  it('says in the reply that it ran only the affected tests', async () => {
-    const t = await setup();
-    await enterBuild(t);
-    t.edit('lib.js', 'module.exports = 10;\n');
-    const res = await validate(t.id);
-    expect(res.body.message).toMatch(/ran the 1 test file\(s\) affected by 1 changed file\(s\)/);
   });
 
   it('a failure in an affected test refuses the step, like a whole run would', async () => {
@@ -171,13 +165,7 @@ describe('a36047ea: what still runs the whole suite', () => {
     return res;
   };
 
-  it('a project with no relatedCommand', async () => {
-    const t = await setup({ related: false });
-    await enterBuild(t);
-    t.edit('lib.js', 'module.exports = 10;\n');
-    await whole(t);
-  });
-
+  // A project with no relatedCommand: "suggests a relatedCommand when a code change ran everything for want of one".
   it('a package.json change', async () => {
     const t = await setup();
     await enterBuild(t);
@@ -185,13 +173,7 @@ describe('a36047ea: what still runs the whole suite', () => {
     await whole(t);
   });
 
-  it('a config file change (vitest.config.js)', async () => {
-    const t = await setup();
-    await enterBuild(t);
-    t.edit('vitest.config.js', 'module.exports = {};\n');
-    await whole(t);
-  });
-
+  // Which other files are whole-suite files (configs, lockfiles, setup): WHOLE_SUITE_FILE in server-pure-helpers.unit.test.ts.
   it('a deleted source file', async () => {
     const t = await setup();
     await enterBuild(t);
@@ -260,18 +242,7 @@ describe('de5e5a03: an affected-only run never stands in for tests it cannot tra
     return res;
   };
 
-  it('a snapshot changed with the code: the whole suite runs', async () => {
-    const t = await setup();
-    fs.mkdirSync(path.join(t.repo, '__snapshots__'));
-    t.edit('__snapshots__/a.test.js.snap', 'exports[`adds 1`] = `1`;\n');
-    git(t.repo, 'git add . && git commit -qm snap');
-    await enterBuild(t);
-    t.edit('lib.js', 'module.exports = 10;\n');
-    t.edit('__snapshots__/a.test.js.snap', 'exports[`adds 1`] = `10`;\n');
-    await whole(t);
-    expect(t.runs().slice(1)).toEqual(['ALL']);
-  });
-
+  // Which files a related run cannot follow (a snapshot, a fixture): GRAPH_FILE in server-pure-helpers.unit.test.ts.
   it('a data file a test reads changed: the whole suite runs', async () => {
     const t = await setup();
     t.edit('fixture.json', '{"n":1}\n');

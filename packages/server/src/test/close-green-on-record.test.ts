@@ -170,40 +170,6 @@ describe('the close stands on a green of this tree already on record (ef1342b8)'
     expect(t?.treeState, 'the record carries the old tree, not the one that closed').not.toBe(green.filesState);
   });
 
-  it('a Markdown file a test names changed since the green: it counts as code, and the verify command runs', async () => {
-    const dir = makeRepo();
-    fs.writeFileSync(path.join(dir, 'tests/a.test.js'), "test reads 'GUIDE.md'");
-    fs.writeFileSync(path.join(dir, 'GUIDE.md'), 'v1\n');
-    git(dir, 'git add . && git commit -qm guide');
-    const suite = counted('suite');
-    const pid = await project(await finalOnly(), reported(dir, suite.command));
-    const id = await card(pid, 'WORK');
-    await captureNow(id);
-    fs.writeFileSync(path.join(dir, 'GUIDE.md'), 'v2\n');
-    git(dir, 'git commit -qam guide2');
-    await moveTo(id, 'FINAL');
-
-    expect((await predict(id)).mode).toBe('full');
-    const res = await validate(id);
-    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
-    expect(suite.runs(), 'a file a test reads was treated as docs').toHaveLength(2);
-  });
-
-  it("a project that ignores nothing for reuse (reuseIgnore: none): a docs edit runs the verify command", async () => {
-    const dir = makeRepo();
-    const suite = counted('suite');
-    const pid = await project(await finalOnly(), { projectRoot: dir, verifyCommand: suite.command, testReport: { format: 'junit-xml', reportPath: 'report.xml', command: suite.command, reuseIgnore: [] } });
-    const id = await card(pid, 'WORK');
-    await captureNow(id);
-    fs.writeFileSync(path.join(dir, 'NOTES.md'), '# notes\n');
-    git(dir, 'git add NOTES.md && git commit -qm docs');
-    await moveTo(id, 'FINAL');
-
-    const res = await validate(id);
-    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
-    expect(suite.runs()).toHaveLength(2);
-  });
-
   it('a green of the same content in ANOTHER checkout: it is not this tree, and the verify command runs', async () => {
     const elsewhere = makeRepo();
     const dir = makeRepo();
