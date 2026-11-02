@@ -13,7 +13,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
-import { questionName, nameDenied, refusalOf, startResolver, followConfig, RefusalReporter, REPORT_PREFACE, type Resolver, type ResolverConfig } from '../airlock/guestDns';
+import { questionName, nameDenied, refusalOf, startResolver, followConfig, RefusalReporter, REPORT_PREFACE, withPortRetry, type Resolver, type ResolverConfig } from '../airlock/guestDns';
 
 /** A DNS query for `name` (type A), as a stub resolver sends it. */
 function query(name: string, id = 0x1234): Buffer {
@@ -374,5 +374,24 @@ describe('RefusalReporter (85d37bd5)', () => {
     expect(sent.length).toBeGreaterThan(1);
     for (const p of sent) expect(Buffer.byteLength(p)).toBeLessThanOrEqual(200);
     expect(sent.flatMap(lines).map((e) => e.name)).toEqual(Array.from({ length: 20 }, (_, i) => `name-number-${i}.example.org`));
+  });
+});
+
+describe('a port taken or reserved when the resolver picks its own (Windows CI: listen EACCES)', () => {
+  const fail = (code: string) => Object.assign(new Error(code), { code });
+
+  it('tries the pair again while its port is taken or reserved, and gives the first that binds', async () => {
+    let n = 0;
+    const got = await withPortRetry(5, async () => { n++; if (n === 1) throw fail('EACCES'); if (n === 2) throw fail('EADDRINUSE'); return n; });
+    expect(got).toBe(3);
+  });
+
+  it('gives up after its attempts, and at once on any other error', async () => {
+    let n = 0;
+    await expect(withPortRetry(3, async () => { n++; throw fail('EACCES'); })).rejects.toThrow('EACCES');
+    expect(n).toBe(3);
+    n = 0;
+    await expect(withPortRetry(3, async () => { n++; throw fail('ENOTFOUND'); })).rejects.toThrow('ENOTFOUND');
+    expect(n).toBe(1);
   });
 });
