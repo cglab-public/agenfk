@@ -25,6 +25,7 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
+import { allowTextOf, denyTextOf, hasHostEntries, hostListsOf, DIRECTION_HELP } from '../airlockHostText';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   api,
@@ -65,8 +66,6 @@ const ACTIONS: Array<{ value: AirlockRuleActionDto; label: string }> = [
   { value: 'off', label: 'Off' },
 ];
 
-const lines = (text: string): string[] => text.split('\n').map(l => l.trim()).filter(Boolean);
-
 type RuleKey = keyof AirlockPolicyDto['rules'];
 
 interface OverrideDraft {
@@ -100,8 +99,8 @@ const HOME_ACCESS: Array<{ value: HomeAccess; label: string }> = [
 
 const overrideDraftOf = (key: string, o: AirlockProjectOverrideDto): OverrideDraft => ({
   key,
-  allow: (o.hosts?.allow ?? []).join('\n'),
-  deny: (o.hosts?.deny ?? []).join('\n'),
+  allow: allowTextOf(o.hosts),
+  deny: denyTextOf(o.hosts),
   rules: { ...o.rules },
   image: o.machineImage ?? '',
 });
@@ -111,12 +110,11 @@ const projectsOf = (overrides: OverrideDraft[]): Record<string, AirlockProjectOv
   if (!overrides.length) return undefined;
   const out: Record<string, AirlockProjectOverrideDto> = {};
   for (const o of overrides) {
-    const allow = lines(o.allow);
-    const deny = lines(o.deny);
+    const hosts = hostListsOf(o.allow, o.deny);
     const rules = { ...o.rules };
     const image = o.image.trim();
     out[o.key.trim()] = {
-      ...(allow.length || deny.length ? { hosts: { allow, deny } } : {}),
+      ...(hasHostEntries(hosts) ? { hosts } : {}),
       ...(Object.keys(rules).length ? { rules } : {}),
       ...(image ? { machineImage: image } : {}),
     };
@@ -140,8 +138,8 @@ const draftOf = (p: AirlockPolicyDto): Draft => ({
   mode: p.mode,
   models: p.models.map(m => ({ ...m })),
   appliesWhenModelUnknown: p.appliesWhenModelUnknown,
-  allow: p.hosts.allow.join('\n'),
-  deny: p.hosts.deny.join('\n'),
+  allow: allowTextOf(p.hosts),
+  deny: denyTextOf(p.hosts),
   rules: { ...DEFAULT_RULES, ...p.rules },
   overrides: Object.entries(p.projects ?? {}).map(([k, o]) => overrideDraftOf(k, o)),
   image: p.machineImage ?? '',
@@ -156,7 +154,7 @@ const policyOf = ({ machineImage: _image, homeAccess: _home, ...base }: AirlockP
   mode: d.mode,
   models: d.models.map(m => ({ ...m })),
   appliesWhenModelUnknown: d.appliesWhenModelUnknown,
-  hosts: { allow: lines(d.allow), deny: lines(d.deny) },
+  hosts: hostListsOf(d.allow, d.deny),
   rules: { ...d.rules },
   projects: projectsOf(d.overrides),
 });
@@ -437,12 +435,12 @@ function PolicyForm({
       <div className={clsx(BLOCK, 'grid gap-4 sm:grid-cols-2')}>
         <div>
           <label htmlFor="airlock-allow" className={LABEL}>Allowed hosts</label>
-          <p className={HELP}>Hosts an upload may go to. One per line: a name, *.domain, or a CIDR.</p>
+          <p className={HELP}>{`Hosts tool calls may reach and send data to. One per line: a name, *.domain, or a CIDR. ${DIRECTION_HELP}`}</p>
           <textarea id="airlock-allow" rows={4} value={draft.allow} readOnly={readOnly} onChange={e => set('allow', e.target.value)} className={clsx(FIELD, 'mt-2 font-mono')} />
         </div>
         <div>
           <label htmlFor="airlock-deny" className={LABEL}>Denied hosts</label>
-          <p className={HELP}>Hosts no tool call may reach. Cloud metadata endpoints are always denied.</p>
+          <p className={HELP}>{`Hosts no tool call may reach. ${DIRECTION_HELP} Cloud metadata endpoints are always denied.`}</p>
           <textarea id="airlock-deny" rows={4} value={draft.deny} readOnly={readOnly} onChange={e => set('deny', e.target.value)} className={clsx(FIELD, 'mt-2 font-mono')} />
         </div>
       </div>

@@ -20,7 +20,7 @@ import { AirlockLearning, learningApi } from '../components/AirlockLearning';
 import { guardTokens } from './helpers/tokenGuard';
 
 const host = (name: string, over: Record<string, unknown> = {}) => ({
-  host: name, hits: 3, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported',
+  host: name, hits: 3, uploads: 0, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported',
   firstSeen: '2026-10-20T10:00:00.000Z', lastSeen: '2026-10-27T10:00:00.000Z', clients: ['pi'], cards: ['card-1'],
   ...over,
 });
@@ -89,7 +89,7 @@ describe('Airlock learning: standalone', () => {
     const list = await open();
     fireEvent.click(within(list).getByRole('checkbox', { name: 'pkg.example.org' }));
     fireEvent.click(screen.getByRole('button', { name: /allow 1 selected host/i }));
-    await waitFor(() => expect(learningApi.accept).toHaveBeenCalledWith({ hosts: ['pkg.example.org'], expectedRevision: 4 }));
+    await waitFor(() => expect(learningApi.accept).toHaveBeenCalledWith({ entries: [{ pattern: 'pkg.example.org', direction: 'download' }], expectedRevision: 4 }));
     expect(await screen.findByRole('status')).toHaveProperty('textContent', expect.stringMatching(/revision 5/));
     expect(screen.queryByRole('button', { name: /send .* to the hub/i })).toBeNull();
   });
@@ -126,7 +126,57 @@ describe('Airlock learning: standalone', () => {
     expect(box('pkg.example.org').checked).toBe(false);
     expect(box('api.example.com').checked).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: /allow 1 selected host/i }));
-    await waitFor(() => expect(learningApi.accept).toHaveBeenCalledWith({ hosts: ['api.example.com'], expectedRevision: 4 }));
+    await waitFor(() => expect(learningApi.accept).toHaveBeenCalledWith({ entries: [{ pattern: 'api.example.com', direction: 'download' }], expectedRevision: 4 }));
+  });
+});
+
+describe('Airlock learning: direction and wildcards (2026-11-02)', () => {
+  const withWildcards = () => answer({ proposal: {
+    hosts: [host('api.us5.datadoghq.com', { hits: 14 }), host('mcp.us5.datadoghq.com', { hits: 6, uploads: 2 }), host('docs.vendor.io')],
+    wildcards: [{ pattern: '*.datadoghq.com', hosts: ['api.us5.datadoghq.com', 'mcp.us5.datadoghq.com'], hits: 20, uploads: 2, evidence: 'agent-reported' }],
+    excluded: [{ host: 'pub.test', reason: 'reserved-name' }],
+  } });
+
+  it('each host says whether it was sent data, and its direction starts at what was seen', async () => {
+    vi.mocked(learningApi.get).mockResolvedValue(withWildcards() as never);
+    renderIt();
+    const rows = within(await open()).getAllByRole('listitem');
+    expect(rows[0].textContent).toMatch(/downloads only/i);
+    expect(rows[1].textContent).toMatch(/sent data 2 times/i);
+    expect((within(rows[0]).getByLabelText('Direction for api.us5.datadoghq.com') as HTMLSelectElement).value).toBe('download');
+    expect((within(rows[1]).getByLabelText('Direction for mcp.us5.datadoghq.com') as HTMLSelectElement).value).toBe('both');
+  });
+
+  it('offers wildcards with the hosts they cover, and accepts hosts and wildcards each with the direction picked', async () => {
+    vi.mocked(learningApi.get).mockResolvedValue(withWildcards() as never);
+    renderIt();
+    const hosts = await open();
+    const wild = screen.getByRole('list', { name: 'Proposed wildcards' });
+    expect(wild.textContent).toMatch(/covers api\.us5\.datadoghq\.com, mcp\.us5\.datadoghq\.com/);
+    fireEvent.click(within(wild).getByRole('checkbox', { name: '*.datadoghq.com' }));
+    fireEvent.change(within(wild).getByLabelText('Direction for *.datadoghq.com'), { target: { value: 'download' } });
+    fireEvent.click(within(hosts).getByRole('checkbox', { name: 'docs.vendor.io' }));
+    fireEvent.change(within(hosts).getByLabelText('Direction for docs.vendor.io'), { target: { value: 'upload' } });
+    fireEvent.click(screen.getByRole('button', { name: /allow 2 selected/i }));
+    await waitFor(() => expect(learningApi.accept).toHaveBeenCalledWith({
+      entries: [{ pattern: 'docs.vendor.io', direction: 'upload' }, { pattern: '*.datadoghq.com', direction: 'download' }],
+      expectedRevision: 4,
+    }));
+  });
+
+  it('names a reserved name as the reason it was left out', async () => {
+    vi.mocked(learningApi.get).mockResolvedValue(withWildcards() as never);
+    renderIt();
+    await open();
+    expect(screen.getByText(/reserved name/i)).toBeTruthy();
+  });
+
+  it('a hub-joined board sends hosts only: no direction and no wildcard, the hub decides those', async () => {
+    vi.mocked(learningApi.get).mockResolvedValue({ ...withWildcards(), source: 'hub', hubManaged: true } as never);
+    renderIt();
+    await open();
+    expect(screen.queryByLabelText(/direction for/i)).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Proposed wildcards' })).toBeNull();
   });
 });
 

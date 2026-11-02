@@ -266,11 +266,15 @@ const MAX_LEARNING_LABEL_ROWS = 1000;
  * newest rows that reached each - the host index, from their `hosts` - while the
  * switch is on. Deterministic event ids, so accepting the same host again adds nothing.
  */
-export async function labelAirlockDatasetHosts(db: DB, orgId: string, hosts: unknown[], now: number = Date.now()): Promise<number> {
+export async function labelAirlockDatasetHosts(
+  db: DB, orgId: string, hosts: ReadonlyArray<string | { host: string; direction: 'download' | 'upload' | 'both' }>, now: number = Date.now(),
+): Promise<number> {
   if (!(await airlockDatasetEnabled(db, orgId))) return 0;
   const at = new Date(now).toISOString();
   let kept = 0;
-  for (const raw of hosts) {
+  for (const item of hosts) {
+    // The direction the admin allowed: a row that sent data to a host allowed for downloads only was not allowed.
+    const { host: raw, direction } = typeof item === 'string' ? { host: item, direction: 'both' as const } : item;
     const host = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
     if (!PLAIN_HOST.test(host)) continue;
     // The newest rows whose hosts name it exactly, by index: a row that only mentions
@@ -283,7 +287,7 @@ export async function labelAirlockDatasetHosts(db: DB, orgId: string, hosts: unk
     for (const r of rows) {
       kept += await keepOne(db, orgId, {
         eventId: `learning:${r.row_id}:${host}`.slice(0, MAX_ROW_ID_CHARS), installationId: 'hub', occurredAt: at,
-        type: 'airlock.dataset-label', payload: { rowId: r.row_id, label: { kind: 'learning-accept', host } },
+        type: 'airlock.dataset-label', payload: { rowId: r.row_id, label: { kind: 'learning-accept', host, direction } },
       }, 'hub-admin', at, now);
     }
   }

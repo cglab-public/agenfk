@@ -15,6 +15,8 @@ export interface AirlockHostObservation {
   ts: string;
   /** An import's count; 1 otherwise. */
   hits?: number;
+  /** Of those, how many sent the host data (an upload a tool call made). */
+  uploads?: number;
   /** An import's first sighting. ISO. */
   firstSeen?: string | null;
   /** When the server received it, by its own clock (defaults to now). ISO. */
@@ -25,6 +27,8 @@ export interface AirlockHostObservation {
 export interface AirlockLearnedHost {
   host: string;
   hits: Record<AirlockLearnSource, number>;
+  /** Of the hits, those that sent the host data; the proxy cannot tell, so its count stays 0. */
+  uploads: Record<AirlockLearnSource, number>;
   firstSeen: string;
   lastSeen: string;
   /** The server's receipt time of the latest sighting: what retention goes by. */
@@ -38,7 +42,8 @@ export type AirlockLearningExclusion =
   | 'ioc-host'
   | 'denied-host'
   | 'already-allowed'
-  | 'private-address';
+  | 'private-address'
+  | 'reserved-name';
 
 export type AirlockLearningEvidence = 'proxy' | 'agent-reported';
 
@@ -47,6 +52,8 @@ export interface AirlockProposedHost {
   /** All sources together. */
   hits: number;
   sources: Record<AirlockLearnSource, number>;
+  /** How many of the hits sent the host data: a hint for the direction to allow. */
+  uploads: number;
   evidence: AirlockLearningEvidence;
   firstSeen: string;
   lastSeen: string;
@@ -54,14 +61,33 @@ export interface AirlockProposedHost {
   cards: string[];
 }
 
+/** Proposed hosts sharing a registrable domain, offered as one `*.domain` entry. */
+export interface AirlockProposedWildcard {
+  pattern: string;
+  /** The proposed hosts it covers, in proposal order. */
+  hosts: string[];
+  hits: number;
+  uploads: number;
+  evidence: AirlockLearningEvidence;
+}
+
+/** One accepted entry: a proposed host or wildcard, and the way data may go. */
+export interface AirlockAcceptedEntry {
+  pattern: string;
+  direction: 'download' | 'upload' | 'both';
+}
+
 export interface AirlockProposal {
   hosts: AirlockProposedHost[];
+  wildcards: AirlockProposedWildcard[];
   excluded: Array<{ host: string; reason: AirlockLearningExclusion }>;
 }
 
 /** A pi session-log import's tally of one host. */
 export interface AirlockImportTally {
   hits: number;
+  /** Of the hits, those that sent the host data. */
+  uploads: number;
   firstSeen: string | null;
   lastSeen: string | null;
 }

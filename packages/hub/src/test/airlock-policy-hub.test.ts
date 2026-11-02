@@ -274,6 +274,13 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub airlock policy (%s)', (backe
       expect(JSON.stringify(r.body)).toMatch(/at most 1000/);
     });
 
+    it.each(['allowDownload', 'allowUpload', 'denyUpload', 'denyDownload'])('too many hosts in the one-way list %s is 400 too', async (list) => {
+      const many = Array.from({ length: 1001 }, (_, i) => `h${i}.example`);
+      const r = await adminPut({ policy: { ...POLICY, hosts: { allow: [], deny: [], [list]: many } } });
+      expect(r.status).toBe(400);
+      expect(JSON.stringify(r.body)).toMatch(new RegExp(`hosts\\.${list}: at most 1000`));
+    });
+
     it('a host pattern longer than 253 characters is 400', async () => {
       const r = await adminPut({ policy: { ...POLICY, hosts: { allow: [`${'a'.repeat(250)}.example`], deny: [] } } });
       expect(r.status).toBe(400);

@@ -1,13 +1,17 @@
+import { getDomain } from 'tldts';
 import {
   DEFAULT_AIRLOCK_POLICY,
   evidenceOf,
   learnableHost,
   learningExclusionOf,
   normalizeAirlockPolicy,
+  proposeWildcards,
   withAcceptedHosts,
   AIRLOCK_PROPOSAL_LIMIT,
   MAX_LEARNED_CLIENTS,
+  type AirlockAcceptedEntry,
   type AirlockLearningEvidence,
+  type AirlockProposedWildcard,
 } from '@agenfk/core';
 import type { DB } from '../db.js';
 import { AirlockPolicyError, getAirlockPolicy, putAirlockPolicy, reportTimeOf, type AirlockPolicyView } from './airlock.js';
@@ -71,17 +75,19 @@ export async function recordAirlockLearningProposal(
     if (!host || !whole(p.hits, 1) || learningExclusionOf(host, policy)) continue;
     const proxy = (p.sources as Record<string, unknown> | undefined)?.proxy;
     const proxyHits = whole(proxy, 0) ? Math.min(proxy, p.hits) : 0;
+    // How many of the hits sent the host data: never more than the hits.
+    const uploadHits = whole(p.uploads, 0) ? Math.min(p.uploads, p.hits) : 0;
     const clients = Array.isArray(p.clients)
       ? [...new Set(p.clients.filter((c): c is string => typeof c === 'string' && c.length > 0 && c.length <= MAX_CLIENT_CHARS && !c.includes('\u0000')))].slice(0, MAX_LEARNED_CLIENTS)
       : [];
     const result = await db.run(
-      `INSERT INTO airlock_learning_reports (org_id, host, installation_id, hits, proxy_hits, clients_json, first_seen, last_seen, reported_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO airlock_learning_reports (org_id, host, installation_id, hits, proxy_hits, upload_hits, clients_json, first_seen, last_seen, reported_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (org_id, host, installation_id) DO UPDATE SET
-         hits = excluded.hits, proxy_hits = excluded.proxy_hits, clients_json = excluded.clients_json,
+         hits = excluded.hits, proxy_hits = excluded.proxy_hits, upload_hits = excluded.upload_hits, clients_json = excluded.clients_json,
          first_seen = excluded.first_seen, last_seen = excluded.last_seen, reported_at = excluded.reported_at
        WHERE airlock_learning_reports.reported_at <= excluded.reported_at`,
-      [orgId, host, e.installationId, p.hits, proxyHits, JSON.stringify(clients), isoOrNull(p.firstSeen), isoOrNull(p.lastSeen), at],
+      [orgId, host, e.installationId, p.hits, proxyHits, uploadHits, JSON.stringify(clients), isoOrNull(p.firstSeen), isoOrNull(p.lastSeen), at],
     );
     if (result.changes > 0) kept++;
   }
@@ -106,6 +112,8 @@ export interface AirlockLearningHostView {
   installations: number;
   hits: number;
   proxyHits: number;
+  /** How many of the hits sent the host data, across installations. */
+  uploads: number;
   evidence: AirlockLearningEvidence;
   clients: string[];
   firstSeen: string | null;
@@ -126,7 +134,7 @@ const policyOf = (view: AirlockPolicyView) => view.policy ?? normalizeAirlockPol
  * evidence first, then most installations, most hits, and host. Shared by
  * every page, so pages never overlap or skip.
  */
-const GROUPS = `SELECT host, COUNT(*) AS installations, SUM(hits) AS total_hits, SUM(proxy_hits) AS total_proxy,
+const GROUPS = `SELECT host, COUNT(*) AS installations, SUM(hits) AS total_hits, SUM(proxy_hits) AS total_proxy, SUM(upload_hits) AS total_uploads,
          CASE WHEN SUM(proxy_hits) > 0 THEN 0 ELSE 1 END AS tier,
          MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen
     FROM airlock_learning_reports WHERE org_id = ?`;
@@ -156,6 +164,7 @@ async function proposedHosts(db: DB, orgId: string, view: AirlockPolicyView, onl
       const proxyHits = Number(g.total_proxy ?? 0);
       hosts.push({
         host: String(g.host), installations: Number(g.installations), hits: Number(g.total_hits ?? 0), proxyHits,
+        uploads: Number(g.total_uploads ?? 0),
         evidence: evidenceOf({ tool: 0, import: 0, proxy: proxyHits }), clients: [],
         firstSeen: iso(g.first_seen), lastSeen: iso(g.last_seen),
       });
@@ -179,40 +188,68 @@ async function proposedHosts(db: DB, orgId: string, view: AirlockPolicyView, onl
   return page;
 }
 
-/** The admin's list: the policy revision it was read at, and the proposed hosts. */
-export async function listAirlockLearning(db: DB, orgId: string): Promise<{ revision: number; hosts: AirlockLearningHostView[] }> {
+/** A host's registrable domain by the public suffix list, private section included (a vercel.app site is its own). */
+const registrableDomain = (host: string): string | null => getDomain(host, { allowPrivateDomains: true });
+
+/** The listed hosts sharing a registrable domain, as `*.domain` entries (core proposeWildcards). */
+const wildcardsOf = (hosts: AirlockLearningHostView[]): AirlockProposedWildcard[] =>
+  proposeWildcards(hosts.map(h => ({ ...h, sources: { tool: 0, proxy: h.proxyHits, import: 0 }, cards: [], firstSeen: h.firstSeen ?? '', lastSeen: h.lastSeen ?? '' })), registrableDomain);
+
+/** The admin's list: the policy revision it was read at, the proposed hosts, and wildcards over them. */
+export async function listAirlockLearning(db: DB, orgId: string): Promise<{ revision: number; hosts: AirlockLearningHostView[]; wildcards: AirlockProposedWildcard[] }> {
   const view = await getAirlockPolicy(db, orgId);
-  return { revision: view.revision, hosts: (await proposedHosts(db, orgId, view)).slice(0, AIRLOCK_PROPOSAL_LIMIT) };
+  const hosts = (await proposedHosts(db, orgId, view)).slice(0, AIRLOCK_PROPOSAL_LIMIT);
+  return { revision: view.revision, hosts, wildcards: wildcardsOf(hosts) };
 }
 
 /**
- * An admin allows some of the proposed hosts: the next revision of the org's
- * policy, with only those added to its allow list. Refused (invalid_policy)
- * for a host the list does not offer, and (revision_conflict) when the policy
- * moved since the list was read.
+ * An admin allows some of the proposed hosts or wildcards, each for a
+ * direction: the next revision of the org's policy, with only those added.
+ * Refused (invalid_policy) for an entry the list does not offer, and
+ * (revision_conflict) when the policy moved since the list was read. Answers
+ * with the proposed hosts the entries cover, for labelling.
  */
 export async function acceptAirlockLearning(
-  db: DB, orgId: string, hosts: unknown, expectedRevision: unknown, email: string | null,
-): Promise<AirlockPolicyView> {
-  if (!Array.isArray(hosts) || hosts.length === 0 || hosts.length > AIRLOCK_PROPOSAL_LIMIT) {
-    throw new AirlockPolicyError('invalid_policy', `hosts (1 to ${AIRLOCK_PROPOSAL_LIMIT} of the proposed hosts) is required`);
+  db: DB, orgId: string, request: { hosts?: unknown; entries?: unknown }, expectedRevision: unknown, email: string | null,
+): Promise<{ view: AirlockPolicyView; covered: Array<{ host: string; direction: AirlockAcceptedEntry['direction'] }> }> {
+  // `entries` ({ pattern, direction }) name hosts or wildcards; `hosts` is the older form, both ways.
+  const raw = request.entries !== undefined
+    ? request.entries
+    : Array.isArray(request.hosts) ? request.hosts.map(h => ({ pattern: h, direction: 'both' })) : request.hosts;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > AIRLOCK_PROPOSAL_LIMIT) {
+    throw new AirlockPolicyError('invalid_policy', `entries (1 to ${AIRLOCK_PROPOSAL_LIMIT} of the proposed hosts or wildcards) is required`);
   }
   if (typeof expectedRevision !== 'number' || !Number.isInteger(expectedRevision) || expectedRevision < 0) {
     throw new AirlockPolicyError('invalid_policy', 'expectedRevision (the policy revision the list was read at) is required');
   }
   const view = await getAirlockPolicy(db, orgId);
-  const asked = [...new Set(hosts.map(learnableHost).filter((h): h is string => h !== null))];
-  const offered = new Set((await proposedHosts(db, orgId, view, asked)).map(h => h.host));
-  const picked: string[] = [];
-  const notOffered: string[] = [];
-  for (const raw of hosts) {
-    const host = learnableHost(raw);
-    if (host && offered.has(host)) { if (!picked.includes(host)) picked.push(host); }
-    else notOffered.push(String(raw).slice(0, 255));
+  // Wildcards are judged against the whole list; a host-only accept reads only the rows it names.
+  const anyWildcard = raw.some((e: any) => typeof e?.pattern === 'string' && e.pattern.trim().startsWith('*.'));
+  const asked = [...new Set(raw.map((e: any) => learnableHost(e?.pattern)).filter((h): h is string => h !== null))];
+  const listed = await proposedHosts(db, orgId, view, anyWildcard ? undefined : asked);
+  const offered = new Set(listed.map(h => h.host));
+  const wildcards = new Map(wildcardsOf(listed).map(w => [w.pattern, w]));
+  const entries: AirlockAcceptedEntry[] = [];
+  const covered = new Map<string, AirlockAcceptedEntry['direction']>();
+  const refused: string[] = [];
+  for (const e of raw as any[]) {
+    const pattern = typeof e?.pattern === 'string' ? e.pattern.trim().toLowerCase() : '';
+    const host = learnableHost(pattern);
+    const wildcard = wildcards.get(pattern);
+    if (!['download', 'upload', 'both'].includes(e?.direction) || (!(host && offered.has(host)) && !wildcard)) {
+      refused.push(`${String(e?.pattern ?? '').slice(0, 255)}: not proposed, or no direction`);
+      continue;
+    }
+    entries.push({ pattern: wildcard ? pattern : host!, direction: e.direction });
+    // A host under an accepted wildcard and accepted on its own keeps the wider of the two.
+    for (const h of wildcard ? wildcard.hosts : [host!]) {
+      const had = covered.get(h);
+      covered.set(h, had && had !== e.direction ? 'both' : e.direction);
+    }
   }
-  if (notOffered.length) {
-    throw new AirlockPolicyError('invalid_policy', 'Only proposed hosts the policy does not already cover can be allowed', notOffered.map(h => `${h}: not proposed`));
+  if (refused.length) {
+    throw new AirlockPolicyError('invalid_policy', 'Only proposed hosts and wildcards the policy does not already cover can be allowed, each for downloads, uploads or both', refused);
   }
-  const { iocHosts: _ioc, ...policy } = withAcceptedHosts(policyOf(view), picked);
-  return putAirlockPolicy(db, orgId, policy, expectedRevision, email);
+  const { iocHosts: _ioc, ...policy } = withAcceptedHosts(policyOf(view), entries);
+  return { view: await putAirlockPolicy(db, orgId, policy, expectedRevision, email), covered: [...covered].map(([host, direction]) => ({ host, direction })) };
 }

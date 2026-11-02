@@ -5,6 +5,7 @@ import { api } from '../api';
 import { apiErrorText } from '../apiError';
 import { Callout, QueryError, buttonClass, cardClass, controlClass, scrollClass } from '../components/ui';
 import { AirlockLearningCard } from './AdminAirlockLearning';
+import { allowTextOf, denyTextOf, hasHostEntries, hostListsOf, DIRECTION_HELP, type AirlockHostListsDto } from '../airlockHostText';
 
 /**
  * Admin → Airlock (GH-294). The org's Airlock policy: what a coding agent's
@@ -43,7 +44,7 @@ interface AirlockPolicy {
   mode: Mode;
   models: ModelSelector[];
   appliesWhenModelUnknown: boolean;
-  hosts: { allow: string[]; deny: string[] };
+  hosts: AirlockHostListsDto;
   iocHosts: { revision: string; hosts: string[]; updatedAt: string | null };
   rules: Record<RuleKey, RuleAction>;
   projects?: Record<string, ProjectOverride>;
@@ -60,7 +61,7 @@ const HOME_ACCESS: Array<{ value: HomeAccess; label: string }> = [
 
 /** Adds to the policy's host lists; each rule it sets wins over the org's. */
 interface ProjectOverride {
-  hosts?: { allow: string[]; deny: string[] };
+  hosts?: AirlockHostListsDto;
   rules?: Partial<Record<RuleKey, RuleAction>>;
   machineImage?: string;
 }
@@ -349,8 +350,8 @@ const policyDraftOf = (v: AirlockView): PolicyDraft => ({
   mode: v.policy?.mode ?? 'off',
   models: (v.policy?.models ?? []).map(selectorLine).join('\n'),
   unknown: v.policy?.appliesWhenModelUnknown ?? true,
-  allow: (v.policy?.hosts.allow ?? []).join('\n'),
-  deny: (v.policy?.hosts.deny ?? []).join('\n'),
+  allow: allowTextOf(v.policy?.hosts),
+  deny: denyTextOf(v.policy?.hosts),
   rules: { ...DEFAULT_RULES, ...(v.policy?.rules ?? {}) },
   image: v.policy?.machineImage ?? '',
   home: v.policy?.homeAccess ?? 'protect-credentials',
@@ -371,7 +372,7 @@ function PolicyCard({ view, tab }: { view: AirlockView; tab: AirlockTab }) {
         mode,
         models: linesOf(models).map(parseSelector),
         appliesWhenModelUnknown: unknown,
-        hosts: { allow: linesOf(allow), deny: linesOf(deny) },
+        hosts: hostListsOf(allow, deny),
         rules,
         ...(image.trim() ? { machineImage: image.trim() } : {}),
         ...(home !== 'protect-credentials' ? { homeAccess: home } : {}),
@@ -458,8 +459,9 @@ function PolicyCard({ view, tab }: { view: AirlockView; tab: AirlockTab }) {
         <textarea aria-label="Denied hosts" rows={3} className={`${controlClass} mt-1.5 font-mono`} value={deny} onChange={(e) => setDeny(e.target.value)} />
       </label>
       <p className="mt-1 text-small text-ink-tertiary">
-        One host per line: a name, *.wildcard or a CIDR range. Cloud metadata endpoints are always denied and cannot be
-        allowed.
+        {`One host per line: a name, *.wildcard or a CIDR range. ${DIRECTION_HELP} Allowed one way, a host is still reachable:
+        which way its data goes is judged on each tool call. Cloud metadata endpoints are always denied and cannot be
+        allowed.`}
       </p>
 
       </div>
@@ -507,19 +509,18 @@ interface OverrideDraft { key: string; allow: string; deny: string; rules: Parti
 
 const overrideDraftsOf = (projects: Record<string, ProjectOverride> | undefined): OverrideDraft[] =>
   Object.entries(projects ?? {}).map(([key, o]) => ({
-    key, allow: (o.hosts?.allow ?? []).join('\n'), deny: (o.hosts?.deny ?? []).join('\n'), rules: { ...o.rules }, image: o.machineImage ?? '',
+    key, allow: allowTextOf(o.hosts), deny: denyTextOf(o.hosts), rules: { ...o.rules }, image: o.machineImage ?? '',
   }));
 
 /** The drafts as the policy holds them: hosts only when there are some, only the rules set, an image when named. */
 export function projectsOf(drafts: OverrideDraft[]): Record<string, ProjectOverride> {
   const out: Record<string, ProjectOverride> = {};
   for (const d of drafts) {
-    const allow = linesOf(d.allow);
-    const deny = linesOf(d.deny);
+    const hosts = hostListsOf(d.allow, d.deny);
     const rules = { ...d.rules };
     const image = d.image.trim();
     out[d.key.trim()] = {
-      ...(allow.length || deny.length ? { hosts: { allow, deny } } : {}),
+      ...(hasHostEntries(hosts) ? { hosts } : {}),
       ...(Object.keys(rules).length ? { rules } : {}),
       ...(image ? { machineImage: image } : {}),
     };

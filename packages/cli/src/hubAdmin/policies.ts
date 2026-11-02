@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import {
   AdminCliError, adminAction, adminDownload, adminRequest, covers, emit, printTable, requireYes,
 } from './client';
+import { hostEntries } from '@agenfk/core';
 
 /**
  * Policies (CGLAB-702 S4): the board's Airlock, Repositories and Models pages.
@@ -52,8 +53,12 @@ export function registerPolicyCommands(admin: Command): void {
       emit(view, opts, v => {
         if (!v.policy) { console.log('No Airlock policy yet.'); return; }
         console.log(`Revision ${v.revision} (IOC ${v.iocRevision}), mode ${v.policy.mode}, by ${v.updatedByEmail ?? '-'} at ${v.updatedAt ?? '-'}`);
-        console.log(`  allow: ${(v.policy.hosts?.allow ?? []).join(', ') || '-'}`);
-        console.log(`  deny:  ${(v.policy.hosts?.deny ?? []).join(', ') || '-'}`);
+        // Each entry with its direction when it is one way only.
+        const entries = hostEntries({ allow: [], deny: [], ...v.policy.hosts });
+        const side = (list: 'allow' | 'deny') => entries.filter(e => e.list === list)
+          .map(e => e.direction === 'both' ? e.pattern : `${e.pattern} (${e.direction})`).join(', ') || '-';
+        console.log(`  allow: ${side('allow')}`);
+        console.log(`  deny:  ${side('deny')}`);
         console.log(`  IOC:   ${(v.policy.iocHosts?.hosts ?? []).length} host(s)`);
       });
     }));
@@ -162,22 +167,33 @@ export function registerPolicyCommands(admin: Command): void {
     .action(adminAction(async (opts: Json) => {
       emit(await adminRequest('GET', '/v1/admin/airlock/learning'), opts, d => {
         console.log(chalk.gray(`Policy revision ${d.revision}`));
+        // UPLOADS: how many of the hits sent the host data, a hint for --direction.
         printTable(d.hosts, {
-          HOST: (h: any) => h.host, HITS: (h: any) => h.hits, PROXY: (h: any) => h.proxyHits, INSTALLATIONS: (h: any) => h.installations,
-          CLIENTS: (h: any) => (h.clients ?? []).join(','), LAST_SEEN: (h: any) => h.lastSeen,
+          HOST: (h: any) => h.host, HITS: (h: any) => h.hits, UPLOADS: (h: any) => h.uploads ?? 0, PROXY: (h: any) => h.proxyHits,
+          INSTALLATIONS: (h: any) => h.installations, CLIENTS: (h: any) => (h.clients ?? []).join(','), LAST_SEEN: (h: any) => h.lastSeen,
         }, 'No proposals.');
+        if (d.wildcards?.length) {
+          console.log(chalk.gray('Wildcards over hosts sharing a domain (accept the pattern to allow them all):'));
+          printTable(d.wildcards, {
+            WILDCARD: (w: any) => w.pattern, COVERS: (w: any) => `${w.hosts.length} hosts`, HITS: (w: any) => w.hits, UPLOADS: (w: any) => w.uploads,
+          }, '');
+        }
       });
     }));
-  learning.command('accept <hosts...>').description('Allow proposed hosts (a new policy revision)')
+  learning.command('accept <patterns...>').description('Allow proposed hosts or wildcards (a new policy revision)')
     .requiredOption('--expected-revision <n>', 'The policy revision `learning list` showed the proposals at')
+    .option('--direction <direction>', 'download, upload or both (default both)', 'both')
     .option('--yes', 'Confirm').option('--json', 'Print as JSON')
-    .action(adminAction(async (hosts: string[], opts: Json & { expectedRevision: string; yes?: boolean }) => {
+    .action(adminAction(async (patterns: string[], opts: Json & { expectedRevision: string; direction: string; yes?: boolean }) => {
       // Never re-read the revision here: the admin reviewed the proposals at a
       // revision, and a policy change since then must surface as a conflict.
       const expectedRevision = intOption(opts.expectedRevision, '--expected-revision')!;
-      requireYes(opts, `allow ${hosts.join(', ')} for every sandbox`);
-      const r = await adminRequest('POST', '/v1/admin/airlock/learning/accept', { body: { hosts, expectedRevision } });
-      emit(r, opts, v => console.log(chalk.green(`✓ Allowed ${hosts.length} host(s); policy revision ${v.revision}.`)));
+      if (!['download', 'upload', 'both'].includes(opts.direction)) throw new AdminCliError('--direction must be download, upload or both');
+      const way = opts.direction === 'both' ? 'both ways' : `for ${opts.direction}s`;
+      requireYes(opts, `allow ${patterns.join(', ')} ${way} for every sandbox`);
+      const entries = patterns.map(pattern => ({ pattern, direction: opts.direction }));
+      const r = await adminRequest('POST', '/v1/admin/airlock/learning/accept', { body: { entries, expectedRevision } });
+      emit(r, opts, v => console.log(chalk.green(`✓ Allowed ${patterns.length} entr${patterns.length === 1 ? 'y' : 'ies'} ${way}; policy revision ${v.revision}.`)));
     }));
 
   // ── Repositories ─────────────────────────────────────────────────────────

@@ -59,6 +59,17 @@ describe('airlock policy', () => {
     expect((await board('get', '/v1/admin/airlock')).body.policy.hosts.allow).toEqual(['github.com', 'npmjs.org']);
   });
 
+  it('keeps each host entry\'s direction, and shows it', async () => {
+    const directed = { ...POLICY, hosts: { allow: ['github.com'], deny: ['evil.example'], allowDownload: ['*.datadoghq.com'], denyUpload: ['pastebin.com'] } };
+    await hub.run(['hub', 'admin', 'airlock', 'policy', 'set', '--file', tmpFile('p.json', JSON.stringify(directed)), '--expected-revision', '0', '--yes']);
+    expect((await board('get', '/v1/admin/airlock')).body.policy.hosts).toEqual({
+      allow: ['github.com'], deny: ['evil.example', 'pastebin.com'], allowDownload: ['*.datadoghq.com'], denyUpload: ['pastebin.com'],
+    });
+    await hub.run(['hub', 'admin', 'airlock', 'policy', 'show']);
+    expect(hub.out()).toContain('allow: github.com, *.datadoghq.com (download)');
+    expect(hub.out()).toContain('deny:  evil.example, pastebin.com (upload)');
+  });
+
   it('a stale revision is the hub\'s conflict, not an overwrite', async () => {
     await board('put', '/v1/admin/airlock').send({ policy: POLICY, expectedRevision: 0 });
     await board('put', '/v1/admin/airlock').send({ policy: { ...POLICY, mode: 'observe' }, expectedRevision: 1 });
@@ -149,6 +160,26 @@ describe('airlock policy', () => {
     // At the current revision it goes through.
     await hub.run(['hub', 'admin', 'airlock', 'learning', 'accept', 'npmjs.org', '--expected-revision', String(after.revision), '--yes']);
     expect((await board('get', '/v1/admin/airlock')).body.policy.hosts.allow).toContain('npmjs.org');
+  });
+
+  it('lists wildcards and upload counts, and accepts a wildcard or a host with a direction', async () => {
+    await board('put', '/v1/admin/airlock').send({ policy: POLICY, expectedRevision: 0 });
+    const key = await issueApiKey(hub.ctx.db, 'org', 'laptop', { installationId: 'inst-w' });
+    const entry = (host: string, uploads: number) => ({ host, hits: 3, uploads, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported',
+      clients: ['pi'], firstSeen: '2026-10-20T10:00:00.000Z', lastSeen: '2026-10-27T10:00:00.000Z', cardCount: 1 });
+    await supertest(hub.server).post('/v1/events').set('Authorization', `Bearer ${key}`).send({ events: [{
+      eventId: 'ev-learn-w', installationId: 'inst-w', orgId: 'org', occurredAt: new Date(Date.now() - 60_000).toISOString(),
+      actor: { osUser: 't', gitName: null, gitEmail: 'inst-w@x' }, type: 'airlock.learning-proposal',
+      payload: { hosts: [entry('api.us5.datadoghq.com', 0), entry('mcp.us5.datadoghq.com', 2), entry('up.vendor.io', 1)] },
+    }] });
+    hub.clear();
+    await hub.run(['hub', 'admin', 'airlock', 'learning', 'list']);
+    expect(hub.out()).toMatch(/UPLOADS/);
+    expect(hub.out()).toMatch(/\*\.datadoghq\.com\s+2 hosts/);
+    await expect(hub.run(['hub', 'admin', 'airlock', 'learning', 'accept', 'up.vendor.io', '--direction', 'sideways', '--expected-revision', '1', '--yes'])).rejects.toThrow(/exit 1/);
+    await hub.run(['hub', 'admin', 'airlock', 'learning', 'accept', '*.datadoghq.com', '--direction', 'download', '--expected-revision', '1', '--yes']);
+    await hub.run(['hub', 'admin', 'airlock', 'learning', 'accept', 'up.vendor.io', '--direction', 'upload', '--expected-revision', '2', '--yes']);
+    expect((await board('get', '/v1/admin/airlock')).body.policy.hosts).toMatchObject({ allowDownload: ['*.datadoghq.com'], allowUpload: ['up.vendor.io'] });
   });
 });
 

@@ -24,12 +24,12 @@ export function registerAirlockLearningRoutes(router: Router, ctx: HubServerCont
     const orgId = req.session!.orgId;
     try {
       const user = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session!.userId]);
-      const view = await withLock(`airlock:${orgId}`, () =>
-        acceptAirlockLearning(ctx.db, orgId, req.body?.hosts, req.body?.expectedRevision, user?.email ?? null));
+      const { view, covered } = await withLock(`airlock:${orgId}`, () =>
+        acceptAirlockLearning(ctx.db, orgId, { hosts: req.body?.hosts, entries: req.body?.entries }, req.body?.expectedRevision, user?.email ?? null));
       // DS-1: the admin's accept labels the dataset rows that reached those hosts. A
       // label that cannot be written costs only itself: the policy change stands.
       try {
-        await labelAirlockDatasetHosts(ctx.db, orgId, Array.isArray(req.body?.hosts) ? req.body.hosts : []);
+        await labelAirlockDatasetHosts(ctx.db, orgId, covered);
       } catch (err) {
         console.warn('[AIRLOCK] could not label dataset rows for accepted hosts: %s', (err as Error).message);
       }

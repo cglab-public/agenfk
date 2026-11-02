@@ -2004,11 +2004,16 @@ export class SQLiteStorageProvider implements StorageProvider {
         last_seen TEXT NOT NULL,
         received_at TEXT NOT NULL DEFAULT '',
         clients TEXT NOT NULL DEFAULT '[]',
-        cards TEXT NOT NULL DEFAULT '[]'
+        cards TEXT NOT NULL DEFAULT '[]',
+        tool_upload_hits INTEGER NOT NULL DEFAULT 0,
+        import_upload_hits INTEGER NOT NULL DEFAULT 0
       );
     `);
     const columns = (this.database.prepare('PRAGMA table_info(airlock_learned_hosts)').all() as { name: string }[]).map((c) => c.name);
     if (!columns.includes('received_at')) this.database.exec("ALTER TABLE airlock_learned_hosts ADD COLUMN received_at TEXT NOT NULL DEFAULT ''");
+    // How often a host was sent data (2026-11-02): a table from before reads as none.
+    if (!columns.includes('tool_upload_hits')) this.database.exec('ALTER TABLE airlock_learned_hosts ADD COLUMN tool_upload_hits INTEGER NOT NULL DEFAULT 0');
+    if (!columns.includes('import_upload_hits')) this.database.exec('ALTER TABLE airlock_learned_hosts ADD COLUMN import_upload_hits INTEGER NOT NULL DEFAULT 0');
     this.database.exec('DROP INDEX IF EXISTS idx_airlock_learned_hosts_last_seen');
     this.database.exec('CREATE INDEX IF NOT EXISTS idx_airlock_learned_hosts_received ON airlock_learned_hosts(received_at)');
   }
@@ -2023,6 +2028,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     return {
       host: r.host,
       hits: { tool: Number(r.tool_hits), proxy: Number(r.proxy_hits), import: Number(r.import_hits) },
+      uploads: { tool: Number(r.tool_upload_hits ?? 0), proxy: 0, import: Number(r.import_upload_hits ?? 0) },
       firstSeen: r.first_seen,
       lastSeen: r.last_seen,
       receivedAt: r.received_at || r.last_seen,
@@ -2036,12 +2042,14 @@ export class SQLiteStorageProvider implements StorageProvider {
     const db = this.database;
     const read = db.prepare('SELECT * FROM airlock_learned_hosts WHERE host = ?');
     const write = db.prepare(
-      `INSERT INTO airlock_learned_hosts (host, tool_hits, proxy_hits, import_hits, first_seen, last_seen, received_at, clients, cards)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO airlock_learned_hosts (host, tool_hits, proxy_hits, import_hits, first_seen, last_seen, received_at, clients, cards,
+         tool_upload_hits, import_upload_hits)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(host) DO UPDATE SET
          tool_hits = excluded.tool_hits, proxy_hits = excluded.proxy_hits, import_hits = excluded.import_hits,
          first_seen = excluded.first_seen, last_seen = excluded.last_seen, received_at = excluded.received_at,
-         clients = excluded.clients, cards = excluded.cards`
+         clients = excluded.clients, cards = excluded.cards,
+         tool_upload_hits = excluded.tool_upload_hits, import_upload_hits = excluded.import_upload_hits`
     );
     // One transaction: each row is read and rewritten with nothing in between.
     db.exec('BEGIN IMMEDIATE');
@@ -2049,7 +2057,8 @@ export class SQLiteStorageProvider implements StorageProvider {
       for (const o of observations) {
         const current = read.get(o.host) as any;
         const row = mergeHostObservation(current ? this.rowToAirlockLearnedHost(current) : null, o);
-        write.run(row.host, row.hits.tool, row.hits.proxy, row.hits.import, row.firstSeen, row.lastSeen, row.receivedAt, JSON.stringify(row.clients), JSON.stringify(row.cards));
+        write.run(row.host, row.hits.tool, row.hits.proxy, row.hits.import, row.firstSeen, row.lastSeen, row.receivedAt,
+          JSON.stringify(row.clients), JSON.stringify(row.cards), row.uploads.tool, row.uploads.import);
       }
       // Each budget on its own: an agent-only row never pushes out a proxy row.
       const prune = (where: string, cap: number) => db.prepare(
