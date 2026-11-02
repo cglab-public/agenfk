@@ -23,7 +23,7 @@
     "@lydell/node-pty": "1.2.0-beta.15"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
+    "@types/node": "^26.6.6",
     "electron": "40.10.6",
     "electron-builder": "^26.0.12",
     "typescript": "~5.9.3"
