@@ -1294,6 +1294,9 @@ const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'] as c
  * A rebase is NOT among them. Git can leave REBASE_HEAD behind after a rebase
  * ends, and a stale one declined every later close commit in that repository
  * (#251). Git itself decides "rebase in progress" by these state directories.
+ * A stopped `git am` also lives in rebase-apply/, told apart by the `applying`
+ * marker inside it (an apply-backend rebase writes `rebasing` instead), so the
+ * decline names the operation the author actually started (#309).
  */
 const REBASE_STATE_DIRS = ['rebase-merge', 'rebase-apply'] as const;
 // A multi-commit cherry-pick or revert keeps the rest of its queue in
@@ -1575,8 +1578,10 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
     // --git-path resolves inside a linked worktree's own git dir, and is
     // relative to `root` unless git returns it absolute.
     const where = await git(['rev-parse', '--git-path', dir], root);
-    if (where.ok && fs.existsSync(path.resolve(root, where.out.trim()))) {
-      return stop('declined', `${what} is in progress`);
+    const stateDir = where.ok ? path.resolve(root, where.out.trim()) : null;
+    if (stateDir && fs.existsSync(stateDir)) {
+      const isAm = dir === 'rebase-apply' && fs.existsSync(path.join(stateDir, 'applying'));
+      return stop('declined', `${isAm ? 'a git am session' : what} is in progress`);
     }
   }
 
