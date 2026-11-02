@@ -6,6 +6,24 @@ import path from 'node:path';
 // Importing the .mjs hook script directly. Pure helpers are exported by name.
 // @ts-ignore — .mjs has no .d.ts; the helpers are JS functions.
 import { classifyTrigger, buildDirective } from '../../../../bin/agenfk-pr-hook.mjs';
+import { gitTemplate, gitSync } from './helpers/gitFixture';
+
+/**
+ * A repo on `main` with one commit of `file.txt`, at `dir` (created if absent).
+ * Copied from a per-worker template (#311): no git spawn once it is built.
+ */
+function initRepoFromTemplate(dir: string): void {
+  const template = gitTemplate('pr-hook-classifier:main-one-commit', (d) => {
+    gitSync(d, 'init', '-q', '-b', 'main');
+    gitSync(d, 'config', 'user.email', 'test@example.com');
+    gitSync(d, 'config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(d, 'file.txt'), 'base\n');
+    gitSync(d, 'add', 'file.txt');
+    gitSync(d, 'commit', '-qm', 'init');
+  });
+  fs.mkdirSync(dir, { recursive: true });
+  fs.cpSync(template, dir, { recursive: true, preserveTimestamps: true });
+}
 
 describe('classifyTrigger', () => {
   it('detects gh pr create', () => {
@@ -332,15 +350,7 @@ describe('runtime branch resolution — the push target directory (BUG 40ff964b)
     return r.stdout.trim();
   }
 
-  function initRepo(dir: string): void {
-    fs.mkdirSync(dir, { recursive: true });
-    git(dir, 'init', '-q', '-b', 'main');
-    git(dir, 'config', 'user.email', 'test@example.com');
-    git(dir, 'config', 'user.name', 'Test');
-    fs.writeFileSync(path.join(dir, 'file.txt'), 'base\n');
-    git(dir, 'add', 'file.txt');
-    git(dir, 'commit', '-qm', 'init');
-  }
+  const initRepo = initRepoFromTemplate;
 
   function pushBranch(dir: string, branch: string): void {
     git(dir, 'checkout', '-q', '-b', branch);
@@ -416,15 +426,7 @@ describe('runtime branch resolution — relative and unresolved targets', () => 
     if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
     return r.stdout.trim();
   }
-  function initRepo(dir: string): void {
-    fs.mkdirSync(dir, { recursive: true });
-    git(dir, 'init', '-q', '-b', 'main');
-    git(dir, 'config', 'user.email', 'test@example.com');
-    git(dir, 'config', 'user.name', 'Test');
-    fs.writeFileSync(path.join(dir, 'file.txt'), 'base\n');
-    git(dir, 'add', 'file.txt');
-    git(dir, 'commit', '-qm', 'init');
-  }
+  const initRepo = initRepoFromTemplate;
   function pushBranch(dir: string, branch: string): void {
     git(dir, 'checkout', '-q', '-b', branch);
     fs.appendFileSync(path.join(dir, 'file.txt'), 'work\n');
