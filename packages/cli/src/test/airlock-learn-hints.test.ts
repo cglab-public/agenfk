@@ -24,7 +24,8 @@ import { registerAirlockCommands } from '../commands/airlock';
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-learn-hints-')); });
-afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+// Windows can hold a folder a just-killed program ran in for a moment.
+afterEach(() => { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
 
 const header = (cwd: string) => JSON.stringify({ type: 'session', version: 3, id: 's', timestamp: '2026-10-01T09:00:00.000Z', cwd });
 const call = (command: string) => JSON.stringify({

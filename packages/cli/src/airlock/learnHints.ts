@@ -128,6 +128,9 @@ export const KILL_GRACE_MS = 5000;
  * The default RunCommand. The program runs in its own process group, so on
  * timeout the whole group is stopped: SIGTERM, then SIGKILL after the grace,
  * and the call fails then even if a descendant still holds the pipes open.
+ * Windows has no process groups or SIGTERM: there the tree is ended at once
+ * with `taskkill /T /F` while its root is still alive (as server killTree.ts
+ * does), the program itself killed when that fails.
  */
 export const runCommand: RunCommand = (cmd, args, opts) => new Promise((resolve, reject) => {
   const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true });
@@ -136,8 +139,18 @@ export const runCommand: RunCommand = (cmd, args, opts) => new Promise((resolve,
   let settled = false;
   let timedOut = false;
   let kill: NodeJS.Timeout | undefined;
+  const killChild = (): void => { try { child.kill('SIGKILL'); } catch { /* already gone */ } };
   const signal = (sig: NodeJS.Signals): void => {
-    try { if (child.pid) process.kill(-child.pid, sig); } catch { /* already gone */ }
+    if (!child.pid) return;
+    if (process.platform === 'win32') {
+      if (sig !== 'SIGTERM' || child.exitCode !== null || child.signalCode !== null) return;
+      const exe = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
+      const tk = spawn(exe, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      tk.on('error', killChild);
+      tk.on('exit', code => { if (code !== 0) killChild(); });
+      return;
+    }
+    try { process.kill(-child.pid, sig); } catch { /* already gone */ }
   };
   const stopped = () => new Error(`${cmd} took longer than ${Math.round(opts.timeoutMs / 1000)}s and was stopped`);
   // Once the timeout starts, the group's SIGKILL stays scheduled whatever the leader does:
@@ -223,7 +236,8 @@ export function hintRunner(provider: HintProvider, opts: HintRunnerOptions = {})
         if (r.code !== 0) throw new Error(`${cli} exited ${r.code ?? 'on a signal'}: ${tail(r.stderr || r.stdout)}`);
         return cli === 'codex' ? fs.readFileSync(last, 'utf8') : r.stdout;
       } finally {
-        fs.rmSync(cwd, { recursive: true, force: true });
+        // Windows can hold a folder a just-killed program ran in for a moment.
+        fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
       }
     },
   };
