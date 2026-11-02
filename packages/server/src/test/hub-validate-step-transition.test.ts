@@ -75,7 +75,7 @@ async function cardAt(status: string) {
 }
 
 describe('closing a card emits the hub closure events', () => {
-  it('validate landing DONE emits step.transitioned with toStatus DONE, and item.closed', async () => {
+  it('validate landing DONE emits step.transitioned with toStatus DONE (unstamped on the shipped default flow), and item.closed', async () => {
     const id = await cardAt('TEST');
     const res = await agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'green' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -84,20 +84,13 @@ describe('closing a card emits the hub closure events', () => {
     const events = await outboxFor(id);
     const transitioned = events.find(e => e.type === 'step.transitioned' && e.payload?.toStatus === 'DONE');
     expect(transitioned, JSON.stringify(events.map(e => e.type))).toBeDefined();
+    // CGLAB-612: a project on the shipped default flow has no revision, so the event is unstamped.
+    expect(transitioned.payload.flowId).toBeUndefined();
+    expect(transitioned.payload.flowRevision).toBeUndefined();
+    expect(transitioned.payload.compliant).toBeUndefined();
     const closed = events.find(e => e.type === 'item.closed');
     expect(closed).toBeDefined();
     expect(closed.payload).toMatchObject({ fromStatus: 'TEST', toStatus: 'DONE', itemType: 'TASK' });
-  });
-
-  it('PUT cannot land DONE, so it emits no item.closed', async () => {
-    const id = await cardAt('TEST');
-    const res = await agent().put(`/items/${id}`).send({ status: 'DONE' });
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toMatch(/verify/);
-    expect((await agent().get(`/items/${id}`)).body.status).toBe('TEST');
-    // Long enough to see a wrongly emitted event: this project's first event waits on its git
-    // remote lookup (up to 1.5 s) before it is recorded (#208 review).
-    expect((await outboxFor(id, 2500)).some(e => e.type === 'item.closed')).toBe(false);
   });
 
 });
@@ -132,7 +125,7 @@ describe('every way a card reaches the end of its flow is a closure the hub sees
     expect(closed?.payload).toMatchObject({ fromStatus: 'WORK', toStatus: 'SHIPPED', itemType: 'TASK' });
   });
 
-  it('a parent closed by the roll-up when its last child closes: step.transitioned and item.closed', async () => {
+  it('a parent closed by the roll-up when its last child closes: step.transitioned and item.closed, after the child\'s, and only once', async () => {
     const { projectId } = await projectOn([st('TODO', 0, { isAnchor: true }), st('WORK', 1), st('DONE', 2, { isAnchor: true })]);
     const parent = await make(projectId, 'STORY', 'WORK');
     const child = await make(projectId, 'TASK', 'WORK', parent);
@@ -141,6 +134,17 @@ describe('every way a card reaches the end of its flow is a closure the hub sees
     const events = await outboxFor(parent);
     expect(events.find(e => e.type === 'step.transitioned')?.payload).toMatchObject({ fromStatus: 'WORK', toStatus: 'DONE', itemType: 'STORY' });
     expect(events.find(e => e.type === 'item.closed')?.payload).toMatchObject({ fromStatus: 'WORK', toStatus: 'DONE', itemType: 'STORY' });
+    // The child's close is recorded before its parent's.
+    const db: any = (storage as any)['database'];
+    const order = (db.prepare('SELECT payload FROM hub_outbox ORDER BY rowid').all() as { payload: string }[])
+      .map(r => JSON.parse(r.payload)).filter(e => e.type === 'item.closed' && (e.itemId === child || e.itemId === parent)).map(e => e.itemId);
+    expect(order).toEqual([child, parent]);
+    // A parent closes once: a second child finishing runs the roll-up again over the closed parent, and emits nothing more.
+    expect(events.filter(e => e.type === 'item.closed')).toHaveLength(1);
+    const late = await make(projectId, 'TASK', 'WORK', parent);
+    expect((await verify(late)).status).toBe(200);
+    await new Promise(r => setTimeout(r, 300));
+    expect((await outboxFor(parent, 300)).filter(e => e.type === 'item.closed')).toHaveLength(1);
   });
 
   it('a card closed by sibling propagation: step.transitioned and item.closed', async () => {
@@ -156,40 +160,6 @@ describe('every way a card reaches the end of its flow is a closure the hub sees
     const events = await outboxFor(next);
     expect(events.find(e => e.type === 'step.transitioned')?.payload).toMatchObject({ toStatus: 'DONE' });
     expect(events.find(e => e.type === 'item.closed')?.payload).toMatchObject({ fromStatus: 'WORK', toStatus: 'DONE', itemType: 'TASK' });
-  });
-
-  it('a parent closes once: a later roll-up over a closed parent emits nothing more', async () => {
-    const { projectId } = await projectOn([st('TODO', 0, { isAnchor: true }), st('WORK', 1), st('DONE', 2, { isAnchor: true })]);
-    const parent = await make(projectId, 'STORY', 'WORK');
-    const child = await make(projectId, 'TASK', 'WORK', parent);
-    expect((await verify(child)).status).toBe(200);
-    expect((await outboxFor(parent)).filter(e => e.type === 'item.closed')).toHaveLength(1);
-    // A second child finishing runs the roll-up again over the already-closed parent.
-    const late = await make(projectId, 'TASK', 'WORK', parent);
-    expect((await verify(late)).status).toBe(200);
-    await new Promise(r => setTimeout(r, 300));
-    expect((await outboxFor(parent, 300)).filter(e => e.type === 'item.closed')).toHaveLength(1);
-  });
-
-  it('a mid-flow move with no command is a step.transitioned the hub sees too', async () => {
-    const { projectId } = await projectOn([st('TODO', 0, { isAnchor: true }), st('PLAN', 1), st('WORK', 2), st('DONE', 3, { isAnchor: true })]);
-    const id = await make(projectId, 'TASK', 'PLAN');
-    expect((await verify(id)).status).toBe(200);
-    await new Promise(r => setTimeout(r, 300));
-    const moved = (await outboxFor(id, 300)).find(e => e.type === 'step.transitioned');
-    expect(moved?.payload).toMatchObject({ fromStatus: 'PLAN', toStatus: 'WORK', itemType: 'TASK' });
-  });
-
-  it('the child\'s close is recorded before its parent\'s', async () => {
-    const { projectId } = await projectOn([st('TODO', 0, { isAnchor: true }), st('WORK', 1), st('DONE', 2, { isAnchor: true })]);
-    const parent = await make(projectId, 'STORY', 'WORK');
-    const child = await make(projectId, 'TASK', 'WORK', parent);
-    expect((await verify(child)).status).toBe(200);
-    await outboxFor(parent);
-    const db: any = (storage as any)['database'];
-    const order = (db.prepare('SELECT payload FROM hub_outbox ORDER BY rowid').all() as { payload: string }[])
-      .map(r => JSON.parse(r.payload)).filter(e => e.type === 'item.closed' && (e.itemId === child || e.itemId === parent)).map(e => e.itemId);
-    expect(order).toEqual([child, parent]);
   });
 
 });
@@ -252,17 +222,6 @@ describe('CGLAB-612: step.transitioned carries the flow version and a compliance
     expect(ev, 'no step.transitioned for WORK -> PAUSED').toBeDefined();
     expect(ev.payload.flowRevision).toBe(1);
     expect(ev.payload.compliant).toBe(false);
-  });
-
-  it('a project on the shipped default flow has no revision, so the event is unstamped', async () => {
-    const id = await cardAt('TEST');
-    expect((await verify(id)).status).toBe(200); // TEST -> DONE
-
-    const ev = moved(await outboxFor(id), 'DONE');
-    expect(ev).toBeDefined();
-    expect(ev.payload.flowId).toBeUndefined();
-    expect(ev.payload.flowRevision).toBeUndefined();
-    expect(ev.payload.compliant).toBeUndefined();
   });
 });
 

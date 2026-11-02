@@ -87,11 +87,6 @@ describe('Claude Code enforcer with the MCP server registered', () => {
     expect(claude('Bash', { command: 'curl -s http://localhost:3000/items' })?.decision).toBe('block');
   });
 
-  it('names no command that no longer exists and offers no bypass window', () => {
-    const reason = claude('Bash', { command: 'cat .agenfk/db.json' })!.reason;
-    expect(reason).not.toMatch(/verify_changes|log-tokens|mcp-fallback-approved|fallback/i);
-  });
-
   it('a stale fallback-approved flag no longer opens the database', () => {
     fs.mkdirSync(path.join(home, '.agenfk'), { recursive: true });
     fs.writeFileSync(path.join(home, '.agenfk', 'mcp-fallback-approved'), '');

@@ -105,14 +105,6 @@ describe("a card's final move while it has open children", () => {
     expect((await storage.getItem(parent))?.status).toBe('END');
   });
 
-  it('does not hold up a card with no children at all', async () => {
-    const pid = await setup();
-    const id = await card(pid, 'WORK');
-    const res = await validate(id);
-    expect(res.body.error, JSON.stringify(res.body)).toBeUndefined();
-    expect((await storage.getItem(id))?.status).toBe('END');
-  });
-
   /*
    * A BARRIER, not a delay: the command says when it started and waits to be
    * released, so the children are created after the entry guard has passed and

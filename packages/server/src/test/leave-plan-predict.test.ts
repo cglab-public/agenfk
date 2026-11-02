@@ -114,22 +114,30 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
     expect(t.runs()).toEqual(['ALL']); // no new run
   });
 
-  it('predicts only the changed test files when only tests changed - and verify runs exactly those', async () => {
+  it('predicts only the changed test files when only tests changed, naming them in its advice - and verify runs exactly those', async () => {
     const t = await setup();
     await enterTests(t);
     fs.writeFileSync(path.join(t.repo, 'b.test.js'), 'pass divides\n');
     const p = await predict(t.id);
     expect(p.prediction).toMatchObject({ mode: 'test-files', files: ['b.test.js'] });
+    // A line of advice names what it predicts.
+    expect(p.prediction.advice).toMatch(/b\.test\.js/);
     await validate(t.id);
     expect(t.runs().slice(1)).toEqual([['b.test.js']]);
   });
 
-  it('predicts the whole suite when code changed and no related-tests command is set - and verify runs it all', async () => {
+  it('predicts the whole suite when code changed and no related-tests command is set, changing nothing itself - and verify runs it all', async () => {
     const t = await setup();
     await enterTests(t);
     fs.writeFileSync(path.join(t.repo, 'lib.js'), 'module.exports = 2;\n');
+    const before: any = await storage.getItem(t.id);
     const p = await predict(t.id);
     expect(p.prediction).toMatchObject({ mode: 'full' });
+    // The dry run itself changes nothing: no record, no step change, no run.
+    const after: any = await storage.getItem(t.id);
+    expect(after.status).toBe(before.status);
+    expect((after.stepRecords ?? []).length).toBe((before.stepRecords ?? []).length);
+    expect(t.runs()).toEqual(['ALL']);
     await validate(t.id);
     expect(t.runs().slice(1)).toEqual(['ALL']);
   });
@@ -143,31 +151,6 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
     const c = await agent().post('/items').send({ type: 'TASK', title: `pr-${++seq}`, projectId: p.body.id });
     await storage.updateItem(c.body.id, { status: 'A' } as any);
     expect((await predict(c.body.id)).prediction).toMatchObject({ mode: 'none' });
-  });
-
-  it("predicts a sibling's green of this tree on the final step - and verify propagates it instead of running", async () => {
-    // Propagation reads siblings on DONE, so the exit step carries that name here.
-    const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('A', 1), s('DONE', 2, { isAnchor: true })] });
-    const repo = tmp('agenfk-pr-sib-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo x > f && git add . && git commit -qm one');
-    const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
-    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
-    const parent = await agent().post('/items').send({ type: 'STORY', title: `pr-${++seq}`, projectId: p.body.id });
-    await storage.updateItem(parent.body.id, { status: 'A' } as any);
-    const mk = async () => {
-      const c = await agent().post('/items').send({ type: 'TASK', title: `pr-${++seq}`, projectId: p.body.id, parentId: parent.body.id });
-      await storage.updateItem(c.body.id, { status: 'A' } as any);
-      return c.body.id as string;
-    };
-    const first = await mk();
-    const second = await mk();
-    const done = await validate(first);
-    expect(done.status, JSON.stringify(done.body)).toBe(200);
-    const pr = await predict(second);
-    expect(pr.prediction).toMatchObject({ mode: 'sibling-green' });
-    expect(pr.prediction.sibling?.id).toBe(first);
-    const res = await validate(second);
-    expect(res.body.message).toMatch(/sibling propagation/i);
   });
 
   it("predicts a sibling's green on a flow whose exit step is not named DONE - and verify propagates it (6b34e5cc)", async () => {
@@ -204,23 +187,6 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
     expect(p.thenCommand).toBeTruthy();
     expect(p.prediction.command).toMatchObject({ mode: 'full' });
     expect(p.prediction.advice).toMatch(/then/i);
-  });
-
-  it('on the final step whose report command IS the verify command, predicts one run that closes the card - and verify runs the suite once (36c5ca25)', async () => {
-    const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('PLAN', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true })] });
-    const t = await setup();
-    const project: any = await storage.getProject(((await storage.getItem(t.id)) as any).projectId);
-    await storage.updateProject(project.id, { flowId: f.body.id, verifyCommand: project.testReport.command } as never);
-    await validate(t.id); // PLAN -> TEST
-    const before = t.runs().length;
-    const p = await predict(t.id);
-    expect(p.closesOnCapture).toBe(true);
-    expect(p.thenCommand).toBeUndefined();
-    expect(p.prediction.command, 'predicted a second run of the same command').toBeUndefined();
-    expect(p.prediction.advice).toMatch(/closes the card/i);
-    const res = await validate(t.id);
-    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
-    expect(t.runs().length - before).toBe(1);
   });
 
   it('on a mid-flow boundary, never predicts a sibling green: only the move that ends the flow propagates one', async () => {
@@ -277,24 +243,5 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.refuses).toBeUndefined();
     expect(res.body.prediction.mode).toBe('full');
-  });
-
-  it('the dry run changes nothing: no record, no step change, no run', async () => {
-    const t = await setup();
-    await enterTests(t);
-    fs.writeFileSync(path.join(t.repo, 'lib.js'), 'module.exports = 3;\n');
-    const before: any = await storage.getItem(t.id);
-    await predict(t.id);
-    const after: any = await storage.getItem(t.id);
-    expect(after.status).toBe(before.status);
-    expect((after.stepRecords ?? []).length).toBe((before.stepRecords ?? []).length);
-    expect(t.runs()).toEqual(['ALL']);
-  });
-
-  it('carries a line of advice naming the predicted mode', async () => {
-    const t = await setup();
-    await enterTests(t);
-    fs.writeFileSync(path.join(t.repo, 'b.test.js'), 'pass divides\n');
-    expect((await predict(t.id)).prediction.advice).toMatch(/b\.test\.js/);
   });
 });

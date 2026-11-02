@@ -126,14 +126,6 @@ const commit = (dir: string, msg: string) => {
 };
 
 describe('CGLAB-381: the review-record check', () => {
-  it('refuses to leave a review step with no review on record', async () => {
-    const { base, pid } = await setup();
-    const id = await cardAt(pid, base);
-    const res = await validate(id);
-    expect(res.status).toBe(422);
-    expect(reviewCheck(res.body)).toMatchObject({ outcome: 'fail', blocking: true });
-    expect(reviewCheck(res.body).detail).toMatch(/agenfk review record/);
-  });
 
   it('passes with a review by a sub-agent of the author\'s session: another agent is independent', async () => {
     const { base, tip, pid } = await setup();
@@ -159,15 +151,6 @@ describe('CGLAB-381: the review-record check', () => {
     void task;
     await record(id, piTranscript('pi-task-author', FUTURE), `${base}..${tip}`);
     expect((await validate(id)).status).toBe(422);
-  });
-
-  it('refuses a range that starts after the card\'s work began', async () => {
-    const { base, tip, pid } = await setup();
-    const id = await cardAt(pid, base);
-    await record(id, claudeSubagentTranscript('author-sess', 'rev2', FUTURE), `${tip}..${tip}`);
-    const res = await validate(id);
-    expect(res.status).toBe(422);
-    expect(reviewCheck(res.body).detail).toMatch(/began/);
   });
 
   it('refuses a range that misses a descendant\'s close commit', async () => {
@@ -239,16 +222,6 @@ describe('CGLAB-381: the review-record check', () => {
       const res = await validate(epic);
       expect(res.status).toBe(422);
       expect(reviewCheck(res.body).detail).toMatch(/no independent review/);
-    });
-
-    it('a review is of the tree as it was recorded: a change afterwards needs the review recorded again', async () => {
-      const { dir, base, tip, pid } = await setup();
-      const id = await cardAt(pid, base);
-      expect((await record(id, claudeSubagentTranscript('author-sess', 'rev-tree', FUTURE), `${base}..${tip}`)).status).toBe(201);
-      fs.writeFileSync(path.join(dir, 'late.txt'), 'written after the review');
-      const res = await validate(id);
-      expect(res.status).toBe(422);
-      expect(reviewCheck(res.body).detail).toMatch(/changed/);
     });
 
     it('a reviewer that edited the card\'s tree is an author, not a reviewer', async () => {

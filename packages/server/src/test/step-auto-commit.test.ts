@@ -54,23 +54,27 @@ const item = async (id: string) => (await agent().get(`/items/${id}?records=1`))
 const exitOf = async (id: string, step: string) => (await item(id)).stepRecords.find((r: any) => r.kind === 'exit' && r.step === step);
 
 describe('CGLAB-388: commit when the card leaves the step', () => {
-  it("commits what is staged, with step(<STEP>), and records the sha", async () => {
+  it("commits what is staged, with step(<STEP>), and records the sha and names it in the reply", async () => {
     const { id, dir, title } = await setup({ autoCommit: true });
     fs.writeFileSync(path.join(dir, 'x.txt'), 'x'); sh('git add x.txt', dir);
     const res = await validate(id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(sh('git log -1 --format=%s', dir)).toBe(`step(PLAN): ${title} [${id}]`);
-    expect((await exitOf(id, 'PLAN')).commit).toBe(sh('git rev-parse HEAD', dir));
+    const rec = await exitOf(id, 'PLAN');
+    expect(rec.commit).toBe(sh('git rev-parse HEAD', dir));
     expect(res.body.message).toMatch(/step commit/i);
+    expect(res.body.message).toContain(rec.commit.slice(0, 12));
   });
 
-  it('says so when nothing was staged, and still moves on', async () => {
+  it('says so when nothing was staged, speaking of the step and not the close, and still moves on', async () => {
     const { id, dir } = await setup({ autoCommit: true });
     fs.writeFileSync(path.join(dir, 'loose.txt'), 'l');
     const res = await validate(id);
     expect(res.status).toBe(200);
     expect(res.body.message).toMatch(/nothing was staged/i);
     expect(res.body.message).toMatch(/loose\.txt/);
+    // It speaks of the step, not the close: it does not say to close the card again.
+    expect(res.body.message).not.toMatch(/close it again/i);
     expect(sh('git log --format=%s', dir)).not.toMatch(/step\(/);
   });
 
@@ -120,20 +124,15 @@ describe('CGLAB-388: commit when the card leaves the step', () => {
 describe('S10 review: the step commit happens only when the card really leaves', () => {
   const validateWith = (id: string, command: string) => agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'ok', command });
 
-  it('a failing command on an autoCommit step: refused, card stays, nothing committed, the work still staged', async () => {
-    const { id, dir } = await setup({ autoCommit: true });
+  it('a failing command on a requireCommit step: refused, card stays, nothing committed, and the retry finds the work staged and commits it', async () => {
+    const { id, dir } = await setup({ autoCommit: true, requireCommit: true });
     fs.writeFileSync(path.join(dir, 'x.txt'), 'x'); sh('git add x.txt', dir);
-    const res = await validateWith(id, 'exit 1');
-    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    const failed = await validateWith(id, 'exit 1');
+    expect(failed.status, JSON.stringify(failed.body)).toBe(422);
+    // Refused: the card stays, nothing is committed, and the work is still staged.
     expect((await item(id)).status).toBe('PLAN');
     expect(sh('git log --format=%s', dir)).not.toMatch(/step\(/);
     expect(sh('git diff --cached --name-only', dir)).toBe('x.txt');
-  });
-
-  it('requireCommit after a failed command: the retry still finds the work staged and commits it', async () => {
-    const { id, dir } = await setup({ autoCommit: true, requireCommit: true });
-    fs.writeFileSync(path.join(dir, 'x.txt'), 'x'); sh('git add x.txt', dir);
-    expect((await validateWith(id, 'exit 1')).status).toBe(422);
     const retry = await validateWith(id, 'exit 0');
     expect(retry.status, JSON.stringify(retry.body)).toBe(200);
     expect((await item(id)).status).toBe('WORK');
@@ -159,15 +158,6 @@ describe('S10 review: the step commit happens only when the card really leaves',
     expect((await item(id)).status).toBe('WORK');
   });
 
-  it('records the sha of the commit it made', async () => {
-    const { id, dir } = await setup({ autoCommit: true });
-    fs.writeFileSync(path.join(dir, 'x.txt'), 'x'); sh('git add x.txt', dir);
-    const res = await validate(id);
-    const rec = await exitOf(id, 'PLAN');
-    expect(rec.commit).toBe(sh('git log -1 --format=%H --grep=^step', dir));
-    expect(res.body.message).toContain(rec.commit.slice(0, 12));
-  });
-
   it('a step before a mid-flow special step commits: only the move that ends the flow skips it', async () => {
     const f = await agent().post('/flows').send({ name: `sc-${++seq}`, steps: [
       s('TODO', 0, { isAnchor: true }), s('PLAN', 1, { autoCommit: true }), s('HOLD', 2, { isSpecial: true }),
@@ -183,13 +173,6 @@ describe('S10 review: the step commit happens only when the card really leaves',
     const res = await validate(id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(sh('git log -1 --format=%s', dir)).toMatch(/^step\(PLAN\)/);
-  });
-
-  it('speaks of the step, not the close: nothing staged does not say to close the card again', async () => {
-    const { id } = await setup({ autoCommit: true });
-    const res = await validate(id);
-    expect(res.body.message).toMatch(/nothing was staged/i);
-    expect(res.body.message).not.toMatch(/close it again/i);
   });
 
   it('a failed step commit says FAILED, like the close commit', async () => {

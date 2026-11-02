@@ -64,25 +64,15 @@ describe('PUT /items/:id tests', () => {
 });
 
 describe('sibling propagation over a stored malformed test record', () => {
-  it('a null in a DONE sibling\'s tests does not make another sibling\'s final verify 500', async () => {
+  it('a null in a DONE sibling\'s tests, or a tests value that is not a list, does not make another sibling\'s final verify 500', async () => {
     const projectId = await project();
     const parent = (await agent().post('/items').send({ type: 'STORY', title: `p-${++seq}`, projectId })).body.id;
-    const done = await task(projectId, { parentId: parent });
+    const withNull = await task(projectId, { parentId: parent });
+    const withObject = await task(projectId, { parentId: parent });
     const next = await task(projectId, { parentId: parent });
     // Stored directly: records written before the PUT sanitised them.
-    await storage.updateItem(done, { status: 'DONE', tests: [null] } as any);
-    await storage.updateItem(next, { status: 'TEST' } as any);
-    const res = await agent().post(`/items/${next}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'done' });
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect((await agent().get(`/items/${next}`)).body.status).toBe('DONE');
-  });
-
-  it('a stored tests value that is not a list (an object) does not make another sibling\'s final verify 500', async () => {
-    const projectId = await project();
-    const parent = (await agent().post('/items').send({ type: 'STORY', title: `p-${++seq}`, projectId })).body.id;
-    const done = await task(projectId, { parentId: parent });
-    const next = await task(projectId, { parentId: parent });
-    await storage.updateItem(done, { status: 'DONE', tests: {} } as any);
+    await storage.updateItem(withNull, { status: 'DONE', tests: [null] } as any);
+    await storage.updateItem(withObject, { status: 'DONE', tests: {} } as any);
     await storage.updateItem(next, { status: 'TEST' } as any);
     const res = await agent().post(`/items/${next}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'done' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -91,17 +81,17 @@ describe('sibling propagation over a stored malformed test record', () => {
 });
 
 describe('a card whose own stored tests are malformed', () => {
-  for (const [label, stored] of [['[null]', [null]], ['an object', {}]] as const) {
-    it(`with ${label}: verify lands DONE and stamps the new green with its commit`, async () => {
+  it('with [null] or an object: verify lands DONE and stamps the new green with its commit', async () => {
+    for (const [label, stored] of [['[null]', [null]], ['an object', {}]] as const) {
       const id = await task(await project());
       await storage.updateItem(id, { status: 'TEST', tests: stored } as any);
       const res = await agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'done' });
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.status, `${label}: ${JSON.stringify(res.body)}`).toBe(200);
       const after = (await agent().get(`/items/${id}`)).body;
-      expect(after.status).toBe('DONE');
+      expect(after.status, label).toBe('DONE');
       const green = after.tests.filter((t: any) => t && t.status === 'PASSED');
-      expect(green).toHaveLength(1);
-      expect(green[0].commit).toMatch(/^[0-9a-f]{40}$/);
-    });
-  }
+      expect(green, label).toHaveLength(1);
+      expect(green[0].commit, label).toMatch(/^[0-9a-f]{40}$/);
+    }
+  });
 });

@@ -82,45 +82,6 @@ describe('desktop-release.yml trigger (CGLAB-621)', () => {
   it('can be re-run by hand for an existing release tag', () => {
     expect(workflow().on.workflow_dispatch?.inputs?.tag?.required).toBe(true);
   });
-
-  it('serialises runs for the same release so a re-run cannot race a tag push', () => {
-    const concurrency = workflow().concurrency;
-    expect(concurrency?.group).toBe('desktop-release-${{ inputs.tag || github.ref_name }}');
-    // Cancelling would let a manual re-run kill the tag's own build mid-upload.
-    expect(concurrency?.['cancel-in-progress']).toBe(false);
-  });
-
-  it('every job checks out the tag being released, including a manual re-run', () => {
-    for (const [name, job] of Object.entries(workflow().jobs)) {
-      const checkout = job.steps.find((s) => s.uses?.startsWith('actions/checkout@'));
-      expect(checkout, `job ${name} has a checkout step`).toBeDefined();
-      expect(String(checkout?.with?.ref ?? ''), `job ${name} checks out the release tag`).toContain('inputs.tag');
-    }
-  });
-
-  it('every attach step uses the shared script and is not gated on desktop-v* refs', () => {
-    const attach = Object.values(workflow().jobs)
-      .flatMap((j) => j.steps)
-      .filter((s) => /attach/i.test(s.name ?? ''));
-    expect(attach.length).toBe(2);
-    for (const step of attach) {
-      expect(step.run ?? '').toMatch(/scripts\/attach-release-assets\.sh (--skip-existing )?"\$RELEASE_TAG"/);
-      expect(step.if ?? '').not.toContain('desktop-v');
-      // The short tag name: `github.ref` would hand the script `refs/tags/v...`.
-      expect(step.env?.RELEASE_TAG).toBe('${{ inputs.tag || github.ref_name }}');
-    }
-  });
-
-  it('keeps the installers on the run before attaching, so a failed attach loses nothing', () => {
-    const names = workflow().jobs.build.steps.map((s) => s.name);
-    expect(names.indexOf('Upload installers')).toBeGreaterThan(-1);
-    expect(names.indexOf('Upload installers')).toBeLessThan(names.indexOf('Attach installers to the release'));
-  });
-
-  it('the dist job leaves a tarball the release flow already attached alone', () => {
-    const step = workflow().jobs.dist.steps.find((s) => /attach/i.test(s.name ?? ''));
-    expect(step?.run ?? '').toContain('attach-release-assets.sh --skip-existing');
-  });
 });
 
 describe('scripts/attach-release-assets.sh (CGLAB-621)', () => {

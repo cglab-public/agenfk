@@ -51,5 +51,11 @@ describe('rate limits on routes CodeQL flagged', () => {
     expect(limited(await agent().put(`/items/${c.id}`).send({ title: 'rl 2' }))).toMatch(/^1200;/);
     expect(limited(await agent().delete(`/items/${c.id}`))).toMatch(/^1200;/);
   });
+
+  // CodeQL 170 on PR #270: the route grew a hub-ownership read (RFC-002). Limited as its sibling PUT /projects/:id.
+  it('PUT /projects/:id/verify-command is limited', async () => {
+    const p = (await agent().post('/projects').send({ name: 'rl-verify-command' })).body;
+    expect(limited(await agent().put(`/projects/${p.id}/verify-command`).send({ verifyCommand: 'exit 0' }))).toMatch(/^1200;/);
+  });
 });
 

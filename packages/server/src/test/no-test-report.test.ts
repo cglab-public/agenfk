@@ -67,7 +67,7 @@ async function setup(verifyCommand: string, gitignore = '.agenfk/\n') {
 const validate = (id: string) => agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok' });
 
 describe('5a8d22e6: the refusal says NO_TEST_REPORT once, with the command that fixes it', () => {
-  it('names the error, and gives a ready command built from the real project id and verify command', async () => {
+  it('names the error once, and gives a ready command built from the real project id and verify command, telling the agent to set it and verify again', async () => {
     // A stand-in that names vitest without running a suite here: the capture still runs it.
     const t = await setup('echo vitest run');
     const res = await validate(t.id);
@@ -75,18 +75,10 @@ describe('5a8d22e6: the refusal says NO_TEST_REPORT once, with the command that 
     expect(res.body.error).toBe('NO_TEST_REPORT');
     expect(res.body.fix).toBe(`agenfk update-project ${t.pid} --test-report-format vitest-json --test-report-command "echo vitest run --reporter=default --reporter=json --outputFile.json=.agenfk/test-report.json" --test-report-path .agenfk/test-report.json`);
     expect(res.body.message).toContain(res.body.fix);
-  });
-
-  it('says it once: no check repeats the placeholder hint', async () => {
-    const t = await setup('echo vitest run');
-    const res = await validate(t.id);
+    // Said once: no check repeats the placeholder hint.
     expect(res.body.message.split('NO_TEST_REPORT').length - 1).toBe(1);
     expect(res.body.message).not.toContain('agenfk update-project <id>');
-  });
-
-  it('tells the agent to set it and verify again, not to ask a person for an override', async () => {
-    const t = await setup('echo vitest run');
-    const res = await validate(t.id);
+    // The fix is the agent's: set it and verify again, not ask a person for an override.
     expect(res.body.message).toMatch(/run the same agenfk verify again/i);
   });
 

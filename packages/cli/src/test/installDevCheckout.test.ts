@@ -78,6 +78,9 @@ describe('sameDirectory, when identities are not to be trusted', () => {
   });
 });
 
+// Kept as a hazard guard, like the static guards in packages/server (GH-281 review): running
+// install.mjs in a test could restart the developer's own server, so its ordering is read from
+// the source - the check must come before any download that would overwrite the checkout.
 describe('install.mjs', () => {
   const src = fs.readFileSync(path.resolve(__dirname, '../../../../scripts/install.mjs'), 'utf8');
 

@@ -32,20 +32,13 @@ import { linkDir } from '../../../cli/src/test/helpers/links';
 beforeEach(() => { execSync.mockClear(); });
 
 describe('defaultSelfExtract on a development checkout', () => {
-  it('refuses, and runs nothing - no download, no extract, no npm ci', async () => {
+  // The refusal itself (no prune, no npm ci, "development checkout") is pinned
+  // end to end in self-extract-prune.test.ts; this pins that not even the download runs.
+  it('runs nothing at all on a development checkout, not even the download', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-devtree-'));
     fs.mkdirSync(path.join(root, '.git'));
-    const result = await defaultSelfExtract({ installRoot: root, targetVersion: '9.9.9' });
-    expect(result.ok).toBe(false);
-    expect((result as { error: string }).error).toMatch(/development checkout/i);
-    expect(execSync).not.toHaveBeenCalled();
-  });
-
-  it('still recovers an ordinary install root, which has no .git', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-install-'));
     await defaultSelfExtract({ installRoot: root, targetVersion: '9.9.9' });
-    // It goes ahead: the download is the first thing it runs.
-    expect(String((execSync.mock.calls[0] as unknown[] | undefined)?.[0] ?? '')).toMatch(/curl/);
+    expect(execSync).not.toHaveBeenCalled();
   });
 
   it('still recovers ~/.agenfk-system, which is a clone in real installs', async () => {

@@ -21,7 +21,7 @@ interface TerminalBridgeApi {
    * over a feature that is merely a warning label.
    *
    * That the CURRENT preload exposes it is guarded at the source, by
-   * `ipcSurface.test.ts` comparing the handler list to the preload.
+   * `ipcSurfaceBehaviour.test.ts` comparing the handler list to the preload.
    */
   sessionPersistence?(): Promise<{ available: boolean; hint?: string; warning?: string }>;
   /**

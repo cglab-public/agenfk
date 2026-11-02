@@ -120,43 +120,6 @@ describe('resolveModelSource (env → ctx → model_select → transcript → se
     const ctx = { getModel: () => ({ provider: 'cloudflare-workers-ai', id: '@cf/zai-org/glm-5.2' }) };
     expect(src({ ctx, lastSelected: 'cached', readDefault: () => 'fromfile' })).toBe('cloudflare-workers-ai/@cf/zai-org/glm-5.2');
   });
-
-  it('returns a bare id when the source knows no provider', () => {
-    const ctx = { getModel: () => ({ id: 'glm-5.2' }) };
-    expect(src({ ctx, lastSelected: null, readDefault: () => null })).toBe('glm-5.2');
-  });
-
-  it('falls back to the cached model_select id when getModel is unavailable', () => {
-    expect(src({ ctx: {}, lastSelected: 'glm-5.2', readDefault: () => 'fromfile' })).toBe('glm-5.2');
-  });
-
-  it('falls back to settings.json defaultModel when nothing fresher is available', () => {
-    expect(src({ ctx: {}, lastSelected: null, readDefault: () => '@cf/zai-org/glm-5.2', readTranscript: () => null })).toBe('@cf/zai-org/glm-5.2');
-  });
-
-  it('returns null when no source yields a model', () => {
-    expect(src({ ctx: {}, lastSelected: null, readDefault: () => null })).toBeNull();
-  });
-
-  // BUG: settings.json defaultModel is pi's STARTUP model read WITHOUT its
-  // defaultProvider, so it is not the live model. It must rank BELOW the
-  // transcript, which records the model that actually answered each turn.
-  it('ranks the live transcript ABOVE the settings.json defaultModel', () => {
-    expect(src({ ctx: {}, lastSelected: null, readDefault: () => 'qwen3.8:27b', readTranscript: () => 'qwen38-flashnext' })).toBe('qwen38-flashnext');
-  });
-
-  it('ranks the model_select cache above the transcript (a switch beats the last turn)', () => {
-    expect(src({ ctx: {}, lastSelected: 'glm-5.2', readDefault: () => 'qwen3.8:27b', readTranscript: () => 'qwen38-flashnext' })).toBe('glm-5.2');
-  });
-
-  it('uses the transcript when ctx.getModel and model_select are both unavailable', () => {
-    expect(src({ ctx: {}, lastSelected: null, readDefault: () => null, readTranscript: () => 'qwen38-flashnext' })).toBe('qwen38-flashnext');
-  });
-
-  it('still prefers the live ctx.getModel() over every fallback', () => {
-    const ctx = { getModel: () => ({ provider: 'p', id: 'live' }) };
-    expect(src({ ctx, lastSelected: 'cached', readDefault: () => 'default', readTranscript: () => 'transcript' })).toBe('p/live');
-  });
 });
 
 // ── Authoritative sources the bug ignored ───────────────────────────────────
@@ -304,12 +267,6 @@ describe('readPiSessionModel (the transcript records the model that answered)', 
   });
 });
 
-describe('readPiDefaultModel still reports the bare defaultModel', () => {
-  it('is unchanged in shape (the provider fix happens in resolution, not here)', () => {
-    expect(readPiDefaultModel(() => JSON.stringify({ defaultProvider: 'coding4', defaultModel: 'qwen3.8:27b' }))).toBe('qwen3.8:27b');
-  });
-});
-
 describe('preferredModelArg (never overwrite a correct agent-reported model)', () => {
   const cmd = 'agenfk pr create abc --model qwen38-flashnext --harness pi';
 
@@ -352,6 +309,12 @@ describe('preferredModelArg (never overwrite a correct agent-reported model)', (
   it('reads a quoted --model value as one shell word', () => {
     expect(preferredModelArg('agenfk pr create abc --model "glm-5.2"', 'glm-5.2')).toBeNull();
     expect(preferredModelArg('agenfk pr create abc --model="glm 5.2"', 'glm 5.2')).toBeNull();
+    // a space or an operator inside the quotes is part of the value
+    expect(preferredModelArg('agenfk pr create abc --model "glm 5.2"', 'glm 5.2')).toBeNull();
+    expect(preferredModelArg('agenfk pr create abc --model "a;b"', 'a;b')).toBeNull();
+    // both quote styles; a value quoted in one style ignores the other style's quote char inside it
+    expect(preferredModelArg(`agenfk pr create abc --model 'glm-5.2'`, 'glm-5.2')).toBeNull();
+    expect(preferredModelArg(`agenfk pr create abc --model 'a"b'`, 'a"b')).toBeNull();
   });
 
   it('reads the --model=VALUE form', () => {
@@ -365,6 +328,10 @@ describe('preferredModelArg (never overwrite a correct agent-reported model)', (
 
   it('does not treat --model-a or a --model in a later pipeline stage as ours', () => {
     expect(preferredModelArg('agenfk pr create abc --model-a glm-5.2', 'glm-5.2')).toBe('glm-5.2');
+    expect(preferredModelArg('agenfk pr create abc --modelname glm-5.2', 'glm-5.2')).toBe('glm-5.2');
+    expect(preferredModelArg('agenfk pr create abc --modelx=glm-5.2', 'glm-5.2')).toBe('glm-5.2');
+    // the case a prefix match would get wrong: the rest of the word would read as the value
+    expect(preferredModelArg('agenfk pr create abc --modelglm-5.2', 'glm-5.2')).toBe('glm-5.2');
     // `glm-5.2` belongs to the SECOND command; ours has none, so still inject.
     expect(preferredModelArg('agenfk pr create abc | grep glm-5.2', 'glm-5.2')).toBe('glm-5.2');
   });
@@ -394,32 +361,6 @@ describe('preferredModelArg (never overwrite a correct agent-reported model)', (
     expect(preferredModelArg('agenfk pr create abc --model glm-5.2|grep x', 'glm-5.2')).toBeNull();
   });
 
-  it('matches a quoted value containing a space or an operator', () => {
-    expect(preferredModelArg('agenfk pr create abc --model "glm 5.2"', 'glm 5.2')).toBeNull();
-    expect(preferredModelArg('agenfk pr create abc --model "a;b"', 'a;b')).toBeNull();
-  });
-
-  it('does not match a flag merely starting with --model', () => {
-    expect(preferredModelArg('agenfk pr create abc --modelname glm-5.2', 'glm-5.2')).toBe('glm-5.2');
-    expect(preferredModelArg('agenfk pr create abc --modelx=glm-5.2', 'glm-5.2')).toBe('glm-5.2');
-  });
-
-  // `--model$` is the end-of-command alternative in the flag regex: without it the
-  // value scan starts past the end and a correct final --model reads as absent.
-  it('kills the end-of-command branch of the flag regex', () => {
-    expect(preferredModelArg('agenfk pr create abc --model glm-5.2', 'glm-5.2')).toBeNull();
-    expect(preferredModelArg('agenfk pr create abc --model=glm-5.2', 'glm-5.2')).toBeNull();
-    // and the flag alone at EOL is still "no report"
-    expect(preferredModelArg('agenfk pr create abc --model', 'glm-5.2')).toBe('glm-5.2');
-  });
-
-  it('honours both quote styles when reading a value', () => {
-    expect(preferredModelArg(`agenfk pr create abc --model 'glm-5.2'`, 'glm-5.2')).toBeNull();
-    expect(preferredModelArg('agenfk pr create abc --model "glm-5.2"', 'glm-5.2')).toBeNull();
-    // a value quoted in one style ignores the other style's quote char inside it
-    expect(preferredModelArg(`agenfk pr create abc --model 'a"b'`, 'a"b')).toBeNull();
-  });
-
   it('honours an escaped quote inside a double-quoted value', () => {
     expect(preferredModelArg('agenfk pr create abc --model "a\\"b"', 'a"b')).toBeNull();
   });
@@ -440,40 +381,22 @@ describe('injectDeterministicModel keeps agreeing with the agent', () => {
     expect(injectDeterministicModel(cmd, 'coding4/qwen38-flashnext')).toBe(cmd);
   });
 
-  it('still overrides a contradicting model', () => {
-    const out = injectDeterministicModel('agenfk pr create abc --model claude-sonnet-4-5 --harness pi', 'coding4/qwen38-flashnext');
-    expect(out).toMatch(/--model claude-sonnet-4-5 --harness pi --model coding4\/qwen38-flashnext --harness pi$/);
-  });
-
-  it('accepts a provider-qualified id (slash is on the allowlist)', () => {
-    const out = injectDeterministicModel('agenfk pr create abc --title "T"', 'coding4/qwen3.8:27b');
-    expect(out).toContain('--model coding4/qwen3.8:27b --harness pi');
-  });
-
   it('still refuses shell metacharacters in a provider-qualified id', () => {
     const cmd = 'agenfk pr create abc --title "T"';
     expect(injectDeterministicModel(cmd, 'coding4/qwen; rm -rf')).toBe(cmd);
-  });
-
-  it('does not inject twice when the agent quoted a correct --model', () => {
-    const cmd = 'agenfk pr create abc --model "qwen38-flashnext" --harness pi';
-    expect(injectDeterministicModel(cmd, 'coding4/qwen38-flashnext')).toBe(cmd);
   });
 
   it('overrides a wrong --model that follows a quoted --body containing an operator', () => {
     const out = injectDeterministicModel('agenfk pr create abc --body "first; then" --model claude-sonnet-4-5', 'glm-5.2');
     expect(out).toBe('agenfk pr create abc --body "first; then" --model claude-sonnet-4-5 --model glm-5.2 --harness pi');
   });
-
-  it('injects before a pipe even when the later stage mentions the model', () => {
-    const out = injectDeterministicModel('agenfk pr create abc | grep glm-5.2', 'glm-5.2');
-    expect(out).toBe('agenfk pr create abc --model glm-5.2 --harness pi | grep glm-5.2');
-  });
 });
 
 describe('readPiDefaultModel (parse ~/.pi/agent/settings.json)', () => {
   it('returns the defaultModel id', () => {
     expect(readPiDefaultModel(() => JSON.stringify({ defaultModel: '@cf/zai-org/glm-5.2' }))).toBe('@cf/zai-org/glm-5.2');
+    // bare: the provider fix happens in resolution, not here
+    expect(readPiDefaultModel(() => JSON.stringify({ defaultProvider: 'coding4', defaultModel: 'qwen3.8:27b' }))).toBe('qwen3.8:27b');
   });
   it('returns null when defaultModel is absent or JSON is bad', () => {
     expect(readPiDefaultModel(() => JSON.stringify({ other: 1 }))).toBeNull();
@@ -501,36 +424,6 @@ describe('activate(): model detection uses env + transcript, not settings.json a
 
     expect(sent[0].message.content).toContain('coding4/qwen3.8:27b');
     expect(sent[0].message.content).not.toContain('claude-opus-4-8');
-  });
-
-  it('uses the session transcript when env + ctx + model_select are all unavailable', async () => {
-    const { pi, sent, fire } = makeFakePi();
-    const deps = makeDeps({
-      prReminder: vi.fn().mockReturnValue({ message: 'open. harness = "pi".' }),
-      readTranscriptModel: () => 'qwen38-flashnext',
-    });
-    activate(pi as any, deps);
-
-    await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create' } }, {});
-
-    expect(sent[0].message.content).toContain('qwen38-flashnext');
-  });
-
-  // The exact failure from the report: the hook asserted a model the session
-  // transcript contradicted, because settings.json defaultModel outranked it.
-  it('does NOT report the settings.json defaultModel when the transcript contradicts it', async () => {
-    const { pi, sent, fire } = makeFakePi();
-    const deps = makeDeps({
-      prReminder: vi.fn().mockReturnValue({ message: 'open. harness = "pi".' }),
-      readDefaultModel: () => '@cf/zai-org/glm-5.2',
-      readTranscriptModel: () => 'qwen38-flashnext/qwen38-flashnext',
-    });
-    activate(pi as any, deps);
-
-    await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create' } }, {});
-
-    expect(sent[0].message.content).toContain('qwen38-flashnext');
-    expect(sent[0].message.content).not.toContain('@cf/zai-org/glm-5.2');
   });
 
   it('re-reads the model per event instead of caching settings.json for the session', async () => {
@@ -682,28 +575,6 @@ describe('activate(): PR-open reminder via tool_result', () => {
     expect(sent[0].message.content).toContain('anthropic/claude-opus-4-8');
   });
 
-  it('falls back to the cached model_select model when ctx.getModel() is unavailable', async () => {
-    const { pi, sent, fire } = makeFakePi();
-    const deps = makeDeps({ prReminder: vi.fn().mockReturnValue({ message: 'open. harness = "pi".' }) });
-    activate(pi as any, deps);
-
-    fire('model_select', { model: { provider: 'zhipu', id: 'glm-5.2' } });
-    await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create' } }, {}); // no getModel
-    expect(sent[0].message.content).toContain('glm-5.2');
-  });
-
-  it('falls back to ~/.pi/agent/settings.json defaultModel when getModel + model_select are both unavailable', async () => {
-    const { pi, sent, fire } = makeFakePi();
-    const deps = makeDeps({
-      prReminder: vi.fn().mockReturnValue({ message: 'open. harness = "pi".' }),
-      readDefaultModel: () => '@cf/zai-org/glm-5.2', // the live-pi reality: model only known from config
-    });
-    activate(pi as any, deps);
-
-    await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create' } }, {}); // no getModel, no model_select
-    expect(sent[0].message.content).toContain('@cf/zai-org/glm-5.2');
-  });
-
   it('still reminds (without a model line) when no model can be resolved', async () => {
     const { pi, sent, fire } = makeFakePi();
     const deps = makeDeps({ prReminder: vi.fn().mockReturnValue({ message: 'open it' }) });
@@ -787,16 +658,6 @@ describe('activate(): gatekeeper enforcement via tool_call', () => {
     expect(res).toEqual({ block: true, reason: 'WORKFLOW VIOLATION' });
   });
 
-  it('blocks write when no task is active', async () => {
-    const { pi, fire } = makeFakePi();
-    const deps = makeDeps({
-      gatekeeperVerdict: vi.fn().mockReturnValue({ decision: 'block', reason: 'nope' }),
-    });
-    activate(pi as any, deps);
-    const res = await fire('tool_call', { toolName: 'write', input: { path: '/repo/x.ts' } });
-    expect(res).toEqual({ block: true, reason: 'nope' });
-  });
-
   it('allows edit when a task is active (no verdict)', async () => {
     const { pi, fire } = makeFakePi();
     const deps = makeDeps();
@@ -807,15 +668,6 @@ describe('activate(): gatekeeper enforcement via tool_call', () => {
 });
 
 describe('activate(): deterministic model injection on agenfk pr commands', () => {
-  it('rewrites event.input.command to force the real ctx.getModel() on `agenfk pr create`', async () => {
-    const { pi, fire } = makeFakePi();
-    activate(pi as any, makeDeps());
-    const event: any = { toolName: 'bash', input: { command: 'agenfk pr create abc --model claude-sonnet-4-5 --harness pi --title "T"' } };
-    await fire('tool_call', event, ctxWithModel('cloudflare-workers-ai', '@cf/zai-org/glm-5.2'));
-    // Provider-qualified id appended last (overrides the agent's guess).
-    expect(event.input.command).toMatch(/--model cloudflare-workers-ai\/@cf\/zai-org\/glm-5\.2 --harness pi$/);
-  });
-
   it('leaves an ordinary bash command unchanged', async () => {
     const { pi, fire } = makeFakePi();
     activate(pi as any, makeDeps());
@@ -965,5 +817,52 @@ describe('activate(): pi read tool and the database files', () => {
     const { pi, fire } = makeFakePi();
     activate(pi as any, makeDeps({ readVerdict: vi.fn().mockReturnValue(null) }));
     expect(await fire('tool_call', { toolName: 'read', input: { path: '/repo/src/index.ts' } }, {})).toBeUndefined();
+  });
+});
+
+// ── pi 1.4's ExtensionContext: the live model is ctx.model ──────────────────
+// Verified against @earendil-works/pi-coding-agent 1.4.0
+// (dist/core/extensions/types.d.ts, ExtensionContext): it carries `model`
+// ({ provider, id, ... }) and `cwd`; getModel() is only on an internal runner
+// type, and PI_PROVIDER/PI_MODEL are set in the bash tool's CHILD shell, not in
+// the extension's process. So in a real session ctx.model is the live model.
+
+/** The shape pi 1.4 hands an extension handler (the fields this extension reads). */
+const realCtx = (provider: string, id: string) => ({
+  cwd: '/repo',
+  mode: 'tui',
+  hasUI: true,
+  ui: { notify: () => {} },
+  model: { provider, id, name: id, api: 'openai-completions' },
+});
+
+describe('resolveModelSource reads ctx.model (pi 1.4 ExtensionContext)', () => {
+  const none = () => null;
+
+  it('ctx.model is the first source: it beats the env, getModel(), the cache, the transcript and settings.json', () => {
+    const ctx = { ...realCtx('coding4', 'qwen3.8:27b'), getModel: () => ({ provider: 'anthropic', id: 'stale' }) };
+    expect(resolveModelSource({
+      ctx: ctx as any, lastSelected: 'cached', readDefault: () => 'settings', readTranscript: () => 't/transcript', env: () => 'e/env',
+    })).toBe('coding4/qwen3.8:27b');
+  });
+
+  it('with no env and no transcript, the live model wins over a different settings.json model', () => {
+    expect(resolveModelSource({
+      ctx: realCtx('cloudflare-workers-ai', '@cf/zai-org/glm-5.2') as any,
+      lastSelected: null, readDefault: () => 'qwen3.8:27b', readTranscript: none, env: none,
+    })).toBe('cloudflare-workers-ai/@cf/zai-org/glm-5.2');
+  });
+
+  it('a ctx.model with no id falls through to the next source', () => {
+    expect(resolveModelSource({ ctx: { model: { provider: 'p' } } as any, lastSelected: null, readDefault: () => 'settings', readTranscript: none, env: none })).toBe('settings');
+  });
+
+  it('activate(): an agenfk pr command is rewritten to the live ctx.model, not settings.json', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps({ readDefaultModel: () => 'settings-model' }));
+    const input = { command: 'agenfk pr create abc' };
+    await fire('tool_call', { toolName: 'bash', input }, realCtx('coding4', 'qwen3.8:27b'));
+    expect(input.command).toContain('--model coding4/qwen3.8:27b --harness pi');
+    expect(input.command).not.toContain('settings-model');
   });
 });

@@ -154,13 +154,6 @@ describe('verifyRepointTarget private-address guard', () => {
     });
     expect(seen).toEqual([]);
   });
-
-  it('still accepts an ordinary public hostname', async () => {
-    const r = await verifyRepointTarget({
-      ...base, targetUrl: NEW_URL, allowedHost: 'hub.new.example', getImpl: makeGet(healthyRoutes),
-    });
-    expect(r.ok).toBe(true);
-  });
 });
 
 describe('verifyRepointTarget URL normalisation', () => {

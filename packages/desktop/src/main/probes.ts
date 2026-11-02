@@ -23,6 +23,8 @@ export type HttpGet = (
   port: number,
   path: string,
   headers?: Record<string, string>,
+  /** End-to-end budget in ms; defaults to REQUEST_DEADLINE_MS. A parameter so tests need not wait 2s. */
+  deadlineMs?: number,
 ) => Promise<HttpResponse | null>;
 
 const BODY_LIMIT = 64 * 1024;
@@ -40,7 +42,7 @@ const BODY_LIMIT = 64 * 1024;
 const REQUEST_DEADLINE_MS = 2000;
 
 /** Real implementation: loopback GET, bounded in both time and bytes. */
-export const httpGet: HttpGet = (port, reqPath, headers = {}) =>
+export const httpGet: HttpGet = (port, reqPath, headers = {}, deadlineMs = REQUEST_DEADLINE_MS) =>
   new Promise(resolve => {
     let settled = false;
     let request: http.ClientRequest | null = null;
@@ -53,10 +55,10 @@ export const httpGet: HttpGet = (port, reqPath, headers = {}) =>
       resolve(value);
     };
 
-    const deadline = setTimeout(() => finish(null), REQUEST_DEADLINE_MS);
+    const deadline = setTimeout(() => finish(null), deadlineMs);
 
     request = http.get(
-      { host: '127.0.0.1', port, path: reqPath, headers, timeout: REQUEST_DEADLINE_MS },
+      { host: '127.0.0.1', port, path: reqPath, headers, timeout: deadlineMs },
       res => {
         const snapshot = (body: string): HttpResponse => ({
           status: res.statusCode ?? 0,

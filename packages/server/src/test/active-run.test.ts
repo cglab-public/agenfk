@@ -67,36 +67,29 @@ const until = async (pred: () => Promise<boolean>, ms = 10_000) => {
 };
 
 describe('9569b4d7: a running verify is visible to the board', () => {
-  it('item responses carry activeRun while the run lasts, and drop it when it ends', async () => {
+  it("item responses carry activeRun while the run lasts, the board is told it started and served its output without the agent's token, and it drops when the run ends", async () => {
     const t = await setup();
-    const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
-    expect(v.status, JSON.stringify(v.body)).toBe(202);
-    const one = (await agent().get(`/items/${t.id}`)).body;
-    expect(one.activeRun).toMatchObject({ runId: v.body.runId, step: 'WORK' });
-    expect(Number.isNaN(Date.parse(one.activeRun.startedAt))).toBe(false);
-    const listed = (await agent().get('/items').query({ projectId: t.pid })).body.find((i: any) => i.id === t.id);
-    expect(listed.activeRun).toMatchObject({ runId: v.body.runId });
-    await until(async () => !(await agent().get(`/items/${t.id}`)).body.activeRun);
-    expect((await agent().get(`/items/${t.id}`)).body.status).toBe('NEXT');
-  });
-
-  it("serves the run's latest output to the board, without the agent's token, while it runs", async () => {
-    const t = await setup();
-    const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
-    expect(v.status).toBe(202);
-    await until(async () => /hello-from-the-run/.test((await agent().get(`/items/${t.id}/active-run`)).body?.output ?? ''));
-    const r = await agent().get(`/items/${t.id}/active-run`);
-    expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ runId: v.body.runId, step: 'WORK' });
-    await until(async () => (await agent().get(`/items/${t.id}/active-run`)).status === 404);
-  });
-
-  it("streams a capture's output to the agent following the run, so the chat is not silent for the whole suite", async () => {
-    const t = await setup();
-    const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
-    expect(v.status).toBe(202);
-    await until(async () => /hello-from-the-run/.test((await agent().get(`/items/validate-runs/${v.body.runId}`).set(internal())).body?.output ?? ''));
-    await until(async () => (await agent().get(`/items/${t.id}/active-run`)).status === 404);
+    const emit = vi.spyOn(io, 'emit');
+    try {
+      const before = emit.mock.calls.filter(c => c[0] === 'items_updated').length;
+      const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
+      expect(v.status, JSON.stringify(v.body)).toBe(202);
+      const one = (await agent().get(`/items/${t.id}`)).body;
+      expect(one.activeRun).toMatchObject({ runId: v.body.runId, step: 'WORK' });
+      expect(Number.isNaN(Date.parse(one.activeRun.startedAt))).toBe(false);
+      // The board hears that a run started, while it runs.
+      expect(emit.mock.calls.filter(c => c[0] === 'items_updated').length).toBeGreaterThan(before);
+      const listed = (await agent().get('/items').query({ projectId: t.pid })).body.find((i: any) => i.id === t.id);
+      expect(listed.activeRun).toMatchObject({ runId: v.body.runId });
+      // The run's latest output, served to the board without the agent's token.
+      await until(async () => /hello-from-the-run/.test((await agent().get(`/items/${t.id}/active-run`)).body?.output ?? ''));
+      const r = await agent().get(`/items/${t.id}/active-run`);
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({ runId: v.body.runId, step: 'WORK' });
+      await until(async () => !(await agent().get(`/items/${t.id}`)).body.activeRun);
+      expect((await agent().get(`/items/${t.id}/active-run`)).status).toBe(404);
+      expect((await agent().get(`/items/${t.id}`)).body.status).toBe('NEXT');
+    } finally { emit.mockRestore(); }
   });
 
   it('keeps only the last 8 KiB of an output far past the followers\' 256 KiB head', async () => {
@@ -126,19 +119,6 @@ describe('9569b4d7: a running verify is visible to the board', () => {
     const t0 = Date.now();
     await until(async () => (await agent().get(`/items/${t.id}/active-run`)).status === 404, 8000);
     expect(Date.now() - t0).toBeLessThan(8000);
-  });
-
-  it('tells the board a run started, while it runs', async () => {
-    const t = await setup();
-    const emit = vi.spyOn(io, 'emit');
-    try {
-      const before = emit.mock.calls.filter(c => c[0] === 'items_updated').length;
-      const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
-      expect(v.status).toBe(202);
-      expect((await agent().get(`/items/${t.id}`)).body.activeRun).toBeDefined();
-      expect(emit.mock.calls.filter(c => c[0] === 'items_updated').length).toBeGreaterThan(before);
-      await until(async () => !(await agent().get(`/items/${t.id}`)).body.activeRun);
-    } finally { emit.mockRestore(); }
   });
 
   it("a capture's output and then the verify command's reach the follower in order, never rewound (review)", async () => {

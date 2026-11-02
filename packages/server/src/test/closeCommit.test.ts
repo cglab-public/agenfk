@@ -92,13 +92,7 @@ describe('when nothing is staged', () => {
     const result = commitStagedForCard(card, '/repo', { run: git.run });
     expect(result.committed).toBe(false);
     expect(git.calls.some(a => a.includes('commit'))).toBe(false);
-  });
-
-  it('says what to do about it, since this is new behaviour', () => {
-    // An agent that has always been committed FOR will meet this once and
-    // needs to know that staging is now its job.
-    const git = spyGit([]);
-    const result = commitStagedForCard(card, '/repo', { run: git.run });
+    // And says what to do about it, since this is new behaviour: staging is the agent's job now.
     expect(result.reason).toMatch(/stage/i);
   });
 });

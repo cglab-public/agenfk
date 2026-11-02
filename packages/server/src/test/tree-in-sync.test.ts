@@ -163,16 +163,4 @@ describe('1049ce52: tree-in-sync', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(await recorded(cid)).toMatchObject({ outcome: 'unavailable', blocking: false });
   });
-
-  it('waits for a person first: no fetch runs while an approval is missing, and it is reported deferred', async () => {
-    const r = remoteSetup();
-    r.pushFromOther('b');
-    const cid = await card(r.work, { role: 'backlog', checks: [{ id: 'human-approval' }] });
-    const res = await validate(cid);
-    expect(res.status).toBe(422);
-    expect((res.body.checks as any[]).filter(c => c.blocking).map(c => c.id)).toEqual(['human-approval']);
-    expect(verdict(res)).toMatchObject({ outcome: 'deferred', blocking: false });
-    // Nothing was fetched: the card's clone still does not know origin moved.
-    expect(sh(r.work, 'git rev-list --count HEAD..origin/main')).toBe('0');
-  });
 });

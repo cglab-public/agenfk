@@ -281,12 +281,14 @@ describe('CGLAB-383: overrides on a step that asks for a passkey', () => {
 });
 
 describe('CGLAB-383: a step that does not ask for a passkey', () => {
-  it('approvals work from the board as in S6, recorded as unverified', async () => {
+  it('approvals work from the board as in S6, recorded and shown on the gates as unverified', async () => {
     const id = await card('PLAN', false);
     const res = await approve(id, {});
     expect(res.status).toBe(201);
     expect(res.body.authority).toBe('unverified');
     expect((await item(id)).stepRecords.find((r: any) => r.kind === 'approval').authority).toBe('unverified');
+    // The board shows each approval with its authority.
+    expect((await agent().get(`/items/${id}/gates`)).body.approvals[0].authority).toBe('unverified');
   });
 });
 
@@ -324,12 +326,6 @@ describe('CGLAB-383: GET /items/:id/gates says whether the step asks for a passk
   it('true on a signed step, false elsewhere', async () => {
     expect((await agent().get(`/items/${await card('PLAN')}/gates`)).body.passkeyRequired).toBe(true);
     expect((await agent().get(`/items/${await card('PLAN', false)}/gates`)).body.passkeyRequired).toBe(false);
-  });
-
-  it('shows each approval with its authority', async () => {
-    const id = await card('PLAN', false);
-    await approve(id, {});
-    expect((await agent().get(`/items/${id}/gates`)).body.approvals[0].authority).toBe('unverified');
   });
 });
 

@@ -1,9 +1,9 @@
 {
   "name": "@agenfk/hub",
-  "version": "2.0.0",
+  "version": "2.1.0-beta.13",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22.12.0"
+    "node": "^22.13.0 || >=23.5.0"
   },
   "description": "Corporate Hub for AgEnFK — fleet-wide metrics + timeline server",
   "main": "dist/server.js",
@@ -25,15 +25,16 @@
     "start": "node dist/bin.js"
   },
   "dependencies": {
-    "@agenfk/core": "2.0.0",
+    "@agenfk/core": "2.1.0-beta.13",
     "axios": "^1.20.0",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
-    "express": "^5.2.1",
-    "express-rate-limit": "^8.5.2",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
     "jsonwebtoken": "^9.0.2",
     "jwks-rsa": "^4.1.0",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "tldts": "^7.0.23"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",

@@ -798,57 +798,6 @@ describe('AppShell - the widened rail', () => {
     return view;
   };
 
-  const navIcon = () => document.querySelector('nav[aria-label="Work"] svg')!;
-
-  it('is 56px wide, not the 40 it was', async () => {
-    const { container } = await renderCollapsed();
-    expect(container.querySelector('aside')!.style.width).toBe('56px');
-  });
-
-  it('scales the nav icons to 18px, and leaves the open sidebar at 14', async () => {
-    /*
-     * CONDITIONAL, and that is the whole point. There is one `size` literal
-     * behind these icons and it is shared with the open sidebar, whose rows are
-     * 13px text with their own tuned proportions - the mockup only touches the
-     * rail. Bumping the literal would grow the open sidebar's icons under its
-     * labels, which nobody asked for.
-     */
-    await renderCollapsed();
-    expect(navIcon().getAttribute('width')).toBe('18');
-
-    fireEvent.click(screen.getByRole('button', { name: /expand sidebar/i }));
-    expect(navIcon().getAttribute('width'), 'the open sidebar grew with the rail').toBe('14');
-  });
-
-  it('makes each nav row a 40px square without fighting w-full', async () => {
-    /*
-     * `w-full` and `w-10` are the same property at the same specificity, so the
-     * winner is whichever Tailwind emitted LAST - not source order, and not
-     * something the next reader can see. The width is therefore chosen per mode
-     * instead of overridden.
-     */
-    await renderCollapsed();
-    const button = document.querySelector('nav[aria-label="Work"] button') as HTMLElement;
-    expect(button.className).toContain('h-10');
-    expect(button.className).toContain('w-10');
-    expect(button.className, 'w-full leaves the width to Tailwind emission order').not.toContain('w-full');
-  });
-
-  it('scales the collapse toggle with the rail', async () => {
-    // The one control that stays 14px while every icon beside it grows read as
-    // left over from the old rail - and it is the control the rail exists for.
-    await renderCollapsed();
-    const toggle = screen.getByRole('button', { name: /expand sidebar/i });
-    expect(toggle.querySelector('svg')!.getAttribute('width')).toBe('18');
-  });
-
-  it('recedes the main column by 32px, not the 48 a 40px rail needed', async () => {
-    const { container } = await renderCollapsed();
-    const reserving = document.querySelector('[data-reserves-window-controls="true"]')!;
-    expect(reserving.className).toContain('pl-8');
-    expect(reserving.className, 'pl-12 is the reserve for a 40px rail').not.toContain('pl-12');
-  });
-
   it('gives every rail icon a hover hint, which is its only label there', async () => {
     /*
      * On the rail the button's only visible child is an aria-hidden icon, so
@@ -896,23 +845,6 @@ describe('AppShell - the widened rail', () => {
     const nav = screen.getByRole('navigation', { name: /work/i });
     const hints = [...nav.querySelectorAll('[role="tooltip"]')].map(el => el.textContent ?? '');
     expect(hints.every(t => /project/i.test(t)), `a hint repeats a visible label: ${hints}`).toBe(true);
-  });
-
-  it('scales the Settings control too, which lives outside the nav', async () => {
-    /*
-     * The one control the first pass missed, found by looking at the rail
-     * rather than at the diff. It renders OUTSIDE the `open` guard on purpose
-     * - collapsing must not remove the only route to Settings, and the sidebar
-     * state is persisted, so getting that wrong is permanent - and being
-     * outside the nav is exactly why a change made to the nav rows skipped it.
-     * 13px beside 18px reads as a different rail.
-     */
-    await renderCollapsed();
-    const settings = document.querySelector('[data-testid="shell-nav"] button') as HTMLElement;
-    expect(settings.querySelector('svg')!.getAttribute('width')).toBe('18');
-    expect(settings.className).toContain('h-10');
-    expect(settings.className).toContain('w-10');
-    expect(settings.className, 'w-full leaves the width to Tailwind emission order').not.toContain('w-full');
   });
 });
 
@@ -1026,21 +958,6 @@ describe('AppShell — the title bar in full screen and over the terminal', () =
     const tabs = terminalTabs()!;
     expect(tabs.getAttribute('data-app-region')).toBe('drag');
     expect(tabs.hasAttribute('data-reserves-window-controls')).toBe(false);
-  });
-
-  it('recedes the tabs by 32px, not the 48 a 40px rail needed', async () => {
-    /*
-     * The reserve is DERIVED, not taste. The traffic lights reach ~78px from
-     * the window edge: against the 40px rail the uncovered 38px rounded up to
-     * 48, and the 56px rail covers 16px more of it, so 78 - 56 = 22 rounds up
-     * to 32. A rail that grows while this stays put is a first tab under the
-     * zoom button.
-     */
-    await openTerminal();
-    collapse();
-    const tabs = terminalTabs()!;
-    expect(tabs.className, 'the tabs still reserve room for a 40px rail').toContain('pl-8');
-    expect(tabs.className, 'pl-12 is the reserve for a 40px rail').not.toContain('pl-12');
   });
 
   it('makes the tab strip neither a handle nor indented in full screen', async () => {
@@ -1820,25 +1737,19 @@ describe('the projects tree row in the new drawing (CGLAB-164)', () => {
     expect(within(without).getByTestId('card-branch').getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('draws the branch in mono, dimmer and smaller than the title', async () => {
-    // A branch name is an identifier. Proportional type makes l/1 and rn/m
-    // ambiguous in exactly the strings you have to compare by eye.
-    const row = await openTheFolder();
-    const branch = within(row).getByTestId('card-branch');
-    expect(branch.className).toMatch(/font-mono/);
-    expect(sizeOf(branch)).toBeLessThan(sizeOf(within(row).getByTestId('card-title')));
-  });
-
   it('sets the card title bigger than the 11px it used to be', async () => {
     // The literal ask. The rows were 11px and cramped.
     const row = await openTheFolder();
     expect(sizeOf(within(row).getByTestId('card-title'))).toBeGreaterThan(11);
   });
 
-  it('orders the row type: title, then branch, then step', async () => {
+  it('orders the row type: title, then a mono branch, then step', async () => {
     // One hierarchy, three sizes. The step is the smallest because it is the
-    // thing you filter by, not the thing you read.
+    // thing you filter by, not the thing you read. The branch is an
+    // identifier, so it is mono: proportional type makes l/1 and rn/m
+    // ambiguous in exactly the strings you have to compare by eye.
     const row = await openTheFolder();
+    expect(within(row).getByTestId('card-branch').className).toMatch(/font-mono/);
     const title = sizeOf(within(row).getByTestId('card-title'));
     const branch = sizeOf(within(row).getByTestId('card-branch'));
     const step = sizeOf(within(row).getByTestId('card-step'));

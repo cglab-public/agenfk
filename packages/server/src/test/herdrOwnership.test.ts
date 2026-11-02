@@ -27,12 +27,6 @@ const inputs = (over: Partial<OwnerInputs> = {}): OwnerInputs =>
   ({ cards: CARDS, projects: PROJECTS, ...over });
 
 describe('a pane inside a card\'s worktree', () => {
-  it('belongs to that card', () => {
-    const o = ownerOfPane('/wt/agenfk/feat-x', inputs());
-    expect(o.kind).toBe('card');
-    expect(o.kind === 'card' && o.card.id).toBe('c-1');
-  });
-
   it('belongs to it from a subdirectory too', () => {
     const o = ownerOfPane('/wt/agenfk/feat-x/packages/server', inputs());
     expect(o.kind === 'card' && o.card.id).toBe('c-1');

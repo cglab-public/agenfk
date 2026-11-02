@@ -117,6 +117,39 @@ const SCHEMA_PG = `
   );
   CREATE INDEX IF NOT EXISTS idx_device_codes_user_code ON device_codes(user_code);
 
+  -- Admin CLI sign-in (CGLAB-702). A code the CLI starts and a signed-in admin
+  -- approves in the browser; kept apart from device_codes so an admin code can
+  -- never be redeemed as an installation key, nor the other way round.
+  CREATE TABLE IF NOT EXISTS admin_device_codes (
+    device_code TEXT PRIMARY KEY,
+    user_code TEXT NOT NULL UNIQUE,
+    org_id TEXT,
+    user_id TEXT,
+    approved_at TIMESTAMPTZ,
+    -- Set by the one poll that collects the grant; the token is minted then,
+    -- so no plaintext waits anywhere between approval and collection.
+    consumed_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  -- The admin CLI's bearer tokens: a second carrier for a user's session, held
+  -- as a hash. Whether its user may act, and as what, is read from users on
+  -- every request, as for the cookie.
+  CREATE TABLE IF NOT EXISTS admin_cli_tokens (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    -- The device grant that minted it. UNIQUE: one grant can never yield a
+    -- second token, whatever fails part-way through issuing the first.
+    grant_code TEXT UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_admin_cli_tokens_org ON admin_cli_tokens(org_id);
+
   CREATE TABLE IF NOT EXISTS used_invites (
     nonce TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
@@ -565,6 +598,193 @@ const SCHEMA_PG = `
     expires_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_jira_oauth_pending_completion ON jira_oauth_pending(completion_hash);
+
+  -- Repository settings (RFC-002). Mirrors the SQLite DDL above; see the
+  -- comment there for what each column is for. Timestamps stay TEXT rather
+  -- than TIMESTAMPTZ on purpose: the app writes the ISO string new Date()
+  -- .toISOString() produces on both backends, so a row read off one replica
+  -- reads identically off the other, and the revision trail compares as
+  -- strings in one order.
+  CREATE TABLE IF NOT EXISTS repo_settings (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    verify_command TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    receipts_mode TEXT NOT NULL DEFAULT 'off' CHECK (receipts_mode IN ('off','shadow','enforce')),
+    shadow_threshold INTEGER,
+    producer_mode TEXT NOT NULL DEFAULT 'listed' CHECK (producer_mode IN ('listed','all')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, remote_url)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_settings_org ON repo_settings(org_id);
+
+  -- Airlock (GH-294). Mirrors the SQLite DDL; see the comment there.
+  CREATE TABLE IF NOT EXISTS airlock_policies (
+    org_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    policy_json TEXT NOT NULL,
+    ioc_revision INTEGER NOT NULL DEFAULT 0,
+    ioc_hosts_json TEXT NOT NULL DEFAULT '[]',
+    ioc_updated_at TEXT,
+    updated_at TEXT NOT NULL,
+    updated_by_email TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS airlock_installations (
+    org_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    applied_revision INTEGER,
+    applied_ioc_revision INTEGER,
+    applied_at TEXT,
+    reported_at TEXT,
+    refused_revision INTEGER,
+    refused_ioc_revision INTEGER,
+    refused_error TEXT,
+    refused_at TEXT,
+    PRIMARY KEY (org_id, installation_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS airlock_decisions (
+    org_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    client TEXT,
+    model TEXT,
+    tool TEXT,
+    capability_kind TEXT,
+    target TEXT,
+    decision TEXT NOT NULL,
+    rule TEXT,
+    mode TEXT,
+    source TEXT NOT NULL,
+    alert TEXT,
+    item_id TEXT,
+    revision INTEGER,
+    policy_source TEXT,
+    PRIMARY KEY (org_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_decisions_org_time ON airlock_decisions(org_id, occurred_at, event_id);
+
+  CREATE TABLE IF NOT EXISTS airlock_learning_reports (
+    org_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    hits INTEGER NOT NULL,
+    proxy_hits INTEGER NOT NULL DEFAULT 0,
+    upload_hits INTEGER NOT NULL DEFAULT 0,
+    clients_json TEXT NOT NULL DEFAULT '[]',
+    first_seen TEXT,
+    last_seen TEXT,
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, host, installation_id)
+  );
+
+  -- Airlock dataset (DS-2). Mirrors the SQLite DDL; see the comment there.
+  CREATE TABLE IF NOT EXISTS airlock_dataset_settings (
+    org_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    updated_by_email TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS airlock_dataset (
+    org_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    row_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    imported INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (org_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_time ON airlock_dataset(org_id, occurred_at, event_id);
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_row ON airlock_dataset(org_id, row_id);
+  -- One row per row id (an import sent again, or twice at once, comes under new event ids).
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_airlock_dataset_row ON airlock_dataset(org_id, row_id) WHERE kind = 'row';
+  -- The hosts each kept row reached (its payload's hosts, at most 50), so a learning
+  -- accept labels the rows that reached a host exactly, by index, not by scanning.
+  CREATE TABLE IF NOT EXISTS airlock_dataset_hosts (
+    org_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    row_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, host, row_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_hosts_time ON airlock_dataset_hosts(org_id, host, occurred_at);
+
+  CREATE TABLE IF NOT EXISTS repo_command_revisions (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    verify_command TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('init','admin')),
+    actor_user_id TEXT,
+    actor_email TEXT,
+    installation_id TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, remote_url, revision)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_command_revisions_repo
+    ON repo_command_revisions(org_id, remote_url);
+
+  CREATE TABLE IF NOT EXISTS repo_producers (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    added_by_email TEXT,
+    PRIMARY KEY (org_id, remote_url, installation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_producers_repo ON repo_producers(org_id, remote_url);
+
+  -- Receipts (RFC-002). Mirrors the SQLite DDL above; see the comment there
+  -- for what each column is for. reusable stays a 1/0 INTEGER rather than a
+  -- BOOLEAN so both backends hand the same value back, and command_revision
+  -- / report_bytes stay nullable integers - NULL means "the receipt carries
+  -- no such number", which is not zero and not an empty string.
+  CREATE TABLE IF NOT EXISTS receipts (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('verification','review')),
+    installation_id TEXT NOT NULL,
+    card_id TEXT,
+    content_tree TEXT,
+    command_revision INTEGER,
+    body_json TEXT NOT NULL,
+    body_hash TEXT NOT NULL,
+    reusable INTEGER NOT NULL,
+    not_reusable_reason TEXT,
+    report_gz_b64 TEXT,
+    report_bytes INTEGER,
+    received_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_receipts_repo
+    ON receipts(org_id, remote_url, kind, content_tree);
+
+  CREATE INDEX IF NOT EXISTS idx_receipts_card
+    ON receipts(org_id, remote_url, kind, card_id, received_at);
+  CREATE INDEX IF NOT EXISTS idx_receipts_recent
+    ON receipts(org_id, remote_url, received_at);
+
+  -- CI read tokens (RFC-002). Mirrors the SQLite DDL above; see the comment
+  -- there. remote_url NULL is an org-wide token, never "no repository".
+  CREATE TABLE IF NOT EXISTS ci_tokens (
+    token_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    remote_url TEXT,
+    label TEXT,
+    created_at TEXT NOT NULL,
+    created_by_email TEXT,
+    revoked_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_ci_tokens_org ON ci_tokens(org_id);
 `;
 
 /**
@@ -725,6 +945,8 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     ['upgrade_dispatch_targets', 'cancel_attempts', 'cancel_attempts INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_fanout', 'reported_seq', 'reported_seq INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_fanout', 'reported_json', 'reported_json TEXT'],
+    // How often an installation's sessions sent a host data (2026-11-02).
+    ['airlock_learning_reports', 'upload_hits', 'upload_hits INTEGER NOT NULL DEFAULT 0'],
   ] as const) {
     // Scope the probe to `public`. information_schema.columns spans every
     // schema the role can see, so an unrelated application's `users.name`
@@ -910,6 +1132,15 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     await adapter.exec("ALTER TABLE flows ADD COLUMN org_available INTEGER NOT NULL DEFAULT 0");
     // One-time backfill: the flow currently set as org default is implicitly available.
     await adapter.exec("UPDATE flows SET org_available = 1 WHERE id IN (SELECT flow_id FROM flow_assignments WHERE scope = 'org')");
+  }
+
+  // repo_settings.producer_mode — RFC-002 Amendment 1 (GH #289). See the
+  // sqlite adapter. Existing rows take the DEFAULT, today's allowlist mode.
+  const rsCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='repo_settings'",
+  );
+  if (rsCols.length > 0 && !new Set(rsCols.map(c => c.column_name)).has('producer_mode')) {
+    await adapter.exec("ALTER TABLE repo_settings ADD COLUMN producer_mode TEXT NOT NULL DEFAULT 'listed' CHECK (producer_mode IN ('listed','all'))");
   }
 
   // flow_assignments multi-scope migration. PG can DROP / ADD CONSTRAINT in

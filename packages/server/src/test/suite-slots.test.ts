@@ -154,19 +154,56 @@ describe('the setting', () => {
 // each run starts takes longer than the 400ms POSIX needs (#208).
 // #264: 400ms was shorter than a run's start-up on a loaded machine, so 'they overlap' tests failed there.
 const RUN_MS = process.platform === 'win32' ? 3000 : 1000;
-/** Two projects whose suite command logs its start and end (ms) to one file outside both trees. */
+/**
+ * A toy suite command, `node runner.js <who>`: it logs `start <who> <ms>` and
+ * `end <who> <ms>` to `log` and writes a junit report. A run lasts `ms[who]`
+ * (RUN_MS by default), unless the test says what it waits for first (GH-274),
+ * and then `ms[who]` more (50ms by default):
+ *  - meet: [label, n] - end once n runs of `label` have started. A test that
+ *    expects runs to overlap synchronises on the other run instead of hoping it
+ *    starts within a sleep, which a loaded machine (a parallel suite) outlasts;
+ *    if the server keeps them apart, the wait times out and the run ends first,
+ *    so the overlap assertion still fails as it should.
+ *  - hold: end once the test writes `release-<who>` beside the log.
+ * Either gives up after MEET_MAX_MS, so a broken test cannot hang the file.
+ */
+const MEET_MAX_MS = 20_000;
+function writeRunner(log: string, opts: { ms?: Record<string, number>; meet?: Record<string, [string, number]>; hold?: string[] } = {}) {
+  const runner = path.join(path.dirname(log), 'runner.js');
+  fs.writeFileSync(runner, `const fs = require('fs'), path = require('path');
+const LOG = ${JSON.stringify(log)};
+const who = process.argv[2];
+const ms = ${JSON.stringify(opts.ms ?? {})}[who];
+const meet = ${JSON.stringify(opts.meet ?? {})}[who];
+const hold = ${JSON.stringify(opts.hold ?? [])}.includes(who);
+fs.appendFileSync(LOG, 'start ' + who + ' ' + Date.now() + '\\n');
+const started = w => fs.readFileSync(LOG, 'utf8').split('\\n').filter(l => l.startsWith('start ' + w + ' ')).length;
+const ready = () => (!meet || started(meet[0]) >= meet[1]) && (!hold || fs.existsSync(path.join(path.dirname(LOG), 'release-' + who)));
+const end = () => {
+  fs.writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="ok" file="t.test.js"/></testsuite></testsuites>');
+  fs.appendFileSync(LOG, 'end ' + who + ' ' + Date.now() + '\\n');
+  process.exit(0);
+};
+// Counted in polls, not by the clock: a machine that sleeps mid-run stops timers but not Date.now(),
+// and a wall-clock deadline would end the run on waking, before the run it waits for could start.
+let polls = ${MEET_MAX_MS / 10};
+if (!meet && !hold) setTimeout(end, ms ?? ${RUN_MS});
+else (function wait() { if (ready() || --polls < 0) setTimeout(end, ms ?? 50); else setTimeout(wait, 10); })();
+`);
+  return runner;
+}
+/** The start and end times (ms) of `who`'s runs, from the log. */
+function readIntervals(log: string, who: string) {
+  const lines = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => l.split(' ')).filter(l => l[1] === who);
+  return { starts: lines.filter(l => l[0] === 'start').map(l => Number(l[2])), ends: lines.filter(l => l[0] === 'end').map(l => Number(l[2])) };
+}
+
+/** Two projects whose suite command logs its start and end (ms) to one file outside both trees; `meet`: each run ends once both have started. */
 let seq = 0;
-async function twoProjects(kind: 'capture' | 'final') {
+async function twoProjects(kind: 'capture' | 'final', { meet = false } = {}) {
   const log = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-slots-log-'))), 'log');
   dirs.push(path.dirname(log));
-  const runner = path.join(path.dirname(log), 'runner.js');
-  fs.writeFileSync(runner, `const fs = require('fs');
-fs.appendFileSync(${JSON.stringify(log)}, 'start ' + Date.now() + '\\n');
-setTimeout(() => {
-  fs.writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="ok" file="t.test.js"/></testsuite></testsuites>');
-  fs.appendFileSync(${JSON.stringify(log)}, 'end ' + Date.now() + '\\n');
-  process.exit(0);
-}, ${RUN_MS});`);
+  const runner = writeRunner(log, meet ? { meet: { T: ['T', 2] } } : {});
   const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...extra });
   const cards: string[] = [];
   for (let i = 0; i < 2; i++) {
@@ -177,17 +214,14 @@ setTimeout(() => {
     const p = await agent().post('/projects').send({ name: `slots-${++seq}` });
     await storage.updateProject(p.body.id, {
       flowId: f.body.id, projectRoot: repo,
-      verifyCommand: kind === 'final' ? `node ${runner}` : 'exit 0',
-      ...(kind === 'capture' ? { testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } : {}),
+      verifyCommand: kind === 'final' ? `node ${runner} T` : 'exit 0',
+      ...(kind === 'capture' ? { testReport: { format: 'junit-xml', command: `node ${runner} T`, reportPath: 'report.xml' } } : {}),
     } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `slots-${++seq}`, projectId: p.body.id });
     await storage.updateItem(c.body.id, { status: 'WORK' } as any);
     cards.push(c.body.id);
   }
-  const intervals = () => {
-    const lines = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => l.split(' '));
-    return { starts: lines.filter(l => l[0] === 'start').map(l => Number(l[1])), ends: lines.filter(l => l[0] === 'end').map(l => Number(l[1])) };
-  };
+  const intervals = () => readIntervals(log, 'T');
   return { cards, intervals };
 }
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -217,21 +251,13 @@ describe('suite runs across projects take a slot', { timeout: 60_000 }, () => {
   // 80920048 (review of 6caae168, finding 9): the queue was drained only when a slot freed.
   it('raising the limit while a run waits starts it at once, not when the running one ends', async () => {
     await agent().put('/settings').send({ maxConcurrentSuiteRuns: 1 });
-    const t = await twoProjects('capture');
+    const t = await twoProjects('capture', { meet: true });
     const pending = t.cards.map(id => agent().post(`/items/${id}/step-records/capture`).set(internal()).send({}).then(r => r));
     const started = () => { try { return t.intervals().starts.length; } catch { return 0; } };
     for (let i = 0; i < 200 && started() < 1; i++) await new Promise(r => setTimeout(r, 10));
     expect(started()).toBe(1);
     expect((await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 })).status).toBe(200);
     for (const r of await Promise.all(pending)) expect(r.status, JSON.stringify(r.body)).toBe(200);
-    const { starts, ends } = t.intervals();
-    expect(Math.max(...starts)).toBeLessThan(Math.min(...ends));
-  });
-
-  it('with room for both, they run at once', async () => {
-    await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
-    const t = await twoProjects('capture');
-    await Promise.all(t.cards.map(id => agent().post(`/items/${id}/step-records/capture`).set(internal()).send({})));
     const { starts, ends } = t.intervals();
     expect(Math.max(...starts)).toBeLessThan(Math.min(...ends));
   });
@@ -243,19 +269,11 @@ describe('suite runs across projects take a slot', { timeout: 60_000 }, () => {
  * server-wide limit allows - and only that project waits for it.
  */
 /** One project, two cards each in its own worktree of the repo (no reuse between them), plus a card in another project. */
-async function exclusiveProject(kind: 'capture' | 'final', exclusive: boolean, ms: { A?: number; B?: number } = {}) {
+async function exclusiveProject(kind: 'capture' | 'final', exclusive: boolean, runs: Parameters<typeof writeRunner>[1] = {}) {
   const log = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-excl-log-'))), 'log');
   dirs.push(path.dirname(log));
-  const runner = path.join(path.dirname(log), 'runner.js');
   // Each run logs which project it belongs to, read from its argument.
-  fs.writeFileSync(runner, `const fs = require('fs');
-const who = process.argv[2];
-fs.appendFileSync(${JSON.stringify(log)}, 'start ' + who + ' ' + Date.now() + '\\n');
-setTimeout(() => {
-  fs.writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="ok" file="t.test.js"/></testsuite></testsuites>');
-  fs.appendFileSync(${JSON.stringify(log)}, 'end ' + who + ' ' + Date.now() + '\\n');
-  process.exit(0);
-}, who === 'B' ? ${ms.B ?? Math.round(RUN_MS / 2)} : ${ms.A ?? RUN_MS});`);
+  const runner = writeRunner(log, { ...runs, ms: { B: Math.round(RUN_MS / 2), ...runs.ms } });
   const s = (name: string, order: number) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...(name !== 'WORK' ? { isAnchor: true } : {}) });
   const make = async (who: string, extra: Record<string, unknown>) => {
     const f = await agent().post('/flows').send({ name: `excl-${++seq}`, steps: [s('START', 0), s('WORK', 1), s('END', 2)] });
@@ -286,11 +304,10 @@ setTimeout(() => {
   const b = await make('B', {});
   const sameProject = [await cardIn(a.pid, wts[0]), await cardIn(a.pid, wts[1])];
   const otherProject = await cardIn(b.pid);
-  const intervals = (who: string) => {
-    const lines = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => l.split(' ')).filter(l => l[1] === who);
-    return { starts: lines.filter(l => l[0] === 'start').map(l => Number(l[2])), ends: lines.filter(l => l[0] === 'end').map(l => Number(l[2])) };
-  };
-  return { sameProject, otherProject, intervals, pid: a.pid };
+  const intervals = (who: string) => readIntervals(log, who);
+  /** Let `who`'s held runs end (see writeRunner). */
+  const release = (who: string) => fs.writeFileSync(path.join(path.dirname(log), `release-${who}`), '');
+  return { sameProject, otherProject, intervals, release, pid: a.pid };
 }
 const runVerify = (kind: 'capture' | 'final', id: string) => kind === 'capture'
   ? agent().post(`/items/${id}/step-records/capture`).set(internal()).send({})
@@ -298,12 +315,14 @@ const runVerify = (kind: 'capture' | 'final', id: string) => kind === 'capture'
 
 // Runs here are serialised on purpose (several RUN_MS each, 3s on Windows): well past vitest's 5s default.
 describe('exclusiveSuite: one suite run at a time in the project', { timeout: 60_000 }, () => {
+  // Both paths, not one: the cross-project limit-1 test would pass even if the final path took the global slot
+  // without the project's (GH-281 review).
   for (const kind of ['capture', 'final'] as const) {
     it(`two ${kind === 'capture' ? 'captures' : 'final-step verifies'} in an exclusive project do not overlap, while another project's run is not held back`, async () => {
       await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
       try {
-        // A's runs long enough that the git work before B's run, slow under a loaded full-suite run, cannot outlast A's first one.
-        const t = await exclusiveProject(kind, true, { A: RUN_MS * 5 });
+        // A's runs last until B's has started, and RUN_MS more: B's start is never a race against the git work before it.
+        const t = await exclusiveProject(kind, true, { meet: { A: ['B', 1] }, ms: { A: RUN_MS } });
         const rs = await Promise.all([...t.sameProject, t.otherProject].map(id => runVerify(kind, id)));
         for (const r of rs) expect(r.status, JSON.stringify(r.body)).toBe(200);
         const a = t.intervals('A');
@@ -322,7 +341,8 @@ describe('exclusiveSuite: one suite run at a time in the project', { timeout: 60
   it('without it, the same two runs overlap: the limit is the server-wide one', async () => {
     await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
     try {
-      const t = await exclusiveProject('capture', false);
+      // Each of A's runs ends once both have started: if the server keeps them apart, the first waits out MEET_MAX_MS alone.
+      const t = await exclusiveProject('capture', false, { meet: { A: ['A', 2] } });
       for (const r of await Promise.all(t.sameProject.map(id => runVerify('capture', id)))) expect(r.status, JSON.stringify(r.body)).toBe(200);
       const a = t.intervals('A');
       expect(Math.max(...a.starts)).toBeLessThan(Math.min(...a.ends));
@@ -354,24 +374,44 @@ describe('exclusiveSuite: one suite run at a time in the project', { timeout: 60
   // Review of 7ddeaf7c, second pass: a run admitted to the project's line before the setting, still waiting for a server slot.
   it('a run already queued for a server slot when it is turned on does not start beside the project\'s running one', async () => {
     await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
+    const spies: Array<{ mockRestore: () => void }> = [];
     try {
-      // A's runs outlast B's by far, so B's slot frees while A's first run is still going.
-      const t = await exclusiveProject('capture', false, { A: RUN_MS * 5, B: Math.round(RUN_MS / 2) });
+      // Every run is held until the test lets it go, so B's slot frees exactly when it is meant to: after the
+      // setting is on, while A's first run is still going (GH-274: a 500ms B ended before A's second run queued).
+      const t = await exclusiveProject('capture', false, { hold: ['A', 'B'] });
+      // Which line each run waits in, by its limit: the server's (2) or the exclusive project's (1). What the
+      // test waits for, instead of sleeping and hoping the run got there (review of GH-274).
+      const { SuiteSlots } = await slotsModule();
+      const realAcquire = SuiteSlots.prototype.acquire;
+      const waitedIn: number[] = [];
+      spies.push(vi.spyOn(SuiteSlots.prototype, 'acquire').mockImplementation(function (this: InstanceType<typeof SuiteSlots>, onWait?: (w: { ahead: number; limit: number }) => void) {
+        return realAcquire.call(this, w => { waitedIn.push(w.limit); onWait?.(w); });
+      }));
       const count = (who: string) => { try { return t.intervals(who).starts.length; } catch { return 0; } };
+      const until = async (done: () => boolean) => { for (let i = 0; i < 1000 && !done(); i++) await new Promise(r => setTimeout(r, 10)); };
       const a1 = runVerify('capture', t.sameProject[0]).then(r => r);
-      for (let i = 0; i < 300 && count('A') < 1; i++) await new Promise(r => setTimeout(r, 10));
+      await until(() => count('A') >= 1);
       const b1 = runVerify('capture', t.otherProject).then(r => r);
-      for (let i = 0; i < 300 && count('B') < 1; i++) await new Promise(r => setTimeout(r, 10));
+      await until(() => count('B') >= 1);
       // Both server slots are taken: A's second run is admitted to its (unlimited) project line and waits for one.
       const a2 = runVerify('capture', t.sameProject[1]).then(r => r);
-      await new Promise(r => setTimeout(r, 150));
+      await until(() => waitedIn.includes(2));
+      expect(waitedIn, "A's second run never queued for a server slot: this would not test the re-check").toContain(2);
       expect((await agent().put(`/projects/${t.pid}`).send({ exclusiveSuite: true })).status).toBe(200);
-      // B ends first and frees a server slot while A's first run is still going.
+      // B ends and frees a server slot while A's first run is still going: A's second takes it, and either queues
+      // again behind A's first (the project's line, limit 1) or wrongly starts beside it.
+      t.release('B');
+      await until(() => waitedIn.includes(1) || count('A') >= 2);
+      expect(waitedIn.includes(1) || count('A') >= 2, "A's second run neither queued behind A's first nor started").toBe(true);
+      // ...and A's first was still held then, not ended by its runner giving up: the outcome is the server's.
+      expect(t.intervals('A').ends).toHaveLength(0);
+      t.release('A');
       for (const r of await Promise.all([a1, b1, a2])) expect(r.status, JSON.stringify(r.body)).toBe(200);
       const a = t.intervals('A');
       expect(a.starts).toHaveLength(2);
       expect(Math.max(...a.starts), "A's queued run started beside its running one").toBeGreaterThanOrEqual(Math.min(...a.ends));
     } finally {
+      for (const sp of spies) sp.mockRestore();
       await agent().put('/settings').send({ maxConcurrentSuiteRuns: 0 });
     }
   });

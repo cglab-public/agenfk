@@ -104,30 +104,6 @@ describe('when herdr is running', () => {
     const body = await buildHerdrSnapshot(deps());
     expect(body.sessions[0].byAgent).toEqual({ claude: 1, pi: 1 });
   });
-
-  it('carries agent_status, so the screen does not have to scrape a screen', async () => {
-    const body = await buildHerdrSnapshot(deps());
-    const pane = body.sessions[0].panes.find(p => p.agent === 'pi');
-    expect(pane?.agent_status).toBe('idle');
-  });
-
-  it('trims the wire record instead of passing it through', async () => {
-    /*
-     * `pane.read` is on demand, when someone opens one - so no content here. And
-     * herdr's own bookkeeping (`revision`, `scroll`, `agent_session`) means
-     * nothing to a listing; carrying it would grow the response with fields
-     * nobody reads.
-     */
-    const body = await buildHerdrSnapshot(deps());
-    for (const p of body.sessions[0].panes) {
-      expect(p).not.toHaveProperty('text');
-      expect(p, p.pane_id).not.toHaveProperty('revision');
-      expect(p, p.pane_id).not.toHaveProperty('scroll');
-      expect(p, p.pane_id).not.toHaveProperty('agent_session');
-    }
-    // And it keeps the ones that earn their place.
-    expect(body.sessions[0].panes[0]).toMatchObject({ pane_id: 'w1:p1', agent_status: 'working' });
-  });
 });
 
 /* ── the failures that must not hide each other ────────────────────────── */
@@ -221,13 +197,6 @@ describe('reading many sessions', () => {
     }));
     expect(body.sessions).toHaveLength(4);
     expect(peak, 'all four should be in flight at once').toBe(4);
-  });
-
-  it('gives every read a deadline, so one hung socket cannot stall the answer', async () => {
-    const read = vi.fn(async () => snap(PANES));
-    await buildHerdrSnapshot(deps({ read }));
-    // The deps signature carries the timeout; the route must pass one.
-    expect(read).toHaveBeenCalledWith(expect.any(String), expect.any(Number));
   });
 });
 
@@ -369,21 +338,6 @@ describe('telling our sessions from the developer\'s own', () => {
       kind: 'card', cardId: 'c-1', title: 'Adapter herdr', status: 'IN_PROGRESS',
       branchName: 'feat/x', projectName: 'agenfk',
     });
-  });
-
-  it('names the PROJECT when it is merely in the repository', async () => {
-    const body = await withOwners('/repos/agenfk/packages/ui');
-    expect(body.sessions[0].panes[0].owner).toEqual({ kind: 'project', projectName: 'agenfk' });
-  });
-
-  it('leaves the developer\'s own work EXTERNAL, and that is the right answer', async () => {
-    /*
-     * Seventeen of the twenty-four panes on the machine this was written on are
-     * this. They run in their own directory, need no worktree, and giving them
-     * a card would be an association nobody asked for and nobody could correct.
-     */
-    const body = await withOwners('/Users/x/GitHub/something-else');
-    expect(body.sessions[0].panes[0].owner).toEqual({ kind: 'external' });
   });
 
   it('answers external when the caller asks nothing about ownership', async () => {

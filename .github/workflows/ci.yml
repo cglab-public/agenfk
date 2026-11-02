@@ -27,6 +27,9 @@ jobs:
   build-and-test:
     name: Linux · build + full suite (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    # Secrets cannot appear in a step's `if`; this can. A fork PR has no secret.
+    env:
+      HAS_CI_TOKEN: ${{ secrets.AGENFK_CI_TOKEN != '' }}
 
     strategy:
       matrix:
@@ -35,6 +38,43 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      # GH-278 / RFC-002: may the suite be skipped because a hub receipt
+      # already certifies this PR's exact content? The action comes from the
+      # PR's BASE commit and runs a pinned agenfk release, so a PR cannot
+      # rewrite the check that would skip its own tests. Only Test is gated:
+      # the build still runs, and the Windows shards never ask. In Shadow (and
+      # Off) the answer is always "run"; it reports what Enforce would do.
+      - name: Receipt check action, from the base commit
+        if: ${{ github.event_name == 'pull_request' && env.HAS_CI_TOKEN == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .ci-check-base
+          sparse-checkout: actions/ci-check
+          persist-credentials: false
+
+      - name: Receipt check (RFC-002)
+        id: receipt
+        if: ${{ github.event_name == 'pull_request' && env.HAS_CI_TOKEN == 'true' }}
+        # A check that cannot answer (the hub, the release, or an action on the
+        # base commit older than this one) leaves `run` unset, so Test runs.
+        continue-on-error: true
+        uses: ./.ci-check-base/actions/ci-check
+        with:
+          kind: verification
+          hub-url: ${{ vars.AGENFK_HUB_URL }}
+          token: ${{ secrets.AGENFK_CI_TOKEN }}
+          agenfk-version: 2.1.0-beta.1
+          agenfk-sha256: 7718ec38af05370912f5697200c42e435d418ab2412a9bb81328a85604c5b7fb
+
+      # continue-on-error above would swallow this one: a release that does not
+      # match its pinned digest is a red job, not an outage to route around.
+      - name: Refuse a tampered agenfk release
+        if: ${{ steps.receipt.outputs.integrity == 'mismatch' }}
+        run: |
+          echo "::error::The agenfk release did not match its pinned agenfk-sha256."
+          exit 1
 
       - name: Set up Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v7
@@ -55,7 +95,10 @@ jobs:
       - name: Home-integrity snapshot (item 9c297075)
         run: node scripts/home-integrity.mjs snapshot
 
+      # Only a check that SUCCEEDED may skip: a failed one still publishes its
+      # outputs under continue-on-error, whatever they say.
       - name: Test
+        if: ${{ steps.receipt.outcome != 'success' || steps.receipt.outputs.run != 'false' }}
         run: npm test
 
       # THE UI SPECS (BUG 66dee896) run inside `npm test` above: the root
@@ -138,6 +181,59 @@ jobs:
           name: vitest-windows-${{ matrix.shard }}
           path: vitest-windows-${{ matrix.shard }}.json
           if-no-files-found: ignore
+
+  # CGLAB-696: Airlock's sandbox conformance on the real, pinned smolvm (the AgEnFK base image,
+  # the spec and the egress decider AgEnFK builds). smolvm needs KVM: GitHub's Linux runners have
+  # it, the runner user just cannot open /dev/kvm until a udev rule says so.
+  airlock-conformance:
+    name: Linux · Airlock conformance (smolvm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 22.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Build
+        run: npm run build
+
+      - name: Open /dev/kvm to the runner user
+        run: |
+          test -e /dev/kvm || { echo "::error::this runner has no /dev/kvm: smolvm cannot run here"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install the pinned smolvm (as Airlock does)
+        run: |
+          node packages/cli/bin/agenfk.js airlock install
+          echo "AGENFK_SMOLVM_PATH=$HOME/.agenfk/smolvm/$(node -p "require('./packages/cli/dist/airlock/smolvm.js').SMOLVM_VERSION")/smolvm" >> "$GITHUB_ENV"
+
+      - name: Build the AgEnFK base image
+        run: |
+          docker build -f airlock-image/Dockerfile -t agenfk-airlock-base:ci .
+          docker save agenfk-airlock-base:ci -o "$RUNNER_TEMP/airlock-base.tar"
+          echo "AGENFK_AIRLOCK_TEST_IMAGE=$RUNNER_TEMP/airlock-base.tar" >> "$GITHUB_ENV"
+
+      - name: Conformance and real-machine tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/smolvm-bin"
+          ln -sf "$AGENFK_SMOLVM_PATH" "$RUNNER_TEMP/smolvm-bin/smolvm"
+          export PATH="$RUNNER_TEMP/smolvm-bin:$PATH"
+          npx vitest run --maxWorkers=1 packages/cli/src/test/airlock-sandbox-conformance.test.ts packages/cli/src/test/airlock-smolvm-runtime.test.ts packages/cli/src/test/airlock-egress.test.ts packages/cli/src/test/airlock-key-injector.test.ts
+        env:
+          AGENFK_SMOLVM_TESTS: '1'
+          AGENFK_REQUIRE_SMOLVM_TESTS: '1'
 
   # "Windows compat" is a required status check on main's "Protect main branch"
   # ruleset. It used to run the #201 subset; it now runs no tests and passes only

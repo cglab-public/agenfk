@@ -10,7 +10,7 @@
 // The identity travels on /device/start so the token can be bound when it is
 // issued at approve time, and so an approving admin can see whose machine it is.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -97,6 +97,26 @@ describe('device-code onboarding binds the installation', () => {
     cleanup();
   });
 
+  // Collecting the token also records the installation (GH-256). A failed
+  // write there must not cost the machine its only copy of the key.
+  it('a collection that fails to record the installation can be retried', async () => {
+    const start = await supertest(__server).post('/hub/device/start').send({ installation: IDENTITY });
+    await supertest(__server).post('/hub/device/approve').set('Cookie', cookie).send({ userCode: start.body.userCode });
+
+    const realRun = ctx.db.run.bind(ctx.db);
+    const spy = vi.spyOn(ctx.db, 'run').mockImplementationOnce(async (sql: string, params?: unknown[]) => {
+      if (sql.includes('INSERT INTO installations')) throw new Error('connection reset');
+      return realRun(sql, params);
+    });
+    const failed = await supertest(__server).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
+    expect(failed.status).toBe(500);
+    spy.mockRestore();
+
+    const retried = await supertest(__server).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
+    expect(retried.body.status).toBe('approved');
+    expect((await keyRow(retried.body.token)).installation_id).toBe('inst-device-1');
+  });
+
   it('binds the installation id onto the issued key', async () => {
     const { token } = await onboard(IDENTITY);
 
@@ -126,11 +146,8 @@ describe('device-code onboarding binds the installation', () => {
 
   it('the bound install receives an upgrade directive', async () => {
     // The point of the whole fix: an unbound key gets 204 forever.
+    // Approving the device code writes the installations row (GH-256).
     const { token } = await onboard(IDENTITY);
-    await ctx.db.run(
-      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
-       VALUES ('inst-device-1', 'org-a', '2026-01-01T00:00:00Z', '2026-05-06T00:00:00Z', 'gcsiqueira', null, 'guilherme@cglab.com')`,
-    );
     await ctx.db.run(
       `INSERT INTO upgrade_directives (id, org_id, target_version, scope_type, scope_id)
        VALUES ('dir-1', 'org-a', '1.2.3', 'installation', 'inst-device-1')`,

@@ -1057,3 +1057,176 @@ describe('PG parity: admin model mappings', () => {
     expect(reverted.byModel).toHaveLength(2);
   });
 });
+
+/**
+ * PG parity: repository settings (RFC-002).
+ *
+ * The repository record is claimed with an atomic first-writer-wins insert, and
+ * its revision history is a second table keyed by (org, remote_url, revision) —
+ * both statements are exactly the shape the dialect translator can get wrong
+ * (`INSERT OR IGNORE` has no PG spelling, and `shadowThreshold` is a nullable
+ * integer that must survive as NULL, not 0). So the whole admin path is walked
+ * on pg-mem here, with the view checked on the way.
+ */
+describe('PG parity: repository settings (RFC-002)', () => {
+  const REPO = 'https://github.com/acme/app.git';
+  const CANON = 'git@github.com:acme/app.git';
+  let fx: Fixture & { key: string };
+
+  beforeEach(async () => {
+    const booted = await bootHubOnPg();
+    fx = { ...booted, key: await issueApiKey(booted.db, 'org', 'pg-repo', { installationId: 'inst-pg-repo' }) };
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-repo', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'dev', 'dev@acme.com')`,
+    );
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-producer', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'ci', 'ci@acme.com')`,
+    );
+  });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  const bearer = (k: string) => ({ Authorization: `Bearer ${k}` });
+
+  it('init -> admin revise -> mode -> producers, and the view reflects all of it', async () => {
+    const init = await supertest(__server).post('/v1/repo-settings/init').set(bearer(fx.key))
+      .send({ repo: 'git@github.com:ACME/App', verifyCommand: 'npm test' });
+    expect(init.status, JSON.stringify(init.body)).toBe(201);
+    expect(init.body.created).toBe(true);
+    expect(init.body.settings).toMatchObject({
+      remoteUrl: CANON, verifyCommand: 'npm test', revision: 1, receiptsMode: 'off', producers: [],
+    });
+    expect(init.body.settings.shadowThreshold).toBeNull();
+
+    const revised = await supertest(__server).put('/v1/admin/repos/command').set('Cookie', fx.cookie)
+      .send({ repo: REPO, verifyCommand: 'pnpm verify' });
+    expect(revised.status, JSON.stringify(revised.body)).toBe(200);
+    expect(revised.body).toMatchObject({ remoteUrl: CANON, verifyCommand: 'pnpm verify', revision: 2 });
+
+    const mode = await supertest(__server).put('/v1/admin/repos/mode').set('Cookie', fx.cookie)
+      .send({ repo: REPO, mode: 'shadow', shadowThreshold: 12 });
+    expect(mode.status, JSON.stringify(mode.body)).toBe(200);
+    expect(mode.body).toMatchObject({ receiptsMode: 'shadow', shadowThreshold: 12, revision: 2 });
+
+    const producers = await supertest(__server).put('/v1/admin/repos/producers').set('Cookie', fx.cookie)
+      .send({ repo: REPO, installationId: 'inst-pg-producer', allowed: true });
+    expect(producers.status, JSON.stringify(producers.body)).toBe(200);
+    expect(producers.body.producers).toEqual(['inst-pg-producer']);
+
+    const view = await supertest(__server).get(`/v1/repo-settings?repo=${encodeURIComponent(REPO)}`).set(bearer(fx.key));
+    expect(view.status).toBe(200);
+    expect(view.body.settings).toMatchObject({
+      remoteUrl: CANON, verifyCommand: 'pnpm verify', revision: 2, receiptsMode: 'shadow',
+      shadowThreshold: 12, producers: ['inst-pg-producer'],
+    });
+    expect(view.headers.etag).toBeTruthy();
+
+    const revs = await supertest(__server).get(`/v1/admin/repos/revisions?repo=${encodeURIComponent(REPO)}`).set('Cookie', fx.cookie);
+    expect(revs.status).toBe(200);
+    expect(revs.body.revisions.map((r: any) => r.revision)).toEqual([2, 1]);
+    expect(revs.body.revisions[0]).toMatchObject({ source: 'admin', actorEmail: 'admin@x' });
+    expect(revs.body.revisions[1]).toMatchObject({ source: 'init', installationId: 'inst-pg-repo' });
+
+    const rows = await fx.db.all<{ n: number }>('SELECT COUNT(*) AS n FROM repo_settings', []);
+    expect(Number(rows[0].n)).toBe(1);
+  });
+});
+
+/**
+ * PG parity: receipts store (RFC-002).
+ *
+ * The receipt is written once and never again: on SQLite that is
+ * `INSERT OR IGNORE`, and Postgres has no such spelling — it is
+ * `INSERT ... ON CONFLICT DO NOTHING`, which the dialect translator has to get
+ * right including the `changes` count the route reads to tell a new row from a
+ * duplicate. `reusable` is a 1/0 integer and `report_bytes` a nullable integer
+ * that must stay NULL rather than become 0, and `body_hash` is compared as text
+ * both sides must agree on. So the write, the retry and the stored row are
+ * walked on pg-mem here.
+ */
+describe('PG parity: receipts store (RFC-002)', () => {
+  const REPO = 'https://github.com/acme/app.git';
+  const CANON = 'git@github.com:acme/app.git';
+  let fx: Fixture & { key: string };
+
+  beforeEach(async () => {
+    const booted = await bootHubOnPg();
+    fx = { ...booted, key: await issueApiKey(booted.db, 'org', 'pg-receipts', { installationId: 'inst-pg-producer' }) };
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-receipts', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'dev', 'dev@acme.com')`,
+    );
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-producer', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'ci', 'ci@acme.com')`,
+    );
+    const init = await supertest(__server).post('/v1/repo-settings/init').set(bearer(fx.key))
+      .send({ repo: REPO, verifyCommand: 'npm test' });
+    expect(init.status, JSON.stringify(init.body)).toBe(201);
+    const producers = await supertest(__server).put('/v1/admin/repos/producers').set('Cookie', fx.cookie)
+      .send({ repo: REPO, installationId: 'inst-pg-producer', allowed: true });
+    expect(producers.status, JSON.stringify(producers.body)).toBe(200);
+  });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  const bearer = (k: string) => ({ Authorization: `Bearer ${k}` });
+
+  const receipt = (id: string) => ({
+    id,
+    kind: 'verification',
+    version: 1,
+    repo: REPO,
+    receiptsMode: 'shadow',
+    card: {
+      id: 'card-1', title: 'Store the receipt', type: 'TASK',
+      closedAt: '2026-06-01T10:00:00.000Z', owner: null,
+      closedBy: { name: 'CI', email: 'ci@acme.com' }, link: null,
+    },
+    execution: {
+      id: 'test-1', command: 'npm test', commandRevision: 1, exitCode: 0,
+      startedAt: '2026-06-01T09:59:00.000Z', finishedAt: '2026-06-01T10:00:00.000Z', logPath: null,
+    },
+    content: { commit: 'b'.repeat(40), gitTree: 'a'.repeat(40), treeState: null, treeStateVersion: 1 },
+    reusable: true,
+  });
+
+  it('stores a receipt once, answers a retry as a duplicate, and keeps the row on Postgres', async () => {
+    const id = 'rcpt-pg-1';
+    const report = { encoding: 'gzip+base64', data: Buffer.from(require('node:zlib').gzipSync('log line\n')).toString('base64'), bytes: 9 };
+
+    const first = await supertest(__server).post('/v1/receipts').set(bearer(fx.key))
+      .send({ receipt: receipt(id), report });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(first.body).toMatchObject({ id, stored: 'new', reusable: true, reason: null });
+
+    const again = await supertest(__server).post('/v1/receipts').set(bearer(fx.key))
+      .send({ receipt: receipt(id), report });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body).toMatchObject({ id, stored: 'duplicate', reusable: true, reason: null });
+
+    const rows = await fx.db.all<any[]>('SELECT * FROM receipts', []);
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row.org_id).toBe('org');
+    expect(row.installation_id).toBe('inst-pg-producer');
+    expect(row.remote_url).toBe(CANON);
+    expect(row.kind).toBe('verification');
+    expect(row.card_id).toBe('card-1');
+    expect(row.content_tree).toBe('a'.repeat(40));
+    expect(Number(row.command_revision)).toBe(1);
+    expect(Number(row.reusable)).toBe(1);
+    expect(row.not_reusable_reason).toBeNull();
+    expect(Number(row.report_bytes)).toBe(9);
+    expect(row.report_gz_b64).toBe(report.data);
+    expect(row.received_at).toBeTruthy();
+
+    // A different body under the same id is a conflict, and the row does not move.
+    const clash = await supertest(__server).post('/v1/receipts').set(bearer(fx.key))
+      .send({ receipt: { ...receipt(id), card: { ...receipt(id).card, title: 'a different claim' } }, report });
+    expect(clash.status, JSON.stringify(clash.body)).toBe(409);
+    expect(clash.body.code).toBe('receipt_conflict');
+    expect(await fx.db.all<any[]>('SELECT * FROM receipts', [])).toHaveLength(1);
+    expect((await fx.db.all<any[]>('SELECT * FROM receipts', []))[0].card_id).toBe('card-1');
+  });
+});

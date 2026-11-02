@@ -6,6 +6,7 @@ import readline from 'readline';
 import { fileURLToPath } from 'url';
 import {
     HOOK_VARIANTS,
+    OPENCODE_PLUGIN_VARIANTS,
     hookBinFilenames,
     stripAgenfkHookEntries,
     resolveConfirmation,
@@ -177,7 +178,7 @@ async function run() {
     if (!onlyPlatform) {
         console.log(`${YELLOW}This will remove:${NC}`);
         console.log("  - Slash commands from Claude Code, Opencode, and Gemini CLI");
-        console.log("  - Opencode skill + plugins (gatekeeper, mcp-enforcer, pr-hook)");
+        console.log("  - Opencode skill + plugins (gatekeeper, mcp-enforcer, pr-hook, airlock)");
         console.log("  - MCP server config from Claude Code, Opencode, Cursor, Codex, and Gemini CLI");
         console.log("  - Cursor workflow rules (agenfk.mdc) + afterShellExecution hook");
         console.log("  - Codex workflow rules (~/.codex/AGENTS.md) + PostToolUse hook");
@@ -388,12 +389,14 @@ async function run() {
         return false;
     });
 
-    // 6a. Opencode plugins (gatekeeper / mcp-enforcer / pr-hook) — #88 Bug 3
+    // 6a. Opencode plugins (gatekeeper / mcp-enforcer / pr-hook / airlock) — #88 Bug 3
     await step('Opencode plugins', shouldRun('opencode'), async () => {
         console.log(`${GREEN}[6a] Removing Opencode plugins...${NC}`);
         const pluginsDir = path.join(os.homedir(), '.config', 'opencode', 'plugins');
         let removed = false;
-        for (const variant of HOOK_VARIANTS) {
+        // Every plugin the installer writes (the airlock plugin has no Claude hook),
+        // plus the hook names an older installer may have left there.
+        for (const variant of new Set([...OPENCODE_PLUGIN_VARIANTS, ...HOOK_VARIANTS])) {
             const dest = path.join(pluginsDir, `${variant}.mjs`);
             if (await rmIfExists(dest)) {
                 console.log(`  Removed: ${dest}`);

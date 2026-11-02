@@ -2,9 +2,9 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { readProjectFile, unreadableFileCommand, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, unreadableFileCommand, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets, VERIFY_COMMAND_FLAG, SETUP_COMMAND_FLAG } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
-import { writeActiveWork } from './activeWork.js';
+import { recordActiveWork, gatekeeperSessionId } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
@@ -26,6 +26,9 @@ import { registryFlowToLocal } from './registryFlowFile.js';
 import { ghPrCreateArgs } from './prArgs.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
+import { HUB_ADMIN_SKILL } from './hubAdmin/skill.js';
+import { registerAirlockCommands } from './commands/airlock.js';
+import { registerCiCommands } from './commands/ci.js';
 import { toonEncode } from './toon.js';
 import { releaseHint } from './releaseHint.js';
 import { ensureLocalIgnored, stripLegacyProjectId, readLegacyProjectId, projectFileTracked, writeLocalProjectId, LOCAL_FILE_REL } from './localProject.js';
@@ -650,6 +653,8 @@ program
 ;
 
 registerHubCommands(program);
+registerAirlockCommands(program);
+registerCiCommands(program);
 
 // Fire-and-forget telemetry for every command invocation (command name only — no args).
 program.hook('preAction', (thisCommand, actionCommand) => {
@@ -2265,8 +2270,8 @@ program
   .description('Update a project\'s name, description, verify command, project root, or suite settings (MCP fallback: update_project)')
   .option('--name <name>', 'New project name')
   .option('--description <text>', 'New project description')
-  .option('--verify-command <cmd>', 'Project-level verification command')
-  .option('--setup-command <cmd>', 'What to run in a newly cut worktree to make it usable (e.g. "npm ci")')
+  .option(`${VERIFY_COMMAND_FLAG} <cmd>`, 'Project-level verification command')
+  .option(`${SETUP_COMMAND_FLAG} <cmd>`, 'What to run in a newly cut worktree to make it usable (e.g. "npm ci")')
   .option('--project-root <path>', 'Absolute path to the repository this project lives in')
   .option('--test-report-format <format>', 'How per-test results are read: vitest-json | junit-xml (with --test-report-command and --test-report-path)')
   .option('--test-report-command <cmd>', 'Command that runs the suite and writes the report')
@@ -2308,7 +2313,7 @@ program
       if (options.verifyCommand === undefined && options.projectRoot === undefined
           && options.setupCommand === undefined && !wantsTestReport
           && Object.keys(updates).length === 0) {
-        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root, --test-report-*, --verify-at-scope, --exclusive-suite.'));
+        console.error(chalk.yellow(`Nothing to update. Pass at least one of --name, --description, ${VERIFY_COMMAND_FLAG}, ${SETUP_COMMAND_FLAG}, --project-root, --test-report-*, --verify-at-scope, --exclusive-suite.`));
         process.exit(1);
         return;
       }
@@ -2704,21 +2709,73 @@ const dbCommand = program
 
 dbCommand
   .command('status')
-  .description('Show current database type, path, and backup information')
-  .action(async () => {
+  .description('Show current database type, path, size, and backup information')
+  .option('--tables', 'Also show the largest tables (reads every page of the database)')
+  .action(async (opts: { tables?: boolean }) => {
     try {
-      const { data } = await axios.get(`${API_URL}/db/status`);
+      const { data } = await axios.get(`${API_URL}/db/status${opts.tables ? '?tables=1' : ''}`);
       console.log(chalk.blue('\nDatabase Status'));
       console.log(chalk.white(`  Type:          ${data.dbType.toUpperCase()}`));
       console.log(chalk.white(`  Path:          ${data.dbPath}`));
       console.log(chalk.white(`  Backup Dir:    ${data.backupDir}`));
       console.log(chalk.white(`  Backups:       ${data.backupCount}`));
-      console.log(chalk.white(`  Latest Backup: ${data.latestBackup || 'none'}\n`));
+      console.log(chalk.white(`  Latest Backup: ${data.latestBackup || 'none'}`));
+      if (data.lastBackupError) {
+        console.log(chalk.red(`  Last backup FAILED at ${data.lastBackupError.at}: ${data.lastBackupError.error}`));
+      }
+      // GH-288: what the file holds, and what a vacuum would give back.
+      if (data.size) {
+        const s = data.size;
+        console.log(chalk.white(`  Size:          ${formatBytes(s.fileBytes)}`));
+        console.log(chalk.white(`  WAL:           ${formatBytes(s.walBytes)}`));
+        console.log(chalk.white(`  Reclaimable:   ${formatBytes(s.reclaimableBytes)}`) + chalk.gray(s.reclaimableBytes > 0 ? '  (agenfk db vacuum)' : ''));
+        if (s.tables) {
+          console.log(chalk.white('  Largest tables:'));
+          for (const t of s.tables.slice(0, 5)) console.log(chalk.white(`    ${t.name.padEnd(24)} ${formatBytes(t.bytes)}`));
+        }
+      }
+      console.log();
     } catch (error: any) {
       console.error(chalk.red('Error fetching DB status:'), error.response?.data?.error || error.message);
       console.error(chalk.yellow('Is the API server running? Try: agenfk up'));
     }
   });
+
+dbCommand
+  .command('vacuum')
+  .description('Compact the database: fold in the WAL, give back the space deleted rows left, and check the result')
+  .action(async () => {
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+    if (!fs.existsSync(tokenPath)) {
+      console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+      process.exitCode = 1;
+      return;
+    }
+    const token = fs.readFileSync(tokenPath, 'utf8').trim();
+    console.log(chalk.blue('Vacuuming the database (the server answers nothing until it finishes)...'));
+    try {
+      const { data } = await axios.post(`${API_URL}/db/vacuum`, {}, { headers: { 'x-agenfk-internal': token } });
+      const total = (s: any) => s.fileBytes + s.walBytes;
+      console.log(chalk.green(`Database: ${formatBytes(total(data.before))} -> ${formatBytes(total(data.after))}`));
+      if (data.check === 'ok') {
+        console.log(chalk.green('Integrity check: ok'));
+      } else {
+        console.error(chalk.red(`Integrity check failed:\n${data.check}`));
+        process.exitCode = 1;
+      }
+    } catch (error: any) {
+      if (error.response?.status === 401) console.error(chalk.red('Error: Invalid verify token.'));
+      else console.error(chalk.red('Error vacuuming the database:'), error.response?.data?.error || error.message);
+      process.exitCode = 1;
+    }
+  });
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
 
 // db switch removed — SQLite is the only supported storage backend.
 
@@ -3651,6 +3708,8 @@ function removeAgenfkSkillsFromDir(destDir: string): void {
   if (!fs.existsSync(destDir)) return;
   for (const entry of fs.readdirSync(destDir) as string[]) {
     if (!isAgenfkOwnedEntry(entry)) continue;
+    // Not the workflow's: `agenfk hub skill` installs and removes it (CGLAB-702).
+    if (shadowedName(entry) === HUB_ADMIN_SKILL) continue;
     const full = path.join(destDir, entry);
     // Remove SKILL.md inside the skill dir, then the dir itself
     // Recursive: a skill dir may hold more than SKILL.md (and an AppleDouble
@@ -4226,7 +4285,7 @@ program
   .option('--role <role>', 'Role label (planning|coding|review|testing|closing); defaults to the role of the step the card is on')
   .option('--item-id <id>', 'Specific item ID to check against')
   .option('--json', 'Output as JSON')
-  .option('--session <id>', 'Harness session id to key the active-work note on (defaults to AGENFK_SESSION_ID, then CLAUDE_CODE_SESSION_ID)')
+  .option('--session <id>', 'Harness session id to key the active-work note on (defaults to AGENFK_SESSION_ID, then CLAUDE_CODE_SESSION_ID, then AGENFK_PI_SESSION_ID)')
   .action(async (options) => {
     try {
       const { data: items } = await axios.get(`${API_URL}/items`);
@@ -4320,17 +4379,18 @@ program
       // CGLAB-570: the note is KEYED to this session when one is known. The
       // explicit flag wins; otherwise the env the harness sets for us —
       // AGENFK_SESSION_ID, then Claude Code's CLAUDE_CODE_SESSION_ID (set in
-      // Bash tool subprocesses, matching the session_id hooks receive). A
+      // Bash tool subprocesses, matching the session_id hooks receive), then
+      // pi's AGENFK_PI_SESSION_ID (gatekeeperSessionId). A
       // keyed note is the common path now: the run recorder STRICTLY refuses
       // the shared note for sessions it can name, so a sessionless gatekeeper
       // run records nothing rather than capturing every other session's runs
       // for the TTL.
       if (decision.authorized && decision.task?.id) {
-        const sessionId = options.session
-          || process.env.AGENFK_SESSION_ID
-          || process.env.CLAUDE_CODE_SESSION_ID
-          || undefined;
-        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId }, sessionId);
+        const sessionId = gatekeeperSessionId(options.session, process.env);
+        await recordActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId }, sessionId, {
+          env: process.env,
+          post: (body) => axios.post(`${API_URL}/active-work`, body, { timeout: 5000 }),
+        });
       }
 
       // 37a292a7: what leaving this step will run, so the agent does not run the
@@ -4373,7 +4433,7 @@ program
 
 const reviewCmd = program
   .command('review')
-  .description('Record independent reviews (CGLAB-381)');
+  .description('Record independent reviews');
 
 reviewCmd
   .command('record <id>')
@@ -4381,6 +4441,7 @@ reviewCmd
   .requiredOption('--transcript <path>', 'The REVIEWER\'s session log, e.g. a Claude Code sub-agent\'s <session>/subagents/agent-<id>.jsonl')
   .option('--range <from..to>', 'The commits the review covered. Leave it out (or pass auto) and the server uses where the card began, up to HEAD - uncommitted work included')
   .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "severity"?: "HIGH"|"MEDIUM"|"LOW", "reason"? } ([] when nothing was found)')
+  .option('--lens <name>', 'A lens the review covered (repeatable; default general)', (v: string, prev: string[] = []) => [...prev, v])
   .action(async (id, options) => {
     let findings: unknown;
     try { findings = JSON.parse(options.findings); } catch {
@@ -4397,7 +4458,7 @@ reviewCmd
     const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
     try {
       const { data } = await axios.post(`${API_URL}/items/${id}/review-records`,
-        { transcript: options.transcript, range: options.range ?? 'auto', findings },
+        { transcript: options.transcript, range: options.range ?? 'auto', findings, ...(options.lens ? { lenses: options.lens } : {}) },
         { headers: { 'x-agenfk-internal': verifyToken } });
       const who = data?.reviewer ? `${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}` : 'the reviewer';
       const over = data?.range?.from && data?.range?.to ? ` over ${String(data.range.from).slice(0, 12)}..${String(data.range.to).slice(0, 12)}` : '';
@@ -4420,7 +4481,7 @@ reviewCmd
 
 reviewCmd
   .command('brief <id>')
-  .description('Print the brief for an independent reviewer of a card on its review step (CGLAB-457): the range, the files changed, the tree\'s warnings, the author\'s evidence as claims, the tests already run, what leaving the step runs, and the rules that keep the reviewer independent. Give its text to the reviewer as its prompt. Read-only. MCP: review_brief.')
+  .description('Print the brief for an independent reviewer of a card on its review step: the range, the files changed, the tree\'s warnings, the author\'s evidence as claims, the tests already run, what leaving the step runs, and the rules that keep the reviewer independent. Give its text to the reviewer as its prompt. Read-only. MCP: review_brief.')
   .option('--json', 'Print the whole brief as JSON')
   .action(async (id, options) => {
     try {
@@ -5331,7 +5392,7 @@ flowCommand
 
         const { action } = await inquirer.prompt([
           {
-            type: 'list',
+            type: 'select',
             name: 'action',
             message: 'What would you like to do?',
             choices: [
@@ -5375,7 +5436,7 @@ flowCommand
           if (steps.length === 0) { console.log(chalk.yellow('No steps to remove.')); continue; }
           const { stepToRemove } = await inquirer.prompt([
             {
-              type: 'list',
+              type: 'select',
               name: 'stepToRemove',
               message: 'Select step to remove:',
               choices: steps.map((s: any) => ({ name: `${s.name} (${s.label})`, value: s.id })),
@@ -5386,14 +5447,17 @@ flowCommand
           if (steps.length < 2) { console.log(chalk.yellow('Need at least 2 steps to reorder.')); continue; }
           const { stepToMove } = await inquirer.prompt([
             {
-              type: 'list',
+              type: 'select',
               name: 'stepToMove',
               message: 'Select step to move:',
               choices: steps.map((s: any) => ({ name: `${s.name} (order: ${s.order})`, value: s.id })),
             },
           ]);
+          // Enter on an empty number prompt answers undefined, and a step with
+          // no order makes the server refuse the whole edit: keep its order.
+          const current = steps.find((s: any) => s.id === stepToMove)?.order;
           const { newOrder } = await inquirer.prompt([
-            { type: 'number', name: 'newOrder', message: 'New order number:' },
+            { type: 'number', name: 'newOrder', message: 'New order number:', default: current, required: true },
           ]);
           steps = steps.map((s: any) => s.id === stepToMove ? { ...s, order: newOrder } : s)
             .sort((a: any, b: any) => a.order - b.order);
@@ -5401,7 +5465,7 @@ flowCommand
           if (steps.length === 0) { console.log(chalk.yellow('No steps to edit.')); continue; }
           const { stepToEdit } = await inquirer.prompt([
             {
-              type: 'list',
+              type: 'select',
               name: 'stepToEdit',
               message: 'Select step to edit:',
               choices: steps.map((s: any) => ({ name: `${s.name} (${s.label})`, value: s.id })),

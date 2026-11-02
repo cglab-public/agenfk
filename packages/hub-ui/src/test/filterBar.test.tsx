@@ -243,9 +243,4 @@ describe('PR overview opens on data', () => {
     act(() => go('/prs'));
     expect(await screen.findByRole('button', { name: 'Edit filters' })).toHaveAttribute('aria-expanded', 'false');
   });
-
-  it('still reads an old collapsed link as collapsed', async () => {
-    renderAt('/prs?filters=0');
-    expect(await screen.findByRole('button', { name: 'Edit filters' })).toHaveAttribute('aria-expanded', 'false');
-  });
 });

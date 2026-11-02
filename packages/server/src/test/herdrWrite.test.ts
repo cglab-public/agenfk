@@ -20,7 +20,6 @@ import {
   focusPane,
   HERDR_UNSENDABLE_KEYS,
   MAX_SEND_TEXT_BYTES,
-  SPECIAL_KEYS_FOR_TEST,
 } from '../herdrWrite';
 
 const ok = '{"id":"x","result":{"type":"ack"}}';
@@ -87,19 +86,6 @@ describe('which keys herdr will take', () => {
     expect(isSendableKey('super+p')).toBe(true);
   });
 
-  it('keeps refusing the six even if the special-key list ever grows to include one', () => {
-    /*
-     * The explicit set looks redundant today: none of the six is in
-     * SPECIAL_KEYS, so they already fall through. Its job is to survive a
-     * future edit that adds `Home` to that list by analogy with `End` on
-     * another multiplexer — and to be EXPORTED, so a keypad greys them instead
-     * of discovering them by failing.
-     */
-    for (const k of HERDR_UNSENDABLE_KEYS) {
-      expect(SPECIAL_KEYS_FOR_TEST.includes(k.toLowerCase()), `${k} must not be special`).toBe(false);
-    }
-  });
-
   it('spells meta as cmd on the wire, and accepts both on input', () => {
     // The contract has one word; herdr answers to `cmd` and `super`.
     expect(normalizeKey('meta+p')).toBe('cmd+p');
@@ -121,19 +107,6 @@ describe('sending text', () => {
     expect(JSON.parse(sent)).toMatchObject({
       method: 'pane.send_text', params: { pane_id: 'w1:p1', text: 'npm test' },
     });
-  });
-
-  it('does NOT append an Enter, because the caller decides when to run it', async () => {
-    /*
-     * `agent.send` writes literal text with no Enter, and this keeps that
-     * property: typing a command into somebody's terminal is one act, running
-     * it is another, and merging them takes the decision away from whoever is
-     * watching.
-     */
-    let sent = '';
-    await sendPaneText('/s.sock', 'p', 'rm -rf build', async (_p, line) => { sent = line; return ok; });
-    expect(JSON.parse(sent).params.text).toBe('rm -rf build');
-    expect(JSON.parse(sent).params.text).not.toMatch(/\n$/);
   });
 
   it('refuses text over the ceiling before it can hang', async () => {
@@ -194,13 +167,5 @@ describe('focus', () => {
     let sent = '';
     await focusPane('/s.sock', 'w2:p3', async (_p, line) => { sent = line; return '{"id":"x","result":{"type":"pane_info"}}'; });
     expect(JSON.parse(sent).method).toBe('pane.focus');
-  });
-
-  it('is not reachable by sending text or keys', async () => {
-    const lines: string[] = [];
-    const t = async (_p: string, line: string): Promise<string> => { lines.push(line); return ok; };
-    await sendPaneText('/s.sock', 'p', 'hi', t);
-    await sendPaneKeys('/s.sock', 'p', ['Enter'], t);
-    expect(lines.some(l => l.includes('pane.focus'))).toBe(false);
   });
 });

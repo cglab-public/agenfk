@@ -15,9 +15,6 @@
  * drawn the windowed bar); every change after that is pushed.
  */
 import { describe, it, expect } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
 import {
   wireFullScreen, answerFullScreenQuery, FULL_SCREEN_CHANNEL, FULL_SCREEN_QUERY, type FullScreenWindow,
 } from '../main/windowFullScreen';
@@ -121,34 +118,5 @@ describe('answerFullScreenQuery', () => {
   it('is its own channel, separate from the push', () => {
     expect(FULL_SCREEN_QUERY).toBe('window:isFullScreen');
     expect(FULL_SCREEN_QUERY).not.toBe(FULL_SCREEN_CHANNEL);
-  });
-});
-
-describe('the window is actually wired', () => {
-  it('is called on the window the app creates', () => {
-    // A module nothing calls is a feature that looks finished. The same
-    // defect ipcSurface.test.ts exists for, one level up.
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.resolve(here, '../main/index.ts'), 'utf8');
-    expect(src).toMatch(/wireFullScreen\(\s*win\s*\)/);
-  });
-
-  it('answers the query from the app itself, not from inside boot', () => {
-    /*
-     * From review: registered inside boot's terminal setup, a node-pty that
-     * failed to load skipped it - and a sendSync nobody answers blocks every
-     * window's preload, a blank window in the path meant to degrade softly.
-     *
-     * So: once, at the top level, before boot runs, and so before any window
-     * (activate, second-instance or boot's own) can exist to ask.
-     */
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.resolve(here, '../main/index.ts'), 'utf8');
-    const answered = src.search(/answerFullScreenQuery\(\s*ipcMain/);
-    expect(answered, 'nothing answers the preload, and sendSync gets undefined').toBeGreaterThan(-1);
-    const bootStart = src.search(/async function boot\(/);
-    const bootEnd = src.indexOf('\n}\n', bootStart);
-    expect(answered > bootStart && answered < bootEnd, 'registered inside boot, where a failure can skip it').toBe(false);
-    expect(answered, 'registered after boot is started').toBeLessThan(src.search(/app\.whenReady\(\)\.then\(boot\)/));
   });
 });

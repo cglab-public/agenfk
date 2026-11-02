@@ -7,18 +7,14 @@
  * (e.g. DISCOVERY, CREATE_UNIT_TESTS) were rejected. list_items also required
  * `status`, so there was no "everything in flight" sweep.
  *
- * Two layers:
- *  1. Static source checks — verify index.ts no longer hardcodes the enum and
- *     no longer requires status on list_items.
- *  2. REST functional tests — verify the underlying GET /items endpoint
- *     accepts custom statuses and returns items regardless of step name.
+ * This file pins the REST side: GET /items accepts custom statuses and returns
+ * items regardless of step name. The MCP tools themselves are driven through a
+ * real MCP client in mcp-item-tools-custom-status.test.ts.
  */
 import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, closeStorage } from '../server';
-import * as fs from 'fs';
-import * as path from 'path';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -37,73 +33,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const ROOT = path.resolve(__dirname, '../../../..');
 const TEST_DB = testDbPath('mcp-status-enum-custom-flows-test-db.sqlite');
-
-const DEFAULT_FLOW_ENUM = `["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"]`;
-
-// ── Static source checks ──────────────────────────────────────────────────────
-
-describe('MCP tool schemas no longer hardcode default-flow status enum', () => {
-  let src: string;
-
-  beforeAll(() => {
-    const indexPath = path.join(ROOT, 'packages/server/src/index.ts');
-    src = fs.readFileSync(indexPath, 'utf8');
-  });
-
-  it('index.ts contains no occurrences of the hardcoded default-flow status enum', () => {
-    // The exact literal `["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"]`
-    // must not appear anywhere — neither in JSON Schema enums nor in Zod z.enum() calls.
-    // After the fix, status is just a string (validated against the project's flow at the
-    // storage/REST layer, not at the MCP schema layer).
-    expect(src.includes(DEFAULT_FLOW_ENUM)).toBe(false);
-  });
-
-  it('list_items tool no longer requires status', () => {
-    // Locate the list_items tool block and check its `required` array.
-    const block = src.match(/name:\s*["']list_items["'][\s\S]{0,1600}?required:\s*(\[[^\]]*\])/);
-    expect(block, 'list_items tool definition not found').toBeTruthy();
-    const required = block![1];
-    expect(required).toContain('projectId');
-    expect(required).not.toMatch(/["']status["']/);
-  });
-
-  it('ListItemsSchema makes status optional (Zod)', () => {
-    // The Zod schema for list_items must declare status as optional and accept any string.
-    const schemaBlock = src.match(/const\s+ListItemsSchema\s*=\s*z\.object\(\{[\s\S]*?\}\);/);
-    expect(schemaBlock, 'ListItemsSchema not found').toBeTruthy();
-    const body = schemaBlock![0];
-    expect(body).toMatch(/status:\s*z\.string\(\)\.optional\(\)/);
-    expect(body).not.toMatch(/status:\s*z\.enum/);
-  });
-
-  it('CreateItemSchema accepts any status string (Zod)', () => {
-    const schemaBlock = src.match(/const\s+CreateItemSchema\s*=\s*z\.object\(\{[\s\S]*?\}\);/);
-    expect(schemaBlock, 'CreateItemSchema not found').toBeTruthy();
-    const body = schemaBlock![0];
-    // status should be present, optional, and NOT a z.enum
-    expect(body).toMatch(/status:/);
-    expect(body).not.toMatch(/status:\s*z\.enum/);
-  });
-
-  it('UpdateItemSchema accepts any status string (Zod)', () => {
-    const schemaBlock = src.match(/const\s+UpdateItemSchema\s*=\s*z\.object\(\{[\s\S]*?\}\);/);
-    expect(schemaBlock, 'UpdateItemSchema not found').toBeTruthy();
-    const body = schemaBlock![0];
-    expect(body).toMatch(/status:/);
-    expect(body).not.toMatch(/status:\s*z\.enum/);
-  });
-
-  it('list_items tool description points callers at get_flow for valid step names', () => {
-    // Description should mention get_flow as the source of truth for valid statuses,
-    // so callers know how to discover custom-flow step names.
-    const block = src.match(/name:\s*["']list_items["'][\s\S]{0,800}?description:\s*["']([^"']+)["']/);
-    expect(block, 'list_items description not found').toBeTruthy();
-    const description = block![1];
-    expect(description).toMatch(/get_flow/i);
-  });
-});
 
 // ── REST functional tests ─────────────────────────────────────────────────────
 // These verify the underlying API behaviour the MCP tools delegate to.

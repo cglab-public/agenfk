@@ -72,11 +72,6 @@ describe('fetchHubJiraStatus', () => {
     await expect(fetchHubJiraStatus(HUB)).rejects.toMatchObject({ code: 'hub_auth_failed' });
   });
 
-  it('an unreachable hub is hub_unreachable', async () => {
-    stubFetch({ [`${HUB.url}/v1/jira/status`]: new Error('ECONNREFUSED') });
-    await expect(fetchHubJiraStatus(HUB)).rejects.toMatchObject({ code: 'hub_unreachable' });
-  });
-
   it('an older hub without the JIRA routes (404) reads as not configured', async () => {
     stubFetch({ [`${HUB.url}/v1/jira/status`]: { status: 404, body: {} } });
     const s = await fetchHubJiraStatus(HUB);

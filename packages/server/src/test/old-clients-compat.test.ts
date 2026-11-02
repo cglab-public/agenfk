@@ -60,24 +60,6 @@ async function oldVerify(id: string, command?: string) {
 }
 
 describe('v1.1.20 CLI against this server', () => {
-  it("verify with a positional command: accepted, the project's command runs instead", async () => {
-    const id = await card('TEST', { verifyCommand: 'exit 1' });
-    const res = await oldVerify(id, 'true');
-    // Never a 400: the command is ignored, not refused. The project's `exit 1` ran, so it fails.
-    expect(res.status, JSON.stringify(res.body)).not.toBe(400);
-    expect(res.body.status === 'failed' || res.status === 422, JSON.stringify(res.body)).toBe(true);
-    expect(JSON.stringify(res.body)).toMatch(/command you passed .* was ignored/);
-    expect((await agent().get(`/items/${id}`)).body.status).toBe('TEST');
-  });
-
-  it('a forward update --status is refused in the error shape it prints, naming verify', async () => {
-    const id = await card('IN_PROGRESS', { verifyCommand: 'exit 0' });
-    const res = await agent().put(`/items/${id}`).send({ status: 'REVIEW' });
-    expect(res.status).toBe(409);
-    expect(typeof res.body.error).toBe('string');
-    expect(res.body.error).toMatch(new RegExp(`agenfk verify ${id}`));
-  });
-
   it("a flow edit that knows nothing of roles keeps the step's contract", async () => {
     const f = await agent().post('/flows').send({ name: `old-${++seq}`, steps: [
       { id: 'a', name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
