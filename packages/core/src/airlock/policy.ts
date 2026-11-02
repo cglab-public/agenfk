@@ -33,8 +33,13 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-/** The built-in metadata host this pattern would cover (exactly, by CIDR or by wildcard), if any. */
+/**
+ * The built-in metadata host this pattern would cover (exactly, by CIDR or by wildcard), if any.
+ * `*` covers none: it means every host but the always-denied ones (user decision 2026-11-02),
+ * which every check judges before any allow. A range that names a metadata address still does.
+ */
 function coversBuiltin(pattern: string): string | null {
+  if (normalizeHost(pattern) === '*') return null;
   return BUILTIN_DENY_HOSTS.find((builtin) => matchHost(builtin, [pattern])) ?? null;
 }
 

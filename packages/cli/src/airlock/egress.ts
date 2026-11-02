@@ -225,6 +225,8 @@ export function decideFlow(flow: { names: string[]; claimed?: string | null; ip:
   if (network.deny.includes('*') || matchHost(ip, network.deny) || denied) {
     return { host: denied ?? names[0] ?? ip, port, decision: 'deny', rule: 'deny-list' };
   }
+  // Every host allowed (`*`): what is not denied goes.
+  if (network.allow.includes('*')) return { host: claim ?? names[0] ?? ip, port, decision: 'allow', rule: 'allow-list' };
   const byAddress = network.allow.some((e) => admits(e, null, ip, port)) ? ip : null;
   let allowedAs: string | null;
   let refused: string;
@@ -265,7 +267,8 @@ export function networkKey(network: Network): string {
 export function allowListArgs(network: Network): string[] {
   const args = ['--reset-allow-list'];
   // Every host, said explicitly: smolvm refuses to empty a list a machine had (enforce set one) without it.
-  if (network.mode === 'observe') return [...args, '--net'];
+  // So too with `*` allowed: the decider refuses what is denied.
+  if (network.mode === 'observe' || network.allow.includes('*')) return [...args, '--net'];
   // The gateway, where the decider relays a session to its launcher.
   const entries = new Set<string>([`--allow-cidr\0${GATEWAY}/32`]);
   for (const raw of network.allow) {

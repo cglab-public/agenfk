@@ -26,6 +26,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { allowTextOf, denyTextOf, hasHostEntries, hostListsOf, DIRECTION_HELP } from '../airlockHostText';
+import { HostListEditor } from './HostListEditor';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   api,
@@ -314,9 +315,11 @@ function OverrideRows({
                 </button>
               )}
             </div>
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-              <textarea aria-label={`Allowed hosts, override ${n}`} placeholder="added allowed hosts" rows={2} value={o.allow} readOnly={readOnly} onChange={e => edit(i, { allow: e.target.value })} className={clsx(FIELD, 'font-mono')} />
-              <textarea aria-label={`Denied hosts, override ${n}`} placeholder="added denied hosts" rows={2} value={o.deny} readOnly={readOnly} onChange={e => edit(i, { deny: e.target.value })} className={clsx(FIELD, 'font-mono')} />
+            <div className="mt-2 space-y-2">
+              <p className="text-[12px] text-ink-tertiary">Added allowed hosts</p>
+              <HostListEditor label={`Allowed hosts, override ${n}`} value={o.allow} readOnly={readOnly} onChange={v => edit(i, { allow: v })} />
+              <p className="text-[12px] text-ink-tertiary">Added denied hosts</p>
+              <HostListEditor label={`Denied hosts, override ${n}`} value={o.deny} readOnly={readOnly} blocking onChange={v => edit(i, { deny: v })} />
             </div>
             <input
               aria-label={`Machine image, override ${n}`} placeholder="machine image (the policy's when empty)" value={o.image}
@@ -436,16 +439,16 @@ function PolicyForm({
         </label>
       </div>
 
-      <div className={clsx(BLOCK, 'grid gap-4 sm:grid-cols-2')}>
+      <div className={clsx(BLOCK, 'space-y-4')}>
         <div>
-          <label htmlFor="airlock-allow" className={LABEL}>Allowed hosts</label>
-          <p className={HELP}>{`Hosts tool calls may reach and send data to. One per line: a name, *.domain, or a CIDR. ${DIRECTION_HELP}`}</p>
-          <textarea id="airlock-allow" rows={4} value={draft.allow} readOnly={readOnly} onChange={e => set('allow', e.target.value)} className={clsx(FIELD, 'mt-2 font-mono')} />
+          <p className={LABEL}>Allowed hosts</p>
+          <p className={HELP}>{`Hosts tool calls may reach and send data to: a name, *.domain, a CIDR, or * for every host. ${DIRECTION_HELP}`}</p>
+          <HostListEditor label="Allowed hosts" value={draft.allow} readOnly={readOnly} onChange={v => set('allow', v)} className="mt-2" />
         </div>
         <div>
-          <label htmlFor="airlock-deny" className={LABEL}>Denied hosts</label>
-          <p className={HELP}>{`Hosts no tool call may reach. ${DIRECTION_HELP} Cloud metadata endpoints are always denied.`}</p>
-          <textarea id="airlock-deny" rows={4} value={draft.deny} readOnly={readOnly} onChange={e => set('deny', e.target.value)} className={clsx(FIELD, 'mt-2 font-mono')} />
+          <p className={LABEL}>Denied hosts</p>
+          <p className={HELP}>{`Hosts no tool call may reach, or send data to when it blocks uploads only. ${DIRECTION_HELP} Cloud metadata endpoints are always denied.`}</p>
+          <HostListEditor label="Denied hosts" value={draft.deny} readOnly={readOnly} blocking onChange={v => set('deny', v)} className="mt-2" />
         </div>
       </div>
 

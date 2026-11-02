@@ -72,7 +72,28 @@ export const hasHostEntries = (h: AirlockHostListsDto): boolean =>
   [h.allow, h.deny, h.allowDownload, h.allowUpload, h.denyUpload, h.denyDownload].some(l => (l?.length ?? 0) > 0);
 
 /** The editors' help for a direction. */
-export const DIRECTION_HELP = 'Add “download” or “upload” after it to make an entry one way only.';
+export const DIRECTION_HELP = 'Tick Download, Upload or both for each host. Paste several at once, one per line; “download” or “upload” after a host is read too.';
+
+/** One row of a host list editor. */
+export interface HostRow { pattern: string; way: Way }
+
+const merge = (a: Way, b: Way): Way => (a === b ? a : 'both');
+
+/** Rows from lines, in order; a host listed twice keeps one row, both ways if its lines differ. */
+export function hostRowsOf(text: string, into: readonly HostRow[] = []): HostRow[] {
+  const rows = into.map(r => ({ ...r }));
+  for (const e of entriesOf(text.replace(/\r/g, ''))) {
+    const pattern = e.pattern.toLowerCase();
+    const at = rows.find(r => r.pattern === pattern);
+    if (at) at.way = merge(at.way, e.way);
+    else rows.push({ pattern, way: e.way });
+  }
+  return rows;
+}
+
+/** A row as the line it saves: the host, and its direction after it when one way. */
+export const hostLineOf = (r: HostRow): string => (r.way === 'both' ? r.pattern : `${r.pattern} ${r.way}`);
+export const hostTextOfRows = (rows: readonly HostRow[]): string => rows.map(hostLineOf).join('\n');
 
 /** What can be said of a learned host for certain (core hostLabels), and what an import knew of it. */
 export type HostLabelDto = 'public-dns-resolver' | 'cloud-machine' | 'network-address' | 'unnamed-address';

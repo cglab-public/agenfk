@@ -58,6 +58,15 @@ const NONE = { policy: null, revision: 0, iocRevision: 0, updatedAt: null, updat
 
 const DATASET_OFF = { enabled: false, rows: 0, labels: 0, oldest: null, newest: null, limits: { maxRows: 100000, maxAgeDays: 90, maxRowBytes: 65536 } };
 
+/** A host list, read as the lines it saves: one per row, "download"/"upload" after a one-way entry. */
+const hostList = (label: string, root: HTMLElement = document.body) => within(root).getByRole('list', { name: label, hidden: true });
+const hostsText = (label: string, root?: HTMLElement) => within(hostList(label, root)).queryAllByRole('listitem', { hidden: true }).map(li => li.getAttribute('data-entry')).join('\n');
+/** Empty a host list (each row's Remove), then paste `text` into its add field. */
+const setHosts = (label: string, text: string, root: HTMLElement = document.body) => {
+  for (let b = within(hostList(label, root)).queryAllByRole('button', { name: /^Remove /, hidden: true })[0]; b; b = within(hostList(label, root)).queryAllByRole('button', { name: /^Remove /, hidden: true })[0]) fireEvent.click(b);
+  if (text.trim()) fireEvent.paste(within(root).getByRole('textbox', { name: `Add to ${label}`, hidden: true }), { clipboardData: { getData: () => text } });
+};
+
 const NO_INSTALLATIONS = { currentRevision: 0, currentIocRevision: 0, installations: [] };
 const NO_HISTORY = { entries: [], next: null };
 
@@ -137,21 +146,22 @@ describe('Admin → Airlock', () => {
     expect(await screen.findByText(/revision 4/i)).toBeInTheDocument();
     expect(screen.getByText(/admin@acme.test/)).toBeInTheDocument();
     expect((screen.getByLabelText(/^mode$/i) as HTMLSelectElement).value).toBe('enforce');
-    expect((screen.getByLabelText(/allowed hosts/i) as HTMLTextAreaElement).value).toBe('github.com\nregistry.npmjs.org');
-    expect((screen.getByLabelText(/denied hosts/i) as HTMLTextAreaElement).value).toBe('evil.example');
+    expect(hostsText('Allowed hosts')).toBe('github.com\nregistry.npmjs.org');
+    expect(hostsText('Denied hosts')).toBe('evil.example');
     expect((screen.getByLabelText(/models/i) as HTMLTextAreaElement).value).toBe('pi cloudflare-workers-ai');
   });
 
-  it('shows a one-way entry with its direction after it, and saves a direction written after a host (2026-11-02)', async () => {
+  it('shows each entry with its direction ticked, and saves a direction pasted after a host (2026-11-02)', async () => {
     hubAnswers({ ...STORED, policy: { ...STORED.policy, hosts: { allow: ['github.com'], deny: ['evil.example', 'pastebin.com'], allowDownload: ['*.datadoghq.com'], denyUpload: ['pastebin.com'] } } });
     put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
     renderPage();
-    const allow = await screen.findByLabelText(/allowed hosts/i) as HTMLTextAreaElement;
-    expect(allow.value).toBe('github.com\n*.datadoghq.com download');
-    expect((screen.getByLabelText(/denied hosts/i) as HTMLTextAreaElement).value).toBe('evil.example\npastebin.com upload');
-    expect(screen.getAllByText(/add .download. or .upload. after it/i).length).toBeGreaterThan(0);
-    fireEvent.change(allow, { target: { value: 'github.com\n*.datadoghq.com download\nuploads.corp.io upload' } });
-    fireEvent.change(screen.getByLabelText(/denied hosts/i), { target: { value: 'evil.example\npastebin.com upload\nwarez.io download' } });
+    await screen.findByRole('list', { name: 'Allowed hosts', hidden: true });
+    expect(hostsText('Allowed hosts')).toBe('github.com\n*.datadoghq.com download');
+    expect(hostsText('Denied hosts')).toBe('evil.example\npastebin.com upload');
+    expect((within(hostList('Allowed hosts')).getByRole('checkbox', { name: 'Upload: *.datadoghq.com', hidden: true }) as HTMLInputElement).checked).toBe(false);
+    expect((within(hostList('Denied hosts')).getByRole('checkbox', { name: 'Upload: pastebin.com', hidden: true }) as HTMLInputElement).checked).toBe(true);
+    setHosts('Allowed hosts', 'github.com\n*.datadoghq.com download\nuploads.corp.io upload');
+    setHosts('Denied hosts', 'evil.example\npastebin.com upload\nwarez.io download');
     fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
     await waitFor(() => expect(put).toHaveBeenCalled());
     expect(put.mock.calls[0][1].policy.hosts).toEqual({
@@ -164,8 +174,8 @@ describe('Admin → Airlock', () => {
     hubAnswers(STORED);
     put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
     renderPage();
-    const allow = await screen.findByLabelText(/allowed hosts/i);
-    fireEvent.change(allow, { target: { value: 'github.com\n\n  pypi.org  \n' } });
+    await screen.findByRole('list', { name: 'Allowed hosts', hidden: true });
+    setHosts('Allowed hosts', 'github.com\n\n  pypi.org  \n');
     fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
     await waitFor(() => expect(put).toHaveBeenCalled());
     const [url, body] = put.mock.calls[0];
@@ -254,8 +264,8 @@ describe('Admin → Airlock', () => {
       message: 'Request failed with status code 400',
     });
     renderPage();
-    const allow = await screen.findByLabelText(/allowed hosts/i);
-    fireEvent.change(allow, { target: { value: '169.254.169.254' } });
+    await screen.findByRole('list', { name: 'Allowed hosts', hidden: true });
+    setHosts('Allowed hosts', '169.254.169.254');
     fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
     expect(await screen.findByRole('alert')).toHaveTextContent(/metadata host/);
   });
@@ -536,8 +546,8 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
     renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     expect((within(card).getByLabelText('Repository or project, override 1') as HTMLInputElement).value).toBe('github.com/acme/api');
-    expect((within(card).getByLabelText('Allowed hosts, override 1') as HTMLTextAreaElement).value).toBe('pypi.org');
-    expect((within(card).getByLabelText('Denied hosts, override 1') as HTMLTextAreaElement).value).toBe('tracker.example');
+    expect(hostsText('Allowed hosts, override 1', card)).toBe('pypi.org');
+    expect(hostsText('Denied hosts, override 1', card)).toBe('tracker.example');
     expect((within(card).getByLabelText(/^Change cloud resources.*, override 1$/) as HTMLSelectElement).value).toBe('deny');
     expect((within(card).getByLabelText(/^Upload to a host.*, override 1$/) as HTMLSelectElement).value).toBe('');
     expect((within(card).getByLabelText('Repository or project, override 2') as HTMLInputElement).value).toBe('project:local-1');
@@ -551,7 +561,7 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
     fireEvent.click(within(card).getByRole('button', { name: 'Add a project override' }));
     fireEvent.change(within(card).getByLabelText('Repository or project, override 3'), { target: { value: ' git@github.com:acme/web.git ' } });
-    fireEvent.change(within(card).getByLabelText('Denied hosts, override 3'), { target: { value: 'a.example\n\nb.example' } });
+    setHosts('Denied hosts, override 3', 'a.example\n\nb.example', card);
     fireEvent.change(within(card).getByLabelText(/^Enter another namespace.*, override 3$/), { target: { value: 'needs-human-approval' } });
     fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
     await waitFor(() => expect(put).toHaveBeenCalled());
@@ -576,7 +586,7 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
     expect((within(card).getByLabelText('Machine image, override 1') as HTMLInputElement).value).toBe('ghcr.io/acme/api-airlock:2');
     fireEvent.change(within(card).getByLabelText('Machine image, override 2'), { target: { value: ' ghcr.io/acme/web-airlock:1 ' } });
     fireEvent.change(within(card).getByLabelText('Machine image, override 1'), { target: { value: '' } });
-    fireEvent.change(within(card).getByLabelText('Allowed hosts, override 1'), { target: { value: 'x.example' } });
+    setHosts('Allowed hosts, override 1', 'x.example', card);
     fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
     await waitFor(() => expect(put).toHaveBeenCalled());
     expect(put.mock.calls[0][1].policy.projects).toEqual({
@@ -590,8 +600,8 @@ describe('Admin → Airlock: per-project overrides (PO-2)', () => {
     put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
     renderPage('projects');
     const card = await screen.findByRole('form', { name: 'Per-project overrides' });
-    expect((within(card).getByLabelText('Allowed hosts, override 1') as HTMLTextAreaElement).value).toBe('pypi.org download');
-    fireEvent.change(within(card).getByLabelText('Denied hosts, override 1'), { target: { value: 'pastebin.com upload' } });
+    expect(hostsText('Allowed hosts, override 1', card)).toBe('pypi.org download');
+    setHosts('Denied hosts, override 1', 'pastebin.com upload', card);
     fireEvent.click(within(card).getByRole('button', { name: 'Save overrides' }));
     await waitFor(() => expect(put).toHaveBeenCalled());
     expect(put.mock.calls[0][1].policy.projects).toEqual({
@@ -678,13 +688,13 @@ describe('Admin → Airlock: PO-2 review (Codex gpt-6.1-sol 01a18308)', () => {
     liveHub(WITH_OVERRIDES);
     renderPage('projects');
     const overrides = await screen.findByRole('form', { name: 'Per-project overrides' });
-    fireEvent.change(within(overrides).getByLabelText('Denied hosts, override 1'), { target: { value: 'tracker.example\nmore.example' } });
+    setHosts('Denied hosts, override 1', 'tracker.example\nmore.example', overrides);
     goTo('Policy');
     fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: 'observe' } });
     fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
     goTo('Projects');
     expect(await within(overrides).findByText(/changed elsewhere \(it is now at revision 5\)/i)).toBeInTheDocument();
-    expect((within(overrides).getByLabelText('Denied hosts, override 1') as HTMLTextAreaElement).value).toBe('tracker.example\nmore.example');
+    expect(hostsText('Denied hosts, override 1', overrides)).toBe('tracker.example\nmore.example');
     fireEvent.click(within(overrides).getByRole('button', { name: 'Keep my edits and save them over revision 5' }));
     fireEvent.click(within(overrides).getByRole('button', { name: 'Save overrides' }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
@@ -955,7 +965,7 @@ describe('Admin → Airlock tabs', () => {
     expect(screen.getByRole('combobox', { name: /^mode$/i })).toBeVisible();
     expect(screen.getByRole('textbox', { name: /models/i })).toBeVisible();
     expect(screen.getByRole('group', { name: /rules/i })).toBeVisible();
-    expect(screen.queryByRole('textbox', { name: /allowed hosts/i })).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Allowed hosts' })).toBeNull();
     expect(screen.queryByRole('textbox', { name: /machine image/i })).toBeNull();
     expect(screen.queryByRole('heading', { name: /installations/i })).toBeNull();
   });
@@ -965,14 +975,14 @@ describe('Admin → Airlock tabs', () => {
     renderPage();
     await screen.findByText(/revision 4/i);
     open(/^network$/i);
-    expect(screen.getByRole('textbox', { name: /allowed hosts/i })).toBeVisible();
-    expect(screen.getByRole('textbox', { name: /denied hosts/i })).toBeVisible();
+    expect(screen.getByRole('list', { name: 'Allowed hosts' })).toBeVisible();
+    expect(screen.getByRole('list', { name: 'Denied hosts' })).toBeVisible();
     expect(screen.getByRole('heading', { name: /indicators of compromise/i })).toBeVisible();
     expect(screen.queryByRole('combobox', { name: /^mode$/i })).toBeNull();
     open(/^sandbox$/i);
     expect(screen.getByRole('textbox', { name: /machine image/i })).toBeVisible();
     expect(screen.getByRole('combobox', { name: /home access/i })).toBeVisible();
-    expect(screen.queryByRole('textbox', { name: /allowed hosts/i })).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Allowed hosts' })).toBeNull();
   });
 
   it('keeps one policy draft across Policy, Network and Sandbox, saved by one Save', async () => {
@@ -982,7 +992,7 @@ describe('Admin → Airlock tabs', () => {
     await screen.findByText(/revision 4/i);
     fireEvent.change(screen.getByRole('combobox', { name: /^mode$/i }), { target: { value: 'observe' } });
     open(/^network$/i);
-    fireEvent.change(screen.getByRole('textbox', { name: /allowed hosts/i }), { target: { value: 'github.com\nexample.org' } });
+    setHosts('Allowed hosts', 'github.com\nexample.org');
     open(/^sandbox$/i);
     fireEvent.change(screen.getByRole('combobox', { name: /home access/i }), { target: { value: 'home-read-write' } });
     fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
@@ -1030,5 +1040,48 @@ describe('Admin → Airlock tabs', () => {
     const history = (await screen.findByRole('list', { name: /revision history/i })).closest('.overflow-y-auto');
     expect(history).not.toBeNull();
     expect(history!.className).toMatch(/max-h-\[/);
+  });
+});
+
+describe('Admin → Airlock: the host lists are lists, one row per host (2026-11-02)', () => {
+  const saveAndRead = async () => {
+    fireEvent.click(screen.getByRole('button', { name: /save policy/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    return put.mock.calls[0][1].policy.hosts;
+  };
+
+  it('unticking Upload makes a host download only, and its last ticked box cannot be unticked', async () => {
+    hubAnswers(STORED);
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    const list = await screen.findByRole('list', { name: 'Allowed hosts', hidden: true });
+    fireEvent.click(within(list).getByRole('checkbox', { name: 'Upload: github.com', hidden: true }));
+    expect((within(list).getByRole('checkbox', { name: 'Download: github.com', hidden: true }) as HTMLInputElement).disabled).toBe(true);
+    expect(hostsText('Allowed hosts')).toBe('github.com download\nregistry.npmjs.org');
+    expect(await saveAndRead()).toMatchObject({ allow: ['registry.npmjs.org'], allowDownload: ['github.com'] });
+  });
+
+  it('pasting several lines adds a row for each, with any trailing direction; Enter adds a typed host; Remove takes one out', async () => {
+    hubAnswers(STORED);
+    renderPage();
+    await screen.findByRole('list', { name: 'Allowed hosts', hidden: true });
+    fireEvent.paste(screen.getByRole('textbox', { name: 'Add to Allowed hosts', hidden: true }), { clipboardData: { getData: () => 'pypi.org download\n\nfiles.vendor.io upload\n' } });
+    expect(hostsText('Allowed hosts')).toBe('github.com\nregistry.npmjs.org\npypi.org download\nfiles.vendor.io upload');
+    const add = screen.getByRole('textbox', { name: 'Add to Denied hosts', hidden: true }) as HTMLTextAreaElement;
+    fireEvent.change(add, { target: { value: 'tracker.vendor.io' } });
+    fireEvent.keyDown(add, { key: 'Enter' });
+    expect(add.value).toBe('');
+    fireEvent.click(within(hostList('Denied hosts')).getByRole('button', { name: 'Remove evil.example', hidden: true }));
+    expect(hostsText('Denied hosts')).toBe('tracker.vendor.io');
+  });
+
+  it('`*` reads as every host, and `* download` saves', async () => {
+    hubAnswers(STORED);
+    put.mockResolvedValue({ data: { ...STORED, revision: 5 } });
+    renderPage();
+    await screen.findByRole('list', { name: 'Allowed hosts', hidden: true });
+    fireEvent.paste(screen.getByRole('textbox', { name: 'Add to Allowed hosts', hidden: true }), { clipboardData: { getData: () => '* download' } });
+    expect(within(hostList('Allowed hosts')).getByText(/every host/i)).toBeInTheDocument();
+    expect(await saveAndRead()).toMatchObject({ allowDownload: ['*'] });
   });
 });
