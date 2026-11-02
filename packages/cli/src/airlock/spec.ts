@@ -13,7 +13,7 @@
  */
 import path from 'path';
 import { isIPv4, isIPv6 } from 'net';
-import { BUILTIN_DENY_HOSTS, HOME_CREDENTIAL_STORES, matchHost, type AirlockClient, type AirlockPolicy } from '@agenfk/core';
+import { BUILTIN_DENY_HOSTS, HOME_CREDENTIAL_STORES, matchHost, networkAllow, networkDeny, type AirlockClient, type AirlockPolicy } from '@agenfk/core';
 
 /** Set inside the sandbox to the client's name; the launch gate (L2-3) looks for it. */
 export const AIRLOCK_SANDBOX_MARKER = 'AGENFK_AIRLOCK_SANDBOX';
@@ -206,7 +206,8 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   // allowed even inside a denied range, and drops deny patterns it cannot
   // express (`*.internal`, `*.com`). Egress is allow-only, so leaving out
   // every allow a deny pattern matches is what makes the deny hold.
-  const denyPatterns = [...BUILTIN_DENY_HOSTS, ...policy.hosts.deny, ...policy.iocHosts.hosts].map(String);
+  // The network cannot see direction: only a both-way block refuses the connection.
+  const denyPatterns = [...BUILTIN_DENY_HOSTS, ...networkDeny(policy.hosts), ...policy.iocHosts.hosts].map(String);
   // A localhost name may be answered with ANY loopback address (127.0.0.0/8,
   // ::1), and the runtime takes those answers before its range denies. So a
   // deny that touches loopback at all (a range inside it, or one covering it)
@@ -245,7 +246,8 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     allow.push(e.value);
     return true;
   };
-  policy.hosts.allow.forEach((h) => addAllow(h));
+  // A host allowed in either direction is reachable; which way its data goes is judged on tool calls.
+  networkAllow(policy.hosts).forEach((h) => addAllow(h));
   const inference: string[] = [];
   for (const raw of session.inferenceHosts) {
     const c = classify(raw);

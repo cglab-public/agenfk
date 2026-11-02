@@ -154,8 +154,8 @@ board without a command fails the build.
 | `agenfk hub admin airlock dataset on` | Start collecting the dataset |
 | `agenfk hub admin airlock dataset off` | Stop collecting the dataset |
 | `agenfk hub admin airlock dataset export` | Export the dataset as JSON lines |
-| `agenfk hub admin airlock learning list` | Proposed hosts |
-| `agenfk hub admin airlock learning accept <hosts>` | Allow proposed hosts (a new policy revision) |
+| `agenfk hub admin airlock learning list` | Proposed hosts, how often each was sent data (UPLOADS), and `*.domain` wildcards over hosts sharing a domain |
+| `agenfk hub admin airlock learning accept <patterns> [--direction download\|upload\|both]` | Allow proposed hosts or wildcards, for downloads, uploads or both (default both); a new policy revision |
 | `agenfk hub admin repos list` | Repositories the hub knows |
 | `agenfk hub admin repos receipts` | Recent verification receipts of a repository |
 | `agenfk hub admin repos revisions` | The verify command's revisions |

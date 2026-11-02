@@ -18,6 +18,8 @@ import {
   type RuleAction,
 } from './types';
 import { isValidHostPattern, matchHost, normalizeHost, parseCidr } from './hosts';
+import { canonicalHostLists, mergeHostLists } from './hostLists';
+import type { AirlockHostLists } from './types';
 import { airlockRepoKey } from './repoKey';
 import { isAirlockImageRef } from './image';
 
@@ -49,6 +51,19 @@ function hostList(raw: unknown, dropBuiltins: boolean): HostPattern[] {
   return [...seen];
 }
 
+/** The host lists' fields, and whether each allows (so may not reach a metadata host). */
+const HOST_LISTS: ReadonlyArray<[keyof AirlockHostLists, boolean]> = [
+  ['allow', true], ['deny', false], ['allowDownload', true], ['allowUpload', true], ['denyUpload', false], ['denyDownload', false],
+];
+
+function hostLists(raw: Record<string, unknown>): AirlockHostLists {
+  const lists: Partial<AirlockHostLists> = {};
+  for (const [k, allows] of HOST_LISTS) lists[k] = hostList(raw[k], allows);
+  return canonicalHostLists(lists);
+}
+
+const hasHosts = (l: AirlockHostLists): boolean => HOST_LISTS.some(([k]) => (l[k]?.length ?? 0) > 0);
+
 function selector(raw: unknown): ModelSelector | null {
   if (!isObject(raw)) return null;
   const out: ModelSelector = {};
@@ -66,9 +81,8 @@ function override(raw: unknown): AirlockProjectOverride | null {
   if (!isObject(raw)) return null;
   const out: AirlockProjectOverride = {};
   if (isObject(raw.hosts)) {
-    const allow = hostList(raw.hosts.allow, true);
-    const deny = hostList(raw.hosts.deny, false);
-    if (allow.length || deny.length) out.hosts = { allow, deny };
+    const hosts = hostLists(raw.hosts);
+    if (hasHosts(hosts)) out.hosts = hosts;
   }
   if (isObject(raw.rules)) {
     const rules: Partial<AirlockRules> = {};
@@ -93,17 +107,10 @@ function projectOverrides(raw: unknown): Record<string, AirlockProjectOverride> 
   return Object.keys(out).length ? out : undefined;
 }
 
-function union(a: HostPattern[], b: HostPattern[]): HostPattern[] {
-  return [...new Set([...a, ...b])];
-}
-
 function applyOverride(base: AirlockProjectOverride, o: AirlockProjectOverride): AirlockProjectOverride {
   const out: AirlockProjectOverride = {};
   if (base.hosts || o.hosts) {
-    out.hosts = {
-      allow: union(base.hosts?.allow ?? [], o.hosts?.allow ?? []),
-      deny: union(base.hosts?.deny ?? [], o.hosts?.deny ?? []),
-    };
+    out.hosts = mergeHostLists(base.hosts ?? {}, o.hosts ?? {});
   }
   if (base.rules || o.rules) out.rules = { ...base.rules, ...o.rules };
   const image = o.machineImage ?? base.machineImage;
@@ -132,10 +139,14 @@ export function effectivePolicyFor(
     const o = key ? projects?.[key] : undefined;
     if (!o) continue;
     if (o.hosts) {
-      hosts = {
-        allow: union(hosts.allow, o.hosts.allow.filter((h) => !coversBuiltin(normalizeHost(h)))),
-        deny: union(hosts.deny, o.hosts.deny),
-      };
+      const notBuiltin = (list?: HostPattern[]) => list?.filter((h) => !coversBuiltin(normalizeHost(h)));
+      // Per pattern and direction: a project can widen an org block or allow, never narrow one.
+      hosts = mergeHostLists(hosts, {
+        ...o.hosts,
+        allow: notBuiltin(o.hosts.allow) ?? [],
+        allowDownload: notBuiltin(o.hosts.allowDownload),
+        allowUpload: notBuiltin(o.hosts.allowUpload),
+      });
     }
     if (o.rules) rules = { ...rules, ...o.rules };
     if (o.machineImage) machineImage = o.machineImage;
@@ -160,7 +171,7 @@ export function normalizeAirlockPolicy(raw: unknown): AirlockPolicy {
       ? r.models.map(selector).filter((s): s is ModelSelector => s !== null)
       : [],
     appliesWhenModelUnknown: typeof r.appliesWhenModelUnknown === 'boolean' ? r.appliesWhenModelUnknown : true,
-    hosts: { allow: hostList(hosts.allow, true), deny: hostList(hosts.deny, false) },
+    hosts: hostLists(hosts),
     iocHosts: {
       revision: typeof ioc.revision === 'string' ? ioc.revision : '',
       hosts: hostList(ioc.hosts, false),
@@ -198,8 +209,7 @@ function projectsErrors(raw: unknown): string[] {
     if (o.hosts !== undefined) {
       if (!isObject(o.hosts)) errors.push(`${field}.hosts must be an object`);
       else {
-        errors.push(...hostListErrors(`${field}.hosts.allow`, o.hosts.allow, true));
-        errors.push(...hostListErrors(`${field}.hosts.deny`, o.hosts.deny, false));
+        for (const [k, allows] of HOST_LISTS) errors.push(...hostListErrors(`${field}.hosts.${k}`, o.hosts[k], allows));
       }
     }
     errors.push(...rulesErrors(`${field}.rules`, o.rules));
@@ -264,8 +274,7 @@ export function airlockPolicyErrors(raw: unknown): string[] {
   if (raw.hosts !== undefined) {
     if (!isObject(raw.hosts)) errors.push('hosts must be an object');
     else {
-      errors.push(...hostListErrors('hosts.allow', raw.hosts.allow, true));
-      errors.push(...hostListErrors('hosts.deny', raw.hosts.deny, false));
+      for (const [k, allows] of HOST_LISTS) errors.push(...hostListErrors(`hosts.${k}`, (raw.hosts as Record<string, unknown>)[k], allows));
     }
   }
   if (raw.iocHosts !== undefined) {

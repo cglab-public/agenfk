@@ -21,7 +21,7 @@ const get = api.get as unknown as ReturnType<typeof vi.fn>;
 const post = api.post as unknown as ReturnType<typeof vi.fn>;
 
 const row = (host: string, over: Record<string, unknown> = {}) => ({
-  host, installations: 1, hits: 3, proxyHits: 0, evidence: 'agent-reported', clients: ['pi'],
+  host, installations: 1, hits: 3, proxyHits: 0, uploads: 0, evidence: 'agent-reported', clients: ['pi'],
   firstSeen: '2026-10-20T10:00:00.000Z', lastSeen: '2026-10-27T10:00:00.000Z', ...over,
 });
 
@@ -72,7 +72,7 @@ describe('Admin → Airlock → Proposed hosts', () => {
     const list = await screen.findByRole('list', { name: 'Proposed hosts' });
     fireEvent.click(within(list).getByRole('checkbox', { name: 'pkg.example.org' }));
     fireEvent.click(screen.getByRole('button', { name: /allow 1 selected host/i }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/airlock/learning/accept', { hosts: ['pkg.example.org'], expectedRevision: 4 }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/airlock/learning/accept', { entries: [{ pattern: 'pkg.example.org', direction: 'download' }], expectedRevision: 4 }));
     expect(await screen.findByRole('status')).toHaveTextContent(/revision 5/);
   });
 
@@ -110,5 +110,45 @@ describe('Admin → Airlock → Proposed hosts', () => {
     get.mockImplementation(async () => ({ data: { revision: 4, hosts: [] } }));
     renderCard();
     expect(await screen.findByText(/no hosts proposed/i)).toBeInTheDocument();
+  });
+});
+
+describe('Admin → Airlock → Proposed hosts: direction and wildcards (2026-11-02)', () => {
+  const WILD = {
+    revision: 4,
+    hosts: [row('api.us5.datadoghq.com', { hits: 14 }), row('mcp.us5.datadoghq.com', { hits: 6, uploads: 2 }), row('docs.vendor.io')],
+    wildcards: [{ pattern: '*.datadoghq.com', hosts: ['api.us5.datadoghq.com', 'mcp.us5.datadoghq.com'], hits: 20, uploads: 2, evidence: 'agent-reported' }],
+  };
+  beforeEach(() => {
+    get.mockImplementation(async (url: string) => {
+      if (url === '/v1/admin/airlock/learning') return { data: WILD };
+      throw new Error(`unexpected GET ${url}`);
+    });
+  });
+
+  it('each host says whether it was sent data, and its direction starts at what was seen', async () => {
+    renderCard();
+    const items = within(await screen.findByRole('list', { name: 'Proposed hosts' })).getAllByRole('listitem');
+    expect(items[0]).toHaveTextContent(/downloads only/i);
+    expect(items[1]).toHaveTextContent(/sent data 2 times/i);
+    expect((within(items[0]).getByLabelText('Direction for api.us5.datadoghq.com') as HTMLSelectElement).value).toBe('download');
+    expect((within(items[1]).getByLabelText('Direction for mcp.us5.datadoghq.com') as HTMLSelectElement).value).toBe('both');
+  });
+
+  it('offers wildcards with the hosts they cover, and allows hosts and wildcards each with the direction picked', async () => {
+    post.mockResolvedValue({ data: { revision: 5 } });
+    renderCard();
+    const hosts = await screen.findByRole('list', { name: 'Proposed hosts' });
+    const wild = screen.getByRole('list', { name: 'Proposed wildcards' });
+    expect(wild).toHaveTextContent(/covers api\.us5\.datadoghq\.com, mcp\.us5\.datadoghq\.com/);
+    fireEvent.click(within(wild).getByRole('checkbox', { name: '*.datadoghq.com' }));
+    fireEvent.change(within(wild).getByLabelText('Direction for *.datadoghq.com'), { target: { value: 'download' } });
+    fireEvent.click(within(hosts).getByRole('checkbox', { name: 'docs.vendor.io' }));
+    fireEvent.change(within(hosts).getByLabelText('Direction for docs.vendor.io'), { target: { value: 'upload' } });
+    fireEvent.click(screen.getByRole('button', { name: /allow 2 selected/i }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/airlock/learning/accept', {
+      entries: [{ pattern: 'docs.vendor.io', direction: 'upload' }, { pattern: '*.datadoghq.com', direction: 'download' }],
+      expectedRevision: 4,
+    }));
   });
 });

@@ -20,15 +20,17 @@ import { analyseCommand } from './shell';
 import { capabilitiesOf } from './capabilities';
 import { hostFromUrl, isHostname, matchHost, normalizeHost, parseIp } from './hosts';
 import { normalizeAirlockPolicy } from './policy';
+import { mergeHostLists, networkAllow } from './hostLists';
+import { CLOUD_STORAGE_DOMAINS, isCloudStorageHost } from './alerts';
 import { BUILTIN_DENY_HOSTS, type AirlockPolicy, type Capability } from './types';
 import type {
-  AirlockHostObservation, AirlockImportTally, AirlockLearnedHost, AirlockLearningEvidence, AirlockLearningExclusion,
-  AirlockLearnSource, AirlockProposal, AirlockProposedHost,
+  AirlockAcceptedEntry, AirlockHostObservation, AirlockImportTally, AirlockLearnedHost, AirlockLearningEvidence,
+  AirlockLearningExclusion, AirlockLearnSource, AirlockProposal, AirlockProposedHost, AirlockProposedWildcard,
 } from './learnTypes';
 
 export type {
-  AirlockHostObservation, AirlockImportTally, AirlockLearnedHost, AirlockLearningEvidence, AirlockLearningExclusion,
-  AirlockLearnSource, AirlockProposal, AirlockProposedHost,
+  AirlockAcceptedEntry, AirlockHostObservation, AirlockImportTally, AirlockLearnedHost, AirlockLearningEvidence,
+  AirlockLearningExclusion, AirlockLearnSource, AirlockProposal, AirlockProposedHost, AirlockProposedWildcard,
 } from './learnTypes';
 
 export const AIRLOCK_LEARN_SOURCES: readonly AirlockLearnSource[] = ['tool', 'proxy', 'import'];
@@ -48,6 +50,15 @@ export const PRIVATE_HOST_PATTERNS: readonly string[] = Object.freeze([
   '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16',
   '::/128', '::1/128', 'fc00::/7', 'fe80::/10',
   'localhost', '*.localhost', '*.local',
+]);
+
+/**
+ * Names reserved for documentation and testing (RFC 2606, RFC 6761): no
+ * session needs one allowed, and they are what test fixtures are written with.
+ */
+export const RESERVED_HOST_PATTERNS: readonly string[] = Object.freeze([
+  '*.test', '*.example', '*.invalid',
+  'example.com', '*.example.com', 'example.net', '*.example.net', 'example.org', '*.example.org',
 ]);
 
 /** Dotted parts that are each decimal, octal or hex: a spelling inet_aton reads as an IPv4 address. */
@@ -81,8 +92,6 @@ export function learnableHost(raw: unknown): string | null {
   return h.includes('.') || h === 'localhost' ? h : null;
 }
 
-const uniq = (list: Iterable<string>): string[] => [...new Set(list)];
-
 /**
  * Says whether a host, AS IT WAS WRITTEN, carries a secret (true: do not keep
  * it). Given by the caller (the server and the CLI pass the shared log
@@ -96,6 +105,11 @@ const NON_ASCII = /[^\x00-\x7f]/;
 /** ASCII-only lowercasing: a non-ASCII letter must not fold into a host. */
 const asciiLower = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
+/** The end of a word's scheme part when it is `file`: `file://`, `--data=file://`. */
+const FILE_SCHEME = /(?:^|[^a-z0-9+.-])file$/i;
+/** A user name, as `user@host` writes it: no option dashes, no `=`, never empty. */
+const USER_NAME = /^[a-z0-9_][a-z0-9._-]*$/i;
+
 /**
  * The raw host tokens of a text, exactly as written: for each word holding a
  * URL, its authority (between `//` and the first `/ ? #`) without userinfo
@@ -108,9 +122,14 @@ export function rawHostTokens(text: string): string[] {
   for (const word of text.split(/[\s'"`;|&()<>]+/)) {
     if (!word) continue;
     const scheme = word.indexOf('://');
+    // A file: URL names a file on this machine (`--user-data file://userdata.sh`), never a host.
+    if (scheme >= 0 && FILE_SCHEME.test(word.slice(0, scheme))) continue;
     let t = scheme >= 0 ? word.slice(scheme + 3) : word;
     if (scheme >= 0) t = t.split(/[/?#]/, 1)[0];
     const at = t.lastIndexOf('@');
+    // Outside a URL, `x@host` is a host only when x is a user name: `--query=@session.id:abc`
+    // (a Datadog query) and `@action.name:x` are not `user@host:` words.
+    if (at >= 0 && scheme < 0 && !USER_NAME.test(t.slice(0, at))) continue;
     if (at >= 0) t = t.slice(at + 1);
     if (t.startsWith('[')) t = t.slice(0, t.indexOf(']') + 1) || t;
     else t = t.split(/[:/?#]/, 1)[0];
@@ -146,12 +165,29 @@ export function learnRawHost(raw: string, screen?: AirlockHostScreen): string | 
  * spells is not learned.
  */
 export function hostsOfCapabilities(caps: readonly Capability[], screen?: AirlockHostScreen): string[] {
+  return sightingsOfCapabilities(caps, screen).map((s) => s.host);
+}
+
+/** One host a tool call reached, and whether the call sent it data. */
+export interface AirlockSighting {
+  host: string;
+  upload: boolean;
+}
+
+/**
+ * hostsOfCapabilities, with which way the data went: a host a command uploads
+ * to (the shell analyser's upload facts) is an upload; anything else it
+ * reaches, and every fetched URL, is not.
+ */
+export function sightingsOfCapabilities(caps: readonly Capability[], screen?: AirlockHostScreen): AirlockSighting[] {
   // Fail closed: a call with any non-ASCII anywhere teaches nothing.
   if (caps.some((c) => NON_ASCII.test(c.kind === 'command' ? c.command : c.kind === 'url' ? c.url : c.path))) return [];
-  const out: string[] = [];
+  const out = new Map<string, boolean>();
   for (const c of caps) {
     const text = c.kind === 'command' ? c.command : c.kind === 'url' ? c.url : '';
-    const found = c.kind === 'command' ? analyseCommand(c.command).hosts : c.kind === 'url' ? [hostFromUrl(c.url)] : [];
+    const analysis = c.kind === 'command' ? analyseCommand(c.command) : null;
+    const found = analysis ? [...analysis.hosts, ...analysis.uploads.flatMap((u) => u.hosts)] : c.kind === 'url' ? [hostFromUrl(c.url)] : [];
+    const uploadsTo = new Set((analysis?.uploads ?? []).flatMap((u) => u.hosts).map(learnableHost));
     const wanted = new Set(found.map(learnableHost).filter((h): h is string => h !== null));
     if (!wanted.size) continue;
     // Every raw token that canonicalises to a wanted host; one refused (a
@@ -164,9 +200,9 @@ export function hostsOfCapabilities(caps: readonly Capability[], screen?: Airloc
       if (learnRawHost(raw, screen) === canonical) accepted.add(canonical);
       else refused.add(canonical);
     }
-    for (const h of wanted) if (accepted.has(h) && !refused.has(h)) out.push(h);
+    for (const h of wanted) if (accepted.has(h) && !refused.has(h)) out.set(h, (out.get(h) ?? false) || uploadsTo.has(h));
   }
-  return uniq(out);
+  return [...out].map(([host, upload]) => ({ host, upload }));
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -178,10 +214,15 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
  * text, a tool's result, a model change - yields nothing.
  */
 export function hostsOfPiRecord(record: unknown, screen?: AirlockHostScreen): string[] {
+  return sightingsOfPiRecord(record, screen).map((s) => s.host);
+}
+
+/** hostsOfPiRecord, with whether each call sent the host data. */
+export function sightingsOfPiRecord(record: unknown, screen?: AirlockHostScreen): AirlockSighting[] {
   if (!isObject(record) || record.type !== 'message' || !isObject(record.message)) return [];
   const message = record.message;
   if (message.role !== 'assistant' || !Array.isArray(message.content)) return [];
-  const out: string[] = [];
+  const out: AirlockSighting[] = [];
   for (const part of message.content) {
     if (!isObject(part) || part.type !== 'toolCall' || !isObject(part.arguments)) continue;
     const args = part.arguments;
@@ -190,7 +231,7 @@ export function hostsOfPiRecord(record: unknown, screen?: AirlockHostScreen): st
     if (Array.isArray(args.urls)) {
       for (const u of args.urls) if (typeof u === 'string' && u.trim()) caps.push({ kind: 'url', url: u });
     }
-    for (const h of hostsOfCapabilities(caps, screen)) out.push(h);
+    for (const h of sightingsOfCapabilities(caps, screen)) out.push(h);
   }
   return out;
 }
@@ -228,18 +269,19 @@ export function tallyPiSessionLine(line: string, tally: Map<string, AirlockImpor
   if (!line || line[0] !== '{') return 0;
   let record: unknown;
   try { record = JSON.parse(line); } catch { return 0; }
-  const hosts = hostsOfPiRecord(record, opts.screen);
+  const sightings = sightingsOfPiRecord(record, opts.screen);
   const at = isObject(record) ? isoOrNull(record.timestamp) : null;
   const max = opts.maxHosts ?? MAX_IMPORT_HOSTS;
   let counted = 0;
-  for (const host of hosts) {
+  for (const { host, upload } of sightings) {
     if (!tally.has(host) && tally.size >= max) {
       if (opts.stats) opts.stats.droppedHosts++;
       continue;
     }
     counted++;
-    const t = tally.get(host) ?? { hits: 0, firstSeen: null, lastSeen: null };
+    const t = tally.get(host) ?? { hits: 0, uploads: 0, firstSeen: null, lastSeen: null };
     t.hits++;
+    if (upload) t.uploads++;
     t.firstSeen = earlier(t.firstSeen, at);
     t.lastSeen = later(t.lastSeen, at);
     tally.set(host, t);
@@ -276,14 +318,21 @@ export function mergeHostObservation(row: AirlockLearnedHost | null, o: AirlockH
   const seen = clampSighting(o.ts, receivedAt);
   const first = o.source === 'import' && o.firstSeen ? clampSighting(o.firstSeen, receivedAt) : seen;
   const n = Number.isInteger(o.hits) && (o.hits as number) > 0 ? (o.hits as number) : 1;
+  // Never more uploads than hits; the proxy cannot see direction.
+  const up = o.source === 'proxy' || !Number.isInteger(o.uploads) || (o.uploads as number) < 0 ? 0 : Math.min(o.uploads as number, n);
   const base: AirlockLearnedHost = row ?? {
-    host: o.host, hits: { tool: 0, proxy: 0, import: 0 }, firstSeen: first, lastSeen: seen, receivedAt, clients: [], cards: [],
+    host: o.host, hits: { tool: 0, proxy: 0, import: 0 }, uploads: { tool: 0, proxy: 0, import: 0 },
+    firstSeen: first, lastSeen: seen, receivedAt, clients: [], cards: [],
   };
   const hits = { ...base.hits };
   hits[o.source] = o.source === 'import' ? n : hits[o.source] + n;
+  // A row stored before uploads were counted reads as none.
+  const uploads = { ...(base.uploads ?? { tool: 0, proxy: 0, import: 0 }) };
+  uploads[o.source] = o.source === 'import' ? up : uploads[o.source] + up;
   return {
     host: base.host,
     hits,
+    uploads,
     firstSeen: earlier(base.firstSeen, first) as string,
     lastSeen: later(base.lastSeen, seen) as string,
     receivedAt: later(base.receivedAt ?? null, receivedAt) as string,
@@ -297,8 +346,10 @@ export function learningExclusionOf(host: string, policy: AirlockPolicy): Airloc
   if (matchHost(host, BUILTIN_DENY_HOSTS)) return 'metadata-endpoint';
   if (matchHost(host, policy.iocHosts.hosts)) return 'ioc-host';
   if (matchHost(host, policy.hosts.deny)) return 'denied-host';
-  if (matchHost(host, policy.hosts.allow)) return 'already-allowed';
+  // Allowed in either direction: the person who allowed it chose which.
+  if (matchHost(host, networkAllow(policy.hosts))) return 'already-allowed';
   if (matchHost(host, PRIVATE_HOST_PATTERNS)) return 'private-address';
+  if (matchHost(host, RESERVED_HOST_PATTERNS)) return 'reserved-name';
   return null;
 }
 
@@ -311,7 +362,8 @@ export const evidenceOf = (hits: Record<AirlockLearnSource, number>): AirlockLea
  * exclusion covers, proxy evidence first, then by hits, then by name.
  */
 export function proposeAllowlist(
-  learned: readonly AirlockLearnedHost[], policy: AirlockPolicy, opts: { limit?: number } = {},
+  learned: readonly AirlockLearnedHost[], policy: AirlockPolicy,
+  opts: { limit?: number; registrableDomain?: RegistrableDomain } = {},
 ): AirlockProposal {
   const limit = Math.max(1, Math.floor(opts.limit ?? AIRLOCK_PROPOSAL_LIMIT));
   const hosts: AirlockProposedHost[] = [];
@@ -325,10 +377,12 @@ export function proposeAllowlist(
       continue;
     }
     const sources = { tool: row.hits.tool ?? 0, proxy: row.hits.proxy ?? 0, import: row.hits.import ?? 0 };
+    const up = row.uploads ?? { tool: 0, proxy: 0, import: 0 };
     hosts.push({
       host,
       hits: sources.tool + sources.proxy + sources.import,
       sources,
+      uploads: (up.tool ?? 0) + (up.import ?? 0),
       evidence: evidenceOf(sources),
       firstSeen: row.firstSeen,
       lastSeen: row.lastSeen,
@@ -339,10 +393,90 @@ export function proposeAllowlist(
   hosts.sort((a, b) =>
     (a.evidence === b.evidence ? 0 : a.evidence === 'proxy' ? -1 : 1) || b.hits - a.hits || a.host.localeCompare(b.host));
   excluded.sort((a, b) => a.host.localeCompare(b.host));
-  return { hosts: hosts.slice(0, limit), excluded: excluded.slice(0, limit) };
+  const offered = hosts.slice(0, limit);
+  return {
+    hosts: offered,
+    wildcards: opts.registrableDomain ? proposeWildcards(offered, opts.registrableDomain).slice(0, limit) : [],
+    excluded: excluded.slice(0, limit),
+  };
 }
 
-/** `policy` with `hosts` added to its allow list, everything else as it was. */
-export function withAcceptedHosts(policy: AirlockPolicy, hosts: readonly string[]): AirlockPolicy {
-  return normalizeAirlockPolicy({ ...policy, hosts: { ...policy.hosts, allow: [...policy.hosts.allow, ...hosts] } });
+/** A host's registrable domain by the public suffix list (private section included), or null. */
+export type RegistrableDomain = (host: string) => string | null;
+
+/**
+ * Domains no wildcard is ever proposed over, whatever the suffix list says:
+ * anyone can get a name under them (shared hosting, tunnels, wildcard DNS), or
+ * they front object storage. Allowing `*.` one of them would let a session
+ * send data to a stranger's site, bucket or tunnel.
+ */
+export const WILDCARD_REFUSED_DOMAINS: readonly string[] = Object.freeze([
+  // wildcard DNS and tunnels
+  'sslip.io', 'nip.io', 'xip.io', 'traefik.me', 'localtest.me', 'lvh.me', 'ngrok.io', 'ngrok.app', 'ngrok-free.app', 'ngrok-free.dev',
+  'trycloudflare.com', 'loca.lt', 'localtunnel.me', 'serveo.net', 'localhost.run', 'lhr.life', 'pinggy.link', 'tunnelmole.net',
+  'devtunnels.ms', 'interact.sh', 'oast.fun', 'oast.pro', 'oast.live', 'oastify.com', 'burpcollaborator.net', 'canarytokens.com',
+  'requestbin.net', 'pipedream.net', 'webhook.site', 'beeceptor.com', 'mockbin.org',
+  // cloud and hosting platforms with customer subdomains
+  'amazonaws.com', 'amazonaws.com.cn', 'cloudfront.net', 'awsapprunner.com', 'on.aws', 'lambda-url.on.aws',
+  'azurewebsites.net', 'azureedge.net', 'azurefd.net', 'azurestaticapps.net', 'windows.net', 'cloudapp.net', 'cloudapp.azure.com',
+  'googleapis.com', 'googleusercontent.com', 'appspot.com', 'cloudfunctions.net', 'run.app', 'web.app', 'firebaseapp.com', 'firebaseio.com',
+  'herokuapp.com', 'herokudns.com', 'github.io', 'githubusercontent.com', 'gitlab.io', 'bitbucket.io', 'netlify.app', 'netlify.com',
+  'vercel.app', 'vercel.sh', 'now.sh', 'pages.dev', 'workers.dev', 'r2.dev', 'fly.dev', 'onrender.com', 'railway.app', 'up.railway.app',
+  'glitch.me', 'repl.co', 'replit.dev', 'replit.app', 'surge.sh', 'deno.dev', 'deta.app', 'onrender.app', 'koyeb.app', 'ondigitalocean.app',
+  'digitaloceanspaces.com', 'cloudflarestorage.com', 'backblazeb2.com', 'wasabisys.com', 'linodeobjects.com', 'oraclecloud.com',
+  'aliyuncs.com', 'scw.cloud', 'blob.core.windows.net', 'myshopify.com', 'wixsite.com', 'squarespace.com', 'webflow.io', 'framer.app',
+  'blogspot.com', 'wordpress.com', 'tumblr.com', 'neocities.org', 'pastebin.com', 'hastebin.com', 'ghost.io', 'notion.site', 'substack.com',
+]);
+
+/** `a` and `b` are the same domain, or one is under the other. */
+const related = (a: string, b: string): boolean => a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+
+/**
+ * A wildcard over `domain` is refused when the domain is, holds or sits under
+ * a refused domain or any domain object storage lives under (Airlock's own
+ * storage list: S3, GCS, Azure incl. sovereign clouds, IBM, R2, ...).
+ */
+const wildcardRefused = (domain: string): boolean =>
+  [...WILDCARD_REFUSED_DOMAINS, ...CLOUD_STORAGE_DOMAINS].some((d) => related(domain, d)) || isCloudStorageHost(domain);
+
+/**
+ * Proposed hosts sharing a registrable domain, as one `*.domain` entry each:
+ * at least two hosts below the domain (the wildcard does not match the domain
+ * itself), never an address, never over a refused domain. In proposal order:
+ * the first host's rank is the wildcard's.
+ */
+export function proposeWildcards(hosts: readonly AirlockProposedHost[], registrableDomain: RegistrableDomain): AirlockProposedWildcard[] {
+  const groups = new Map<string, AirlockProposedHost[]>();
+  for (const h of hosts) {
+    if (parseIp(h.host)) continue;
+    let domain: string | null = null;
+    try { domain = registrableDomain(h.host); } catch { domain = null; }
+    if (!domain || domain === h.host || !h.host.endsWith(`.${domain}`) || wildcardRefused(domain) || isCloudStorageHost(h.host)) continue;
+    groups.set(domain, [...(groups.get(domain) ?? []), h]);
+  }
+  const out: AirlockProposedWildcard[] = [];
+  for (const [domain, members] of groups) {
+    if (members.length < 2) continue;
+    out.push({
+      pattern: `*.${domain}`,
+      hosts: members.map((m) => m.host),
+      hits: members.reduce((n, m) => n + m.hits, 0),
+      uploads: members.reduce((n, m) => n + m.uploads, 0),
+      evidence: members.some((m) => m.evidence === 'proxy') ? 'proxy' : 'agent-reported',
+    });
+  }
+  return out;
+}
+
+/**
+ * `policy` with the accepted entries allowed, each for its direction (a bare
+ * host is both ways), everything else as it was.
+ */
+export function withAcceptedHosts(policy: AirlockPolicy, accepted: readonly (string | AirlockAcceptedEntry)[]): AirlockPolicy {
+  const add = { allow: [] as string[], deny: [] as string[], allowDownload: [] as string[], allowUpload: [] as string[] };
+  for (const a of accepted) {
+    const e = typeof a === 'string' ? { pattern: a, direction: 'both' as const } : a;
+    (e.direction === 'download' ? add.allowDownload : e.direction === 'upload' ? add.allowUpload : add.allow).push(e.pattern);
+  }
+  return normalizeAirlockPolicy({ ...policy, hosts: mergeHostLists(policy.hosts, add) });
 }

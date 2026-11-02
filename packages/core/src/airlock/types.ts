@@ -15,6 +15,26 @@ export type AirlockAlert = (typeof AIRLOCK_ALERTS)[number];
 /** 'api.x.com' | '*.x.com' | '*' | '10.0.0.0/8' | 'fd00::/8' | '169.254.169.254' */
 export type HostPattern = string;
 
+/** Which way data goes for a host entry: an entry without one is both (hostLists.ts). */
+export type HostDirection = 'download' | 'upload';
+
+/**
+ * Allowed and blocked hosts, each entry for downloads, uploads or both. `allow`
+ * and `deny` are both ways; the one-way lists are encoded so an installation
+ * that predates them is never looser (hostLists.ts).
+ */
+export interface AirlockHostLists {
+  allow: HostPattern[];
+  /** Every block, one-way ones included. */
+  deny: HostPattern[];
+  allowDownload?: HostPattern[];
+  allowUpload?: HostPattern[];
+  /** Blocks in deny that hold for uploads only. */
+  denyUpload?: HostPattern[];
+  /** Blocks in deny that hold for downloads only. */
+  denyDownload?: HostPattern[];
+}
+
 /** Case-insensitive globs (`*`, `?`); an omitted field means `*`. */
 export interface ModelSelector {
   client?: AirlockClient | '*';
@@ -41,7 +61,7 @@ export interface AirlockPolicy {
   /** [] = every session */
   models: ModelSelector[];
   appliesWhenModelUnknown: boolean;
-  hosts: { allow: HostPattern[]; deny: HostPattern[] };
+  hosts: AirlockHostLists;
   iocHosts: { revision: string; hosts: HostPattern[]; updatedAt: string | null };
   rules: AirlockRules;
   /**
@@ -70,7 +90,7 @@ export type AirlockHomeAccess = (typeof AIRLOCK_HOME_ACCESS)[number];
 
 /** Adds to the org's host lists (a deny always outranks an allow); each rule set, and a machine image, wins over the org's. */
 export interface AirlockProjectOverride {
-  hosts?: { allow: HostPattern[]; deny: HostPattern[] };
+  hosts?: AirlockHostLists;
   rules?: Partial<AirlockRules>;
   /** The project's own machine image, over the org's. */
   machineImage?: string;

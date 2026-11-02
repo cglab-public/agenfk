@@ -23,6 +23,27 @@ export interface CommandAnalysis {
   /** every host the command connects to or names, in order of appearance */
   hosts: string[];
   uploads: UploadFact[];
+  /**
+   * Hosts a transfer tool whose direction the analyser reads (DIRECTED_TOOLS)
+   * reached WITHOUT sending them data, in some simple command. A host neither
+   * here nor an upload destination is reached in a way whose direction is not
+   * known (an interpreter, ssh, a URL in text).
+   */
+  downloads: string[];
+  /**
+   * Whether direction can be read for the WHOLE call: every command in it is a
+   * directed transfer without options that run programs, an inert command, or a
+   * shell/eval whose body is analysed; no command substitution, socket
+   * redirection, or body too deep to analyse. When false, no host in the call
+   * has a known direction: one opaque command could send any of them data, and
+   * per-word or per-host carve-outs were each bypassed (${IFS}, a python socket
+   * after a curl download, git -c core.sshCommand=...).
+   */
+  understood: boolean;
+  /** A git push to a remote named by its alias: the destination is not in the call. */
+  unresolvedPush: boolean;
+  /** An upload that follows redirects (curl -L, httpie --follow): it may be resent to a host not named here. */
+  redirectedUpload: boolean;
   /** can it reach the network at all */
   network: boolean;
   credentialPaths: string[];
@@ -322,6 +343,10 @@ interface NetResult {
   destinations: string[] | null;
   /** indices in args of words the command WRITES to (output files) */
   outputs: number[];
+  /** hosts a transfer only fetched from, when the tool has several transfers (curl --next); else contacted minus destinations */
+  fetched?: string[];
+  /** an upload that follows redirects: a 307/308 resends it to a host the call does not name */
+  followsUpload?: boolean;
 }
 
 const CURL_VALUES = set(`-T --upload-file -d --data --data-binary --data-raw --data-ascii --data-urlencode
@@ -331,7 +356,7 @@ const CURL_VALUES = set(`-T --upload-file -d --data --data-binary --data-raw --d
   --connect-to --interface --dns-servers -C --continue-at --retry --retry-delay --retry-max-time
   --limit-rate -Y --speed-limit -y --speed-time --max-filesize --url -t --telnet-option -Q --quote
   --trace --trace-ascii --stderr -D --dump-header --variable --preproxy --socks4 --socks4a --socks5
-  --socks5-hostname --proxy-header --output-dir --etag-save --etag-compare --libcurl --noproxy`);
+  --socks5-hostname --proxy-header --output-dir --etag-save --etag-compare --libcurl --noproxy --max-redirs --proto`);
 const CURL_UPLOADS = set(`-T --upload-file -d --data --data-binary --data-raw --data-ascii --data-urlencode
   -F --form --form-string --json`);
 const CURL_OUTPUTS = set(`-o --output -D --dump-header -c --cookie-jar --stderr --trace --trace-ascii
@@ -340,7 +365,7 @@ const CURL_PROXIES = set('-x --proxy --preproxy --socks4 --socks4a --socks5 --so
 const WGET_VALUES = set(`-O --output-document -o --output-file -a --append-output -P --directory-prefix
   -U --user-agent --header -e --execute -t --tries -T --timeout -w --wait --user --password -i --input-file
   -B --base -l --level -A -R -D -I -X --post-data --post-file --body-data --body-file --method --referer
-  --load-cookies --save-cookies -Q --quota --limit-rate`);
+  --load-cookies --save-cookies -Q --quota --limit-rate --waitretry`);
 const WGET_UPLOADS = set('--post-data --post-file --body-data --body-file');
 const WGET_OUTPUTS = set(`-O --output-document -o --output-file -a --append-output -P --directory-prefix
   --save-cookies`);
@@ -413,8 +438,12 @@ function transfer(args: string[], isCurl: boolean): NetResult {
   const p = parseArgs(args, isCurl ? CURL_VALUES : WGET_VALUES);
   const targets = [...p.positionals, ...p.opts.filter((o) => o.name === '--url').map((o) => o.value ?? '')];
   const overrides = isCurl ? p.opts.flatMap(curlOverrideHosts) : [];
-  const upload = p.opts.some((o) => (isCurl ? CURL_UPLOADS : WGET_UPLOADS).has(o.name));
+  // curl -H @file / -H @- reads headers from a file or stdin: its contents are sent.
+  const upload = p.opts.some((o) => (isCurl ? CURL_UPLOADS : WGET_UPLOADS).has(o.name)
+    || (isCurl && (o.name === '-H' || o.name === '--header') && (o.value ?? '').startsWith('@')));
+  const follows = isCurl && p.opts.some((o) => o.name === '-L' || o.name === '--location');
   return {
+    followsUpload: upload && follows,
     contacted: [...compact(targets.map((t) => hostFromTarget(t))), ...overrides.filter((h) => h !== UNKNOWN_HOST)],
     destinations: upload
       ? [...(targets.length ? targets.map((t) => hostFromTarget(t) ?? UNKNOWN_HOST) : [UNKNOWN_HOST]), ...overrides]
@@ -425,14 +454,17 @@ function transfer(args: string[], isCurl: boolean): NetResult {
 
 /** curl runs each `--next` (`-:`) section as a transfer of its own. */
 function curlTransfers(args: string[]): NetResult {
-  const out: NetResult = { contacted: [], destinations: null, outputs: [] };
+  const out: NetResult = { contacted: [], destinations: null, outputs: [], fetched: [] };
   let start = 0;
   for (let i = 0; i <= args.length; i++) {
     if (i < args.length && args[i] !== '--next' && args[i] !== '-:') continue;
     const t = transfer(args.slice(start, i), true);
     for (const h of t.contacted) out.contacted.push(h);
+    // Each --next transfer has its own direction: an upload in one never hides a download in another.
+    for (const h of t.contacted) if (!(t.destinations ?? []).includes(h)) out.fetched!.push(h);
     if (t.destinations) out.destinations = [...(out.destinations ?? []), ...t.destinations];
     for (const at of t.outputs) out.outputs.push(start + at);
+    if (t.followsUpload) out.followsUpload = true;
     start = i + 1;
   }
   return out;
@@ -445,6 +477,131 @@ function hostTool(target: string | undefined, s: Simple): NetResult {
   const host = target ? hostFromTarget(target, true) : null;
   return { contacted: compact([host]), destinations: fedInput(s) ? [host ?? UNKNOWN_HOST] : null, outputs: [] };
 }
+
+/**
+ * Commands that neither reach the network nor run anything: in a call of only
+ * these and directed transfers, direction can be read. Not sed (e), awk
+ * (system), find (-exec), xargs, env, or any interpreter or shell.
+ */
+const INERT = set(`cd pwd true false : test [ echo printf cat head tail grep egrep fgrep wc uniq cut tr jq
+  tee mkdir touch ls basename dirname realpath readlink stat date sleep wait base64 md5sum sha1sum sha256sum shasum
+  column fold tac nl`);
+
+/**
+ * Options of directed tools that run a program or read options from a file:
+ * direction is then not read. `short`: letters, found in any cluster (`-sK`,
+ * `-Kfile`); `long`: names, alone or with `=value`.
+ */
+const RUNS_PROGRAM: Record<string, { short: string; long: string[] }> = {
+  curl: { short: 'K', long: ['--config'] },
+  wget: { short: 'ei', long: ['--execute', '--input-file', '--config'] },
+  aria2c: { short: 'i', long: ['--input-file', '--conf-path'] },
+  scp: { short: 'SFJo', long: [] },
+  sftp: { short: 'SFJoD', long: [] },
+  rsync: { short: 'eM', long: ['--rsh', '--rsync-path', '--remote-option'] },
+  git: { short: 'c', long: ['--config-env', '--exec-path', '--upload-pack', '--receive-pack', '--exec', '--template', '--config'] },
+};
+
+const runsProgram = (name: string, args: string[]): boolean => {
+  const r = RUNS_PROGRAM[name];
+  if (!r) return false;
+  return args.some((a) => {
+    if (a.startsWith('--')) return r.long.some((l) => a === l || a.startsWith(`${l}=`)) || (name === 'aria2c' && a.startsWith('--on-'));
+    return /^-[^-]/.test(a) && [...a.slice(1)].some((c) => r.short.includes(c));
+  });
+};
+
+/** HTTPie/xh options that take the next word as their value. */
+const HTTPIE_VALUES = set('-a --auth -A --auth-type -o --output -p --print --timeout --max-redirects --verify --cert --cert-key --style -s --session --pretty');
+
+/**
+ * Every option, per tool, whose effect on direction is known: plain download
+ * options, and the uploads transfer() models. Any other option (curl
+ * --variable/--expand-data, --proto-default, -K, -Q; wget -e; httpie --proxy)
+ * makes the call not understood: an unknown option must never default to a download.
+ */
+const KNOWN_OPTIONS: Record<string, { values: ReadonlySet<string>; known: ReadonlySet<string> }> = {
+  curl: {
+    values: CURL_VALUES,
+    known: set(`-T --upload-file -d --data --data-binary --data-raw --data-ascii --data-urlencode -F --form --form-string --json
+      -o --output -H --header -u --user -A --user-agent -e --referer -b --cookie -c --cookie-jar -X --request -w --write-out
+      --cacert --capath --cert -E --key --key-type --cert-type -m --max-time --connect-timeout -r --range -z --time-cond
+      -x --proxy -U --proxy-user --resolve --connect-to -C --continue-at --retry --retry-delay --retry-max-time --limit-rate
+      -Y --speed-limit -y --speed-time --max-filesize --url -D --dump-header --stderr --trace --trace-ascii --output-dir
+      --preproxy --socks4 --socks4a --socks5 --socks5-hostname --noproxy --etag-save --proto
+      -s --silent -S --show-error -L --location -f --fail --fail-with-body --fail-early -k --insecure -v --verbose -i --include
+      -I --head -G --get -O --remote-name --remote-name-all -J --remote-header-name --compressed -# --progress-bar -N --no-buffer
+      --http1.0 --http1.1 --http2 --http2-prior-knowledge -4 -6 --ipv4 --ipv6 --create-dirs -R --remote-time --no-progress-meter
+      -g --globoff --path-as-is --retry-all-errors --retry-connrefused --max-redirs --tlsv1.2 --tlsv1.3 --ssl-reqd --next -:`),
+  },
+  wget: {
+    values: WGET_VALUES,
+    known: set(`-O --output-document -o --output-file -a --append-output -P --directory-prefix -U --user-agent --header
+      -t --tries -T --timeout -w --wait --user --password -B --base -l --level -A -R -D -I -X --post-data --post-file
+      --body-data --body-file --method --referer --load-cookies --save-cookies -Q --quota --limit-rate
+      -q --quiet -n -v --verbose --no-verbose -c --continue -N --timestamping -r --recursive --no-parent -x -k
+      --convert-links -p --page-requisites -S --server-response --spider --no-check-certificate -4 -6 --inet4-only
+      --inet6-only -m --mirror -H --span-hosts -E --adjust-extension --content-disposition --trust-server-names
+      --show-progress --progress --no-clobber --waitretry --no-directories -nv -nc -nd -nH -np`),
+  },
+  http: {
+    values: HTTPIE_VALUES,
+    known: set(`-f --form -j --json --raw -a --auth -A --auth-type -o --output -p --print -h --headers -b --body -d --download
+      -F --follow --timeout --max-redirects --check-status -I --ignore-stdin -v --verbose -q --quiet --pretty --style -s
+      --session --offline --verify --cert --cert-key --multipart --chunked`),
+  },
+};
+KNOWN_OPTIONS.https = KNOWN_OPTIONS.http;
+KNOWN_OPTIONS.xh = KNOWN_OPTIONS.http;
+KNOWN_OPTIONS.xhs = KNOWN_OPTIONS.http;
+
+/** Whether a directed tool's options are all known (aria2c: none at all). */
+function optionsKnown(name: string, args: string[]): boolean {
+  // aria2c: plain http(s)/ftp(s) URLs only - a magnet, a .torrent or a metalink dials peers it does not name.
+  if (name === 'aria2c') return args.every((a) => /^(?:https?|ftps?):\/\//i.test(a) && !/\.(?:torrent|metalink|meta4)(?:[?#]|$)/i.test(a));
+  const k = KNOWN_OPTIONS[name];
+  if (!k) return true;
+  // wget's -nv, -nc, -nd, -nH, -np are two-letter options, not -n plus another.
+  const words = name === 'wget' ? args.map((a) => (/^-n[vcdHp]$/.test(a) ? '--no-op' : a)) : args;
+  return parseArgs(words, k.values).opts.every((o) => o.name === '--no-op' || (k.known.has(o.name)
+    // An HTTPie session is understood by its bare name; a path loads another file's headers and auth.
+    && !(o.name === '--session' && /[/~\\]/.test(o.value ?? ''))));
+}
+
+const READ_SCHEMES = set('http https ftp ftps');
+/** Config files the directed tools read on their own. */
+const TOOL_CONFIG = /curlrc\b|wgetrc\b|[._]netrc\b|\/httpie\/|\/xh\/|\b(?:CURL_HOME|WGETRC|XDG_CONFIG_HOME|XH_CONFIG_DIR|HTTPIE_CONFIG_DIR)\b/;
+/** Tools that model their own transports: git's ssh and git protocols, rsync's daemon, sftp/scp over ssh. */
+const TOOL_SCHEMES: Record<string, Set<string>> = {
+  git: set('http https ssh git'),
+  rsync: set('rsync ssh'),
+  sftp: set('sftp ssh'),
+  scp: set('scp ssh'),
+};
+
+/** Whether direction can be read for this command (see CommandAnalysis.understood). */
+function understoodCommand(name: string, args: string[], s: Simple): boolean {
+  if (INERT.has(name)) return true;
+  // A shell with -c and eval are wrappers: their body is analysed as a call of its own.
+  if (name === 'eval' || (SHELLS.has(name) && args.some((a) => /^-[a-z]*c[a-z]*$/i.test(a)))) return true;
+  if (!DIRECTED_TOOLS.has(name) || netTool(name, args, s) === null && name !== 'git') return false;
+  if (runsProgram(name, args) || !optionsKnown(name, args)) return false;
+  // Only http(s) and ftp(s) transfers have a direction read here: telnet sends stdin, smtp, mqtt, ws and the
+  // like send data in ways not modelled.
+  const schemes = TOOL_SCHEMES[name] ?? READ_SCHEMES;
+  if (args.some((a) => { const m = /^([a-z][a-z0-9+.-]*):\/\//i.exec(a); return !!m && !schemes.has(m[1].toLowerCase()); })) return false;
+  // git clone -u <path> is --upload-pack: a program on the far side's behalf.
+  if (name === 'git' && gitSubcommand(args).sub === 'clone' && args.includes('-u')) return false;
+  return true;
+}
+
+/**
+ * Transfer tools whose direction netTool reads: what they send is an upload
+ * fact, and anything else they contact they only fetch from (git: the fetching
+ * subcommands and push, gitTransfer). ssh, nc, socat,
+ * telnet and ftp clients carry a two-way session, so their direction is unknown.
+ */
+const DIRECTED_TOOLS = set('curl wget aria2c http https xh xhs scp rsync sftp git');
 
 function netTool(name: string, args: string[], s: Simple): NetResult | null {
   switch (name) {
@@ -498,16 +655,70 @@ function netTool(name: string, args: string[], s: Simple): NetResult | null {
     case 'https':
     case 'xh':
     case 'xhs': {
-      const positionals = args.filter((a) => !a.startsWith('-'));
-      const items = /^[A-Z]+$/.test(positionals[0] ?? '') ? positionals.slice(1) : positionals;
+      // Option values are not operands (`-o out.json`); a method is letters only, any case.
+      const parsed = parseArgs(args, HTTPIE_VALUES);
+      const positionals = parsed.positionals;
+      // HTTPie's own guess: the first operand is a method only when it is letters and the next one is not a
+      // request item (`http artifacts x=@f` POSTs to the host `artifacts`).
+      const isItem = (a: string | undefined) => !!a && !/^[a-z][a-z0-9+.-]*:\/\//i.test(a) && !/^[\w.-]+:\d+(?:\/|$)/.test(a)
+        && (/^@./.test(a) || /^[^=:@\s]+(?:==|=|:=|@|:)/.test(a));
+      const items = /^[A-Za-z]+$/.test(positionals[0] ?? '') && positionals.length > 1 && !isItem(positionals[1]) ? positionals.slice(1) : positionals;
       const [target, ...rest] = items;
       const host = target ? hostFromTarget(target, true) : null;
-      const upload = fedInput(s) || rest.some((a) => /^[^=:@\s]+(?:=(?!=)|:=|@)/.test(a));
-      return { contacted: compact([host]), destinations: upload ? [host ?? UNKNOWN_HOST] : null, outputs: [] };
+      // name=value, name:=json, name@file, a whole body from @file, or --raw: data sent.
+      const upload = fedInput(s) || rest.some((a) => /^[^=:@\s]+(?:=(?!=)|:=|@)/.test(a) || /^@./.test(a))
+        || args.some((a) => a === '--raw' || a.startsWith('--raw='));
+      const follows = parsed.opts.some((o) => o.name === '-F' || o.name === '--follow');
+      return { contacted: compact([host]), destinations: upload ? [host ?? UNKNOWN_HOST] : null, outputs: [], followsUpload: upload && follows };
     }
+    case 'git':
+      return gitTransfer(args);
     default:
       return null;
   }
+}
+
+/** git's global options that take a value (`git -C dir`, `git -c key=value`). */
+const GIT_GLOBAL_VALUES = set('-C -c --git-dir --work-tree --namespace --exec-path --config-env');
+const GIT_FETCHING = set('clone fetch pull ls-remote');
+/** Options of git's transfer subcommands that take the next word as their value. */
+const GIT_SUB_VALUES = set(`-o --push-option --receive-pack --exec --upload-pack --repo --depth --deepen --shallow-since
+  --shallow-exclude -b --branch --origin --reference --reference-if-able --separate-git-dir -c --config --template -j --jobs
+  --filter --server-option --negotiation-tip --refmap --recurse-submodules-default --bundle-uri`);
+/** git's subcommand and the words after it. */
+function gitSubcommand(args: string[]): { sub: string | undefined; rest: string[] } {
+  let i = 0;
+  while (i < args.length && args[i].startsWith('-')) i += GIT_GLOBAL_VALUES.has(args[i]) ? 2 : 1;
+  return { sub: args[i], rest: args.slice(i + 1) };
+}
+
+/**
+ * git reaching the repository it names (a URL or `user@host:path`), the first
+ * operand after the subcommand's options: clone, fetch, pull and ls-remote
+ * fetch from it, push sends it data. Refspecs and directories after it are not
+ * hosts, and a remote named by its alias (`origin`) names no host here.
+ */
+function gitTransfer(args: string[]): NetResult | null {
+  const { sub, rest } = gitSubcommand(args);
+  if (!sub || (!GIT_FETCHING.has(sub) && sub !== 'push')) return null;
+  let repository: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '--') { repository = rest[i + 1]; break; }
+    // -u is clone's --upload-pack <path>; for fetch and push it takes no value (--set-upstream, --update-head-ok).
+    if (a.startsWith('-')) { if (GIT_SUB_VALUES.has(a) || (a === '-u' && sub === 'clone')) i++; continue; }
+    repository = a;
+    break;
+  }
+  const host = repository ? remoteHost(repository) : null;
+  if (!host) return null;
+  return { contacted: [host], destinations: sub === 'push' ? [host] : null, outputs: [] };
+}
+
+/** `git push` whose destination the call does not name: a remote alias, or none (the branch's upstream). */
+function gitPushUnresolved(args: string[]): boolean {
+  const { sub } = gitSubcommand(args);
+  return sub === 'push' && gitTransfer(args) === null;
 }
 
 // ---------------------------------------------------------------------------
@@ -884,6 +1095,10 @@ function empty(): CommandAnalysis {
     commands: [],
     hosts: [],
     uploads: [],
+    downloads: [],
+    understood: true,
+    unresolvedPush: false,
+    redirectedUpload: false,
     network: false,
     credentialPaths: [],
     namespaceEscape: null,
@@ -900,6 +1115,10 @@ function addAll(xs: string[], ys: readonly string[]): void {
 function merge(into: CommandAnalysis, from: CommandAnalysis): void {
   addAll(into.commands, from.commands);
   addAll(into.hosts, from.hosts);
+  addAll(into.downloads, from.downloads);
+  into.understood &&= from.understood;
+  into.unresolvedPush ||= from.unresolvedPush;
+  into.redirectedUpload ||= from.redirectedUpload;
   addAll(into.credentialPaths, from.credentialPaths);
   for (const u of from.uploads) into.uploads.push(u);
   into.network ||= from.network;
@@ -932,6 +1151,7 @@ function analyse(src: string, depth: number): CommandAnalysis {
     if (cmd && 'split' in cmd) nested.push(cmd.split);
     else if (cmd) {
       const { name, args, offset } = cmd;
+      if (name === 'git' && gitPushUnresolved(args)) result.unresolvedPush = true;
       addAll(result.commands, [name]);
       if (NAMESPACE_ESCAPE.has(name)) result.namespaceEscape ??= name;
       result.cloudMutation ??= cloudMutation(name, args);
@@ -946,6 +1166,8 @@ function analyse(src: string, depth: number): CommandAnalysis {
         addAll(result.hosts, net.contacted);
         result.network = true;
         if (net.destinations) result.uploads.push({ tool: name, hosts: net.destinations });
+        if (net.followsUpload) result.redirectedUpload = true;
+        if (DIRECTED_TOOLS.has(name)) addAll(result.downloads, net.fetched ?? net.contacted.filter((h) => !(net.destinations ?? []).includes(h)));
         for (const at of net.outputs) notRead.add(offset + at);
       }
       if (name === 'tee') args.forEach((_, k) => notRead.add(offset + k));
@@ -968,8 +1190,38 @@ function analyse(src: string, depth: number): CommandAnalysis {
       }
     }
     s.words.forEach((w, k) => notRead.has(k) || addAll(result.credentialPaths, credentialPathsIn(w)));
+    // A variable set for the call (GIT_SSH_COMMAND=..., CURL_HOME=...) can make a tool run anything.
+    // As the shell reads them (cur''lrc, \.curlrc): config files named in words or redirect targets.
+    if ([...s.words, ...s.redirs.map((r) => r.target)].some((w) => TOOL_CONFIG.test(w))) result.understood = false;
+    // A write whose target the shell expands (a glob, a brace) may land on such a file.
+    // tee writes every file it names, uniq its second operand: the same holds for them.
+    const writes = cmd && !('split' in cmd)
+      ? cmd.name === 'tee' ? cmd.args.filter((a) => !a.startsWith('-'))
+        : cmd.name === 'uniq' ? cmd.args.filter((a) => !a.startsWith('-')).slice(1) : []
+      : [];
+    if ([...s.redirs.filter((r) => WRITE_REDIRECT.test(r.op)).map((r) => r.target), ...writes].some((t) => /[*?[{]/.test(t) || TOOL_CONFIG.test(t))) {
+      result.understood = false;
+    }
+    const lead = cmd && !('split' in cmd) ? s.words.slice(0, Math.max(0, cmd.offset - 1)) : s.words;
+    if (lead.some((w) => ASSIGNMENT.test(w))) result.understood = false;
+    if (cmd && !('split' in cmd) && !understoodCommand(cmd.name, cmd.args, s)) result.understood = false;
   }
+  // Command substitution can carry what it reads into any word (a URL's query): direction is not read.
+  if (subs.length) result.understood = false;
+  // A tool's own config files (~/.curlrc upload-file=, ~/.wgetrc post_file=, .netrc, HTTPie/xh config) named
+  // in the call can turn a later download into an upload: read as written and as the shell reads it.
+  if (TOOL_CONFIG.test(src)) result.understood = false;
+  // ANSI-C and locale quoting ($'\x72', $"...") spell a word differently from how it reads here.
+  if (/\$['"]/.test(src)) result.understood = false;
   if (depth < MAX_DEPTH) for (const text of [...nested, ...subs]) merge(result, analyse(text, depth + 1));
+  else if (nested.length || subs.length) {
+    // Too deep to analyse (eval eval ...): what it names is still hosts, of unknown direction.
+    result.understood = false;
+    for (const text of [...nested, ...subs]) {
+      addAll(result.hosts, compact(text.split(/\s+/).map(hostInWord)));
+      for (const m of text.matchAll(URL_IN_TEXT)) { const h = hostFromUrl(m[0]); if (h) addAll(result.hosts, [h]); }
+    }
+  }
 
   for (const m of src.matchAll(URL_IN_TEXT)) {
     const host = hostFromUrl(m[0]);
@@ -978,7 +1230,9 @@ function analyse(src: string, depth: number): CommandAnalysis {
   }
   for (const m of src.matchAll(DEV_NET)) {
     const host = hostFromTarget(m[1], true);
+    // A socket redirection: its direction is not read here.
     if (host) addAll(result.hosts, [host]);
+    result.understood = false;
     result.network = true;
   }
   return result;

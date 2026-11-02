@@ -119,11 +119,11 @@ export async function collectPiSessionHosts(dir: string, opts: CollectOptions = 
 
 export interface ImportBatch {
   client: 'pi';
-  hosts: Array<{ host: string; hits: number; firstSeen: string | null; lastSeen: string | null }>;
+  hosts: Array<{ host: string; hits: number; uploads: number; firstSeen: string | null; lastSeen: string | null }>;
 }
 
 /**
- * The tally as the requests the server takes: four fields per host, one batch
+ * The tally as the requests the server takes: five fields per host, one batch
  * at a time, each at most MAX_IMPORT_BATCH hosts AND `maxBytes` serialised
  * (long host names fill the body limit long before the count).
  */
@@ -132,7 +132,7 @@ export function* importBatches(tally: Map<string, AirlockImportTally>, maxBytes:
   let hosts: ImportBatch['hosts'] = [];
   let bytes = envelope;
   for (const [host, t] of tally) {
-    const entry = { host, hits: t.hits, firstSeen: t.firstSeen, lastSeen: t.lastSeen };
+    const entry = { host, hits: t.hits, uploads: t.uploads ?? 0, firstSeen: t.firstSeen, lastSeen: t.lastSeen };
     const size = Buffer.byteLength(JSON.stringify(entry)) + 1;
     if (hosts.length && (hosts.length === MAX_IMPORT_BATCH || bytes + size > maxBytes)) {
       yield { client: 'pi', hosts };
@@ -148,7 +148,7 @@ export function* importBatches(tally: Map<string, AirlockImportTally>, maxBytes:
 const tooLarge = (e: unknown): boolean => (e as { response?: { status?: number } } | null)?.response?.status === 413;
 
 export interface LearnImportDeps {
-  post: (url: string, body: ImportBatch) => Promise<{ data: { recorded?: number; invalid?: number; excluded?: number } }>;
+  post: (url: string, body: ImportBatch) => Promise<{ data: { recorded?: number; invalid?: number; excluded?: number; hubJoined?: boolean } }>;
   apiUrl: string;
   log: (message: string) => void;
   env?: NodeJS.ProcessEnv;
@@ -163,6 +163,24 @@ export interface LearnImportResult {
   longLines: number;
   droppedHosts: number;
   unreadableLines: number;
+  /** The server is joined to a hub: the proposal is sent to the hub from the board, not accepted here. */
+  hubJoined: boolean;
+}
+
+/** What the command prints once the import is done: what was learned, and where a person takes it next. */
+export function learnImportSummary(result: LearnImportResult, boardUrl: string): string[] {
+  const n = result.recorded;
+  const notes = [
+    result.invalid && `${result.invalid} refused`,
+    result.excluded && `${result.excluded} never proposed: already listed, blocked, private, a metadata endpoint or a reserved name`,
+  ].filter(Boolean).join(', ');
+  const lines = [`Learned ${n} host${n === 1 ? '' : 's'}${notes ? ` (${notes})` : ''}.`];
+  if (!result.hubJoined) return [...lines, `Accept the hosts you want allowed on the board: ${boardUrl}`];
+  return [
+    ...lines,
+    `Your organization's hub owns the Airlock policy: send the hosts you want allowed to the hub from the board: ${boardUrl}`,
+    'An org admin accepts them on the hub (Admin -> Airlock, or agenfk hub admin airlock learning accept).',
+  ];
 }
 
 export async function runLearnImport(opts: { dir?: string } & CollectOptions, deps: LearnImportDeps): Promise<LearnImportResult> {
@@ -175,10 +193,11 @@ export async function runLearnImport(opts: { dir?: string } & CollectOptions, de
   let recorded = 0;
   let invalid = 0;
   let excluded = 0;
+  let hubJoined = false;
   // A batch the server still finds too large (413) is halved and sent again,
   // down to one host; any other failure ends the import.
   const send = async (batch: ImportBatch): Promise<void> => {
-    let data: { recorded?: number; invalid?: number; excluded?: number };
+    let data: { recorded?: number; invalid?: number; excluded?: number; hubJoined?: boolean };
     try {
       ({ data } = await deps.post(`${deps.apiUrl}/airlock/learning/import`, batch));
     } catch (e) {
@@ -191,7 +210,8 @@ export async function runLearnImport(opts: { dir?: string } & CollectOptions, de
     recorded += data?.recorded ?? 0;
     invalid += data?.invalid ?? 0;
     excluded += data?.excluded ?? 0;
+    hubJoined ||= data?.hubJoined === true;
   };
   for (const batch of importBatches(hosts)) await send(batch);
-  return { files, hosts: hosts.size, recorded, invalid, excluded, longLines, droppedHosts, unreadableLines };
+  return { files, hosts: hosts.size, recorded, invalid, excluded, longLines, droppedHosts, unreadableLines, hubJoined };
 }

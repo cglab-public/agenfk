@@ -8,7 +8,10 @@ import { issueApiKey } from '../auth/apiKey';
 import { loginAs } from './helpers/loginAs';
 import { drainApp } from './helpers/drainApp';
 import type { HubDb } from '../db/types';
-import { pruneLearningReports, LEARNING_RETENTION_MS } from '../services/airlockLearning';
+import { pruneLearningReports, LEARNING_RETENTION_MS, recordAirlockLearningProposal, listAirlockLearning } from '../services/airlockLearning';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 /**
  * Airlock learning proposals on the hub (GH-294, TEL-3).
@@ -49,6 +52,7 @@ const event = (orgId: string, installationId: string, payload: unknown, occurred
 const proposed = (host: string, over: Record<string, unknown> = {}) => ({
   host,
   hits: 3,
+  uploads: 0,
   sources: { tool: 3, proxy: 0, import: 0 },
   evidence: 'agent-reported',
   clients: ['pi'],
@@ -114,25 +118,25 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub airlock learning proposals (
   });
 
   it('a forwarded proposal is listed to the admin', async () => {
-    const r = await send(keyAlice, 'inst-alice', [proposed('api.example.com', { sources: { tool: 1, proxy: 2, import: 0 }, evidence: 'proxy' })]);
+    const r = await send(keyAlice, 'inst-alice', [proposed('api.vendor.io', { sources: { tool: 1, proxy: 2, import: 0 }, evidence: 'proxy' })]);
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     const res = await list();
     expect(res.status).toBe(200);
     expect(res.body.revision).toBe(1);
     expect(res.body.hosts).toEqual([expect.objectContaining({
-      host: 'api.example.com', installations: 1, hits: 3, proxyHits: 2, evidence: 'proxy', clients: ['pi'],
+      host: 'api.vendor.io', installations: 1, hits: 3, proxyHits: 2, evidence: 'proxy', clients: ['pi'],
       firstSeen: '2026-10-20T10:00:00.000Z', lastSeen: '2026-10-27T10:00:00.000Z',
     })]);
   });
 
   it('the same host from many installations is one row; a later report from one installation replaces its own', async () => {
-    await send(keyAlice, 'inst-alice', [proposed('api.example.com', { hits: 5 })], ago(30));
-    await send(keyBob, 'inst-bob', [proposed('api.example.com', { hits: 2, clients: ['opencode'] }), proposed('docs.example.org')]);
-    await send(keyAlice, 'inst-alice', [proposed('api.example.com', { hits: 7 })], ago(10));
+    await send(keyAlice, 'inst-alice', [proposed('api.vendor.io', { hits: 5 })], ago(30));
+    await send(keyBob, 'inst-bob', [proposed('api.vendor.io', { hits: 2, clients: ['opencode'] }), proposed('docs.vendor.dev')]);
+    await send(keyAlice, 'inst-alice', [proposed('api.vendor.io', { hits: 7 })], ago(10));
     // An older report arriving late does not roll it back.
-    await send(keyAlice, 'inst-alice', [proposed('api.example.com', { hits: 1 })], ago(50));
+    await send(keyAlice, 'inst-alice', [proposed('api.vendor.io', { hits: 1 })], ago(50));
     const res = await list();
-    expect(hostsOf(res.body)).toEqual(['api.example.com', 'docs.example.org']);
+    expect(hostsOf(res.body)).toEqual(['api.vendor.io', 'docs.vendor.dev']);
     const api = res.body.hosts[0];
     expect(api).toMatchObject({ installations: 2, hits: 9 });
     expect([...api.clients].sort()).toEqual(['opencode', 'pi']);
@@ -140,48 +144,48 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub airlock learning proposals (
 
   it('never offers what the org policy already allows, denies or lists as an IOC, nor a metadata or private host', async () => {
     await supertest(__server).put('/v1/admin/airlock/ioc').set('Cookie', cookieAdmin).send({ hosts: ['bad.example'] });
-    await send(keyAlice, 'inst-alice', ['github.com', 'evil.example', 'bad.example', '169.254.169.254', '10.0.0.4', 'ok.example.com'].map(h => proposed(h)));
+    await send(keyAlice, 'inst-alice', ['github.com', 'evil.example', 'bad.example', '169.254.169.254', '10.0.0.4', 'ok.vendor.io'].map(h => proposed(h)));
     const res = await list();
-    expect(hostsOf(res.body)).toEqual(['ok.example.com']);
+    expect(hostsOf(res.body)).toEqual(['ok.vendor.io']);
   });
 
   it('an entry that is not a bare host is not kept, and nor are fields beyond host names and counts', async () => {
     await send(keyAlice, 'inst-alice', [
-      proposed('https://x.example.com/path?q=1'),
-      proposed('x.example.com/path'),
-      proposed('*.example.com'),
-      { ...proposed('kept.example.com'), command: 'curl https://kept.example.com/secret' },
+      proposed('https://x.vendor.io/path?q=1'),
+      proposed('x.vendor.io/path'),
+      proposed('*.vendor.io'),
+      { ...proposed('kept.vendor.io'), command: 'curl https://kept.vendor.io/secret' },
     ]);
-    expect(hostsOf((await list()).body)).toEqual(['kept.example.com']);
+    expect(hostsOf((await list()).body)).toEqual(['kept.vendor.io']);
     const rows = await db.all<any>('SELECT * FROM airlock_learning_reports');
     expect(JSON.stringify(rows)).not.toMatch(/secret|curl/);
   });
 
   it('a viewer cannot read or accept, and another org sees nothing', async () => {
-    await send(keyAlice, 'inst-alice', [proposed('api.example.com')]);
+    await send(keyAlice, 'inst-alice', [proposed('api.vendor.io')]);
     expect((await list(cookieViewer)).status).toBe(403);
-    expect((await accept({ hosts: ['api.example.com'], expectedRevision: 1 }, cookieViewer)).status).toBe(403);
+    expect((await accept({ hosts: ['api.vendor.io'], expectedRevision: 1 }, cookieViewer)).status).toBe(403);
     expect(hostsOf((await list(cookieOrgB)).body)).toEqual([]);
-    await send(keyB, 'inst-other', [proposed('other.example.com')], undefined, 'org-b');
-    expect(hostsOf((await list()).body)).toEqual(['api.example.com']);
+    await send(keyB, 'inst-other', [proposed('other.vendor.io')], undefined, 'org-b');
+    expect(hostsOf((await list()).body)).toEqual(['api.vendor.io']);
   });
 
   it('an installation key cannot accept: it is an admin route', async () => {
-    await send(keyAlice, 'inst-alice', [proposed('api.example.com')]);
-    const r = await supertest(__server).post('/v1/admin/airlock/learning/accept').set(bearer(keyAlice)).send({ hosts: ['api.example.com'], expectedRevision: 1 });
+    await send(keyAlice, 'inst-alice', [proposed('api.vendor.io')]);
+    const r = await supertest(__server).post('/v1/admin/airlock/learning/accept').set(bearer(keyAlice)).send({ hosts: ['api.vendor.io'], expectedRevision: 1 });
     expect([401, 403]).toContain(r.status);
     expect((await supertest(__server).get('/v1/admin/airlock').set('Cookie', cookieAdmin)).body.revision).toBe(1);
   });
 
   it('the admin accepts a subset: a new revision allows exactly those hosts, and it is audited', async () => {
-    await send(keyAlice, 'inst-alice', [proposed('api.example.com'), proposed('docs.example.org')]);
-    const r = await accept({ hosts: ['api.example.com'], expectedRevision: 1 });
+    await send(keyAlice, 'inst-alice', [proposed('api.vendor.io'), proposed('docs.vendor.dev')]);
+    const r = await accept({ hosts: ['api.vendor.io'], expectedRevision: 1 });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(r.body.revision).toBe(2);
-    expect(r.body.policy.hosts.allow).toEqual(['github.com', 'api.example.com']);
+    expect(r.body.policy.hosts.allow).toEqual(['github.com', 'api.vendor.io']);
     expect(r.body.policy.hosts.deny).toEqual(['evil.example']);
     expect(r.body.policy.mode).toBe('enforce');
-    expect(hostsOf((await list()).body)).toEqual(['docs.example.org']);
+    expect(hostsOf((await list()).body)).toEqual(['docs.vendor.dev']);
 
     const deadline = Date.now() + 3000;
     let rows: any[] = [];
@@ -195,13 +199,13 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub airlock learning proposals (
     expect(row.actorEmail).toBe(ADMIN);
     expect(row.before.revision).toBe(1);
     expect(row.after.revision).toBe(2);
-    expect(row.after.policy.hosts.allow).toContain('api.example.com');
+    expect(row.after.policy.hosts.allow).toContain('api.vendor.io');
   });
 
   it('a stale revision is a conflict; a host nobody proposed, or one excluded, cannot be accepted', async () => {
-    await send(keyAlice, 'inst-alice', [proposed('api.example.com'), proposed('evil.example')]);
-    expect((await accept({ hosts: ['api.example.com'], expectedRevision: 0 })).status).toBe(409);
-    expect((await accept({ hosts: ['never.example.com'], expectedRevision: 1 })).status).toBe(400);
+    await send(keyAlice, 'inst-alice', [proposed('api.vendor.io'), proposed('evil.example')]);
+    expect((await accept({ hosts: ['api.vendor.io'], expectedRevision: 0 })).status).toBe(409);
+    expect((await accept({ hosts: ['never.vendor.io'], expectedRevision: 1 })).status).toBe(400);
     expect((await accept({ hosts: ['evil.example'], expectedRevision: 1 })).status).toBe(400);
     expect((await accept({ hosts: [], expectedRevision: 1 })).status).toBe(400);
     expect((await supertest(__server).get('/v1/admin/airlock').set('Cookie', cookieAdmin)).body.revision).toBe(1);
@@ -210,23 +214,25 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub airlock learning proposals (
   describe('ranking and eligibility (round 2, finding 2)', () => {
     it('one ranking: proxy evidence, then installations, then hits, then host', async () => {
       await send(keyAlice, 'inst-alice', [
-        proposed('c.example.com', { hits: 50 }),
-        proposed('b.example.com', { hits: 1, sources: { tool: 0, proxy: 1, import: 0 }, evidence: 'proxy' }),
-        proposed('a.example.com', { hits: 5 }),
-        proposed('d.example.com', { hits: 5 }),
+        proposed('c.vendor.io', { hits: 50 }),
+        proposed('b.vendor.io', { hits: 1, sources: { tool: 0, proxy: 1, import: 0 }, evidence: 'proxy' }),
+        proposed('a.vendor.io', { hits: 5 }),
+        proposed('d.vendor.io', { hits: 5 }),
       ]);
-      await send(keyBob, 'inst-bob', [proposed('a.example.com', { hits: 1 })]);
-      expect(hostsOf((await list()).body)).toEqual(['b.example.com', 'a.example.com', 'c.example.com', 'd.example.com']);
+      await send(keyBob, 'inst-bob', [proposed('a.vendor.io', { hits: 1 })]);
+      expect(hostsOf((await list()).body)).toEqual(['b.vendor.io', 'a.vendor.io', 'c.vendor.io', 'd.vendor.io']);
     });
 
     it('2000+ higher-ranked hosts a newer deny entry covers do not hide the eligible hosts ranked below them', async () => {
-      const blocked = Array.from({ length: 2100 }, (_, i) => proposed(`h${i}.blocked.example`, { hits: 100, sources: { tool: 0, proxy: 100, import: 0 }, evidence: 'proxy' }));
+      // Not a reserved name: those are never stored, and the higher-ranked rows must be there to page past.
+      const blocked = Array.from({ length: 2100 }, (_, i) => proposed(`h${i}.blocked.vendor.io`, { hits: 100, sources: { tool: 0, proxy: 100, import: 0 }, evidence: 'proxy' }));
       for (let i = 0; i < blocked.length; i += 500) await send(keyAlice, 'inst-alice', blocked.slice(i, i + 500));
-      await send(keyBob, 'inst-bob', [proposed('low1.example.com', { hits: 1 }), proposed('low2.example.com', { hits: 2 })]);
-      expect((await putPolicy({ ...POLICY, hosts: { allow: ['github.com'], deny: ['evil.example', '*.blocked.example'] } })).status).toBe(200);
+      await send(keyBob, 'inst-bob', [proposed('low1.vendor.io', { hits: 1 }), proposed('low2.vendor.io', { hits: 2 })]);
+      expect(Number((await db.get<any>("SELECT COUNT(*) AS n FROM airlock_learning_reports WHERE org_id = 'org-a'"))!.n)).toBe(2102);
+      expect((await putPolicy({ ...POLICY, hosts: { allow: ['github.com'], deny: ['evil.example', '*.blocked.vendor.io'] } })).status).toBe(200);
       const res = await list();
-      expect(hostsOf(res.body)).toEqual(['low2.example.com', 'low1.example.com']);
-      expect((await accept({ hosts: ['low1.example.com'], expectedRevision: 2 })).status).toBe(200);
+      expect(hostsOf(res.body)).toEqual(['low2.vendor.io', 'low1.vendor.io']);
+      expect((await accept({ hosts: ['low1.vendor.io'], expectedRevision: 2 })).status).toBe(200);
     }, 120_000);
   });
 
@@ -234,27 +240,99 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub airlock learning proposals (
     const count = async () => Number((await db.get<any>("SELECT COUNT(*) AS n FROM airlock_learning_reports WHERE org_id = 'org-a'"))!.n);
 
     it('a host the org policy already covers when it arrives is not stored', async () => {
-      await send(keyAlice, 'inst-alice', [proposed('github.com'), proposed('evil.example'), proposed('fresh.example.com')]);
+      await send(keyAlice, 'inst-alice', [proposed('github.com'), proposed('evil.example'), proposed('fresh.vendor.io')]);
       const rows = await db.all<any>("SELECT host FROM airlock_learning_reports WHERE org_id = 'org-a'");
-      expect(rows.map(r => r.host)).toEqual(['fresh.example.com']);
+      expect(rows.map(r => r.host)).toEqual(['fresh.vendor.io']);
     });
 
     it('a report past the retention is dropped on the next insert', async () => {
       const old = new Date(Date.now() - LEARNING_RETENTION_MS - 60_000).toISOString();
-      await send(keyAlice, 'inst-alice', [proposed('old.example.com')], old);
-      await send(keyBob, 'inst-bob', [proposed('new.example.com')], new Date().toISOString());
-      expect(hostsOf((await list()).body)).toEqual(['new.example.com']);
+      await send(keyAlice, 'inst-alice', [proposed('old.vendor.io')], old);
+      await send(keyBob, 'inst-bob', [proposed('new.vendor.io')], new Date().toISOString());
+      expect(hostsOf((await list()).body)).toEqual(['new.vendor.io']);
     });
 
     it('an org keeps at most the cap of report rows, the oldest reports going first', async () => {
       const now = Date.now();
       for (let i = 0; i < 5; i++) {
-        await send(keyAlice, 'inst-alice', [proposed(`h${i}.example.com`)], new Date(now - (5 - i) * 60_000).toISOString());
+        await send(keyAlice, 'inst-alice', [proposed(`h${i}.vendor.io`)], new Date(now - (5 - i) * 60_000).toISOString());
       }
       expect(await count()).toBe(5);
       await pruneLearningReports(db, 'org-a', now, 3);
       expect(await count()).toBe(3);
-      expect(hostsOf((await list()).body).sort()).toEqual(['h2.example.com', 'h3.example.com', 'h4.example.com']);
+      expect(hostsOf((await list()).body).sort()).toEqual(['h2.vendor.io', 'h3.vendor.io', 'h4.vendor.io']);
     });
+  });
+
+  describe('direction and wildcards (2026-11-02)', () => {
+    it('keeps how often each installation sent a host data, and lists the sum', async () => {
+      await send(keyAlice, 'inst-alice', [proposed('up.vendor.io', { hits: 4, uploads: 3 })]);
+      await send(keyBob, 'inst-bob', [proposed('up.vendor.io', { hits: 2, uploads: 1 }), proposed('docs.vendor.dev', { uploads: 9 })]);
+      const hosts = (await list()).body.hosts;
+      expect(hosts.find((h: any) => h.host === 'up.vendor.io')).toMatchObject({ hits: 6, uploads: 4 });
+      // An upload count past the hits it came with is read as the hits.
+      expect(hosts.find((h: any) => h.host === 'docs.vendor.dev')).toMatchObject({ hits: 3, uploads: 3 });
+    });
+
+    it('offers *.domain for hosts sharing a registrable domain, never over a shared host', async () => {
+      await send(keyAlice, 'inst-alice', [
+        proposed('api.us5.datadoghq.com'), proposed('mcp.us5.datadoghq.com', { uploads: 1 }),
+        proposed('18-116-41-81.sslip.io'), proposed('44-243-79-35.sslip.io'),
+      ]);
+      const body = (await list()).body;
+      expect(body.wildcards).toEqual([{
+        pattern: '*.datadoghq.com', hosts: ['api.us5.datadoghq.com', 'mcp.us5.datadoghq.com'], hits: 6, uploads: 1, evidence: 'agent-reported',
+      }]);
+    });
+
+    it('the admin accepts entries with a direction: a wildcard for downloads, a host for uploads', async () => {
+      await send(keyAlice, 'inst-alice', [proposed('api.us5.datadoghq.com'), proposed('mcp.us5.datadoghq.com'), proposed('up.vendor.io')]);
+      const r = await accept({ entries: [{ pattern: '*.datadoghq.com', direction: 'download' }, { pattern: 'up.vendor.io', direction: 'upload' }], expectedRevision: 1 });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.policy.hosts).toMatchObject({ allow: ['github.com'], allowDownload: ['*.datadoghq.com'], allowUpload: ['up.vendor.io'] });
+      expect((await list()).body.hosts).toEqual([]);
+    });
+
+    it('refuses an entry the list does not offer, or a direction that is not one', async () => {
+      await send(keyAlice, 'inst-alice', [proposed('api.vendor.io')]);
+      for (const entries of [[{ pattern: '*.vendor.io', direction: 'both' }], [{ pattern: 'api.vendor.io', direction: 'sideways' }]]) {
+        const r = await accept({ entries, expectedRevision: 1 });
+        expect(r.status, JSON.stringify(entries)).toBe(400);
+      }
+      expect((await list()).body.revision).toBe(1);
+    });
+  });
+});
+
+// The Postgres side of the upload_hits backfill is not tested here: pg-mem, the
+// only Postgres harness in this suite, cannot bootstrap over a table that already
+// exists (see display-name.test.ts). It shares the schema-scoped, IF NOT EXISTS
+// loop every other Postgres column backfill uses.
+describe('a hub learning table from before upload counts (SQLite)', () => {
+  const LEGACY = path.join(os.tmpdir(), `agenfk-hub-learning-legacy-${process.pid}.sqlite`);
+  const rm = () => { for (const f of [LEGACY, `${LEGACY}-wal`, `${LEGACY}-shm`]) fs.rmSync(f, { force: true }); };
+  afterEach(rm);
+
+  it('gains upload_hits, reads old reports as none, and keeps new counts', async () => {
+    rm();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+    const seed = new DatabaseSync(LEGACY);
+    seed.exec(`CREATE TABLE airlock_learning_reports (org_id TEXT NOT NULL, host TEXT NOT NULL, installation_id TEXT NOT NULL,
+      hits INTEGER NOT NULL, proxy_hits INTEGER NOT NULL DEFAULT 0, clients_json TEXT NOT NULL DEFAULT '[]', first_seen TEXT,
+      last_seen TEXT, reported_at TEXT NOT NULL, PRIMARY KEY (org_id, host, installation_id))`);
+    seed.exec(`INSERT INTO airlock_learning_reports (org_id, host, installation_id, hits, reported_at)
+               VALUES ('org-a', 'old.vendor.io', 'inst-old', 4, '${new Date().toISOString()}')`);
+    seed.close();
+    const db = await openSqliteDb(LEGACY);
+    try {
+      await recordAirlockLearningProposal(db, 'org-a', { installationId: 'inst-new', occurredAt: new Date().toISOString() },
+        { hosts: [{ host: 'up.vendor.io', hits: 5, uploads: 2 }] });
+      const hosts = (await listAirlockLearning(db, 'org-a')).hosts;
+      expect(hosts.find(h => h.host === 'old.vendor.io')).toMatchObject({ hits: 4, uploads: 0 });
+      expect(hosts.find(h => h.host === 'up.vendor.io')).toMatchObject({ hits: 5, uploads: 2 });
+    } finally {
+      await db.close();
+    }
   });
 });

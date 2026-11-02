@@ -186,7 +186,7 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub Airlock dataset (%s)', (back
     });
 
     it('a row is never forwarded to a parent hub (it stays on the hub its admin switched on)', async () => {
-      await writeParentBinding(db, SECRET, { parentUrl: 'https://parent.example.com', token: 'fed_' + 'f'.repeat(64), childHubId: 'ch-1' });
+      await writeParentBinding(db, SECRET, { parentUrl: 'https://parent.vendor.io', token: 'fed_' + 'f'.repeat(64), childHubId: 'ch-1' });
       await setSwitch(true);
       await post(keyAlice, [event('org-a', 'inst-alice', 'airlock.dataset', row('r-1')), event('org-a', 'inst-alice', 'item.closed', {})]);
       expect(await datasetRows()).toHaveLength(1);
@@ -477,7 +477,7 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub Airlock dataset (%s)', (back
   describe('story review, second pass (Codex gpt-6.1-sol 01a18385)', () => {
     it('a resend after the row was kept but its hosts were not repairs the host index', async () => {
       await setSwitch(true);
-      const e = { e: event('org-a', 'inst-alice', 'airlock.dataset', row('r-h', { hosts: ['api.example.com'] })), userKey: 'u' };
+      const e = { e: event('org-a', 'inst-alice', 'airlock.dataset', row('r-h', { hosts: ['api.vendor.io'] })), userKey: 'u' };
       const failingHosts = new Proxy(db, {
         get(target: any, prop) {
           if (prop !== 'run') return typeof target[prop] === 'function' ? target[prop].bind(target) : target[prop];
@@ -495,9 +495,9 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub Airlock dataset (%s)', (back
 
     it('a row id kept from another event does not take this event\'s hosts', async () => {
       await setSwitch(true);
-      await recordAirlockDataset(db, 'org-a', [{ e: event('org-a', 'inst-alice', 'airlock.dataset', row('r-x', { hosts: ['a.example.com'] })), userKey: 'u' }]);
-      await recordAirlockDataset(db, 'org-a', [{ e: event('org-a', 'inst-alice', 'airlock.dataset', row('r-x', { hosts: ['b.example.com'] })), userKey: 'u' }]);
-      expect((await db.all<{ host: string }>("SELECT host FROM airlock_dataset_hosts WHERE org_id = 'org-a'")).map(h => h.host)).toEqual(['a.example.com']);
+      await recordAirlockDataset(db, 'org-a', [{ e: event('org-a', 'inst-alice', 'airlock.dataset', row('r-x', { hosts: ['a.vendor.io'] })), userKey: 'u' }]);
+      await recordAirlockDataset(db, 'org-a', [{ e: event('org-a', 'inst-alice', 'airlock.dataset', row('r-x', { hosts: ['b.vendor.io'] })), userKey: 'u' }]);
+      expect((await db.all<{ host: string }>("SELECT host FROM airlock_dataset_hosts WHERE org_id = 'org-a'")).map(h => h.host)).toEqual(['a.vendor.io']);
     });
 
     it('labels sent at once, racing, stop at the cap', async () => {
@@ -519,20 +519,44 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub Airlock dataset (%s)', (back
         rules: { uploadToUnlistedHost: 'deny', credentialReadWithNetwork: 'deny', namespaceEscape: 'deny', cloudMutation: 'needs-human-approval' },
       } });
       await post(keyAlice, [event('org-a', 'inst-alice', 'airlock.learning-proposal', { hosts: [{
-        host: 'api.example.com', hits: 3, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported', clients: ['pi'],
+        host: 'api.vendor.io', hits: 3, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported', clients: ['pi'],
         firstSeen: new Date(Date.now() - 3_600_000).toISOString(), lastSeen: new Date().toISOString(), cardCount: 1,
       }] }, new Date(Date.now() - 60_000).toISOString())]);
       await setSwitch(true);
-      await sendRow(row('reached', { hosts: ['api.example.com'] }));
-      await sendRow(row('elsewhere', { hosts: ['api.example.com.evil.example'] }));
+      await sendRow(row('reached', { hosts: ['api.vendor.io'] }));
+      await sendRow(row('elsewhere', { hosts: ['api.vendor.io.evil.example'] }));
       // names the host in its arguments, but never reached it
-      await sendRow(row('mentions', { hosts: ['other.example'], args: { note: 'see "api.example.com"', list: ['api.example.com'] } }));
-      const r = await supertest(__server).post('/v1/admin/airlock/learning/accept').set('Cookie', cookieAdmin).send({ hosts: ['api.example.com'], expectedRevision: 1 });
+      await sendRow(row('mentions', { hosts: ['other.example'], args: { note: 'see "api.vendor.io"', list: ['api.vendor.io'] } }));
+      const r = await supertest(__server).post('/v1/admin/airlock/learning/accept').set('Cookie', cookieAdmin).send({ hosts: ['api.vendor.io'], expectedRevision: 1 });
       expect(r.status, JSON.stringify(r.body)).toBe(200);
       const { lines } = await exportLines();
-      expect(lines.find((l: any) => l.id === 'reached').labels).toEqual([{ kind: 'learning-accept', host: 'api.example.com' }]);
+      expect(lines.find((l: any) => l.id === 'reached').labels).toEqual([{ kind: 'learning-accept', host: 'api.vendor.io', direction: 'both' }]);
       expect(lines.find((l: any) => l.id === 'elsewhere').labels).toEqual([]);
       expect(lines.find((l: any) => l.id === 'mentions').labels).toEqual([]);
+    });
+
+    it('accepting a wildcard labels the rows that reached the hosts it was proposed for, with the direction allowed', async () => {
+      await supertest(__server).put('/v1/admin/airlock').set('Cookie', cookieAdmin).send({ policy: {
+        schemaVersion: 1, mode: 'enforce', models: [], appliesWhenModelUnknown: true,
+        hosts: { allow: ['github.com'], deny: [] },
+        rules: { uploadToUnlistedHost: 'deny', credentialReadWithNetwork: 'deny', namespaceEscape: 'deny', cloudMutation: 'needs-human-approval' },
+      } });
+      const entry = (host: string) => ({
+        host, hits: 3, uploads: 0, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported', clients: ['pi'],
+        firstSeen: new Date(Date.now() - 3_600_000).toISOString(), lastSeen: new Date().toISOString(), cardCount: 1,
+      });
+      await post(keyAlice, [event('org-a', 'inst-alice', 'airlock.learning-proposal', { hosts: [entry('api.us5.datadoghq.com'), entry('mcp.us5.datadoghq.com')] }, new Date(Date.now() - 60_000).toISOString())]);
+      await setSwitch(true);
+      await sendRow(row('api', { hosts: ['api.us5.datadoghq.com'] }));
+      await sendRow(row('mcp', { hosts: ['mcp.us5.datadoghq.com'] }));
+      await sendRow(row('other', { hosts: ['docs.vendor.io'] }));
+      const r = await supertest(__server).post('/v1/admin/airlock/learning/accept').set('Cookie', cookieAdmin)
+        .send({ entries: [{ pattern: '*.datadoghq.com', direction: 'download' }], expectedRevision: 1 });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const { lines } = await exportLines();
+      expect(lines.find((l: any) => l.id === 'api').labels).toEqual([{ kind: 'learning-accept', host: 'api.us5.datadoghq.com', direction: 'download' }]);
+      expect(lines.find((l: any) => l.id === 'mcp').labels).toEqual([{ kind: 'learning-accept', host: 'mcp.us5.datadoghq.com', direction: 'download' }]);
+      expect(lines.find((l: any) => l.id === 'other').labels).toEqual([]);
     });
   });
 
@@ -542,23 +566,23 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub Airlock dataset (%s)', (back
       rules: { uploadToUnlistedHost: 'deny', credentialReadWithNetwork: 'deny', namespaceEscape: 'deny', cloudMutation: 'needs-human-approval' },
     } });
     await post(keyAlice, [event('org-a', 'inst-alice', 'airlock.learning-proposal', { hosts: [{
-      host: 'api.example.com', hits: 3, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported', clients: ['pi'],
+      host: 'api.vendor.io', hits: 3, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported', clients: ['pi'],
       firstSeen: new Date(Date.now() - 3_600_000).toISOString(), lastSeen: new Date().toISOString(), cardCount: 1,
     }] }, new Date(Date.now() - 60_000).toISOString())]);
     await setSwitch(true);
-    await sendRow(row('reached', { hosts: ['api.example.com'] }), new Date(Date.now() - 3_600_000).toISOString());
+    await sendRow(row('reached', { hosts: ['api.vendor.io'] }), new Date(Date.now() - 3_600_000).toISOString());
     for (let b = 0; b < 3; b++) {
-      await post(keyAlice, Array.from({ length: 400 }, (_, i) => event('org-a', 'inst-alice', 'airlock.dataset', row(`decoy-${b}-${i}`, { hosts: ['other.example'], args: { list: ['api.example.com'] } }))));
+      await post(keyAlice, Array.from({ length: 400 }, (_, i) => event('org-a', 'inst-alice', 'airlock.dataset', row(`decoy-${b}-${i}`, { hosts: ['other.example'], args: { list: ['api.vendor.io'] } }))));
     }
-    expect((await supertest(__server).post('/v1/admin/airlock/learning/accept').set('Cookie', cookieAdmin).send({ hosts: ['api.example.com'], expectedRevision: 1 })).status).toBe(200);
+    expect((await supertest(__server).post('/v1/admin/airlock/learning/accept').set('Cookie', cookieAdmin).send({ hosts: ['api.vendor.io'], expectedRevision: 1 })).status).toBe(200);
     const labelled = await db.all<{ row_id: string }>("SELECT row_id FROM airlock_dataset WHERE org_id = 'org-a' AND kind = 'label'");
     expect(labelled.map(l => l.row_id)).toEqual(['reached']);
   }, 60_000);
 
   it('a pruned row leaves no host entries behind', async () => {
     await setSwitch(true);
-    await sendRow(row('gone', { hosts: ['api.example.com'] }), new Date(Date.now() - 10 * 86_400_000).toISOString());
-    await sendRow(row('stays', { hosts: ['api.example.com'] }));
+    await sendRow(row('gone', { hosts: ['api.vendor.io'] }), new Date(Date.now() - 10 * 86_400_000).toISOString());
+    await sendRow(row('stays', { hosts: ['api.vendor.io'] }));
     await pruneAirlockDataset(db, 'org-a', { maxAgeDays: 5 });
     const hosts = await db.all<{ row_id: string }>("SELECT row_id FROM airlock_dataset_hosts WHERE org_id = 'org-a'");
     expect(hosts.map(h => h.row_id)).toEqual(['stays']);

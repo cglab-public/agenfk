@@ -85,7 +85,7 @@ describe('the hub admin skill', () => {
       expect(text, words.join(' ')).toContain(`agenfk hub admin ${words.join(' ')} ${usage}`);
     }
     // Codex review 01a197c7: several values stay several.
-    expect(text).toContain('agenfk hub admin airlock learning accept <hosts...>');
+    expect(text).toContain('agenfk hub admin airlock learning accept <patterns...>');
   });
 
   // Codex review 01a197c7: a required option is part of the usage, not one option among the rest.

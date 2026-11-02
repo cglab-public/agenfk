@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput, VerifyRunEntry } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 import { API_URL } from './apiUrl';
+import type { AirlockHostListsDto } from './airlockHostText';
 
 /** CGLAB-609: the server's flow-adherence verdict for a card or project. */
 export interface FlowAdherence {
@@ -118,7 +119,7 @@ export interface AirlockPolicyDto {
   mode: AirlockModeDto;
   models: AirlockModelSelectorDto[];
   appliesWhenModelUnknown: boolean;
-  hosts: { allow: string[]; deny: string[] };
+  hosts: AirlockHostListsDto;
   iocHosts: { revision: string; hosts: string[]; updatedAt: string | null };
   rules: { uploadToUnlistedHost: AirlockRuleActionDto; credentialReadWithNetwork: AirlockRuleActionDto; namespaceEscape: AirlockRuleActionDto; cloudMutation: AirlockRuleActionDto; publishThroughAllowedHost: AirlockRuleActionDto };
   /** Per-project overrides (PO-1), keyed by repository or project:<id>; absent when there are none. */
@@ -130,7 +131,7 @@ export interface AirlockPolicyDto {
 }
 /** Adds to the policy's host lists; each rule it sets wins over the policy's. */
 export interface AirlockProjectOverrideDto {
-  hosts?: { allow: string[]; deny: string[] };
+  hosts?: AirlockHostListsDto;
   rules?: Partial<AirlockPolicyDto['rules']>;
   /** The project's own machine image, over the policy's. */
   machineImage?: string;

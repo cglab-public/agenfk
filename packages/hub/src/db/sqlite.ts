@@ -766,6 +766,7 @@ const SCHEMA_SQLITE = `
     installation_id TEXT NOT NULL,
     hits INTEGER NOT NULL,
     proxy_hits INTEGER NOT NULL DEFAULT 0,
+    upload_hits INTEGER NOT NULL DEFAULT 0,
     clients_json TEXT NOT NULL DEFAULT '[]',
     first_seen TEXT,
     last_seen TEXT,
@@ -993,6 +994,13 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const userCols = raw.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (userCols.length > 0 && !new Set(userCols.map(c => c.name)).has('name')) {
     raw.exec("ALTER TABLE users ADD COLUMN name TEXT");
+  }
+
+  // airlock_learning_reports.upload_hits — how often an installation's sessions
+  // sent a host data (2026-11-02); a hub from before has the table without it.
+  const learningCols = raw.prepare("PRAGMA table_info(airlock_learning_reports)").all() as Array<{ name: string }>;
+  if (learningCols.length > 0 && !new Set(learningCols.map(c => c.name)).has('upload_hits')) {
+    raw.exec("ALTER TABLE airlock_learning_reports ADD COLUMN upload_hits INTEGER NOT NULL DEFAULT 0");
   }
 
   // Backfill: canonicalise remote_url forms (ssh / https / with-or-without-.git)
