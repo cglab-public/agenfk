@@ -14,7 +14,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -29,8 +28,9 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell, shellQuote } from './helpers/posixShell';
 import { linkDir } from '../../../cli/src/test/helpers/links';
+import { echoRepo, A } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -44,7 +44,6 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (p: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), p))); dirs.push(d); return d; };
-const sh = (cwd: string, cmd: string) => execSync(cmd, { cwd, shell: posixShell(), encoding: 'utf8' }).trim();
 
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
@@ -53,13 +52,15 @@ const s = (name: string, order: number, extra: Record<string, unknown> = {}) => 
 async function setup() {
   const base = tmp('agenfk-wtc-');
   const root = path.join(base, 'root');
-  fs.mkdirSync(root);
-  sh(root, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+  // The template's copy, moved to base/root: the worktrees, clone and links sit beside it.
+  fs.renameSync(echoRepo(A, 'agenfk-wtc-root-'), root);
   const wt = path.join(base, 'wt');
   const wt2 = path.join(base, 'wt2');
-  sh(root, `git worktree add -q -b feat/epic ${shellQuote(wt)} && git worktree add -q -b feat/other ${shellQuote(wt2)}`);
+  gitSync(root, 'worktree', 'add', '-q', '-b', 'feat/epic', wt);
+  gitSync(root, 'worktree', 'add', '-q', '-b', 'feat/other', wt2);
   const clone = path.join(base, 'clone');
-  sh(base, `git clone -q ${shellQuote(root)} ${shellQuote(clone)}`);
+  // A clone on purpose: an unrelated checkout of the same history.
+  gitSync(base, 'clone', '-q', root, clone);
   const f = await agent().post('/flows').send({ name: `wtc-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const p = await agent().post('/projects').send({ name: `wtc-${++seq}` });

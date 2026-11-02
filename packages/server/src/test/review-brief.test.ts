@@ -19,7 +19,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 import { removeTestDb, testDbPath } from './helpers/testDb';
 
 vi.mock('axios', () => {
@@ -35,7 +34,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -56,16 +55,25 @@ afterAll(async () => {
   for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
+/** Two commits: a.txt (one), then b.txt (two). */
+const buildTwoCommits: GitTemplateBuild = (d) => {
+  gitSync(d, 'init', '-q', '-b', 'main');
+  gitSync(d, 'config', 'user.email', 't@t');
+  gitSync(d, 'config', 'user.name', 't');
+  writeFiles(d, { 'a.txt': 'a\n' });
+  gitSync(d, 'add', '.');
+  gitSync(d, 'commit', '-qm', 'one');
+  writeFiles(d, { 'b.txt': 'b\n' });
+  gitSync(d, 'add', '.');
+  gitSync(d, 'commit', '-qm', 'two');
+};
+
 function makeRepo(): { dir: string; base: string; tip: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-brief-repo-'));
+  // A clone of the per-worker template (#311): same content and history as a
+  // fresh build, with real commit dates from when the worker built it.
+  const dir = cloneGitTemplate('review-brief:two-commits', buildTwoCommits, 'agenfk-brief-repo-');
   cleanup.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
-  fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
-  const base = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
-  fs.writeFileSync(path.join(dir, 'b.txt'), 'b\n');
-  execSync('git add . && git commit -qm two', { cwd: dir, shell: posixShell() });
-  const tip = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+  const [base, tip] = gitSync(dir, 'rev-parse', 'HEAD~1', 'HEAD').split(/\r?\n/);
   return { dir, base, tip };
 }
 

@@ -16,15 +16,14 @@
 import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, afterAll } from 'vitest';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 const TEST_DB = testDbPath('server-pure-helpers-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 
 import * as server from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 
 const dirs: string[] = [];
 afterAll(async () => {
@@ -39,37 +38,32 @@ const freshRootClose = (item: unknown, project: unknown): boolean => (server as 
 const WHOLE_SUITE_FILE = (): RegExp => (server as any).WHOLE_SUITE_FILE;
 const GRAPH_FILE = (): RegExp => (server as any).GRAPH_FILE;
 
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
-const INIT = 'git init -q -b main && git config user.email t@t && git config user.name t';
-
 /** A repository whose project is `top/sub`, with shared.js beside it; `head` is its one commit. */
 function subProject() {
-  const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-outside-')));
+  const top = echoRepo({ 'shared.js': 'module.exports = 0;\n', 'sub/lib.js': 'module.exports = 1;\n' }, 'agenfk-outside-');
   dirs.push(top);
   const root = path.join(top, 'sub');
-  fs.mkdirSync(root);
-  fs.writeFileSync(path.join(top, 'shared.js'), 'module.exports = 0;\n');
-  fs.writeFileSync(path.join(root, 'lib.js'), 'module.exports = 1;\n');
-  git(top, `${INIT} && git add . && git commit -qm one`);
-  return { top, root, head: git(top, 'git rev-parse HEAD') };
+  return { top, root, head: gitSync(top, 'rev-parse', 'HEAD') };
 }
-/** A repository nested beside the project (vendor/), with one commit. */
+/** A repository nested beside the project (vendor/), with one commit. Built in place: it lives at a fixed path inside `top`. */
 function nestedRepo(top: string) {
   const nested = path.join(top, 'vendor');
   fs.mkdirSync(nested);
   fs.writeFileSync(path.join(nested, 'x.js'), 'module.exports = 1;\n');
-  git(nested, `${INIT} && git add . && git commit -qm one`);
+  gitSync(nested, 'init', '-q', '-b', 'main');
+  gitSync(nested, 'config', 'user.email', 't@t');
+  gitSync(nested, 'config', 'user.name', 't');
+  gitSync(nested, 'add', '.');
+  gitSync(nested, 'commit', '-qm', 'one');
   return nested;
 }
 
 describe('outsideState: the content beside a subdirectory project', () => {
   it('a project at the repository top has nothing beside it', () => {
-    const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-outside-top-')));
+    const top = echoRepo({ 'a.js': '1\n' }, 'agenfk-outside-top-');
     dirs.push(top);
-    fs.writeFileSync(path.join(top, 'a.js'), '1\n');
-    git(top, `${INIT} && git add . && git commit -qm one`);
     fs.writeFileSync(path.join(top, 'a.js'), '2\n');
-    expect(outsideState(top, git(top, 'git rev-parse HEAD'))).toBe('');
+    expect(outsideState(top, gitSync(top, 'rev-parse', 'HEAD'))).toBe('');
   });
 
   it('nothing changed beside it is the empty state, whatever changed inside the root', () => {
@@ -101,7 +95,7 @@ describe('outsideState: the content beside a subdirectory project', () => {
     const p = subProject();
     fs.writeFileSync(path.join(p.top, 'shared.js'), 'module.exports = 99;\n');
     const withWork = outsideState(p.root, p.head);
-    git(p.top, 'git checkout -q -- shared.js');
+    gitSync(p.top, 'checkout', '-q', '--', 'shared.js');
     const after = outsideState(p.root, p.head);
     expect(after).toBe('');
     expect(after).not.toBe(withWork);
@@ -109,7 +103,7 @@ describe('outsideState: the content beside a subdirectory project', () => {
 
   it('a user\'s diff.relative does not hide an edit beside the root', () => {
     const p = subProject();
-    git(p.top, 'git config diff.relative true');
+    gitSync(p.top, 'config', 'diff.relative', 'true');
     fs.writeFileSync(path.join(p.top, 'shared.js'), 'module.exports = 99;\n');
     const first = outsideState(p.root, p.head);
     expect(first).not.toBe('');
@@ -124,7 +118,7 @@ describe('outsideState: the content beside a subdirectory project', () => {
     expect(first).not.toBe('');
     expect(outsideState(p.root, p.head)).toBe(first);
     fs.writeFileSync(path.join(nested, 'x.js'), 'module.exports = 2;\n');
-    git(nested, 'git commit -qam two');
+    gitSync(nested, 'commit', '-qam', 'two');
     expect(outsideState(p.root, p.head)).not.toBe(first);
   });
 

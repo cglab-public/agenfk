@@ -12,9 +12,6 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -30,7 +27,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { TDD_FLOW_PRESET } from '@agenfk/core';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -46,9 +43,8 @@ const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const board = () => ({ 'x-agenfk-ui': '1' });
 
 function makeRepo(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-human-gates-'));
+  const dir = echoRepo(A, 'agenfk-human-gates-');
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 

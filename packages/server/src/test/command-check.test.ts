@@ -11,7 +11,6 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -30,7 +29,7 @@ process.env.AGENFK_PASSKEY_STORE = STORE;
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { SoftAuthenticator } from './softAuthenticator';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -60,9 +59,8 @@ async function onWork(checks: unknown[], { root = true, origin }: { root?: boole
   const f = await agent().post('/flows').send({ name: `cmd-${++seq}`, steps: flowWith(checks) });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   if (origin) await storage.updateFlow(f.body.id, { origin } as never);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-cmd-repo-'));
+  const dir = echoRepo({ marker: 'a\n' }, 'agenfk-cmd-repo-');
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > marker && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `cmd-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, ...(root ? { projectRoot: dir } : {}) } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `cmd-${++seq}`, projectId: p.body.id });

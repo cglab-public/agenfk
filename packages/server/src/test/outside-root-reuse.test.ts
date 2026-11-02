@@ -19,7 +19,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -34,7 +33,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, IGNORE_REPORT } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -48,19 +48,14 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 const counter = (file: string) => () => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0);
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
 
 /** A monorepo: the project is packages/app; packages/lib sits beside it. */
 function monorepo() {
-  const repo = tmp('agenfk-or-repo-');
-  fs.mkdirSync(path.join(repo, 'packages', 'app'), { recursive: true });
-  fs.mkdirSync(path.join(repo, 'packages', 'lib'), { recursive: true });
-  fs.writeFileSync(path.join(repo, 'packages', 'app', 'a.js'), 'a\n');
-  fs.writeFileSync(path.join(repo, 'packages', 'lib', 'lib.js'), 'one\n');
-  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one');
+  const repo = echoRepo({ 'packages/app/a.js': 'a\n', 'packages/lib/lib.js': 'one\n', ...IGNORE_REPORT }, 'agenfk-or-repo-');
+  dirs.push(repo);
   return { repo, root: path.join(repo, 'packages', 'app'), lib: path.join(repo, 'packages', 'lib', 'lib.js') };
 }
 
@@ -89,7 +84,7 @@ describe('19e660ac: capture reuse in a subdirectory project', () => {
     const a = await t.card();
     expect((await capture(a)).body).toMatchObject({ available: true, exitCode: 0 });
     fs.writeFileSync(t.lib, 'two\n');
-    git(t.repo, 'git commit -qam lib-two');
+    gitSync(t.repo, 'commit', '-qam', 'lib-two');
     const b = await t.card();
     const rb = await capture(b);
     expect(rb.status, JSON.stringify(rb.body)).toBe(200);
@@ -113,7 +108,7 @@ describe('19e660ac: capture reuse in a subdirectory project', () => {
     fs.writeFileSync(t.lib, 'two\n');
     const a = await t.card();
     expect((await capture(a)).status).toBe(200);
-    git(t.repo, 'git commit -qam lib-two');
+    gitSync(t.repo, 'commit', '-qam', 'lib-two');
     const b = await t.card();
     const rb = await capture(b);
     expect(rb.body.reusedFrom, JSON.stringify(rb.body)).toMatchObject({ itemId: a });
@@ -125,7 +120,8 @@ describe('19e660ac: capture reuse in a subdirectory project', () => {
     fs.writeFileSync(path.join(t.root, 'b.js'), 'b\n');
     const a = await t.card();
     expect((await capture(a)).status).toBe(200);
-    git(t.repo, 'git add packages/app/b.js && git commit -qm a-closes');
+    gitSync(t.repo, 'add', 'packages/app/b.js');
+    gitSync(t.repo, 'commit', '-qm', 'a-closes');
     const b = await t.card();
     const rb = await capture(b);
     expect(rb.body.reusedFrom, JSON.stringify(rb.body)).toMatchObject({ itemId: a });
@@ -157,7 +153,7 @@ describe('19e660ac: final-step sibling propagation in a subdirectory project', (
     expect((await validate(a)).body.status).toBe('DONE');
     expect(t.count()).toBe(1);
     fs.writeFileSync(t.lib, 'two\n');
-    git(t.repo, 'git commit -qam lib-two');
+    gitSync(t.repo, 'commit', '-qam', 'lib-two');
     const b = await t.child();
     const rb = await validate(b);
     expect(rb.body.status, JSON.stringify(rb.body)).toBe('DONE');

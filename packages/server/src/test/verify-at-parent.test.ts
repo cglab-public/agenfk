@@ -14,9 +14,7 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -25,7 +23,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
@@ -40,6 +38,15 @@ afterAll(async () => {
 
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
+/** One commit of `a` on main; every project clones it from the per-worker template (#311). */
+const buildOneCommit: GitTemplateBuild = (d) => {
+  gitSync(d, 'init', '-q', '-b', 'main');
+  gitSync(d, 'config', 'user.email', 't@t');
+  gitSync(d, 'config', 'user.name', 't');
+  writeFiles(d, { a: 'a\n' });
+  gitSync(d, 'add', '.');
+  gitSync(d, 'commit', '-qm', 'one');
+};
 const STEPS = [s('TODO', 0, { isAnchor: true }), s('WORK', 1), s('DONE', 2, { isAnchor: true })];
 
 /**
@@ -51,9 +58,8 @@ const STEPS = [s('TODO', 0, { isAnchor: true }), s('WORK', 1), s('DONE', 2, { is
 async function project(verifyAt?: string, { command = true, steps = STEPS, delayMs = 0, flowExtra = {}, projectExtra = {} }: { command?: boolean; steps?: unknown[]; delayMs?: number; flowExtra?: Record<string, unknown>; projectExtra?: Record<string, unknown> } = {}) {
   const f = await agent().post('/flows').send({ name: `vap-${++seq}`, steps, ...(verifyAt ? { verifyAt } : {}), ...flowExtra });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-vap-'));
+  const dir = cloneGitTemplate('verify-at-parent:one-commit', buildOneCommit, 'agenfk-vap-');
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const runs = path.join(dir, '..', `${path.basename(dir)}-runs`);
   dirs.push(runs);
   fs.mkdirSync(runs);
@@ -204,7 +210,7 @@ describe("verifyAt: 'parent' - round-2 review (281adef0)", () => {
     const { pid, dir, runCount } = await project('parent');
     const wt = `${dir}-wt`;
     dirs.push(wt);
-    execSync(`git worktree add -q -b child-branch ${JSON.stringify(wt)}`, { cwd: dir });
+    gitSync(dir, 'worktree', 'add', '-q', '-b', 'child-branch', wt);
     const parent = await card(pid);
     const child = await card(pid, 'WORK', { parentId: parent });
     await storage.updateItem(child, { worktreePath: wt } as any);
@@ -259,8 +265,10 @@ describe('verifyAtScope', () => {
   function childWorktree(dir: string, branch: string) {
     const wt = `${dir}-${branch}`;
     dirs.push(wt);
-    execSync(`git worktree add -q -b ${branch} ${JSON.stringify(wt)}`, { cwd: dir });
-    execSync('echo work > child.txt && git add child.txt && git commit -qm "child work"', { cwd: wt, shell: posixShell() });
+    gitSync(dir, 'worktree', 'add', '-q', '-b', branch, wt);
+    writeFiles(wt, { 'child.txt': 'work\n' });
+    gitSync(wt, 'add', 'child.txt');
+    gitSync(wt, 'commit', '-qm', 'child work');
     return wt;
   }
   const plan = async (id: string) => (await agent().get(`/items/${id}/leave-plan`)).body;
@@ -311,7 +319,7 @@ describe('verifyAtScope', () => {
     expect((await get(parent)).status).toBe('WORK');
     expect(runCount(), 'the suite ran over a tree without the child in it').toBe(0);
     // Merged: the one run covers it.
-    execSync('git merge -q --no-edit scope-b', { cwd: dir });
+    gitSync(dir, 'merge', '-q', '--no-edit', 'scope-b');
     const ok = await validate(parent);
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     expect((await get(parent)).status).toBe('DONE');
@@ -321,9 +329,11 @@ describe('verifyAtScope', () => {
   it("'project': a merge taken before the child's last commit does not count - the check is on the commit the child closed on", async () => {
     const { pid, dir } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
     const wt = childWorktree(dir, 'scope-c');
-    execSync('git merge -q --no-edit scope-c', { cwd: dir });
+    gitSync(dir, 'merge', '-q', '--no-edit', 'scope-c');
     // Merged BEFORE the child's last commit, which is the one it closes on.
-    execSync('echo more > more.txt && git add more.txt && git commit -qm "more child work"', { cwd: wt, shell: posixShell() });
+    writeFiles(wt, { 'more.txt': 'more\n' });
+    gitSync(wt, 'add', 'more.txt');
+    gitSync(wt, 'commit', '-qm', 'more child work');
     const parent = await card(pid);
     const child = await card(pid, 'WORK', { parentId: parent });
     await storage.updateItem(child, { worktreePath: wt } as any);
@@ -357,13 +367,13 @@ describe('verifyAtScope', () => {
     expect(unstaged.body.error).toBe('DEFERRED_CLOSE_UNCOMMITTED');
     expect(unstaged.body.message).toContain('child.txt');
     expect((await get(child)).status).toBe('WORK');
-    execSync('git checkout -- child.txt', { cwd: wt });
+    gitSync(wt, 'checkout', '--', 'child.txt');
     fs.writeFileSync(path.join(wt, 'new.txt'), 'untracked');
     const untracked = await validate(child);
     expect(untracked.status).toBe(422);
     expect(untracked.body.message).toContain('new.txt');
     // Staged, it goes into the close commit: the close goes through.
-    execSync('git add new.txt', { cwd: wt });
+    gitSync(wt, 'add', 'new.txt');
     expect((await validate(child)).status).toBe(200);
     expect(runCount()).toBe(0);
   });
@@ -372,7 +382,7 @@ describe('verifyAtScope', () => {
   it("'project': an untracked file is seen even with status.showUntrackedFiles=no", async () => {
     const { pid, dir } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
     const wt = childWorktree(dir, 'scope-j');
-    execSync('git config status.showUntrackedFiles no', { cwd: dir });
+    gitSync(dir, 'config', 'status.showUntrackedFiles', 'no');
     const parent = await card(pid);
     const child = await card(pid, 'WORK', { parentId: parent });
     await storage.updateItem(child, { worktreePath: wt } as any);
@@ -410,7 +420,7 @@ describe('verifyAtScope', () => {
     await storage.updateItem(child, { worktreePath: wt } as any);
     expect((await validate(child)).status).toBe(200);
     // mid shares top's tree: it closes by deferring again, running nothing.
-    execSync('git merge -q --no-edit scope-l', { cwd: dir });
+    gitSync(dir, 'merge', '-q', '--no-edit', 'scope-l');
     const midClose = await validate(mid);
     expect(midClose.status, JSON.stringify(midClose.body)).toBe(200);
     expect(midClose.body.message).toMatch(/deferred/);
@@ -441,7 +451,7 @@ describe('verifyAtScope', () => {
     const child = await card(pid, 'WORK', { parentId: parent });
     await storage.updateItem(child, { worktreePath: wt } as any);
     expect((await validate(child)).status).toBe(200);
-    execSync('git merge -q --no-edit scope-m', { cwd: dir });
+    gitSync(dir, 'merge', '-q', '--no-edit', 'scope-m');
     expect((await validate(parent)).status).toBe(200);
     expect((await get(parent)).status).toBe('END');
     expect((await agent().post(`/items/${child}/move`).send({ targetProjectId: elsewhere.pid })).status).toBe(200);

@@ -18,7 +18,7 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -35,7 +35,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, reportOwned } from '../server';
 import { surfaceOf } from '../stepRecords';
 import { formatCheckResults, describeCapture, EVALUATORS } from '../checkEngine';
-import { posixShell, shellQuote } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
@@ -71,17 +71,24 @@ fs.mkdirSync(path.dirname(out),{recursive:true});fs.writeFileSync(out,JSON.strin
 process.exit(testResults.some(t=>t.status==='failed')?1:0);
 `;
 
+/** The toy project at its first commit, with `gitignore` as its .gitignore (#311: a template per gitignore, cloned per test). */
+const buildRepo = (gitignore: string): GitTemplateBuild => (dir) => {
+  gitSync(dir, 'init', '-q', '-b', 'main');
+  gitSync(dir, 'config', 'user.email', 't@t');
+  gitSync(dir, 'config', 'user.name', 't');
+  writeFiles(dir, {
+    'runner.cjs': RUNNER,
+    'tests/a.test.js': 'T add_works add=ok\n',
+    'src/impl.json': JSON.stringify({ add: 'ok' }),
+    '.gitignore': gitignore,
+  });
+  gitSync(dir, 'add', '.');
+  gitSync(dir, 'commit', '-qm', 'one');
+};
+
 function makeRepo(gitignore = 'report.*\n'): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-enh-'));
+  const dir = cloneGitTemplate(`check-enhancements:repo:gitignore=${JSON.stringify(gitignore)}`, buildRepo(gitignore), 'agenfk-enh-');
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
-  fs.mkdirSync(path.join(dir, 'tests'));
-  fs.mkdirSync(path.join(dir, 'src'));
-  fs.writeFileSync(path.join(dir, 'runner.cjs'), RUNNER);
-  fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'T add_works add=ok\n');
-  fs.writeFileSync(path.join(dir, 'src/impl.json'), JSON.stringify({ add: 'ok' }));
-  fs.writeFileSync(path.join(dir, '.gitignore'), gitignore);
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 const write = (dir: string, f: string, text: string) => { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), text); };
@@ -252,7 +259,7 @@ describe('a rollback: greens kept for reuse, frozen tests not laundered', () => 
     const c = counted();
     const t = await setup({ format: 'vitest-json', command: c.command, reportPath: 'report.json' });
     write(t.dir, 'e2e/flow.test.js', 'never run by this suite\n');
-    execSync('git add e2e && git commit -qm e2e', { cwd: t.dir, shell: posixShell() });
+    gitSync(t.dir, 'add', 'e2e'); gitSync(t.dir, 'commit', '-qm', 'e2e');
     await advanceTo(t.id, 'TIDY', HONEST(t.dir));
     const r = await agent().put(`/items/${t.id}`).send({ status: 'BUILD' });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
@@ -329,18 +336,24 @@ describe('what verify says', () => {
 
 describe('tests-added-late: test files added after the tests were frozen, flagged without a run (d26832d6 #21)', () => {
   // Real git, not a fake: the paths git prints are the point.
-  const gitIn = (dir: string) => (args: string[]) => execSync(`git ${args.map(shellQuote).join(' ')}`, { cwd: dir, encoding: 'utf8', shell: posixShell() });
-  const sh = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
-  /** A repository whose tests were frozen at HEAD; `root` is the card's tree inside it. */
-  function frozenRepo(sub = '') {
-    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-'));
-    dirs.push(repo);
-    sh(repo, 'git init -q -b main && git config user.email t@t && git config user.name t');
+  const gitIn = (dir: string) => (args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  /** The frozen base, its tree under `sub` (#311: a template per sub, cloned per test). */
+  const buildFrozen = (sub: string): GitTemplateBuild => (repo) => {
+    gitSync(repo, 'init', '-q', '-b', 'main');
+    gitSync(repo, 'config', 'user.email', 't@t');
+    gitSync(repo, 'config', 'user.name', 't');
     const root = sub ? path.join(repo, sub) : repo;
     write(root, 'tests/a.test.js', 'a');
     write(root, 'src/x.js', 'x');
-    sh(repo, 'git add -A && git commit -qm base');
-    return { repo, root, head: sh(repo, 'git rev-parse HEAD') };
+    gitSync(repo, 'add', '-A');
+    gitSync(repo, 'commit', '-qm', 'base');
+  };
+  /** A repository whose tests were frozen at HEAD; `root` is the card's tree inside it. */
+  function frozenRepo(sub = '') {
+    const repo = cloneGitTemplate(`check-enhancements:frozen:sub=${sub}`, buildFrozen(sub), 'agenfk-late-');
+    dirs.push(repo);
+    const root = sub ? path.join(repo, sub) : repo;
+    return { repo, root, head: gitSync(repo, 'rev-parse', 'HEAD') };
   }
   const judge = (root: string, head: string, over: Record<string, any> = {}, files: Record<string, string> = { 'tests/a.test.js': 'h' }) =>
     EVALUATORS['tests-added-late']({ root, git: gitIn(root), item: { id: '11111111-1111-4111-8111-111111111111', type: 'TASK' }, cardBranch: null, cardKeys: [], testPaths: [], ignoredPaths: ['.reports'],
@@ -348,8 +361,8 @@ describe('tests-added-late: test files added after the tests were frozen, flagge
 
   it('flags test files added since the freeze - committed, staged or untracked - and nothing else', () => {
     const { repo, root, head } = frozenRepo();
-    write(root, 'tests/committed.test.js', 'c'); sh(repo, 'git add -A && git commit -qm more');
-    write(root, 'tests/staged.test.js', 's'); sh(repo, 'git add tests/staged.test.js');
+    write(root, 'tests/committed.test.js', 'c'); gitSync(repo, 'add', '-A'); gitSync(repo, 'commit', '-qm', 'more');
+    write(root, 'tests/staged.test.js', 's'); gitSync(repo, 'add', 'tests/staged.test.js');
     write(root, 'tests/untracked.test.js', 'u');
     write(root, 'src/fix.js', 'f');
     write(root, '.reports/r.test.js', 'r');
@@ -364,7 +377,7 @@ describe('tests-added-late: test files added after the tests were frozen, flagge
     const { repo, root, head } = frozenRepo('app');
     write(root, 'tests/frozen.test.js', 'f'); // untracked at the freeze, in its surface
     write(repo, 'other/pkg.test.js', 'o'); // another package's test, outside the tree
-    sh(repo, 'git add -A && git commit -qm later');
+    gitSync(repo, 'add', '-A'); gitSync(repo, 'commit', '-qm', 'later');
     write(root, 'tests/late.test.js', 'l');
     const r = judge(root, head, {}, { 'tests/a.test.js': 'h', 'tests/frozen.test.js': 'h' });
     expect(r.outcome).toBe('fail');
@@ -374,17 +387,17 @@ describe('tests-added-late: test files added after the tests were frozen, flagge
 
   it("leaves out another card's close commit and main's tests merged in: only this card's additions count", () => {
     const { repo, root, head } = frozenRepo();
-    write(root, 'tests/sibling.test.js', 's'); sh(repo, 'git add -A && git commit -qm "close(task): sibling [22222222-2222-4222-8222-222222222222]"');
-    sh(repo, 'git checkout -q -b side HEAD~1');
-    write(root, 'tests/main.test.js', 'm'); sh(repo, 'git add -A && git commit -qm main-work && git checkout -q - && git merge -q --no-edit side');
+    write(root, 'tests/sibling.test.js', 's'); gitSync(repo, 'add', '-A'); gitSync(repo, 'commit', '-qm', 'close(task): sibling [22222222-2222-4222-8222-222222222222]');
+    gitSync(repo, 'checkout', '-q', '-b', 'side', 'HEAD~1');
+    write(root, 'tests/main.test.js', 'm'); gitSync(repo, 'add', '-A'); gitSync(repo, 'commit', '-qm', 'main-work'); gitSync(repo, 'checkout', '-q', '-'); gitSync(repo, 'merge', '-q', '--no-edit', 'side');
     expect(judge(root, head).outcome).toBe('pass');
-    write(root, 'tests/mine.test.js', 'x'); sh(repo, 'git add -A && git commit -qm "close(task): mine [11111111-1111-4111-8111-111111111111]"');
+    write(root, 'tests/mine.test.js', 'x'); gitSync(repo, 'add', '-A'); gitSync(repo, 'commit', '-qm', 'close(task): mine [11111111-1111-4111-8111-111111111111]');
     expect(judge(root, head).detail).toContain('tests/mine.test.js');
   });
 
   it('is not led by rename detection and sees non-ASCII names', () => {
     const { repo, root, head } = frozenRepo();
-    sh(repo, 'git mv tests/a.test.js tests/renamed.test.js && git commit -qm mv');
+    gitSync(repo, 'mv', 'tests/a.test.js', 'tests/renamed.test.js'); gitSync(repo, 'commit', '-qm', 'mv');
     write(root, 'tests/é.test.js', 'e');
     const r = judge(root, head);
     for (const f of ['tests/renamed.test.js', 'tests/é.test.js']) expect(r.detail).toContain(f);
@@ -407,36 +420,36 @@ describe('tests-added-late: test files added after the tests were frozen, flagge
   function withRemote(repo: string) {
     const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-remote-'));
     dirs.push(remote);
-    sh(remote, 'git init -q --bare -b main');
-    sh(repo, `git remote add origin ${shellQuote(remote)} && git push -q origin main`);
+    gitSync(remote, 'init', '-q', '--bare', '-b', 'main');
+    gitSync(repo, 'remote', 'add', 'origin', remote); gitSync(repo, 'push', '-q', 'origin', 'main');
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-other-'));
     dirs.push(other);
-    sh(other, `git clone -q ${shellQuote(remote)} . && git config user.email o@o && git config user.name o`);
-    return { pushMainTest: (f: string) => { write(other, f, 'm'); sh(other, `git add -A && git commit -qm main-work && git push -q origin main`); sh(repo, 'git fetch -q origin'); } };
+    gitSync(other, 'clone', '-q', remote, '.'); gitSync(other, 'config', 'user.email', 'o@o'); gitSync(other, 'config', 'user.name', 'o');
+    return { pushMainTest: (f: string) => { write(other, f, 'm'); gitSync(other, 'add', '-A'); gitSync(other, 'commit', '-qm', 'main-work'); gitSync(other, 'push', '-q', 'origin', 'main'); gitSync(repo, 'fetch', '-q', 'origin'); } };
   }
 
   it("pushing the card's own branch hides nothing: its late test is still flagged", () => {
     const { repo, root, head } = frozenRepo();
     withRemote(repo);
-    sh(repo, 'git checkout -q -b feat/X');
-    write(root, 'tests/late.test.js', 'l'); sh(repo, 'git add -A && git commit -qm late && git push -q origin feat/X');
+    gitSync(repo, 'checkout', '-q', '-b', 'feat/X');
+    write(root, 'tests/late.test.js', 'l'); gitSync(repo, 'add', '-A'); gitSync(repo, 'commit', '-qm', 'late'); gitSync(repo, 'push', '-q', 'origin', 'feat/X');
     expect(judge(root, head).detail).toContain('tests/late.test.js');
   });
 
   it("main's tests arriving by a fast-forward are not this card's", () => {
     const { repo, root, head } = frozenRepo();
     withRemote(repo).pushMainTest('tests/main.test.js');
-    sh(repo, 'git merge -q --ff-only origin/main');
+    gitSync(repo, 'merge', '-q', '--ff-only', 'origin/main');
     expect(judge(root, head).outcome).toBe('pass');
   });
 
   it("main's tests arriving by a rebase are not this card's, while its own rebased commit still is", () => {
     const { repo, root, head } = frozenRepo();
     const r = withRemote(repo);
-    sh(repo, 'git checkout -q -b card');
-    write(root, 'tests/mine.test.js', 'x'); sh(repo, 'git add -A && git commit -qm "wip: my test"');
+    gitSync(repo, 'checkout', '-q', '-b', 'card');
+    write(root, 'tests/mine.test.js', 'x'); gitSync(repo, 'add', '-A'); gitSync(repo, 'commit', '-qm', 'wip: my test');
     r.pushMainTest('tests/main.test.js');
-    sh(repo, 'git rebase -q origin/main');
+    gitSync(repo, 'rebase', '-q', 'origin/main');
     const got = judge(root, head);
     expect(got.detail).toContain('tests/mine.test.js');
     expect(got.detail).not.toContain('tests/main.test.js');
@@ -444,23 +457,23 @@ describe('tests-added-late: test files added after the tests were frozen, flagge
 
   it('a test added and then deleted is no late test', () => {
     const { repo, root, head } = frozenRepo();
-    write(root, 'tests/gone.test.js', 'g'); sh(repo, 'git add -A && git commit -qm add && git rm -q tests/gone.test.js && git commit -qm rm');
-    write(root, 'tests/staged-then-removed.test.js', 's'); sh(repo, 'git add -A'); fs.rmSync(path.join(root, 'tests/staged-then-removed.test.js'));
+    write(root, 'tests/gone.test.js', 'g'); gitSync(repo, 'add', '-A'); gitSync(repo, 'commit', '-qm', 'add'); gitSync(repo, 'rm', '-q', 'tests/gone.test.js'); gitSync(repo, 'commit', '-qm', 'rm');
+    write(root, 'tests/staged-then-removed.test.js', 's'); gitSync(repo, 'add', '-A'); fs.rmSync(path.join(root, 'tests/staged-then-removed.test.js'));
     expect(judge(root, head).outcome).toBe('pass');
   });
 
   it('in a subdirectory project, a frozen test that is only STAGED is not late', () => {
     const { repo, root, head } = frozenRepo('app');
-    write(root, 'tests/frozen.test.js', 'f'); sh(repo, 'git add app/tests/frozen.test.js');
+    write(root, 'tests/frozen.test.js', 'f'); gitSync(repo, 'add', 'app/tests/frozen.test.js');
     expect(judge(root, head, {}, { 'tests/a.test.js': 'h', 'tests/frozen.test.js': 'h' }).outcome).toBe('pass');
     // ...and a LATE one that is only staged is seen, under the tree's own path.
-    write(root, 'tests/late.test.js', 'l'); sh(repo, 'git add app/tests/late.test.js');
+    write(root, 'tests/late.test.js', 'l'); gitSync(repo, 'add', 'app/tests/late.test.js');
     expect(judge(root, head, {}, { 'tests/a.test.js': 'h', 'tests/frozen.test.js': 'h' }).detail).toContain('tests/late.test.js');
   });
 
   it("a hand-written card tag is nobody's proof: only the server's own close/step commit for another card is left out", () => {
     const { repo, root, head } = frozenRepo();
-    write(root, 'tests/late.test.js', 'l'); sh(repo, 'git add -A && git commit -qm "wip [deadbeef-dead-4ead-8ead-deadbeefdead]"');
+    write(root, 'tests/late.test.js', 'l'); gitSync(repo, 'add', '-A'); gitSync(repo, 'commit', '-qm', 'wip [deadbeef-dead-4ead-8ead-deadbeefdead]');
     expect(judge(root, head).detail).toContain('tests/late.test.js');
   });
 

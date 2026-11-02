@@ -12,7 +12,8 @@ import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
+import { gitSync } from './helpers/gitFixture';
 
 const TEST_DB = testDbPath('project-settings-route-test-db.sqlite');
 let server: import('http').Server;
@@ -147,7 +148,7 @@ describe('GET /projects/:id/settings with a project file', () => {
     fs.symlinkSync('/dev/zero', path.join(zero, '.agenfk', 'project.json'));
     const fifo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
     fs.mkdirSync(path.join(fifo, '.agenfk'));
-    execSync(`mkfifo ${JSON.stringify(path.join(fifo, '.agenfk', 'project.json'))}`);
+    execFileSync('mkfifo', [path.join(fifo, '.agenfk', 'project.json')]);
     for (const [root, name] of [[zero, 'dev-zero'], [fifo, 'fifo']] as const) {
       const id = await projectRootedAt(root, name);
       const res = await request(server).get(`/projects/${id}/settings`);
@@ -208,9 +209,10 @@ describe('a command declared by the repository', () => {
     // A right-to-left override makes this READ as one quoted echo; the shell runs printf too.
     const command = "echo 'safe\u202E'; printf REVIEW_MARKER; #";
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-bidi-'));
-    execSync('git init -q', { cwd: root });
+    gitSync(root, 'init', '-q');
     write(root, { projectId: 'x', verifyCommand: command });
-    execSync('git add -A && git -c user.email=t@t -c user.name=t commit -qm seed', { cwd: root });
+    gitSync(root, 'add', '-A');
+    gitSync(root, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'seed');
     const created = await request(server).post('/projects').send({ name: 'bidi' });
     await storage.updateProject(created.body.id, { projectRoot: root } as never);
     const settings = await request(server).get(`/projects/${created.body.id}/settings`);
@@ -247,10 +249,11 @@ describe('a command declared by the repository', () => {
     });
     expect(flow.status, JSON.stringify(flow.body)).toBe(201);
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fix-'));
-    execSync('git init -q', { cwd: root });
+    gitSync(root, 'init', '-q');
     // `vitest run` so the hint recognises the runner and would build a fix from it.
     write(root, { projectId: 'x', verifyCommand: 'echo file-marker && vitest run' });
-    execSync('git add -A && git -c user.email=t@t -c user.name=t commit -qm seed', { cwd: root });
+    gitSync(root, 'add', '-A');
+    gitSync(root, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'seed');
     const created = await request(server).post('/projects').send({ name: 'no-laundering' });
     await storage.updateProject(created.body.id, { flowId: flow.body.id, projectRoot: root } as never);
     const itemId = await cardOn(created.body.id);
@@ -302,8 +305,9 @@ it('PUT /projects/:id/project-root refuses a linked git worktree, and takes its 
   const main = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-root-main-')));
   const linked = path.join(fs.realpathSync(os.tmpdir()), `agenfk-root-linked-${process.pid}-${Date.now()}`);
   try {
-    execSync('git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init', { cwd: main });
-    execSync(`git worktree add -q "${linked}"`, { cwd: main });
+    gitSync(main, 'init', '-q');
+    gitSync(main, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
+    gitSync(main, 'worktree', 'add', '-q', linked);
     const created = await request(server).post('/projects').send({ name: 'worktree-root' });
     const put = (root: string) => request(server).put(`/projects/${created.body.id}/project-root`).set('x-agenfk-internal', VERIFY_TOKEN).send({ projectRoot: root });
     const refused = await put(linked);

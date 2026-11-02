@@ -1,6 +1,7 @@
 import * as os from 'os';
 import { defineConfig } from 'vitest/config';
 import { sharedResolve, sharedTest } from './scripts/vitest-shared-config.mjs';
+import { resolveMaxWorkers } from './scripts/vitest-workers.mjs';
 
 /**
  * Test files that touch no shared filesystem state, so their files may run
@@ -61,16 +62,32 @@ export default defineConfig({
     // does since GH-274).
     ...sharedTest({ include: [...PARALLEL_INCLUDE, ...SERIAL_INCLUDE], fileParallelism: true }),
     /*
-     * A quarter of the CPUs (at least 2), not vitest's all-but-one (GH-274).
-     * A server, hub or cli file spawns git and node children by the dozen, so a
-     * worker is several CPUs' load. Measured on an 18-CPU machine: at 9 workers
-     * every test ran ~3.9x slower than alone (6996s of test time in an 817s run)
-     * and the heaviest end-to-end tests passed 60s; at 4 workers the server files
-     * ran ~1.35x slower than alone, all green. Set here, at the root, so
-     * `--maxWorkers` on the command line still overrides it for every project; a
-     * project's own value would win over the flag.
+     * The worker count, not vitest's all-but-one: scripts/vitest-workers.mjs.
+     *
+     * POSIX - a quarter of the CPUs, at least 2 (GH-274). A server, hub or cli
+     * file spawns git and node children by the dozen, so a worker is several
+     * CPUs' load and CPU is the bottleneck. Measured on an 18-CPU Linux machine:
+     * at 9 workers every test ran ~3.9x slower than alone (6996s of test time in
+     * an 817s run) and the heaviest end-to-end tests passed 60s; at 4 workers the
+     * server files ran ~1.35x slower than alone, all green.
+     *
+     * win32 - 40% of the CPUs, rounded, at least 2 and at most the CPUs (#313).
+     * There the same files are wait-bound, not CPU-bound: each spawn waits on
+     * process creation and on the EDR sensor scanning it, so more workers overlap
+     * that wait instead of fighting for CPU. Measured on a 14-CPU Windows 11
+     * machine, 8-file server subset, pre-change code, all green:
+     *
+     *   | maxWorkers | Duration |
+     *   |      3     | 384.6 s  |   (the POSIX rule)
+     *   |      4     | 314.7 s  |
+     *   |      6     | 277.0 s  |   (the win32 rule at 14 CPUs)
+     *   |      8     | 284.0 s  |
+     *
+     * Set here, at the root, so `--maxWorkers` on the command line still
+     * overrides it for every project; a project's own value would win over the
+     * flag.
      */
-    maxWorkers: Math.max(2, Math.floor(os.availableParallelism() / 4)),
+    maxWorkers: resolveMaxWorkers({ platform: process.platform, cpus: os.availableParallelism() }),
     projects: [
       {
         test: {

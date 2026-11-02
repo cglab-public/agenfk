@@ -60,6 +60,7 @@ import { createServer } from "http";
 import * as net from "net";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
+import { createGitMemo, fenceOf, gitStateMayHaveMoved, isReadOnlyGit, noteChildProcess, rawGitRunner, type GitMemo, type GitRunner } from './gitMemo';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { resolveAirlockPolicy, registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
 import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/reportToken.js';
@@ -1604,7 +1605,13 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
   const result = commitStagedForCard(
     item as any,
     root,
-    { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...(commitEnv ? { env: commitEnv } : {}) }) },
+    {
+      run: args => {
+        // GH #312: the commit (any write) moves the tree under every verify's memo.
+        try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...(commitEnv ? { env: commitEnv } : {}) }); }
+        finally { if (!isReadOnlyGit(args)) gitStateMayHaveMoved(); }
+      },
+    },
     { message },
   );
   if (result.committed) {
@@ -4221,11 +4228,11 @@ function unreviewedAfter(root: string, from: string, since: number, mine: Set<st
  * was first verified. The start is where the card and its descendants each
  * began (their first exit heads), merged back to the commit all of them share.
  */
-async function reviewRangeOf(item: any, root: string): Promise<{ from: string; to: string } | { error: string }> {
+async function reviewRangeOf(item: any, root: string, runner: GitRunner = gitRun): Promise<{ from: string; to: string } | { error: string }> {
   const firstHead = (card: any): string | null => (card.stepRecords ?? []).find((r: any) => r?.kind === 'exit' && typeof r.head === 'string')?.head ?? null;
   const heads = [...new Set([item, ...(await descendantsOf(item))].map(firstHead).filter((h): h is string => !!h))];
   if (!heads.length) return { error: `[${String(item.id).slice(0, 8)}] and its cards have no recorded start commit (none left its first step with a tree to read one from), so the range cannot be worked out: record the review with an explicit --range <from>..<to>.` };
-  const git = (args: string[]) => gitRun.run(['-C', root, ...args]).trim();
+  const git = (args: string[]) => runner.run(['-C', root, ...args]).trim();
   let from = heads[0];
   if (heads.length > 1) {
     // Starts recorded in another worktree's history may share no base here: keep the card's own, else the first.
@@ -4528,7 +4535,8 @@ function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: 
     // Not detached on Windows: there it means DETACHED_PROCESS, which voids
     // CREATE_NO_WINDOW, and cmd.exe then gives every console grandchild
     // (npx, npm, node) a visible window (GH #200). Process groups are POSIX-only anyway.
-    const child = spawn(command, { shell: true, cwd, stdio: onOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore', detached: process.platform !== 'win32', windowsHide: true });
+    // GH #312: the run may write the tree - its start and its exit end every verify memo's epoch.
+    const child = noteChildProcess(spawn(command, { shell: true, cwd, stdio: onOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore', detached: process.platform !== 'win32', windowsHide: true }));
     if (onOutput) for (const s of [child.stdout, child.stderr]) {
       // Whole characters only: a chunk can end inside a multi-byte one.
       const decoder = new StringDecoder('utf8');
@@ -4567,16 +4575,16 @@ function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: 
  * when the tree cannot be read (not a git repository, no commit yet, git
  * failed): the caller treats that as "cannot say", never as unchanged.
  */
-function treeContentState(root: string, excludeRel: TreeExclude): string | null {
-  return treeContentRead(root, excludeRel)?.state ?? null;
+function treeContentState(root: string, excludeRel: TreeExclude, git: GitRunner = gitRun): string | null {
+  return treeContentRead(root, excludeRel, git)?.state ?? null;
 }
 
 /** treeContentState with the read it hashed: what a fenced run records must come from this one read (de5e5a03). */
-function treeContentRead(root: string, excludeRel: TreeExclude): { state: string; tree: TreeRead } | null {
+function treeContentRead(root: string, excludeRel: TreeExclude, git: GitRunner = gitRun): { state: string; tree: TreeRead } | null {
   try {
-    const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString().trim();
+    const head = git.run(['-C', root, 'rev-parse', 'HEAD'], { timeout: 0, stderr: 'ignore' }).trim();
     if (!head) return null;
-    const tree = treeFiles(root, excludeRel);
+    const tree = treeFiles(root, excludeRel, git);
     return tree === null ? null : { state: `${head}:${tree.hash}`, tree };
   } catch {
     return null;
@@ -4588,8 +4596,8 @@ function treeContentRead(root: string, excludeRel: TreeExclude): { state: string
  * commit leaves unchanged when it commits exactly what the capture ran on, so
  * a capture on the dirty tree can be tied to the commit that follows it.
  */
-function treeFilesState(root: string, excludeRel: TreeExclude): string | null {
-  return treeFiles(root, excludeRel)?.hash ?? null;
+function treeFilesState(root: string, excludeRel: TreeExclude, git: GitRunner = gitRun): string | null {
+  return treeFiles(root, excludeRel, git)?.hash ?? null;
 }
 
 /**
@@ -4631,10 +4639,10 @@ function hashEntries(entries: Iterable<[string, string]>): string {
   for (const [rel, v] of [...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) h.update(`\0${rel}\0${v}`);
   return h.digest('hex');
 }
-function treeFiles(root: string, excludeRel: TreeExclude): TreeRead | null {
+function treeFiles(root: string, excludeRel: TreeExclude, runner: GitRunner = gitRun): TreeRead | null {
   const excluded = excludedBy(excludeRel);
   try {
-    const git = (args: string[], cwd = root) => execFileSync('git', ['-C', cwd, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString();
+    const git = (args: string[], cwd = root) => runner.run(['-C', cwd, ...args], { timeout: 0, maxBuffer: 256 * 1024 * 1024, stderr: 'ignore' });
     const staged = git(['ls-files', '-z', '-s']);
     // --relative (6e0d2fd6): ls-files names paths from `root`, a bare diff from the repository's top - in a project
     // that is a subdirectory they never matched, and a modified tracked file kept its stale index hash.
@@ -4687,8 +4695,8 @@ function treeFiles(root: string, excludeRel: TreeExclude): TreeRead | null {
 const reportRelOf = (root: string, project: any): string | null =>
   reportPathsOf(project?.testReport).map(p => insideRoot(root, path.resolve(root, p))).find(Boolean) ?? null;
 /** Every report the setting names, owned: the files and the directories that hold only them. */
-const reportsOwned = (root: string, setting: any): string[] =>
-  [...new Set(reportPathsOf(setting).flatMap(p => reportOwned(root, insideRoot(root, path.resolve(root, p)), Array.isArray(setting?.surface) ? setting.surface : [])))];
+const reportsOwned = (root: string, setting: any, git: GitRunner = gitRun): string[] =>
+  [...new Set(reportPathsOf(setting).flatMap(p => reportOwned(root, insideRoot(root, path.resolve(root, p)), Array.isArray(setting?.surface) ? setting.surface : [], git)))];
 const toPosixPath = (p: string) => p.split(path.sep).join('/');
 
 /**
@@ -4700,7 +4708,7 @@ const toPosixPath = (p: string) => p.split(path.sep).join('/');
  * directory as a non-test change. A directory holding tracked files (a report
  * written into `test/`) is never owned: only the report file is.
  */
-export function reportOwned(root: string, reportRel: string | null, surface: readonly string[] = []): string[] {
+export function reportOwned(root: string, reportRel: string | null, surface: readonly string[] = [], git: GitRunner = gitRun): string[] {
   if (!reportRel) return [];
   const dir = path.posix.dirname(reportRel);
   if (!dir || dir === '.') return [reportRel];
@@ -4712,13 +4720,13 @@ export function reportOwned(root: string, reportRel: string | null, surface: rea
   const underSurface = surface.some(p => { const d = toPosixPath(path.posix.normalize(p)).replace(/\/$/, ''); return d === '.' || d === '' || dir === d || dir.startsWith(`${d}/`) || d.startsWith(`${dir}/`); });
   if (!reportish || underSurface) return [reportRel];
   try {
-    const tracked = execFileSync('git', ['-C', root, 'ls-files', '-z', '--', dir], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, windowsHide: true }).toString();
+    const tracked = git.run(['-C', root, 'ls-files', '-z', '--', dir], { timeout: 15_000, stderr: 'ignore' });
     return tracked ? [reportRel] : [reportRel, dir];
   } catch {
     return [reportRel];
   }
 }
-const reportOwnedOf = (root: string, project: any): string[] => reportsOwned(root, project?.testReport);
+const reportOwnedOf = (root: string, project: any, git: GitRunner = gitRun): string[] => reportsOwned(root, project?.testReport, git);
 
 /**
  * 3ffc9651 — the state of a tree, clean or dirty: the content of every tracked
@@ -4734,10 +4742,10 @@ const reportOwnedOf = (root: string, project: any): string[] => reportsOwned(roo
  * narrower world at another commit, never content it did not see. Files git
  * ignores are not seen, exactly as a clean green does not see them.
  */
-const treeStateOf = (root: string, project: any): string | null => {
-  const t = treeFiles(root, reportOwnedOf(root, project));
+const treeStateOf = (root: string, project: any, git: GitRunner = gitRun): string | null => {
+  const t = treeFiles(root, reportOwnedOf(root, project, git), git);
   // 19e660ac: and what lies beside a subdirectory project's root.
-  return t && t.shareable ? sharedState(t.hash, outsideContent(root)) : null;
+  return t && t.shareable ? sharedState(t.hash, outsideContent(root, git)) : null;
 };
 /**
  * The state a command check's pass is shared at (3ffc9651 review): the files,
@@ -4745,9 +4753,9 @@ const treeStateOf = (root: string, project: any): string | null => {
  * read the index (a staged-files linter, a secret scan) or the branch, and every
  * card stages its own files before it closes.
  */
-const commandStateOf = (root: string, project: any): string | null => {
-  const t = treeFiles(root, reportOwnedOf(root, project));
-  const head = t && t.shareable ? readHead(root, gitRun) : null;
+const commandStateOf = (root: string, project: any, git: GitRunner = gitRun): string | null => {
+  const t = treeFiles(root, reportOwnedOf(root, project, git), git);
+  const head = t && t.shareable ? readHead(root, git) : null;
   return t && head ? `${head}\0${t.index}\0${t.hash}` : null;
 };
 /**
@@ -4757,12 +4765,12 @@ const commandStateOf = (root: string, project: any): string | null => {
  * step too (ef1342b8) - while the record's filesState and command checks keep every file.
  * Null when the tree cannot be read, or nothing may be shared on it.
  */
-function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null, outsideGiven?: string | null): string | null {
+function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null, outsideGiven?: string | null, git: GitRunner = gitRun): string | null {
   if (!setting) return null;
   // Read only when asked for and not handed in (BUG 91d2941d): null handed in means "not shareable".
-  const outside = outsideGiven === undefined ? outsideContent(root) : outsideGiven;
+  const outside = outsideGiven === undefined ? outsideContent(root, git) : outsideGiven;
   // de5e5a03: from the caller's read when it has one - a fenced run's, so the state is the content it ran on.
-  const tree = read === undefined ? treeFiles(root, reportsOwned(root, setting)) : read;
+  const tree = read === undefined ? treeFiles(root, reportsOwned(root, setting, git), git) : read;
   if (!tree || !tree.shareable) return null;
   const patterns = Array.isArray(setting.reuseIgnore) ? setting.reuseIgnore : DEFAULT_REUSE_IGNORE;
   let ignored = new Set<string>();
@@ -4866,7 +4874,9 @@ function finalVerifyCommandOf(project: any): string | undefined {
   const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
   return (typeof declared === 'string' ? declared : project?.verifyCommand) || undefined;
 }
-async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void; lazyOver?: any; onPhase?: (phase: VerifyPhase) => void }): Promise<CaptureOutcome> {
+async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void; lazyOver?: any; onPhase?: (phase: VerifyPhase) => void; git?: GitRunner }): Promise<CaptureOutcome> {
+  // GH #312: the verify's memo when it hands one down, so a read it already made is not spawned again.
+  const git = opts?.git ?? gitRun;
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   if (!root) {
@@ -4905,19 +4915,19 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
    * the tree may have changed during a whole suite run, and another waiter may
    * already be the new owner.
    */
-  const lazy = setting && opts?.lazyOver ? lazyPlan(root, setting, opts.lazyOver) : null;
+  const lazy = setting && opts?.lazyOver ? lazyPlan(root, setting, opts.lazyOver, git) : null;
   if (lazy) {
-    const out = await runCapture(item, root, setting, command, readCleanTreeSha(root, gitRun), { ...opts, lazy });
+    const out = await runCapture(item, root, setting, command, readCleanTreeSha(root, git), { ...opts, lazy });
     if (out !== LAZY_FALLBACK) return out;
     // The partial run could not stand for the whole suite. The tree may have
     // changed meanwhile, so it is read afresh below, reuse and single-flight included.
     opts?.onOutput?.('[agenfk] the partial run cannot stand for the whole suite: running all of it\n');
   }
   for (let attempt = 0; ; attempt++) {
-    const cleanSha = readCleanTreeSha(root, gitRun);
+    const cleanSha = readCleanTreeSha(root, git);
     // 3ffc9651: the tree's state, dirty or not - what reuse and single-flight key on.
-    const state = treeStateOf(root, project);
-    const reused = await reusableCapture(item, project, root, cleanSha, state, suiteStateOf(root, setting));
+    const state = treeStateOf(root, project, git);
+    const reused = await reusableCapture(item, project, root, cleanSha, state, suiteStateOf(root, setting, undefined, undefined, git), git);
     if (reused) {
       opts?.onPhase?.({ state: 'running', kind: 'reused' });
       const fresh: any = await storage.getItem(item.id);
@@ -4974,7 +4984,9 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
  * narrower baseline, never a green on content it did not see.
  * Resolves to the stamped record, or null.
  */
-export async function stampCloseGreen(itemId: string, root: string, sha: string): Promise<any | null> {
+export async function stampCloseGreen(itemId: string, root: string, sha: string, git: GitRunner = gitRun): Promise<any | null> {
+  // GH #312: a deliberate re-read (F4) - another agent committing since the caller read the tree must be seen.
+  const fence = fenceOf(git);
   const item: any = await storage.getItem(itemId);
   if (!item) return null;
   const project: any = await storage.getProject(item.projectId);
@@ -4982,9 +4994,9 @@ export async function stampCloseGreen(itemId: string, root: string, sha: string)
   if (!setting) return null;
   const runs = (item.stepRecords ?? []).filter((r: any) => isOwnRun(r, setting, root) && stateOfRecord(r) !== null);
   if (!runs.length) return null;
-  if (readCleanTreeSha(root, gitRun) !== sha) return null;
+  if (readCleanTreeSha(root, fence) !== sha) return null;
   // 19e660ac: compared with a stamped filesState, so the content beside the root counts the same way.
-  const files = sharedState(treeFilesState(root, reportsOwned(root, setting)), outsideContent(root));
+  const files = sharedState(treeFilesState(root, reportsOwned(root, setting, fence), fence), outsideContent(root, fence));
   if (!files) return null;
   const last = [...runs].reverse().find((r: any) => stateOfRecord(r) === files);
   if (!last || !capturedGreen(last)) return null;
@@ -5038,9 +5050,9 @@ function relatedPlan(root: string, setting: TestReportSetting, entry: any, chang
 }
 
 /** a36047ea: the hint a whole run gets when only code changed and the project has no related-tests command. */
-function relatedHint(root: string, setting: TestReportSetting, entry: any): string | null {
+function relatedHint(root: string, setting: TestReportSetting, entry: any, git: GitRunner = gitRun): string | null {
   if (setting.relatedCommand || !(entry?.kind === 'capture' && entry.clean === true && typeof entry.head === 'string')) return null;
-  const since = changedSince(root, entry.head, reportsOwned(root, setting));
+  const since = changedSince(root, entry.head, reportsOwned(root, setting, git), git);
   if (!since || since.outside || !since.inside.length || since.inside.every(f => TEST_FILE_NAME.test(f))) return null;
   const vitest = /\bvitest\b/.test(setting.command), jest = /\bjest\b/.test(setting.command);
   const example = vitest ? 'npx vitest related --run {files}' : jest ? 'npx jest --findRelatedTests {files}' : "<your runner's related-tests command> {files}";
@@ -5060,10 +5072,10 @@ const LAZY_MAX_FILES = 200;
  * addition, so a rename cannot hide the file it removed; NUL-separated so no
  * name is mis-split. Null: git failed.
  */
-function changedSince(root: string, head: string, reportRel: TreeExclude): { inside: string[]; outside: boolean } | null {
+function changedSince(root: string, head: string, reportRel: TreeExclude, git: GitRunner = gitRun): { inside: string[]; outside: boolean } | null {
   const excluded = excludedBy(reportRel);
   try {
-    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    const run = (args: string[]) => git.run(['-C', root, ...args], { timeout: 15_000, maxBuffer: 64 * 1024 * 1024, stderr: 'ignore' });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     // --no-relative (c03ae9f7): a user's diff.relative would list only what is under `root`, relative to it.
     const diff = run(['diff', '--no-relative', '--no-renames', '--name-only', '-z', head]).split('\0');
@@ -5093,15 +5105,15 @@ const OUTSIDE_MAX_FILES = 2000;
  * run over an entry needs this unchanged since it: the entry's results were
  * taken with that work beside it.
  */
-export function outsideState(root: string, head: string): string | null {
-  const beside = outsideEntries(root, head);
+export function outsideState(root: string, head: string, git: GitRunner = gitRun): string | null {
+  const beside = outsideEntries(root, head, git);
   return beside === null ? null : beside.length ? hashEntries(beside) : '';
 }
 
 /** outsideState's entries, by repository path: `<mode>:<blob>`, `160000:<commit>`, or 'absent'. [] when nothing differs. */
-function outsideEntries(root: string, head: string): [string, string][] | null {
+function outsideEntries(root: string, head: string, git: GitRunner = gitRun): [string, string][] | null {
   try {
-    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    const run = (args: string[]) => git.run(['-C', root, ...args], { timeout: 15_000, maxBuffer: 64 * 1024 * 1024, stderr: 'ignore' });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     // c03ae9f7: a project at the repository's top has nothing beside it.
     if (!prefix) return [];
@@ -5123,7 +5135,7 @@ function outsideEntries(root: string, head: string): [string, string][] | null {
       else if (st.isDirectory() && fs.existsSync(path.join(abs, '.git'))) {
         // c03ae9f7: a submodule or nested repository - by its commit. 62f87741: its own uncommitted work is not
         // hashed (its status names files, not content), so with any, no partial run.
-        const sub = (args: string[]) => execFileSync('git', ['-C', abs, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+        const sub = (args: string[]) => git.run(['-C', abs, ...args], { timeout: 15_000, maxBuffer: 64 * 1024 * 1024, stderr: 'ignore' });
         if (sub(['status', '--porcelain', '-z'])) return null;
         entries.push([f, `160000:${sub(['rev-parse', 'HEAD']).trim()}`]);
       } else return null;   // anything else cannot be told apart from itself changed: no partial run
@@ -5147,9 +5159,9 @@ function outsideEntries(root: string, head: string): [string, string][] | null {
 const outsideBaseCache = new Map<string, { head: string; files: Map<string, string>; hash: string }>();
 const OUTSIDE_BASE_CACHE_MAX = 16;
 
-function outsideContent(root: string): string | null {
+function outsideContent(root: string, git: GitRunner = gitRun): string | null {
   try {
-    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true });
+    const run = (args: string[]) => git.run(['-C', root, ...args], { timeout: 15_000, maxBuffer: 256 * 1024 * 1024, stderr: 'ignore' });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     if (!prefix) return '';
     const head = run(['rev-parse', 'HEAD']).trim();
@@ -5169,7 +5181,7 @@ function outsideContent(root: string): string | null {
       if (outsideBaseCache.size >= OUTSIDE_BASE_CACHE_MAX) outsideBaseCache.clear();
       outsideBaseCache.set(root, base);
     }
-    const beside = outsideEntries(root, head);
+    const beside = outsideEntries(root, head, git);
     if (beside === null) return null;
     // Nothing differs beside the root: HEAD's content there, already hashed.
     if (!beside.length) return base.hash;
@@ -5197,11 +5209,11 @@ function sharedState(files: string | null | undefined, outside: string | null): 
  * clean head. A change outside `root` is read from git either way, and means
  * the whole suite.
  */
-function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { inside: string[]; outside: boolean } | null {
-  if (!isFileMap(entry.fileShas)) return changedSince(root, entry.head, reportRel);
-  const now = treeFiles(root, reportRel);
+function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude, git: GitRunner = gitRun): { inside: string[]; outside: boolean } | null {
+  if (!isFileMap(entry.fileShas)) return changedSince(root, entry.head, reportRel, git);
+  const now = treeFiles(root, reportRel, git);
   // 83c1cbca: beside `root`, what matters is whether the work there is what the entry ran with.
-  const beside = outsideState(root, entry.head);
+  const beside = outsideState(root, entry.head, git);
   if (!now || beside === null) return null;
   const before: Record<string, string> = entry.fileShas;
   const inside = new Set<string>();
@@ -5228,12 +5240,12 @@ function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { 
  * Files git ignores (a rebuilt dist/, node_modules) are not seen, exactly as
  * reuse of a clean green does not see them.
  */
-function lazyPlan(root: string, setting: TestReportSetting, entry: any): LazyPlan | null {
+function lazyPlan(root: string, setting: TestReportSetting, entry: any, git: GitRunner = gitRun): LazyPlan | null {
   // 6e0d2fd6: an entry that recorded its files works dirty or partial - which is how a TDD coding step is entered.
   if (!(entry?.kind === 'capture' && entry.root === root && entry.available === true && typeof entry.head === 'string'
     && ((entry.clean === true && !entry.lazy) || (isFileMap(entry.fileShas) && typeof entry.outsideState === 'string'))
     && Array.isArray(entry.tests) && ranAsSetNow(entry, setting))) return null;
-  const since = changedSinceEntry(root, entry, reportsOwned(root, setting));
+  const since = changedSinceEntry(root, entry, reportsOwned(root, setting, git), git);
   if (!since || since.outside) return null;
   const changed = since.inside;
   if (!changed.length || changed.length > LAZY_MAX_FILES) return null;
@@ -5264,7 +5276,7 @@ async function withReportLock<T>(key: string, fn: () => Promise<T>, onOutput?: (
 /** runCapture's answer when a lazy run cannot stand for the whole suite: the caller captures the ordinary way. */
 const LAZY_FALLBACK = Symbol('lazy-fallback');
 
-type CaptureRunOpts = { onOutput?: (chunk: string) => void; onPhase?: (phase: VerifyPhase) => void };
+type CaptureRunOpts = { onOutput?: (chunk: string) => void; onPhase?: (phase: VerifyPhase) => void; git?: GitRunner };
 async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: CaptureRunOpts & { lazy: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK>;
 async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: CaptureRunOpts): Promise<CaptureOutcome>;
 async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: CaptureRunOpts & { lazy?: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK> {
@@ -5281,7 +5293,7 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
     }, item.id);
     try {
       opts?.onPhase?.(running);
-      return await runAndRead(item, root, setting, command, cleanSha, opts, lazy);
+      return await runAndRead(item, root, setting, command, cleanSha, opts, lazy, opts?.git ?? gitRun);
     } finally { release(); }
   }, opts?.onOutput, () => opts?.onPhase?.({ state: 'waiting', on: 'report' }));
   if (record === null) return LAZY_FALLBACK;
@@ -5307,10 +5319,10 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
  * file it ran is missing from its report (a runner that reports no file path,
  * as pytest's default JUnit does, cannot be merged by file).
  */
-async function runAndRead(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: { onOutput?: (chunk: string) => void } | undefined, lazy: LazyPlan | undefined): Promise<any | null> {
+async function runAndRead(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: { onOutput?: (chunk: string) => void } | undefined, lazy: LazyPlan | undefined, git: GitRunner): Promise<any | null> {
   const record: any = {
     step: item.status, kind: 'capture', at: new Date().toISOString(),
-    head: readHead(root, gitRun), clean: cleanSha !== null,
+    head: readHead(root, git), clean: cleanSha !== null,
     format: setting ? setting.format : 'exit-code', available: false,
     // What ran, and where: a later card may reuse this record only for the same command in the same tree (961f301d).
     command, root,
@@ -5334,14 +5346,19 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
     reportAbs = reportAbsAll[0] ?? null;
   }
   const reportRel = reportAbs ? insideRoot(root, reportAbs) : null;
-  const owned = setting ? reportsOwned(root, setting) : [];
-  const stateBefore = treeContentState(root, owned);
+  const owned = setting ? reportsOwned(root, setting, git) : [];
+  /*
+   * GH #312: the reads before the run come from the verify's memo - the same epoch as the
+   * plan and the reuse check above - and the run's spawn ends that epoch, so the reads after
+   * it are git's afresh. (The report removed just above is excluded from every state here.)
+   */
+  const stateBefore = treeContentState(root, owned, git);
   // de5e5a03/83c1cbca: the work beside `root` as the run starts - read on both sides, so a change meanwhile counts.
-  const besideBefore = typeof record.head === 'string' ? outsideState(root, record.head) : null;
+  const besideBefore = typeof record.head === 'string' ? outsideState(root, record.head, git) : null;
   // 19e660ac: and the content beside the root, which the shared states fold in - only when it held still.
-  const outsideBefore = outsideContent(root);
+  const outsideBefore = outsideContent(root, git);
   // The plan was made before the run was fenced: the tree must still be what it saw.
-  if (lazy && JSON.stringify(changedSinceEntry(root, lazy.entry, owned)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
+  if (lazy && JSON.stringify(changedSinceEntry(root, lazy.entry, owned, git)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
   if (lazy) {
     // acceaa54: only the changed test files run; the rest keep their entry results.
     Object.assign(record, { lazy: true, ranFiles: lazy.ran, lazyCommand: lazy.command, mergedOver: { step: lazy.entry.step, at: lazy.entry.at, head: lazy.entry.head } });
@@ -5355,7 +5372,7 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
   if (airlockRun.sandboxed) opts?.onOutput?.('[agenfk] An Airlock sandbox touched this card, so this run is in the Airlock sandbox (agenfk airlock exec).\n');
   record.exitCode = await runForExitCode(airlockRun.command, root, verifyMaxMs(), opts?.onOutput);
   // de5e5a03: one read for the fence AND everything the record says the run saw - a later read may see a later tree.
-  const after = treeContentRead(root, owned);
+  const after = treeContentRead(root, owned, git);
   const stateAfter = after?.state ?? null;
   if (setting && reportAbs) {
     try {
@@ -5366,7 +5383,7 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       }
       // What the run saw, without HEAD: a close that commits exactly this can re-stamp it (e99b5015).
       // 19e660ac: with the content beside a subdirectory root, when it did not change during the run; else no state.
-      const outsideAfter = outsideContent(root);
+      const outsideAfter = outsideContent(root, git);
       const outsideHeld = outsideBefore !== null && outsideBefore === outsideAfter ? outsideAfter : null;
       const filesState = sharedState(stateAfter.slice(stateAfter.indexOf(':') + 1), outsideHeld);
       if (filesState) record.filesState = filesState;
@@ -5374,10 +5391,10 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       // 6e0d2fd6: which file held what, for the next step's partial run.
       record.fileShas = after!.tree.files;
       // The map covers `root` only: the work beside it is recorded as one state, when the run saw it stay put (83c1cbca).
-      const besideAfter = typeof record.head === 'string' ? outsideState(root, record.head) : null;
+      const besideAfter = typeof record.head === 'string' ? outsideState(root, record.head, git) : null;
       if (besideBefore !== null && besideBefore === besideAfter) record.outsideState = besideAfter;
       // 32045202: what reuse compares, docs no test names aside.
-      const suite = suiteStateOf(root, setting, after!.tree, outsideHeld);
+      const suite = suiteStateOf(root, setting, after!.tree, outsideHeld, git);
       if (suite) record.suiteState = suite;
       // Each report the command should have written, read as one run's results.
       // One that is missing says which: a suite that crashed before writing its
@@ -5430,7 +5447,7 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       const ambiguous = new Set(parsed.duplicateNames);
       // The project's declared test paths are the surface (9afdba7d); the tree is listed only to suggest some
       // when a name is no file and none are declared. The report this run wrote is never hashed.
-      const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true }).split('\0').filter(Boolean);
+      const listTree = () => git.run(['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
       const surface = surfaceOf(root, [...new Set([...parsed.tests.map(t => t.file), ...parsed.brokenFiles.map(b => b.file)])], setting.surface ?? [], { listTree, exclude: owned });
       record.available = true;
       record.tests = parsed.tests.filter(t => !ambiguous.has(t.name));
@@ -5509,7 +5526,7 @@ function isOwnGreenRun(r: any, setting: TestReportSetting, root: string): boolea
  * the same content the green ran on. So the report is re-read, not re-run
  * (the field card ran its whole suite again for a surface declaration).
  */
-function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: string, sha: string | null, state: string | null, base: any, suite: string | null = null): any | null {
+function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: string, sha: string | null, state: string | null, base: any, suite: string | null = null, git: GitRunner = gitRun): any | null {
   const sameRun = (r: any) => r?.kind === 'capture' && r.root === root && r.available === true && !r.reusedFrom && !r.lazy && capturedGreen(r)
     && r.command === setting.command && r.format === setting.format && r.surfaceScope === 'declared' && Array.isArray(r.tests)
     && JSON.stringify(r.reportPaths ?? null) === JSON.stringify(reportPathsOf(setting))
@@ -5518,9 +5535,9 @@ function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: st
   for (const card of candidates) for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (sameRun(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
   if (!best) return null;
   const { supersededAt: _s, rolledBackTo: _t, surfaceMissing: _m, surfaceSuggested: _g, ...green } = best.r;
-  const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true }).split('\0').filter(Boolean);
+  const listTree = () => git.run(['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
   const files = [...new Set([...(green.tests ?? []).map((t: any) => t.file), ...(green.brokenFiles ?? []).map((b: any) => b.file)])];
-  const surface = surfaceOf(root, files, setting.surface ?? [], { listTree, exclude: reportsOwned(root, setting) });
+  const surface = surfaceOf(root, files, setting.surface ?? [], { listTree, exclude: reportsOwned(root, setting, git) });
   return {
     ...green, ...base,
     surface: { files: surface.files }, surfaceComplete: surface.missing.length === 0, surfaceScope: 'declared', surfaceDeclared: [...(setting.surface ?? [])],
@@ -5557,7 +5574,7 @@ function ranAsSetNow(r: any, setting: TestReportSetting): boolean {
  * content, the card's own included. Only a run that fenced its tree carries a
  * state (its filesState), so a run that saw the tree change never matches.
  */
-async function reusableCapture(item: any, project: any, root: string, sha: string | null, state: string | null = null, suite: string | null = null): Promise<any | null> {
+async function reusableCapture(item: any, project: any, root: string, sha: string | null, state: string | null = null, suite: string | null = null, git: GitRunner = gitRun): Promise<any | null> {
   if (!sha && !state && !suite) return null;
   const setting: TestReportSetting | undefined = project?.testReport;
   // As the capture resolves it (captureStepRecord), the repository's file included.
@@ -5570,12 +5587,12 @@ async function reusableCapture(item: any, project: any, root: string, sha: strin
     const card: any = await storage.getItem(id);
     if (card && card.projectId === item.projectId) candidates.push(card);
   }
-  const base = { step: item.status, kind: 'capture', at: new Date().toISOString(), head: sha ?? readHead(root, gitRun), clean: sha !== null, command, root };
+  const base = { step: item.status, kind: 'capture', at: new Date().toISOString(), head: sha ?? readHead(root, git), clean: sha !== null, command, root };
   if (setting) {
     const same = (r: any) => isOwnGreenRun(r, setting, root) && ((sha !== null && r.clean === true && r.head === sha) || (state !== null && stateOfRecord(r) === state) || (suite !== null && suiteStateOfRecord(r) === suite));
     let best: { card: any; r: any } | null = null;
     for (const card of candidates) for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (same(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
-    if (!best) return resurfacedGreen(candidates, setting, root, sha, state, base, suite);
+    if (!best) return resurfacedGreen(candidates, setting, root, sha, state, base, suite, git);
     const { supersededAt: _s, rolledBackTo: _t, ...green } = best.r;
     return { ...green, ...base, reusedFrom: { itemId: best.card.id, step: best.r.step, at: best.r.at } };
   }
@@ -6088,9 +6105,7 @@ const RUN_EVENT_KINDS = new Set(['dispatch', 'think', 'tool', 'result', 'diff', 
  * synchronous git on a stalled mount must not pin the event loop for the
  * whole server.
  */
-const runGitSync = (args: readonly string[]): string =>
-  execFileSync('git', args as string[], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5_000, windowsHide: true });
-const gitRun = { run: runGitSync };
+const gitRun: GitRunner = rawGitRunner({ timeout: 5_000 });
 
 /**
  * The card a session works on, recorded for a gatekeeper that cannot write it itself: one inside
@@ -8818,7 +8833,7 @@ async function withReviewBrief<T extends { status: (code: number) => any; json: 
   return proxy;
 }
 
-async function reviewEvidence(item: any, root: string | null, depth = 0): Promise<any> {
+async function reviewEvidence(item: any, root: string | null, depth = 0, git: GitRunner = gitRun): Promise<any> {
   const descendants = await descendantsOf(item);
   const children = descendants.filter(d => d.parentId === item.id);
   const authors: Array<{ client: string; sessionId: string; agentId: string | null }> = [];
@@ -8835,13 +8850,13 @@ async function reviewEvidence(item: any, root: string | null, depth = 0): Promis
   if (root) {
     for (const d of descendants) {
       try {
-        const out = gitRun.run(['-C', root, 'log', '--format=%H', '--fixed-strings', `--grep=[${d.id}]`]).trim();
+        const out = git.run(['-C', root, 'log', '--format=%H', '--fixed-strings', `--grep=[${d.id}]`]).trim();
         for (const sha of out.split('\n').filter(Boolean)) if (!descendantCommits.includes(sha)) descendantCommits.push(sha);
       } catch { /* no history to read: nothing to require */ }
     }
   }
   // CGLAB-457: the start the range defaults to, for the refusal to name (the card's tree, not the card alone).
-  const range = root && depth === 0 ? await reviewRangeOf(item, root) : null;
+  const range = root && depth === 0 ? await reviewRangeOf(item, root, git) : null;
   const evidence = {
     itemId: item.id,
     ...(range && !('error' in range) ? { rangeFrom: range.from } : {}),
@@ -8852,24 +8867,24 @@ async function reviewEvidence(item: any, root: string | null, depth = 0): Promis
     authors,
     startHead: firstExit?.head ?? null,
     descendantCommits,
-    currentTree: root && depth === 0 ? treeContentState(root, reportOwnedOf(root, await storage.getProject(item.projectId))) : null,
+    currentTree: root && depth === 0 ? treeContentState(root, reportOwnedOf(root, await storage.getProject(item.projectId), git), git) : null,
   };
   // A child counts only when its OWN latest review passes the same test, over
   // its own authors and commits - having a record is not enough (CGLAB-381
   // review). Its tree has moved on since, so the tree is not compared.
   for (const c of children) {
     if (!Array.isArray(c.reviewRecords) || !c.reviewRecords.length) continue;
-    const e = await reviewEvidence(c, root, depth + 1);
-    e.descendantCommits = [...new Set([...e.descendantCommits, ...ownCloseCommits(c.id, root)])];
-    if (judgeReview(e, root, args => gitRun.run(args), { bindTree: false }).outcome === 'pass') evidence.childrenReviewed++;
+    const e = await reviewEvidence(c, root, depth + 1, git);
+    e.descendantCommits = [...new Set([...e.descendantCommits, ...ownCloseCommits(c.id, root, git)])];
+    if (judgeReview(e, root, args => git.run(args), { bindTree: false }).outcome === 'pass') evidence.childrenReviewed++;
   }
   return evidence;
 }
 
 /** The close commits of one card, found by the `[<id>]` its close commit message carries. */
-function ownCloseCommits(id: string, root: string | null): string[] {
+function ownCloseCommits(id: string, root: string | null, git: GitRunner = gitRun): string[] {
   if (!root) return [];
-  try { return gitRun.run(['-C', root, 'log', '--format=%H', '--fixed-strings', `--grep=[${id}]`]).trim().split('\n').filter(Boolean); } catch { return []; }
+  try { return git.run(['-C', root, 'log', '--format=%H', '--fixed-strings', `--grep=[${id}]`]).trim().split('\n').filter(Boolean); } catch { return []; }
 }
 
 /** JIRA keys on a card and its ancestors, nearest first. */
@@ -8951,7 +8966,7 @@ type UnmergedWork = { id: string; title: string; sha: string; branch: string | n
 /** Whether two checkouts share one repository (the same git common dir), so a commit made in one is reachable from the other. */
 function sameRepository(a: string, b: string): boolean {
   const commonDir = (root: string): string | null => {
-    try { return fs.realpathSync(path.resolve(root, runGitSync(['-C', root, 'rev-parse', '--git-common-dir']).trim())); } catch { return null; }
+    try { return fs.realpathSync(path.resolve(root, gitRun.run(['-C', root, 'rev-parse', '--git-common-dir']).trim())); } catch { return null; }
   };
   const ca = commonDir(a);
   return ca !== null && ca === commonDir(b);
@@ -8969,7 +8984,7 @@ function crossTreeDeferral(childRoot: string | null, parentRoot: string | null, 
   const sha = committed || readHead(childRoot, gitRun);
   if (!sha) return null;
   let branch: string | null = null;
-  try { branch = runGitSync(['-C', childRoot, 'rev-parse', '--abbrev-ref', 'HEAD']).trim() || null; } catch { /* detached or unreadable */ }
+  try { branch = gitRun.run(['-C', childRoot, 'rev-parse', '--abbrev-ref', 'HEAD']).trim() || null; } catch { /* detached or unreadable */ }
   return { sha, root: childRoot, branch: branch === 'HEAD' ? null : branch };
 }
 
@@ -8999,7 +9014,7 @@ async function unmergedDeferredWork(item: any, project: any): Promise<UnmergedWo
       const at = child.suiteDeferredCommit;
       if (at?.sha) {
         let merged = false;
-        try { runGitSync(['-C', root, 'merge-base', '--is-ancestor', at.sha, 'HEAD']); merged = true; } catch { /* not an ancestor, or not in this repository */ }
+        try { gitRun.run(['-C', root, 'merge-base', '--is-ancestor', at.sha, 'HEAD']); merged = true; } catch { /* not an ancestor, or not in this repository */ }
         if (!merged) missing.push({ id: child.id, title: child.title, sha: at.sha, branch: at.branch ?? null });
       }
       walk(child.id);
@@ -9017,7 +9032,7 @@ async function unmergedDeferredWork(item: any, project: any): Promise<UnmergedWo
 function uncommittableChanges(root: string, { staged = true }: { staged?: boolean } = {}): string[] | null {
   let out: string;
   // Explicit: a user's status.showUntrackedFiles=no would otherwise hide an untracked file from this check. Null: unreadable.
-  try { out = runGitSync(['-C', root, 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']); } catch { return null; }
+  try { out = gitRun.run(['-C', root, 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']); } catch { return null; }
   // Porcelain is `XY path`: Y is the worktree side, so anything but a space there (untracked `??` included) is not staged.
   // With staged: false (after the commit) a staged change counts too: it is not in the commit either.
   return out.split('\n').filter(l => l.length > 3 && (l[1] !== ' ' || (!staged && l[0] !== ' '))).map(l => l.slice(3));
@@ -9135,6 +9150,8 @@ async function readUpstream(root: string): Promise<UpstreamState> {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_ASKPASS: '', SSH_ASKPASS: '', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=10' };
   const git = (args: string[], timeoutMs = 5000) => new Promise<{ ok: boolean; out: string; err: string }>(resolve => {
     const child = spawn('git', ['-C', root, '-c', 'credential.interactive=never', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true });
+    // GH #312: a fetch writes refs - it ends every verify memo's epoch.
+    if (!isReadOnlyGit(args)) noteChildProcess(child);
     let out = '';
     let err = '';
     let done = false;
@@ -9215,11 +9232,11 @@ async function greenPeersOf(item: any): Promise<any[]> {
   return (await storage.listItems({ projectId: item.projectId, hydrate: false } as any)).filter((s: any) => !s.parentId);
 }
 
-async function siblingGreenOf(item: any, siblings: any[], flow: TransitionFlow, project: any, gateRoot: string | null | undefined, command: string) {
+async function siblingGreenOf(item: any, siblings: any[], flow: TransitionFlow, project: any, gateRoot: string | null | undefined, command: string, git: GitRunner = gitRun) {
   const sharesRoot = !!gateRoot;
-  const treeSha = sharesRoot ? readCleanTreeSha(gateRoot!, gitRun) : null;
+  const treeSha = sharesRoot ? readCleanTreeSha(gateRoot!, git) : null;
   // 3ffc9651: or at this very STATE, dirty or not - every file's content, as the green recorded it.
-  const treeState = sharesRoot ? treeStateOf(gateRoot!, project) : null;
+  const treeState = sharesRoot ? treeStateOf(gateRoot!, project, git) : null;
   let pass: { sibling: any; test: any } | null = null;
   let refusal = treeSha
     ? 'no sibling green is tied to this commit'
@@ -9260,12 +9277,12 @@ const stepHasCommandChecks = (flow: { steps: any[] }, status: string): boolean =
  * a green reused from an earlier run), in the root the command runs in, on the
  * state the tree is still in.
  */
-export function ownCaptureGreenOf(capture: any, command: string, root: string | null | undefined, project: any): any | null {
+export function ownCaptureGreenOf(capture: any, command: string, root: string | null | undefined, project: any, git: GitRunner = gitRun): any | null {
   // A reused green ran nothing on this move (reusedFrom; a re-read surface sets it too): the command is then the one run.
   if (!capture || capture.kind !== 'capture' || !root || capture.lazy || capture.reusedFrom || capture.surfaceRereadFrom || !capturedGreen(capture)) return null;
   if (capture.command !== command || capture.root !== root) return null;
   const state = stateOfRecord(capture);
-  return state !== null && treeStateOf(root, project) === state ? capture : null;
+  return state !== null && treeStateOf(root, project, git) === state ? capture : null;
 }
 
 /**
@@ -9279,21 +9296,22 @@ export function ownCaptureGreenOf(capture: any, command: string, root: string | 
  * Like a capture's green, it needs a report with paths (only fenced runs
  * carry a state) and the report's command to BE the verify command.
  */
-async function closeGreenOnRecord(item: any, project: any, root: string | null | undefined, command: string): Promise<{ green: any; state: string; sha: string | null } | null> {
+async function closeGreenOnRecord(item: any, project: any, root: string | null | undefined, command: string, git: GitRunner = gitRun): Promise<{ green: any; state: string; sha: string | null } | null> {
   const setting: TestReportSetting | undefined = project?.testReport;
   if (!root || !setting || reportPathsOf(setting).length === 0) return null;
   if (effectiveVerifyCommand(project).command !== command) return null;
   // ONE read of the tree: the state matched and the state recorded must be the same content (review: an agent
   // sharing the tree could save a file between two reads, and the close would record its untested edit as green).
-  const sha = readCleanTreeSha(root, gitRun);
-  const read = treeFiles(root, reportOwnedOf(root, project));
+  const sha = readCleanTreeSha(root, git);
+  const read = treeFiles(root, reportOwnedOf(root, project, git), git);
   // HEAD read again after the files: a commit between the two reads would tie this content to the wrong commit.
-  if (!read || !read.shareable || readCleanTreeSha(root, gitRun) !== sha) return null;
+  // GH #312: a deliberate re-read (F1), so from git itself, never from the verify's memo.
+  if (!read || !read.shareable || readCleanTreeSha(root, fenceOf(git)) !== sha) return null;
   // 19e660ac: one read of what lies beside a subdirectory root, for both states.
-  const outside = outsideContent(root);
+  const outside = outsideContent(root, git);
   const state = sharedState(read.hash, outside);
   if (!state) return null;
-  const green = await reusableCapture(item, project, root, sha, state, suiteStateOf(root, setting, read, outside));
+  const green = await reusableCapture(item, project, root, sha, state, suiteStateOf(root, setting, read, outside, git), git);
   return green && green.available === true && capturedGreen(green) ? { green, state, sha } : null;
 }
 
@@ -9748,7 +9766,9 @@ async function noteNoReceipt(itemId: string, reason: string): Promise<void> {
   }
 }
 
-async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun; answers?: Record<string, string> }): Promise<StepGate> {
+async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun; answers?: Record<string, string>; git?: GitRunner }): Promise<StepGate> {
+  // GH #312: the verify's memo, so the checks read what the verify already read in this epoch.
+  const git = opts?.git ?? gitRun;
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
@@ -9776,7 +9796,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   if (planned.runs) {
     const run = opts?.run;
     const lazyOver = await entryCaptureOf(item, sorted, index);
-    const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver });
+    const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver, git });
     if ('error' in out) {
       if (out.error === 'COMMAND_UNREADABLE') {
         unreadable = { message: out.message, command: out.command };
@@ -9786,7 +9806,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     setRunPhase(run, { state: 'checking' });
     // a36047ea: a whole run that only code changes caused, in a project that could have run fewer.
     if (capture && !capture.lazy && !capture.reusedFrom && lazyOver && project?.testReport && project.projectRoot) {
-      const hint = relatedHint(capture.root ?? project.projectRoot, project.testReport, lazyOver);
+      const hint = relatedHint(capture.root ?? project.projectRoot, project.testReport, lazyOver, git);
       if (hint) capture = { ...capture, relatedHint: hint };
     }
   }
@@ -9813,7 +9833,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   // On a step that asks for a passkey, only signed overrides lift a check.
   const signedOnly = stepWantsPasskey(flow as Flow, item.status);
   for (const r of here) if (r.kind === 'override' && typeof r.check === 'string' && (!signedOnly || r.authority === 'passkey')) overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? ''), ...(typeof r.detail === 'string' ? { detail: r.detail } : {}) };
-  const review = resolved.some(c => (c.id === 'review-record' || c.id === 'fixes-reviewed') && c.applicable) ? { ...(await reviewEvidence(item, root)), agenfkVersion: getCurrentVersion() } : undefined;
+  const review = resolved.some(c => (c.id === 'review-record' || c.id === 'fixes-reviewed') && c.applicable) ? { ...(await reviewEvidence(item, root, 0, git)), agenfkVersion: getCurrentVersion() } : undefined;
   // Whoever is advancing the card now is an author too, though no step record carries them yet.
   if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
     review.authors.push({ client: actor.client, sessionId: actor.sessionId, agentId: actor.agentId ?? null });
@@ -9828,7 +9848,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
       // SX-3 review: a covered card's flow command runs in the Airlock sandbox too.
       airlock: (argv, cwd) => airlockArgvFor(airlockRunDeps, item.id, argv, cwd),
       // 3ffc9651: a pass is shared by this project's cards at the same state of this tree.
-      ...(root ? { share: { scope: `${item.projectId}\0${root}`, itemId: item.id, state: () => commandStateOf(root, project) } } : {}),
+      ...(root ? { share: { scope: `${item.projectId}\0${root}`, itemId: item.id, state: () => commandStateOf(root, project, git) } } : {}),
     })
     : undefined;
   const outcome = evaluateChecks(resolved, {
@@ -9836,12 +9856,12 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     ...(agentReports ? { agentReports } : {}),
     review,
     root,
-    git: args => gitRun.run(args),
+    git: args => git.run(args),
     item,
     cardBranch: await branchOfCard(item),
     cardKeys: await keysOfCard(item),
     testPaths: Array.isArray(project?.testReport?.surface) ? project.testReport.surface : [],
-    ignoredPaths: reportPath && root ? reportsOwned(root, project?.testReport) : [],
+    ignoredPaths: reportPath && root ? reportsOwned(root, project?.testReport, git) : [],
     // aa98ccf4: a dirty tree shared with live cards warns instead of blocking.
     ...(resolved.some(c => c.applicable && c.id === 'tree-clean') && root ? { liveTreeMates: await liveTreeMatesOf(item, root, project?.projectRoot, new Set(((flow as any)?.steps ?? []).filter((st: any) => st?.isAnchor || st?.isSpecial).map((st: any) => String(st.name).toUpperCase()))) } : {}),
     deferToCommand,
@@ -10066,7 +10086,14 @@ function runRecorder(run: ValidateRun) {
   };
 }
 
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport>; answers?: Record<string, string>; joined?: boolean }) {
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport>; answers?: Record<string, string>; joined?: boolean; git?: GitMemo }) {
+  /*
+   * GH #312: this verify's git memo - a read-only query asked again within one epoch is answered
+   * from its first answer, never across requests (a continuation of this same verify passes it on).
+   * The deliberate fence re-reads (closeGreenOnRecord's, the close's re-check, stampCloseGreen's)
+   * go to git through its fence; runCommandAndFinalize's reads stay on raw git throughout.
+   */
+  const vgit = opts?.git ?? createGitMemo(gitRun);
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -10113,8 +10140,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    */
   const exitRecord = {
     step: item.status, kind: 'exit' as const, at: new Date().toISOString(),
-    head: effectiveRoot ? readHead(effectiveRoot, gitRun) : null,
-    clean: effectiveRoot ? readCleanTreeSha(effectiveRoot, gitRun) !== null : false,
+    head: effectiveRoot ? readHead(effectiveRoot, vgit) : null,
+    clean: effectiveRoot ? readCleanTreeSha(effectiveRoot, vgit) !== null : false,
     // Who advanced the card, as its harness reports it (CGLAB-381): the review
     // check tells the reviewer apart from every author by this.
     ...(opts?.actor ? { actor: opts.actor } : {}),
@@ -10209,7 +10236,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (!gate && !(currentFlowStep.step.isAnchor && currentFlowStep.index !== 0)) {
     // 961f301d: a person's missing approval is answered first, inline, before anything slow.
     if (await waitsOnPerson(item, activeFlow, project)) {
-      const waiting = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { personFirst: true, answers: opts?.answers });
+      const waiting = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { personFirst: true, answers: opts?.answers, git: vgit });
       if (waiting.blocked) return refuseOnChecks(res, item, waiting);
     }
     const nextName = sorted[currentFlowStep.index + 1]?.name;
@@ -10232,12 +10259,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       void (async () => {
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
-        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run, answers: opts?.answers });
+        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run, answers: opts?.answers, git: vgit });
         if (g.unreadable) {
           return recorder.status(400).json({ error: 'COMMAND_UNREADABLE', message: g.unreadable.message, command: g.unreadable.command });
         }
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
-        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports, answers: opts?.answers });
+        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports, answers: opts?.answers, git: vgit });
       })()
         .catch((err: any) => {
           run.status = 'failed';
@@ -10251,7 +10278,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         });
       return;
     }
-    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { answers: opts?.answers });
+    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { answers: opts?.answers, git: vgit });
     if (gate.unreadable) {
       return res.status(400).json({ error: 'COMMAND_UNREADABLE', message: gate.unreadable.message, command: gate.unreadable.command });
     }
@@ -10384,7 +10411,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     if (!endsFlow) return '';
     // The configured report (and a directory holding only it) is agenfk's own,
     // never the card's work to stage (d26832d6 #3).
-    const owned = effectiveRoot ? reportOwnedOf(effectiveRoot, project) : [];
+    const owned = effectiveRoot ? reportOwnedOf(effectiveRoot, project, vgit) : [];
     const paths = (result?.unstaged ?? []).filter(f => { const c = f.replace(/\/$/, ''); return !owned.some(o => c === o || c.startsWith(`${o}/`)); });
     const shown = paths.slice(0, UNSTAGED_SHOWN);
     const left = paths.length
@@ -10616,12 +10643,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
      * that commit - recorded, so the next card inherits it by commit too.
      */
     if (how.stampAt && effectiveRoot) {
-      const verifiedSha = readCleanTreeSha(effectiveRoot, gitRun);
-      if (verifiedSha && treeStateOf(effectiveRoot, project) === how.stampAt) {
+      const verifiedSha = readCleanTreeSha(effectiveRoot, vgit);
+      if (verifiedSha && treeStateOf(effectiveRoot, project, vgit) === how.stampAt) {
         const current = await storage.getItem(itemId);
         await storage.updateItem(itemId, { tests: testRecords(current?.tests).map((t: any) => (t.id === testId ? { ...t, commit: verifiedSha } : t)) });
         noteGreen(item.projectId, effectiveRoot, verifiedSha, itemId);
-        try { await stampCloseGreen(itemId, effectiveRoot, verifiedSha); }
+        try { await stampCloseGreen(itemId, effectiveRoot, verifiedSha, vgit); }
         catch (e: any) { console.error(`[validate] stampCloseGreen failed after the close: ${e?.message || e}`); }
         io.emit('items_updated');
       }
@@ -10636,7 +10663,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // The gate just ran the verify command as its capture, green, on this very tree: running it again proves nothing new.
   // A command check on this step runs after the capture (a build, say, into ignored files the tree state cannot see): the command then runs after it, as before.
   if (endsFlow && resolvedCommand && gate?.capture && !stepHasCommandChecks(activeFlow, item.status) && !freshRootClose(item, project)) {
-    const own = ownCaptureGreenOf(gate.capture, resolvedCommand, effectiveRoot, project);
+    const own = ownCaptureGreenOf(gate.capture, resolvedCommand, effectiveRoot, project, vgit);
     if (own) {
       const green = { ...(own.clean === true && typeof own.head === 'string' ? { commit: own.head } : {}), treeState: stateOfRecord(own), treeStateVersion: STATE_VERSION, commitRoot: effectiveRoot };
       return closeOnGreen(res, {
@@ -10680,7 +10707,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * (CGLAB-366).
        */
       const gateRoot = effectiveRoot;
-      const { pass, refusal, treeState } = await siblingGreenOf(item, siblings, activeFlow as TransitionFlow, project, gateRoot, resolvedCommand!);
+      const { pass, refusal, treeState } = await siblingGreenOf(item, siblings, activeFlow as TransitionFlow, project, gateRoot, resolvedCommand!, vgit);
       if (pass) {
         const { sibling: passedSibling, test: siblingTest } = pass;
         const where = siblingTest.commit ? `\`${String(siblingTest.commit).slice(0, 12)}\`` : `\`${String(siblingTest.treeState).slice(0, 12)}\` with the same uncommitted content`;
@@ -10728,9 +10755,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // A capture of this move that ran and was NOT green is never outvoted by an older green (as stampCloseGreen refuses).
   const gateRanRed = !!gate?.capture && gate.capture.kind === 'capture' && !gate.capture.reusedFrom && !capturedGreen(gate.capture);
   if (endsFlow && resolvedCommand && !gateRanRed && !stepHasCommandChecks(activeFlow, item.status) && !freshRootClose(item, project)) {
-    const onRecord = await closeGreenOnRecord(item, project, effectiveRoot, resolvedCommand);
+    const onRecord = await closeGreenOnRecord(item, project, effectiveRoot, resolvedCommand, vgit);
     // The state it matched, still the tree's: a tree that moved since runs the command.
-    if (onRecord && treeStateOf(effectiveRoot!, project) === onRecord.state) {
+    // GH #312: a deliberate re-read (F3) - an edit landing during closeGreenOnRecord's awaits must be seen.
+    if (onRecord && treeStateOf(effectiveRoot!, project, vgit.fence) === onRecord.state) {
       const from = onRecord.green.reusedFrom ?? {};
       const source = `${from.itemId === itemId ? 'this card' : `card \`${String(from.itemId ?? '').slice(0, 8)}\``}${from.step ? ` at ${from.step}` : ''}${from.at ? ` (${from.at})` : ''}`;
       // The tree that closes: on a docs-only change, not the content the green ran on.
@@ -10831,10 +10859,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
     }>((resolve) => {
     // A sandboxed run is a process group of its own, so a timeout's group kill takes all of it (SX-3 review).
-    const child = spawn(airlockRun.command, {
+    // GH #312: the command may write the tree - its start and its exit end every verify memo's epoch.
+    const child = noteChildProcess(spawn(airlockRun.command, {
       shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' }, windowsHide: true,
       ...(airlockRun.sandboxed && process.platform !== 'win32' ? { detached: true } : {}),
-    });
+    }));
     let killed = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -11327,13 +11356,14 @@ function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: st
 }
 
 function runWorktreeSetup(item: any, decision: SetupDecision, worktreePath: string, commandLine: string): void {
-  const child = spawn(commandLine, {
+  // GH #312: a setup command writes a tree a verify may be reading.
+  const child = noteChildProcess(spawn(commandLine, {
     shell: true,
     cwd: worktreePath,
     detached: process.platform !== 'win32',
     env: { ...process.env, FORCE_COLOR: '0' },
     windowsHide: true,
-  });
+  }));
   let output = '';
   let timedOut = false;
   // A ROLLING TAIL, not a head. The diagnosis is at the END of an install log,

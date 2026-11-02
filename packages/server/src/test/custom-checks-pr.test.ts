@@ -12,9 +12,6 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -24,7 +21,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { argvHash } from '../commandChecks';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -47,9 +44,8 @@ const checks = [
 async function project() {
   const f = await agent().post('/flows').send({ name: `ccpr-${++seq}`, steps: [s('TODO', 0, { isAnchor: true }), s('WORK', 1, { checks }), s('NEXT', 2), s('DONE', 3, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ccpr-'));
+  const dir = echoRepo(A, 'agenfk-ccpr-');
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `ccpr-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, verifyCommand: 'exit 0' } as never);
   return p.body.id as string;

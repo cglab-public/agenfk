@@ -1399,11 +1399,17 @@ describe('POST /items/:id/validate — push instructions included in DONE messag
     afterAll(() => { for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
     /** A project on the role-less default flow, rooted in a real one-commit repository, with a green verify command. */
     const pushProject = async (name: string) => {
-      const { execSync } = await import('child_process');
-      const { posixShell } = await import('./helpers/posixShell');
-      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pushhint-'));
+      const { cloneGitTemplate, gitSync, writeFiles } = await import('./helpers/gitFixture');
+      // `git init` with no -b: the branch is git's configured default, as before.
+      const repo = cloneGitTemplate('server.supplemental:pushhint-a.txt', (d: string) => {
+        gitSync(d, 'init', '-q');
+        gitSync(d, 'config', 'user.email', 't@t');
+        gitSync(d, 'config', 'user.name', 't');
+        writeFiles(d, { 'a.txt': 'a\n' });
+        gitSync(d, 'add', '.');
+        gitSync(d, 'commit', '-qm', 'one');
+      }, 'agenfk-pushhint-');
       repos.push(repo);
-      execSync('git init -q && git config user.email t@t && git config user.name t && echo a > a.txt && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
       const p = await makeProject(app, name);
       await bindRoleLessDefaultFlow(storage, p.id);
       await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'exit 0' } as never);

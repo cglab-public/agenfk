@@ -15,7 +15,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -25,7 +24,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { describeCapture } from '../checkEngine';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, IGNORE_REPORT } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -39,7 +38,6 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...extra });
 
@@ -79,15 +77,18 @@ async function setup(sub = false, steps?: any[]) {
     s('START', 0, { isAnchor: true }), s('SPECS', 1, { role: 'test-authoring' }), s('BUILD', 2, { role: 'coding' }), s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const top = tmp('agenfk-de-repo-');
   // With `sub`, the project is a subdirectory of its repository.
+  const at = sub ? 'sub/' : '';
+  const top = echoRepo({
+    ...(sub ? { 'shared.js': 'module.exports = 0;\n' } : {}),
+    [`${at}lib.js`]: 'module.exports = 1;\n',
+    [`${at}other.js`]: 'module.exports = 2;\n',
+    [`${at}a.test.js`]: 'pass adds\n',
+    [`${at}b.test.js`]: 'pass other works\n',
+    ...IGNORE_REPORT,
+  }, 'agenfk-de-repo-');
+  dirs.push(top);
   const repo = sub ? path.join(top, 'sub') : top;
-  if (sub) { fs.mkdirSync(repo); fs.writeFileSync(path.join(top, 'shared.js'), 'module.exports = 0;\n'); }
-  fs.writeFileSync(path.join(repo, 'lib.js'), 'module.exports = 1;\n');
-  fs.writeFileSync(path.join(repo, 'other.js'), 'module.exports = 2;\n');
-  fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass adds\n');
-  fs.writeFileSync(path.join(repo, 'b.test.js'), 'pass other works\n');
-  git(top, 'git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one');
   const tools = tmp('agenfk-de-tools-');
   const log = path.join(tools, 'runs');
   const deps = path.join(tools, 'deps.json');
