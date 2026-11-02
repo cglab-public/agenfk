@@ -73,3 +73,30 @@ export const hasHostEntries = (h: AirlockHostListsDto): boolean =>
 
 /** The editors' help for a direction. */
 export const DIRECTION_HELP = 'Add “download” or “upload” after it to make an entry one way only.';
+
+/** What can be said of a learned host for certain (core hostLabels), and what an import knew of it. */
+export type HostLabelDto = 'public-dns-resolver' | 'cloud-machine' | 'network-address' | 'unnamed-address';
+export interface HostContextDto {
+  projects: string[];
+  reverseDns: string | null;
+  /** One sentence a model wrote (agenfk airlock learn --hints): display only. */
+  hint: string | null;
+  hintBy: string | null;
+}
+
+/** Each label as a person reads it: core's AIRLOCK_HOST_LABEL_TEXT, copied (this package does not import core). */
+export const HOST_LABEL_TEXT: Readonly<Record<HostLabelDto, string>> = {
+  'public-dns-resolver': 'public DNS resolver',
+  'cloud-machine': 'cloud machine: the address is someone else\'s once it is gone',
+  'network-address': 'network address: more likely a range or a version number than a machine',
+  'unnamed-address': 'address with no name',
+};
+
+/** A host's facts as one line's parts: its labels, its reverse DNS name and the projects that reached it. */
+export function hostFacts(labels?: readonly string[] | null, context?: HostContextDto | null, moreProjects = 0): string[] {
+  return [
+    ...(labels ?? []).map(l => HOST_LABEL_TEXT[l as HostLabelDto] ?? l),
+    ...(context?.reverseDns ? [`reverse DNS ${context.reverseDns}`] : []),
+    ...(context?.projects?.length ? [`seen in ${context.projects.join(', ')}${moreProjects > 0 ? ` and ${moreProjects} more` : ''}`] : []),
+  ];
+}

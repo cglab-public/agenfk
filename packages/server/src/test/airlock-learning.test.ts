@@ -410,7 +410,8 @@ describe('a hub-joined installation', () => {
     const hosts = sent[0].payload.hosts;
     expect(hosts.map((x: any) => x.host).sort()).toEqual(['api.vendor.io', 'pkg.vendor.dev']);
     for (const x of hosts) {
-      expect(Object.keys(x).sort()).toEqual(['cardCount', 'clients', 'evidence', 'firstSeen', 'hits', 'host', 'lastSeen', 'sources', 'uploads']);
+      // context: what the import knew of the host (null here); still no command, URL or card id.
+      expect(Object.keys(x).sort()).toEqual(['cardCount', 'clients', 'context', 'evidence', 'firstSeen', 'hits', 'host', 'lastSeen', 'sources', 'uploads']);
     }
     expect(JSON.stringify(sent[0].payload)).not.toMatch(/private|path|Bearer|card-1|curl/);
   });
@@ -533,3 +534,71 @@ describe('review round 1 (Codex)', () => {
   });
 });
 
+describe('a learned host\'s context (user decision 2026-11-02)', () => {
+  const context = { projects: ['spark'], reverseDns: 'ec2-16-170-214-92.eu-north-1.compute.amazonaws.com', hint: 'A build box agents polled over ssh.', hintBy: 'claude' };
+  const imp = (hosts: unknown[]) => ({ client: 'pi', hosts });
+
+  it('an import entry may carry one; the proposal shows it with the labels it implies', async () => {
+    const h = harness();
+    const r = await h.call('POST /airlock/learning/import', imp([{ host: '16.170.214.92', hits: 3, context }]));
+    expect(r.body).toMatchObject({ recorded: 1, invalid: 0 });
+    const p = await h.proposal();
+    expect(p.proposal.hosts[0]).toMatchObject({ host: '16.170.214.92', context, labels: ['cloud-machine'] });
+  });
+
+  it('only the context\'s own fields are kept, cleaned; a malformed one is dropped and the host still learned', async () => {
+    const h = harness();
+    await h.call('POST /airlock/learning/import', imp([
+      { host: 'a.vendor.io', hits: 1, context: { ...context, command: 'curl https://a.vendor.io/secret', hint: 'line one\nline two' } },
+      { host: 'b.vendor.io', hits: 1, context: 'not an object' },
+    ]));
+    const p = await h.proposal();
+    const byHost = Object.fromEntries(p.proposal.hosts.map((x: any) => [x.host, x]));
+    expect(byHost['a.vendor.io'].context).toEqual({ ...context, hint: 'line one line two' });
+    expect(byHost['b.vendor.io'].context).toBeNull();
+    expect(JSON.stringify([...h.learned.values()])).not.toMatch(/curl|secret/);
+  });
+
+  it('a hint or project that carries a secret is not kept', async () => {
+    const h = harness();
+    await h.call('POST /airlock/learning/import', imp([{ host: 'a.vendor.io', hits: 1, context: { projects: ['ok', 'AKIAIOSFODNN7EXAMPLE'], hint: 'uses key AKIAIOSFODNN7EXAMPLE', hintBy: 'pi' } }]));
+    expect((await h.proposal()).proposal.hosts[0].context).toEqual({ projects: ['ok'], reverseDns: null, hint: null, hintBy: null });
+    expect(JSON.stringify([...h.learned.values()])).not.toContain('AKIA');
+  });
+
+  it('forwarding sends each host\'s context to the hub', async () => {
+    const h = harness({ hubJoined: true });
+    await h.call('POST /airlock/learning/import', imp([{ host: '16.170.214.92', hits: 3, context }]));
+    await h.call('POST /airlock/learning/forward', { hosts: ['16.170.214.92'] }, BOARD);
+    const sent = h.recordHubEvent.mock.calls.map(c => c[0]).find((e: any) => e.type === 'airlock.learning-proposal');
+    expect(sent.payload.hosts[0].context).toEqual(context);
+  });
+
+  it('a later import that found nothing for a host clears its projects and reverse DNS name, and keeps its hint (review: stale context)', async () => {
+    const h = harness();
+    await h.call('POST /airlock/learning/import', imp([{ host: '16.170.214.92', hits: 3, context }]));
+    await h.call('POST /airlock/learning/import', imp([{ host: '16.170.214.92', hits: 3, context: { projects: [], reverseDns: null, hint: null, hintBy: null } }]));
+    expect((await h.proposal()).proposal.hosts[0].context).toEqual({ projects: [], reverseDns: null, hint: context.hint, hintBy: context.hintBy });
+  });
+
+  it('an import from before contexts (no context field) leaves the stored one as it was', async () => {
+    const h = harness();
+    await h.call('POST /airlock/learning/import', imp([{ host: '16.170.214.92', hits: 3, context }]));
+    await h.call('POST /airlock/learning/import', imp([{ host: '16.170.214.92', hits: 3 }]));
+    expect((await h.proposal()).proposal.hosts[0].context).toEqual(context);
+  });
+
+  it('a later import that found nothing and has no hint to keep leaves no context at all', async () => {
+    const h = harness();
+    await h.call('POST /airlock/learning/import', imp([{ host: 'a.vendor.io', hits: 1, context: { projects: ['spark'] } }]));
+    await h.call('POST /airlock/learning/import', imp([{ host: 'a.vendor.io', hits: 1, context: { projects: [] } }]));
+    expect((await h.proposal()).proposal.hosts[0].context).toBeNull();
+  });
+
+  it('a hint in ordinary prose (an apostrophe, quotes) is kept: only a secret drops it (local test, 2026-11-02)', async () => {
+    const h = harness();
+    const hint = "The team's AgEnFK hub; agents checked its \"health\" endpoint.";
+    await h.call('POST /airlock/learning/import', imp([{ host: 'a.vendor.io', hits: 1, context: { projects: ["bob's-app"], hint, hintBy: 'claude' } }]));
+    expect((await h.proposal()).proposal.hosts[0].context).toEqual({ projects: ["bob's-app"], reverseDns: null, hint, hintBy: 'claude' });
+  });
+});

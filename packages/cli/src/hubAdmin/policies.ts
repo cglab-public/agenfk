@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import {
   AdminCliError, adminAction, adminDownload, adminRequest, covers, emit, printTable, requireYes,
 } from './client';
-import { hostEntries } from '@agenfk/core';
+import { hostEntries, AIRLOCK_HOST_LABEL_TEXT, type AirlockHostLabel } from '@agenfk/core';
 
 /**
  * Policies (CGLAB-702 S4): the board's Airlock, Repositories and Models pages.
@@ -172,6 +172,16 @@ export function registerPolicyCommands(admin: Command): void {
           HOST: (h: any) => h.host, HITS: (h: any) => h.hits, UPLOADS: (h: any) => h.uploads ?? 0, PROXY: (h: any) => h.proxyHits,
           INSTALLATIONS: (h: any) => h.installations, CLIENTS: (h: any) => (h.clients ?? []).join(','), LAST_SEEN: (h: any) => h.lastSeen,
         }, 'No proposals.');
+        // What the installations' imports knew of each host: display only, never a verdict.
+        for (const h of d.hosts ?? []) {
+          const facts = [
+            ...(h.labels ?? []).map((l: AirlockHostLabel) => AIRLOCK_HOST_LABEL_TEXT[l] ?? l),
+            h.context?.reverseDns && `reverse DNS ${h.context.reverseDns}`,
+            h.context?.projects?.length && `seen in ${h.context.projects.join(', ')}${h.moreProjects ? ` and ${h.moreProjects} more` : ''}`,
+          ].filter(Boolean);
+          if (facts.length) console.log(`${h.host}: ${facts.join(' · ')}`);
+          if (h.context?.hint) console.log(chalk.gray(`  model hint (${h.context.hintBy ?? 'unknown'}): ${h.context.hint}`));
+        }
         if (d.wildcards?.length) {
           console.log(chalk.gray('Wildcards over hosts sharing a domain (accept the pattern to allow them all):'));
           printTable(d.wildcards, {

@@ -22,6 +22,7 @@ import { clsx } from 'clsx';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { API_URL } from '../apiUrl';
 import { useSocketEvent } from '../SocketContext';
+import { hostFacts, type HostContextDto, type HostLabelDto } from '../airlockHostText';
 
 export interface AirlockProposedHostDto {
   host: string;
@@ -34,6 +35,9 @@ export interface AirlockProposedHostDto {
   lastSeen: string;
   clients: string[];
   cards: string[];
+  /** What the latest import knew of it (absent from a server before 2026-11-02). */
+  context?: HostContextDto | null;
+  labels?: HostLabelDto[];
 }
 /** Proposed hosts sharing a registrable domain, offered as one `*.domain` entry. */
 export interface AirlockProposedWildcardDto {
@@ -93,6 +97,23 @@ const day = (iso: string) => new Date(iso).toLocaleDateString();
 function messageOf(e: unknown, fallback: string): string {
   const data = (e as { response?: { data?: { message?: string; error?: string } } } | null)?.response?.data;
   return data?.message ?? data?.error ?? fallback;
+}
+
+/** What is known of a host, to decide on it: its labels, reverse DNS name and projects, and a model hint marked as one. */
+function HostContext({ labels, context }: { labels?: HostLabelDto[]; context?: HostContextDto | null }): React.ReactElement | null {
+  const facts = hostFacts(labels, context);
+  if (!facts.length && !context?.hint) return null;
+  return (
+    <>
+      {facts.length > 0 && <p className="text-ink-tertiary">{facts.join(' · ')}</p>}
+      {context?.hint && (
+        <p className="text-ink-secondary">
+          <span className="text-ink-tertiary">{`Model hint (${context.hintBy ?? 'unknown'}): `}</span>
+          <span className="italic">{context.hint}</span>
+        </p>
+      )}
+    </>
+  );
 }
 
 function DirectionPicker({ pattern, value, onChange }: { pattern: string; value: DirectionDto; onChange: (d: DirectionDto) => void }): React.ReactElement {
@@ -170,6 +191,7 @@ function Proposal({ data, selected, setSelected, directions, setDirections }: {
                   {` · `}
                   <span className={clsx((h.uploads ?? 0) > 0 && 'text-status-warn-text')}>{sentData(h.uploads ?? 0)}</span>
                 </p>
+                <HostContext labels={h.labels} context={h.context} />
               </div>
               {!data.hubManaged && <DirectionPicker pattern={h.host} value={directionOf(h.host, h.uploads ?? 0)} onChange={setDirection(h.host)} />}
             </li>

@@ -152,3 +152,44 @@ describe('Admin → Airlock → Proposed hosts: direction and wildcards (2026-11
     }));
   });
 });
+
+describe('what is known of each host (user decisions 2026-11-02)', () => {
+  it('its labels, reverse DNS name and projects, and a model hint said to be one', async () => {
+    const context = { projects: ['spark'], reverseDns: 'ec2-16-170-214-92.eu-north-1.compute.amazonaws.com', hint: 'A build box agents polled over ssh.', hintBy: 'claude' };
+    get.mockImplementation(async () => ({ data: { revision: 4, hosts: [row('16.170.214.92', { labels: ['cloud-machine'], context }), row('api.vendor.io', { labels: [], context: null })] } }));
+    renderCard();
+    const [box, plain] = within(await screen.findByRole('list', { name: 'Proposed hosts' })).getAllByRole('listitem');
+    for (const s of ['cloud machine', 'ec2-16-170-214-92.eu-north-1.compute.amazonaws.com', 'spark', 'A build box agents polled over ssh.', 'claude']) expect(box.textContent, s).toContain(s);
+    expect(within(box).getByText(/model hint/i)).toBeInTheDocument();
+    expect(within(plain).queryByText(/model hint/i)).toBeNull();
+  });
+
+  it('labels read as words, never as their codes', async () => {
+    get.mockImplementation(async () => ({ data: { revision: 4, hosts: [row('1.1.1.1', { labels: ['public-dns-resolver'] }), row('52.1.2.3', { labels: ['unnamed-address'] })] } }));
+    renderCard();
+    const text = (await screen.findByRole('list', { name: 'Proposed hosts' })).textContent ?? '';
+    expect(text).toMatch(/public DNS resolver/);
+    expect(text).toMatch(/address with no name/);
+    expect(text).not.toMatch(/public-dns-resolver|unnamed-address/);
+  });
+});
+
+describe('a direction picker is as wide as its choices (bug 351d88ca)', () => {
+  it('never asks for the full width and its own width at once', async () => {
+    renderCard();
+    await screen.findByRole('list', { name: 'Proposed hosts' });
+    for (const s of screen.getAllByRole('combobox')) {
+      const classes = s.className.split(/\s+/);
+      expect(classes.includes('w-full') && classes.includes('w-auto'), s.getAttribute('aria-label') ?? '').toBe(false);
+    }
+  });
+});
+
+describe('projects beyond those listed (review, 2026-11-02)', () => {
+  it('says how many more there are', async () => {
+    get.mockImplementation(async () => ({ data: { revision: 4, hosts: [row('api.vendor.io', { labels: [], context: { projects: ['a', 'b'], reverseDns: null, hint: null, hintBy: null }, moreProjects: 5 })] } }));
+    renderCard();
+    const list = await screen.findByRole('list', { name: 'Proposed hosts' });
+    expect(list.textContent).toContain('seen in a, b and 5 more');
+  });
+});

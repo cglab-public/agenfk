@@ -23,6 +23,7 @@ import { normalizeAirlockPolicy } from './policy';
 import { mergeHostLists, networkAllow } from './hostLists';
 import { CLOUD_STORAGE_DOMAINS, isCloudStorageHost } from './alerts';
 import { BUILTIN_DENY_HOSTS, type AirlockPolicy, type Capability } from './types';
+import { hostLabels, mergeHostContext } from './hostContext';
 import type {
   AirlockAcceptedEntry, AirlockHostObservation, AirlockImportTally, AirlockLearnedHost, AirlockLearningEvidence,
   AirlockLearningExclusion, AirlockLearnSource, AirlockProposal, AirlockProposedHost, AirlockProposedWildcard,
@@ -219,10 +220,27 @@ export function hostsOfPiRecord(record: unknown, screen?: AirlockHostScreen): st
 
 /** hostsOfPiRecord, with whether each call sent the host data. */
 export function sightingsOfPiRecord(record: unknown, screen?: AirlockHostScreen): AirlockSighting[] {
+  return piToolCallsOf(record, screen).flatMap((c) => c.sightings);
+}
+
+/** One tool call of a pi record: what it ran (its command or URL), and the hosts it reached. */
+interface PiToolCall {
+  text: string;
+  sightings: AirlockSighting[];
+}
+
+/** The text a call is shown by: its command, its URL(s), or its arguments as JSON. */
+const callText = (args: Record<string, unknown>): string =>
+  typeof args.command === 'string' ? args.command
+    : typeof args.url === 'string' ? args.url
+      : Array.isArray(args.urls) ? args.urls.filter((u) => typeof u === 'string').join(' ')
+        : JSON.stringify(args);
+
+function piToolCallsOf(record: unknown, screen?: AirlockHostScreen): PiToolCall[] {
   if (!isObject(record) || record.type !== 'message' || !isObject(record.message)) return [];
   const message = record.message;
   if (message.role !== 'assistant' || !Array.isArray(message.content)) return [];
-  const out: AirlockSighting[] = [];
+  const out: PiToolCall[] = [];
   for (const part of message.content) {
     if (!isObject(part) || part.type !== 'toolCall' || !isObject(part.arguments)) continue;
     const args = part.arguments;
@@ -231,7 +249,7 @@ export function sightingsOfPiRecord(record: unknown, screen?: AirlockHostScreen)
     if (Array.isArray(args.urls)) {
       for (const u of args.urls) if (typeof u === 'string' && u.trim()) caps.push({ kind: 'url', url: u });
     }
-    for (const h of sightingsOfCapabilities(caps, screen)) out.push(h);
+    out.push({ text: callText(args), sightings: sightingsOfCapabilities(caps, screen) });
   }
   return out;
 }
@@ -258,6 +276,8 @@ export interface AirlockTallyOptions {
   maxHosts?: number;
   /** Counts what was left out: sightings of hosts past the cap. */
   stats?: { droppedHosts: number };
+  /** Each tool call that reached a host, with what it ran: the import's examples for a hint. */
+  onCall?: (call: { hosts: string[]; text: string }) => void;
 }
 
 /**
@@ -269,7 +289,9 @@ export function tallyPiSessionLine(line: string, tally: Map<string, AirlockImpor
   if (!line || line[0] !== '{') return 0;
   let record: unknown;
   try { record = JSON.parse(line); } catch { return 0; }
-  const sightings = sightingsOfPiRecord(record, opts.screen);
+  const calls = piToolCallsOf(record, opts.screen);
+  if (opts.onCall) for (const c of calls) if (c.sightings.length) opts.onCall({ hosts: c.sightings.map((h) => h.host), text: c.text });
+  const sightings = calls.flatMap((c) => c.sightings);
   const at = isObject(record) ? isoOrNull(record.timestamp) : null;
   const max = opts.maxHosts ?? MAX_IMPORT_HOSTS;
   let counted = 0;
@@ -329,6 +351,8 @@ export function mergeHostObservation(row: AirlockLearnedHost | null, o: AirlockH
   // A row stored before uploads were counted reads as none.
   const uploads = { ...(base.uploads ?? { tool: 0, proxy: 0, import: 0 }) };
   uploads[o.source] = o.source === 'import' ? up : uploads[o.source] + up;
+  // Only an import knows a host's context; anything else leaves it as it was.
+  const context = o.source === 'import' && o.context !== undefined ? mergeHostContext(base.context, o.context) : base.context ?? null;
   return {
     host: base.host,
     hits,
@@ -338,6 +362,7 @@ export function mergeHostObservation(row: AirlockLearnedHost | null, o: AirlockH
     receivedAt: later(base.receivedAt ?? null, receivedAt) as string,
     clients: addBounded(base.clients, o.client, MAX_LEARNED_CLIENTS),
     cards: addBounded(base.cards, o.itemId, MAX_LEARNED_CARDS),
+    ...(context ? { context } : {}),
   };
 }
 
@@ -388,6 +413,8 @@ export function proposeAllowlist(
       lastSeen: row.lastSeen,
       clients: [...row.clients],
       cards: [...row.cards],
+      context: row.context ?? null,
+      labels: hostLabels(host, row.context),
     });
   }
   hosts.sort((a, b) =>

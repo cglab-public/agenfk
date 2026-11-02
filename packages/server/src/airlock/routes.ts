@@ -588,6 +588,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
     resolvePolicy: () => resolveAirlockPolicy(deps.storage(), deps.hubJoined()),
     writeStateFile: (view) => tryWriteAirlockStateFile(view as AirlockPolicyView, stateFile()),
     redact: redactTarget,
+    redactPlain: redactPlainText,
   });
 
   // DS-1: full rows for the hub's dataset, only while its switch is on and this installation is joined.

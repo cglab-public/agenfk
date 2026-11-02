@@ -197,3 +197,38 @@ describe('Airlock learning: hub-joined', () => {
     expect(await screen.findByRole('status')).toHaveProperty('textContent', expect.stringMatching(/sent 2 hosts/i));
   });
 });
+
+describe('what is known of each host (user decisions 2026-11-02)', () => {
+  const context = { projects: ['spark', 'horizon'], reverseDns: 'ec2-16-170-214-92.eu-north-1.compute.amazonaws.com', hint: 'A build box agents polled over ssh.', hintBy: 'pi spark/glm' };
+
+  it('its labels, reverse DNS name and projects, and a model hint said to be one', async () => {
+    vi.spyOn(learningApi, 'get').mockResolvedValue(answer({ proposal: {
+      hosts: [host('16.170.214.92', { labels: ['cloud-machine'], context }), host('api.vendor.io', { labels: [], context: null })], excluded: [],
+    } }) as never);
+    renderIt();
+    const [box, plain] = within(await open()).getAllByRole('listitem');
+    const text = box.textContent ?? '';
+    for (const s of ['cloud machine', 'ec2-16-170-214-92.eu-north-1.compute.amazonaws.com', 'spark, horizon', 'A build box agents polled over ssh.', 'pi spark/glm']) expect(text, s).toContain(s);
+    expect(within(box).getByText(/model hint/i)).toBeTruthy();
+    expect(within(plain).queryByText(/model hint/i)).toBeNull();
+    expect(plain.textContent).not.toMatch(/reverse DNS|seen in/i);
+  });
+
+  it('each label reads as words, never as its code', async () => {
+    vi.spyOn(learningApi, 'get').mockResolvedValue(answer({ proposal: {
+      hosts: [host('1.1.1.1', { labels: ['public-dns-resolver'] }), host('154.0.0.0', { labels: ['network-address', 'unnamed-address'] })], excluded: [],
+    } }) as never);
+    renderIt();
+    const text = (await open()).textContent ?? '';
+    expect(text).toMatch(/public DNS resolver/);
+    expect(text).toMatch(/address with no name/);
+    expect(text).toMatch(/network address/);
+    expect(text).not.toMatch(/public-dns-resolver|unnamed-address|network-address/);
+  });
+
+  it('a host from an older server, with neither, renders as before', async () => {
+    renderIt();
+    const rows = within(await open()).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+  });
+});

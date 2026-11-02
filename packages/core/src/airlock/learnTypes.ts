@@ -5,6 +5,24 @@
  */
 export type AirlockLearnSource = 'tool' | 'proxy' | 'import';
 
+/**
+ * What an import knew of a host beyond its counts (user decisions
+ * 2026-11-02): shown to the person deciding on it, never used to decide.
+ */
+export interface AirlockHostContext {
+  /** The projects (working-folder names, never paths) whose sessions reached it. */
+  projects: string[];
+  /** An address's reverse DNS name, when it has one. */
+  reverseDns: string | null;
+  /** One sentence a model wrote on what the host is and what the agents did with it (--hints, opt-in). */
+  hint: string | null;
+  /** Which provider and model wrote the hint. */
+  hintBy: string | null;
+}
+
+/** Exact facts about a host, from its name or address and its reverse DNS name alone. */
+export type AirlockHostLabel = 'public-dns-resolver' | 'cloud-machine' | 'network-address' | 'unnamed-address';
+
 /** One sighting of a host (an import carries its count and window). */
 export interface AirlockHostObservation {
   host: string;
@@ -21,6 +39,8 @@ export interface AirlockHostObservation {
   firstSeen?: string | null;
   /** When the server received it, by its own clock (defaults to now). ISO. */
   receivedAt?: string;
+  /** An import's context of the host, already cleaned (sanitizeHostContext). */
+  context?: AirlockHostContext | null;
 }
 
 /** Everything learned about one host. */
@@ -35,6 +55,8 @@ export interface AirlockLearnedHost {
   receivedAt: string;
   clients: string[];
   cards: string[];
+  /** What the latest import knew of it; absent when none did. */
+  context?: AirlockHostContext | null;
 }
 
 export type AirlockLearningExclusion =
@@ -59,6 +81,8 @@ export interface AirlockProposedHost {
   lastSeen: string;
   clients: string[];
   cards: string[];
+  context: AirlockHostContext | null;
+  labels: AirlockHostLabel[];
 }
 
 /** Proposed hosts sharing a registrable domain, offered as one `*.domain` entry. */
