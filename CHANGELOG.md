@@ -4,6 +4,33 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.14] — 2026-11-02
+
+**Airlock** (#344)
+
+- **Each learned host says what it is, so a person can decide on it.** Every import
+  (`agenfk airlock learn --import-pi-sessions`) now brings the projects whose sessions reached a host (the working
+  folder's name, never its path) and an address's reverse DNS name, and the board and the hub label what can be said
+  for certain: a public DNS resolver, a cloud machine (the address is someone else's once it is gone), a network
+  address (`x.x.x.0`), an address with no name. The hub lists every installation's projects (25, then a count) and
+  the newest name and hint; `agenfk hub admin airlock learning list` prints them too. Display only: nothing here
+  allows, excludes or accepts a host.
+- **`--hints <provider>` writes one sentence per host.** Opt-in: `--hints claude`, `codex` or `pi` runs your own CLI
+  with your own login, or `--hints <http(s) URL>` asks an OpenAI-compatible server (a local llama-server or Ollama,
+  a self-hosted model; key in `AGENFK_HINTS_API_KEY`), with `--hints-model <id>` to pick the model. It is given up to
+  three example commands per host with secrets removed (the log redaction, plus the credentials a command spells out:
+  `curl -u`, authorization and cookie headers, a URL's user:password, `sshpass -p`, password options and
+  `*_PASSWORD=` style assignments), 30 hosts per call; the commands go to that provider only, never to the server or
+  the hub. A provider that fails or takes too long is stopped with everything it started, and the import goes on
+  without hints for those hosts. A later import replaces a host's projects and reverse DNS name, and keeps its hint
+  unless it brings a new one.
+- **Fixed:** the dropdowns in the board's Airlock settings took the whole row, squeezing each rule's name and
+  description to one word per line; the hub's learning direction picker had the same fault.
+- **Fixed:** the guest resolver could fail to start on Windows when the TCP side of the port it picked was reserved;
+  it now tries another port.
+
+The hub needs this version to show context and hints; an older hub ignores them in a forward.
+
 **Fixes**
 
 - A stopped `git am` declines the close commit as "a git am session is in progress", not as a rebase (#309).
