@@ -306,6 +306,111 @@ describe('it never claims a commit it did not make', () => {
     }
   });
 
+  // #309: the #251 stale-REBASE_HEAD test above writes the file by hand. These
+  // drive real git to the same state, so the test proves git actually leaves it.
+  const gitEnv = { ...process.env, GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true' };
+  const gitIn = (cwd: string, cmd: string) =>
+    execSync('git -c user.name=Tester -c user.email=test@example.com -c commit.gpgsign=false -c core.editor=true ' + cmd,
+      { cwd, stdio: 'pipe', env: gitEnv }).toString();
+  // REBASE_HEAD is a ref: a file under the files backend, but not under reftable
+  // (git 3.0's default), so presence is asked of git, never of the filesystem.
+  const hasRef = (cwd: string, ref: string) => {
+    try { gitIn(cwd, `rev-parse -q --verify ${ref}`); return true; } catch { return false; }
+  };
+  /** Rebase `side` onto `main` in `cwd` (merge backend), resolve the conflict, and finish with --continue. */
+  const finishConflictedRebase = (cwd: string) => {
+    let stopped = false;
+    try { gitIn(cwd, 'rebase --merge main'); } catch { stopped = true; }
+    expect(stopped, 'precondition: the rebase must stop on the conflict').toBe(true);
+    fs.writeFileSync(path.join(cwd, 'tracked.txt'), 'resolved\n');
+    gitIn(cwd, 'add tracked.txt');
+    gitIn(cwd, 'rebase --continue');
+    const gitPath = (p: string) => path.resolve(cwd, gitIn(cwd, `rev-parse --git-path ${p}`).trim());
+    // The rebase is over...
+    expect(fs.existsSync(gitPath('rebase-merge')), 'precondition: rebase-merge/ is gone').toBe(false);
+    expect(fs.existsSync(gitPath('rebase-apply')), 'precondition: rebase-apply/ is gone').toBe(false);
+    // ...but git left REBASE_HEAD behind. If a future git stops doing this the
+    // scenario under test no longer exists and this says so loudly.
+    expect(hasRef(cwd, 'REBASE_HEAD'), 'precondition: git left a stale REBASE_HEAD after rebase --continue').toBe(true);
+  };
+
+  it('commits after a real merge-backend rebase finished with --continue leaves a stale REBASE_HEAD (#309)', async () => {
+    const { dir, git } = repo();
+    try {
+      conflictingSide(git, dir);
+      git('checkout -q side');
+      finishConflictedRebase(dir);
+      expect(hasRef(dir, 'REBASE_HEAD')).toBe(true);
+
+      fs.writeFileSync(path.join(dir, 'card.txt'), 'card work\n');
+      git('add card.txt');
+      const r = await close(dir);
+      expect(r.outcome).not.toBe('declined');
+      expect(r.committed).toBe(true);
+      expect(git('log -1 --pretty=%s').trim()).toBe('close(bug): demo bug [abc123]');
+      expect(git('ls-tree -r --name-only HEAD')).toContain('card.txt');
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+  });
+
+  it('commits in a linked worktree whose finished rebase left a stale REBASE_HEAD in its own git dir (#309)', async () => {
+    const { dir, git } = repo();
+    const wt = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'agenfk-wt-'));
+    try {
+      conflictingSide(git, dir);
+      fs.rmSync(wt, { recursive: true, force: true });
+      git(`worktree add -q "${wt}" side`);
+      finishConflictedRebase(wt);
+      // The marker is the worktree's own (REBASE_HEAD is a per-worktree ref):
+      // the linked worktree sees it, the main checkout does not.
+      expect(hasRef(wt, 'REBASE_HEAD'), 'precondition: the worktree has a stale REBASE_HEAD').toBe(true);
+      expect(hasRef(dir, 'REBASE_HEAD'), 'precondition: the main checkout has no REBASE_HEAD').toBe(false);
+      // Under the files backend it is a file in .git/worktrees/<n>/, not in the main .git.
+      const rebaseHead = path.resolve(wt, gitIn(wt, 'rev-parse --git-path REBASE_HEAD').trim());
+      if (fs.existsSync(rebaseHead)) {
+        expect(rebaseHead.split(path.sep).join('/')).toMatch(/\/worktrees\/[^/]+\/REBASE_HEAD$/);
+      }
+
+      fs.writeFileSync(path.join(wt, 'card.txt'), 'card work\n');
+      gitIn(wt, 'add card.txt');
+      const r = await close(wt);
+      expect(r.outcome).not.toBe('declined');
+      expect(r.committed).toBe(true);
+      expect(gitIn(wt, 'log -1 --pretty=%s').trim()).toBe('close(bug): demo bug [abc123]');
+    } finally {
+      fs.rmSync(wt, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
+
+  it('declines a stopped git am with its own wording (#309)', async () => {
+    // `git am` stops in .git/rebase-apply/ just like an apply-backend rebase,
+    // but telling the author "a rebase is in progress" sends them looking for
+    // a rebase they never started.
+    const { dir, git } = repo();
+    const patches = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'agenfk-am-'));
+    try {
+      conflictingSide(git, dir); // side and main both changed tracked.txt from v1
+      git(`format-patch -q -1 side -o "${patches}"`);
+      const patch = fs.readdirSync(patches).filter(f => f.endsWith('.patch'))[0];
+      expect(patch, 'precondition: format-patch wrote a patch').toBeTruthy();
+      let stopped = false;
+      try { gitIn(dir, `am "${path.join(patches, patch)}"`); } catch { stopped = true; }
+      expect(stopped, 'precondition: git am must stop on the conflicting patch').toBe(true);
+      const rebaseApply = path.resolve(dir, gitIn(dir, 'rev-parse --git-path rebase-apply').trim());
+      expect(fs.existsSync(rebaseApply), 'precondition: git am stopped in rebase-apply/').toBe(true);
+      expect(fs.existsSync(path.join(rebaseApply, 'applying')), 'precondition: rebase-apply/ is git am, not rebase').toBe(true);
+      expect(hasRef(dir, 'REBASE_HEAD'), 'precondition: no REBASE_HEAD for git am').toBe(false);
+
+      const r = await close(dir);
+      expect(r.outcome).toBe('declined');
+      expect(r.committed).toBe(false);
+      expect(r.detail).toMatch(/git am/i);
+    } finally {
+      fs.rmSync(patches, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
+
   it('declines a multi-commit cherry-pick stopped between picks, after its HEAD marker is gone (#251 review; a revert leaves the same sequencer/ state)', async () => {
     // Committing a resolved conflict by hand clears CHERRY_PICK_HEAD (or
     // REVERT_HEAD), but the rest of the sequence is still queued in sequencer/.

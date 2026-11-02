@@ -4,6 +4,10 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+**Fixes**
+
+- A stopped `git am` declines the close commit as "a git am session is in progress", not as a rebase (#309).
+
 ## [2.1.0-beta.12] — 2026-11-01
 
 **Airlock**
