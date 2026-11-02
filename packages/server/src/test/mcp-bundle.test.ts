@@ -38,12 +38,14 @@ describe('the MCP bundle', () => {
       send({ id: 3, method: 'tools/call', params: { name: 'list_projects', arguments: {} } });
       for (let i = 0; i < 200 && !answers.has(3); i++) await new Promise((r) => setTimeout(r, 50));
       child.kill();
+      // On Windows the dying child still holds `dir` as its cwd: removing it before the exit is EPERM.
+      if (child.exitCode === null && child.signalCode === null) await new Promise((r) => child.once('exit', r));
       expect(answers.get(2)?.result?.tools?.some((t: { name: string }) => t.name === 'list_projects')).toBe(true);
       expect(answers.get(3)?.result).toBeDefined();
       expect(seen).toContain('/projects');
     } finally {
       await new Promise<void>((r) => api.close(() => r()));
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   }, 60_000);
 });
