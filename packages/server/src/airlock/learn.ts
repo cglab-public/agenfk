@@ -3,7 +3,7 @@
  * allowlist a person accepts.
  *
  *   GET  /airlock/learning           the proposal, and the policy it was made against
- *   POST /airlock/learning/import    host names and counts from a pi session-log import (CLI); loopback only
+ *   POST /airlock/learning/import    host names, counts and context from a pi session-log import (CLI); loopback only
  *   POST /airlock/learning/accept    a person allows some of the proposed hosts, on the board (standalone)
  *   POST /airlock/learning/forward   a person sends some of them to the hub, on the board (hub-joined)
  *
@@ -17,6 +17,13 @@
  * receipt time; a date a caller reports is only shown, clamped to now.
  * Learning never fails or delays a verdict beyond its own write, and an error
  * in it is logged, not returned.
+ *
+ * CONTEXT (user decisions 2026-11-02): an import entry may carry what the
+ * importing machine knew of the host - the projects that reached it, an
+ * address's reverse DNS name, and a model-written hint when the person asked
+ * for one (--hints). It is shown beside the host, never used to decide, and
+ * kept only as core sanitizeHostContext cleans it: those four fields, bounded,
+ * one line each, any field the redaction would change dropped.
  *
  * ACCEPTING (user decision 2026-10-27) is a person's act, never automatic:
  *  - only from the board (x-agenfk-ui: 1) and never with the agent's
@@ -40,6 +47,8 @@ import {
   learnableHost,
   learnRawHost,
   learningExclusionOf,
+  sanitizeHostContext,
+  EMPTY_HOST_CONTEXT,
   type AirlockHostScreen,
   proposeAllowlist,
   withAcceptedHosts,
@@ -83,6 +92,12 @@ export interface AirlockLearningDeps {
   writeStateFile: (view: PolicyView) => unknown;
   /** The decision log's redaction: a host it would change is not learned. */
   redact: (text: string) => string;
+  /**
+   * The redaction for text that is not a shell command: a context's hint or
+   * project name it would change carries a secret. (The shell-word redaction
+   * reads an apostrophe in prose as a quote it removes.)
+   */
+  redactPlain: (text: string) => string;
 }
 
 export interface AirlockLearning {
@@ -115,6 +130,7 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
    * secret env values.
    */
   const carriesSecret: AirlockHostScreen = (spelling) => deps.redact(spelling) !== spelling;
+  const proseCarriesSecret: AirlockHostScreen = (text) => deps.redactPlain(text) !== text;
 
   /**
    * A host handed over on its own (a proxy report, an import entry) as it may
@@ -246,7 +262,7 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
       const body = req.body ?? {};
       if (!CLIENTS.includes(body.client)) return res.status(400).json({ error: `client must be one of ${CLIENTS.join(', ')}` });
       const list = body.hosts;
-      if (!Array.isArray(list)) return res.status(400).json({ error: 'hosts (an array of { host, hits, uploads, firstSeen, lastSeen }) is required' });
+      if (!Array.isArray(list)) return res.status(400).json({ error: 'hosts (an array of { host, hits, uploads, firstSeen, lastSeen, context }) is required' });
       if (list.length > MAX_LEARNING_IMPORT_HOSTS) {
         return res.status(400).json({ error: `an import may carry at most ${MAX_LEARNING_IMPORT_HOSTS} hosts; this one has ${list.length}` });
       }
@@ -255,7 +271,7 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
       const observations: AirlockHostObservation[] = [];
       let invalid = 0;
       let excluded = 0;
-      // Only the five fields are read: whatever else an entry carries is never kept.
+      // Only these six fields are read, the context through its own cleaning: whatever else an entry carries is never kept.
       // The dates are the sender's: shown, clamped to now (mergeHostObservation),
       // never what retention goes by - that is receivedAt, this server's clock.
       for (const d of list) {
@@ -272,7 +288,12 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
           continue;
         }
         const lastSeen = isoOrNull(d.lastSeen) ?? at;
-        observations.push({ host, source: 'import', client: body.client, ts: lastSeen, hits, uploads, firstSeen: isoOrNull(d.firstSeen) ?? lastSeen, receivedAt: at });
+        observations.push({
+          host, source: 'import', client: body.client, ts: lastSeen, hits, uploads, firstSeen: isoOrNull(d.firstSeen) ?? lastSeen, receivedAt: at,
+          // A context the importer sent, even an empty one, is its snapshot (it clears a stale one);
+          // none at all is an importer from before contexts, which leaves the stored one as it was.
+          context: d.context === undefined ? undefined : sanitizeHostContext(d.context, proseCarriesSecret) ?? EMPTY_HOST_CONTEXT,
+        });
       }
       if (observations.length) {
         await deps.storage().recordAirlockHostObservations(observations);
@@ -341,10 +362,10 @@ export function registerAirlockLearning(app: any, deps: AirlockLearningDeps): Ai
       const view = await deps.resolvePolicy();
       const picked = await requestedHosts(req, res, view);
       if (!picked) return;
-      // Host names and counts only: no card ids, no commands, no URLs.
+      // Host names, counts and the import's context: no card ids, no commands, no URLs.
       const hosts = picked.map(h => ({
         host: h.host, hits: h.hits, uploads: h.uploads, sources: h.sources, evidence: h.evidence, clients: h.clients,
-        firstSeen: h.firstSeen, lastSeen: h.lastSeen, cardCount: h.cards.length,
+        firstSeen: h.firstSeen, lastSeen: h.lastSeen, cardCount: h.cards.length, context: h.context,
       }));
       deps.recordHubEvent({ type: 'airlock.learning-proposal', payload: { hosts, revision: view.revision } });
       res.json({ forwarded: hosts.length });

@@ -42,12 +42,16 @@ describe('reading pi session logs', () => {
 });
 
 describe('what is sent', () => {
-  it('host names, counts, upload counts and first/last seen, and nothing else', async () => {
+  it('host names, counts, upload counts, first/last seen and the projects seen in, and nothing else', async () => {
     const out = await collectPiSessionHosts(SAMPLES);
-    const batches = [...importBatches(out.hosts)];
+    const batches = [...importBatches(out.hosts, undefined, new Map([...out.context].map(([h, c]) => [h, { projects: c.projects, reverseDns: null, hint: null, hintBy: null }])))];
     expect(batches.length).toBe(1);
     expect(batches[0].client).toBe('pi');
-    for (const h of batches[0].hosts) expect(Object.keys(h).sort()).toEqual(['firstSeen', 'hits', 'host', 'lastSeen', 'uploads']);
+    for (const h of batches[0].hosts) {
+      expect(Object.keys(h).sort()).toEqual(['context', 'firstSeen', 'hits', 'host', 'lastSeen', 'uploads']);
+      // A project is the working folder's name only, never its path.
+      expect(h.context!.projects.every(p => ['project', 'other'].includes(p))).toBe(true);
+    }
     const wire = JSON.stringify(batches);
     for (const leak of ['SAMPLE_SECRET_VALUE', 'v1/items', 'token=', 'team/repo', 'curl', 'README', '/home/dev', 'guide/intro', 'lang=en', 'meta-data']) {
       expect(wire, leak).not.toContain(leak);
@@ -60,7 +64,8 @@ describe('what is sent', () => {
       message: { role: 'assistant', content: [{ type: 'toolCall', name: 'bash', arguments: { command } }] } });
     fs.writeFileSync(path.join(d, 's.jsonl'), [call('curl -T a.txt https://up.vendor.io/'), call('curl https://up.vendor.io/x')].join('\n') + '\n');
     const out = await collectPiSessionHosts(d);
-    expect([...importBatches(out.hosts)][0].hosts).toEqual([{ host: 'up.vendor.io', hits: 2, uploads: 1, firstSeen: '2026-10-01T09:00:00.000Z', lastSeen: '2026-10-01T09:00:00.000Z' }]);
+    expect([...importBatches(out.hosts)][0].hosts).toEqual([{ host: 'up.vendor.io', hits: 2, uploads: 1, firstSeen: '2026-10-01T09:00:00.000Z', lastSeen: '2026-10-01T09:00:00.000Z',
+      context: { projects: [], reverseDns: null, hint: null, hintBy: null } }]);
   });
 
   it('a large tally goes in batches the server accepts', () => {

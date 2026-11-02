@@ -43,7 +43,8 @@ describe('the MCP bundle', () => {
       expect(seen).toContain('/projects');
     } finally {
       await new Promise<void>((r) => api.close(() => r()));
-      fs.rmSync(dir, { recursive: true, force: true });
+      // The bundle was just killed: Windows can hold the folder it ran from for a moment (EBUSY on CI).
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   }, 60_000);
 });

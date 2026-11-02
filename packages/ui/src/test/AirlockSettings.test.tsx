@@ -602,3 +602,20 @@ describe('Airlock panel: home access (story 525cd331)', () => {
     expect(select.disabled).toBe(true);
   });
 });
+
+describe('Airlock panel: a dropdown is as wide as its choices (bug 351d88ca)', () => {
+  // A dropdown that took the row squeezed its label and description to one word a line.
+  // Tailwind gives one width to a class list holding both, and w-full is the one it kept.
+  it('no dropdown asks for the full width and its own width at once; each rule\'s dropdown keeps its own', async () => {
+    renderPanel();
+    await modeReady();
+    const selects = Array.from(document.querySelectorAll('select'));
+    expect(selects.length).toBeGreaterThan(3);
+    for (const s of selects) {
+      const classes = s.className.split(/\s+/);
+      expect(classes.includes('w-full') && classes.includes('w-auto'), s.id || s.getAttribute('aria-label') || '').toBe(false);
+    }
+    const rule = document.querySelector('select[id^="airlock-rule-"]') as HTMLSelectElement;
+    expect(rule.className.split(/\s+/)).toContain('w-auto');
+  });
+});

@@ -768,6 +768,7 @@ const SCHEMA_SQLITE = `
     proxy_hits INTEGER NOT NULL DEFAULT 0,
     upload_hits INTEGER NOT NULL DEFAULT 0,
     clients_json TEXT NOT NULL DEFAULT '[]',
+    context_json TEXT,
     first_seen TEXT,
     last_seen TEXT,
     reported_at TEXT NOT NULL,
@@ -1001,6 +1002,11 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const learningCols = raw.prepare("PRAGMA table_info(airlock_learning_reports)").all() as Array<{ name: string }>;
   if (learningCols.length > 0 && !new Set(learningCols.map(c => c.name)).has('upload_hits')) {
     raw.exec("ALTER TABLE airlock_learning_reports ADD COLUMN upload_hits INTEGER NOT NULL DEFAULT 0");
+  }
+  // airlock_learning_reports.context_json — what the installation's import knew
+  // of a host (projects, reverse DNS, a model hint; 2026-11-02).
+  if (learningCols.length > 0 && !new Set(learningCols.map(c => c.name)).has('context_json')) {
+    raw.exec("ALTER TABLE airlock_learning_reports ADD COLUMN context_json TEXT");
   }
 
   // Backfill: canonicalise remote_url forms (ssh / https / with-or-without-.git)
