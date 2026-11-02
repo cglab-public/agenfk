@@ -1129,7 +1129,8 @@ export function resolverDenyOf(network: SandboxSpec['network']): string[] {
  * resolver's are not.
  */
 export function resolverAllowOf(network: SandboxSpec['network']): string[] | undefined {
-  if (network.mode === 'observe') return undefined;
+  // Observe, or every host allowed (`*`): every name not denied is answered.
+  if (network.mode === 'observe' || network.allow.includes('*')) return undefined;
   const names = network.allow.map((a) => (a.startsWith('[') ? a : a.replace(/:\d+$/, '')).trim().toLowerCase())
     .filter((h) => h && !net.isIP(h.replace(/^\[|\]$/g, '')) && !h.includes('/') && h !== 'localhost' && !h.endsWith('.localhost'));
   return [...new Set(names)];
@@ -2193,7 +2194,9 @@ export class SmolvmRuntime implements AirlockRuntime {
       await this.startResolver(name, workspace, spec);
       fs.writeFileSync(file, networkKey(spec.network));
       const had = new Set(before ? resolverAllowOf(before) ?? [] : []);
-      const added = before?.mode === 'enforce' ? (resolverAllowOf(spec.network) ?? []).filter((h) => !had.has(h)) : [];
+      // Every host (`*`) newly allowed: smolvm keeps the list it started with until the machine restarts.
+      const opened = before?.mode === 'enforce' && !before.allow.includes('*') && spec.network.allow.includes('*');
+      const added = opened ? ['every host (*)'] : before?.mode === 'enforce' ? (resolverAllowOf(spec.network) ?? []).filter((h) => !had.has(h)) : [];
       if (added.length) this.d.warn(`Airlock: the policy now allows ${added.join(', ')}; in the machine for ${workspace} that resolves from its next start (end every session in it, and launch again).`);
       return 'applied';
     });

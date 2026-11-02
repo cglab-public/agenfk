@@ -20,7 +20,7 @@ import { analyseCommand } from './shell';
 import { capabilitiesOf } from './capabilities';
 import { hostFromUrl, isHostname, matchHost, normalizeHost, parseIp } from './hosts';
 import { normalizeAirlockPolicy } from './policy';
-import { mergeHostLists, networkAllow } from './hostLists';
+import { allowedFor, mergeHostLists, networkAllow } from './hostLists';
 import { CLOUD_STORAGE_DOMAINS, isCloudStorageHost } from './alerts';
 import { BUILTIN_DENY_HOSTS, type AirlockPolicy, type Capability } from './types';
 import { hostLabels, mergeHostContext } from './hostContext';
@@ -371,8 +371,10 @@ export function learningExclusionOf(host: string, policy: AirlockPolicy): Airloc
   if (matchHost(host, BUILTIN_DENY_HOSTS)) return 'metadata-endpoint';
   if (matchHost(host, policy.iocHosts.hosts)) return 'ioc-host';
   if (matchHost(host, policy.hosts.deny)) return 'denied-host';
-  // Allowed in either direction: the person who allowed it chose which.
-  if (matchHost(host, networkAllow(policy.hosts))) return 'already-allowed';
+  // Allowed in either direction by an entry naming it: the person who allowed it chose which. A one-way
+  // `*` names no host, so one it covers stays proposed until it is allowed the other way too.
+  if (matchHost(host, networkAllow(policy.hosts).filter((p) => p !== '*'))) return 'already-allowed';
+  if (matchHost(host, allowedFor(policy.hosts, 'download')) && matchHost(host, allowedFor(policy.hosts, 'upload'))) return 'already-allowed';
   if (matchHost(host, PRIVATE_HOST_PATTERNS)) return 'private-address';
   if (matchHost(host, RESERVED_HOST_PATTERNS)) return 'reserved-name';
   return null;

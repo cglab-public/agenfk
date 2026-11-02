@@ -6,6 +6,7 @@ import { apiErrorText } from '../apiError';
 import { Callout, QueryError, buttonClass, cardClass, controlClass, scrollClass } from '../components/ui';
 import { AirlockLearningCard } from './AdminAirlockLearning';
 import { allowTextOf, denyTextOf, hasHostEntries, hostListsOf, DIRECTION_HELP, type AirlockHostListsDto } from '../airlockHostText';
+import { HostListEditor } from '../components/HostListEditor';
 
 /**
  * Admin → Airlock (GH-294). The org's Airlock policy: what a coding agent's
@@ -450,16 +451,16 @@ function PolicyCard({ view, tab }: { view: AirlockView; tab: AirlockTab }) {
       </div>
 
       <div hidden={tab !== 'network'}>
-      <label className="block mt-3">
+      <div className="mt-3">
         <span className="eyebrow text-ink-tertiary">Allowed hosts</span>
-        <textarea aria-label="Allowed hosts" rows={4} className={`${controlClass} mt-1.5 font-mono`} value={allow} onChange={(e) => setAllow(e.target.value)} />
-      </label>
-      <label className="block mt-3">
+        <HostListEditor label="Allowed hosts" value={allow} onChange={setAllow} className="mt-1.5" />
+      </div>
+      <div className="mt-3">
         <span className="eyebrow text-ink-tertiary">Denied hosts</span>
-        <textarea aria-label="Denied hosts" rows={3} className={`${controlClass} mt-1.5 font-mono`} value={deny} onChange={(e) => setDeny(e.target.value)} />
-      </label>
+        <HostListEditor label="Denied hosts" value={deny} blocking onChange={setDeny} className="mt-1.5" />
+      </div>
       <p className="mt-1 text-small text-ink-tertiary">
-        {`One host per line: a name, *.wildcard or a CIDR range. ${DIRECTION_HELP} Allowed one way, a host is still reachable:
+        {`Each host is a name, *.wildcard, a CIDR range, or * for every host but the denied ones. ${DIRECTION_HELP} Allowed one way, a host is still reachable:
         which way its data goes is judged on each tool call. Cloud metadata endpoints are always denied and cannot be
         allowed.`}
       </p>
@@ -616,9 +617,15 @@ function ProjectOverridesCard({ view }: { view: AirlockView }) {
                     <span aria-hidden="true">Remove</span>
                   </button>
                 </div>
-                <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                  <textarea aria-label={`Allowed hosts, override ${n}`} placeholder="added allowed hosts" rows={2} className={`${controlClass} font-mono`} value={d.allow} onChange={(e) => edit(i, { allow: e.target.value })} />
-                  <textarea aria-label={`Denied hosts, override ${n}`} placeholder="added denied hosts" rows={2} className={`${controlClass} font-mono`} value={d.deny} onChange={(e) => edit(i, { deny: e.target.value })} />
+                <div className="mt-2 grid gap-3 lg:grid-cols-2">
+                  <div>
+                    <span className="text-small text-ink-tertiary">Added allowed hosts</span>
+                    <HostListEditor label={`Allowed hosts, override ${n}`} value={d.allow} onChange={(v) => edit(i, { allow: v })} className="mt-1" />
+                  </div>
+                  <div>
+                    <span className="text-small text-ink-tertiary">Added denied hosts</span>
+                    <HostListEditor label={`Denied hosts, override ${n}`} value={d.deny} blocking onChange={(v) => edit(i, { deny: v })} className="mt-1" />
+                  </div>
                 </div>
                 <input
                   aria-label={`Machine image, override ${n}`} placeholder="machine image (the org's when empty)"

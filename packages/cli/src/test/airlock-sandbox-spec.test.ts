@@ -75,12 +75,11 @@ describe('buildSandboxSpec: network', () => {
   });
 
   it('never widens: allow entries the sandbox cannot express are left out and reported, not turned into allow-all', () => {
-    // normalizeAirlockPolicy already drops `*` (it covers the metadata hosts);
-    // the builder must not rely on that.
-    const raw = { ...policy(), hosts: { allow: ['*', '10.0.0.0/8', 'intranet', 'ok.example.com'], deny: [] } };
+    // `*` is not among them: it means every host but the denied ones (2026-11-02, airlock-every-host.test.ts).
+    const raw = { ...policy(), hosts: { allow: ['10.0.0.0/8', 'intranet', 'ok.example.com'], deny: [] } };
     const spec = buildSandboxSpec(raw, session());
     expect(spec.network.allow).toContain('ok.example.com');
-    for (const bad of ['*', '10.0.0.0/8', 'intranet']) {
+    for (const bad of ['10.0.0.0/8', 'intranet']) {
       expect(spec.network.allow).not.toContain(bad);
       expect(spec.skipped.map((s) => s.entry)).toContain(bad);
     }
