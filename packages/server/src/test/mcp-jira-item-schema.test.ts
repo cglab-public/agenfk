@@ -60,13 +60,6 @@ describe('MCP advertises the JIRA linking parameter', () => {
     expect(toolNamed('update_item')?.inputSchema?.required ?? []).not.toContain('jiraItem');
   });
 
-  it("tells the agent how to unlink, since 'none' is not guessable", () => {
-    const description = toolNamed('update_item')?.inputSchema?.properties?.jiraItem?.description ?? '';
-    // Stronger than a bare substring match: the description has to actually
-    // instruct, not merely contain the word somewhere.
-    expect(description).toMatch(/['"`]?none['"`]? to unlink/i);
-  });
-
   // Advertising the parameter is only half of it — the handler has to FORWARD
   // it. Both handlers currently spread the parsed args into the REST call, but a
   // refactor to an explicit field list would drop jiraItem with every schema

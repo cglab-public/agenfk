@@ -66,14 +66,19 @@ apiProcess.unref();
 
 let API_PORT = REQUESTED_API_PORT;
 let reported = false;
-for (let i = 0; i < 30; i++) {
+// How long to wait for the server to report its port: 15s by default.
+// AGENFK_PORT_WAIT_MS bounds it (GH-281: a test pins the "never reported" warning without sitting out 15s).
+const PORT_POLL_MS = 500;
+const portWaitMs = Number(process.env.AGENFK_PORT_WAIT_MS);
+const portPolls = Number.isFinite(portWaitMs) && portWaitMs > 0 ? Math.max(1, Math.ceil(portWaitMs / PORT_POLL_MS)) : 30;
+for (let i = 0; i < portPolls; i++) {
     if (fs.existsSync(SERVER_PORT_FILE)) {
         try {
             const persisted = fs.readFileSync(SERVER_PORT_FILE, 'utf8').trim();
             if (persisted) { API_PORT = persisted; reported = true; break; }
         } catch { /* ignore */ }
     }
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, PORT_POLL_MS));
 }
 
 // A vite URL an older install left behind would send `agenfk ui` to a dead port.

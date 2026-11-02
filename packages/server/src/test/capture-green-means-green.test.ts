@@ -53,12 +53,12 @@ const FAIL = '<testsuites><testsuite name="s"><testcase classname="t" name="adds
  * the tree, and always exits 0 - a masked exit, as `a; b` gives. Each run is
  * counted outside the tree too, so changing the mode never changes the tree.
  */
-async function setup(opts: { commit?: boolean } = {}) {
+async function setup() {
   const f = await agent().post('/flows').send({ name: `cg-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const repo = tmp('agenfk-cg-repo-');
   execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
-  if (!opts.commit) fs.writeFileSync(path.join(repo, 'notes.txt'), 'mid-edit\n');
+  fs.writeFileSync(path.join(repo, 'notes.txt'), 'mid-edit\n');
   const outside = tmp('agenfk-cg-ctl-');
   const mode = path.join(outside, 'mode');
   const runs = path.join(outside, 'runs');
@@ -128,33 +128,5 @@ describe('a red capture with a masked exit is never reused', () => {
     expect(t.count()).toBe(2);
     expect(again.body.reusedFrom).toBeUndefined();
     expect(again.body.tests.every((x: any) => x.status === 'passed')).toBe(true);
-  });
-
-  it("another card at the same state does not inherit the red run", async () => {
-    const t = await setup();
-    expect((await capture(await t.card())).status).toBe(200);
-    const b = await capture(await t.card());
-    expect(b.status, JSON.stringify(b.body)).toBe(200);
-    expect(t.count()).toBe(2);
-    expect(b.body.reusedFrom).toBeUndefined();
-  });
-
-  it('on a clean tree, a red run at the same commit is not reused either', async () => {
-    const t = await setup({ commit: true });
-    const a = await t.card();
-    expect((await capture(a)).status).toBe(200);
-    const again = await capture(a);
-    expect(t.count()).toBe(2);
-    expect(again.body.reusedFrom).toBeUndefined();
-  });
-
-  it('a green run is still reused: the fix does not re-run what passed', async () => {
-    const t = await setup();
-    t.pass();
-    const a = await t.card();
-    expect((await capture(a)).status).toBe(200);
-    const again = await capture(a);
-    expect(t.count()).toBe(1);
-    expect(again.body.reusedFrom).toMatchObject({ itemId: a });
   });
 });

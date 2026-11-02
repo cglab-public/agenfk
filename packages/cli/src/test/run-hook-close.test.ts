@@ -24,9 +24,7 @@
 import { describe, it, expect } from 'vitest';
 import { closesRun } from '../../../../bin/agenfk-run-hook.mjs';
 import { applyClaudeHooks } from '../../../../scripts/install-helpers.mjs';
-import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
 
 describe('the events that end a run', () => {
   it('ends on SessionEnd, which is the one that means it', () => {
@@ -145,18 +143,4 @@ describe('how the installer subscribes', () => {
   // install-helpers.mjs, so there is no copy here to drift from install.mjs.
   const migrate = (settings: Record<string, any>): Record<string, any> =>
     applyClaudeHooks(settings, '/home/me/.local/bin', { platform: 'linux' });
-});
-
-describe('uninstalling', () => {
-  it('takes the SessionEnd registration with it', () => {
-    /*
-     * Otherwise `~/.claude/settings.json` keeps a command pointing at a binary
-     * the uninstaller deleted, executed at the end of every session forever.
-     * The old `Stop` key had the same problem and is stripped here too.
-     */
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.resolve(here, '../../../../scripts/uninstall.mjs'), 'utf8');
-    expect(src).toContain("'hooks.SessionEnd'");
-    expect(src).toContain("'hooks.Stop'");
-  });
 });

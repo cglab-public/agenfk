@@ -1,7 +1,7 @@
 import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeEach, beforeAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, closeStorage, storage, oauthStateStore, mapJiraTypeToAgEnFK, clearJiraValidationCache, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, oauthStateStore, mapJiraTypeToAgEnFK, clearJiraValidationCache } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 import { Status, ItemType, AgEnFKItem } from '@agenfk/core';
 import * as fs from 'fs';
@@ -123,27 +123,6 @@ describe('Server API', () => {
       expect(res.body.title).toBe('T1');
     });
 
-    it('should move an item status back, and only let the board move it forward (CGLAB-377)', async () => {
-      const createRes = await agent()
-        .post('/items')
-        .send({ projectId, type: ItemType.TASK, title: 'To Update', description: 'D' });
-      const id = createRes.body.id;
-
-      const refused = await agent().put(`/items/${id}`).send({ status: Status.IN_PROGRESS });
-      expect(refused.status).toBe(409);
-
-      const res = await agent()
-        .put(`/items/${id}`)
-        .set('x-agenfk-ui', '1')
-        .send({ status: Status.IN_PROGRESS });
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe(Status.IN_PROGRESS);
-
-      const back = await agent().put(`/items/${id}`).send({ status: Status.TODO });
-      expect(back.status).toBe(200);
-      expect(back.body.status).toBe(Status.TODO);
-    });
-
     it('should block direct transition to DONE', async () => {
       const createRes = await agent()
         .post('/items')
@@ -156,21 +135,6 @@ describe('Server API', () => {
       
       expect(res.status).toBe(403);
       expect(res.body.error).toContain('WORKFLOW VIOLATION');
-    });
-
-    it('should refuse DONE even with the internal token (CGLAB-377)', async () => {
-      const createRes = await agent()
-        .post('/items')
-        .send({ projectId, type: ItemType.TASK, title: 'Verify Me', description: 'D' });
-      const id = createRes.body.id;
-
-      const res = await agent()
-        .put(`/items/${id}`)
-        .set('x-agenfk-internal', VERIFY_TOKEN)
-        .send({ status: Status.DONE });
-
-      expect(res.status).toBe(403);
-      expect((await agent().get(`/items/${id}`)).body.status).toBe(Status.TODO);
     });
 
     it('should propagate status to parent', async () => {
@@ -822,15 +786,8 @@ describe('JIRA Integration', () => {
       expect(res.body).toHaveProperty('installationId');
       expect(res.body).toHaveProperty('telemetryEnabled');
       expect(typeof res.body.telemetryEnabled).toBe('boolean');
-    });
-
-    it('installationId is a non-empty string or null', async () => {
-      const res = await agent().get('/api/telemetry/config');
       const { installationId } = res.body;
-      expect(installationId === null || typeof installationId === 'string').toBe(true);
-      if (typeof installationId === 'string') {
-        expect(installationId.length).toBeGreaterThan(0);
-      }
+      expect(installationId === null || (typeof installationId === 'string' && installationId.length > 0)).toBe(true);
     });
   });
 

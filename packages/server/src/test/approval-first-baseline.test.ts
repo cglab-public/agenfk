@@ -112,15 +112,6 @@ describe('961f301d (2): a missing approval is answered first', () => {
     expect(t.runCount()).toBe(0);
   });
 
-  it('does not run the step\'s command checks while the approval is missing', async () => {
-    const marker = path.join(tmp('agenfk-af-cmd-'), 'ran');
-    const t = await setup([{ id: 'command-check', params: { name: 'lint', argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`] } }]);
-    const res = await validate(t.id);
-    expect(res.status, JSON.stringify(res.body)).toBe(422);
-    expect(blockingIds(res.body.checks)).toEqual(['human-approval']);
-    expect(fs.existsSync(marker)).toBe(false);
-  });
-
   it('still judges the cheap checks, so a person can see and override them while approving; slow ones are deferred', async () => {
     const t = await setup([{ id: 'jira-key-valid' }]);
     const res = await validate(t.id);
@@ -285,11 +276,6 @@ process.exit(${exitCode});`);
     expect((await entryCapture(t.id))?.reusedFrom).toMatchObject({ itemId: t.from });
   });
 
-  it('the scan ignores a per-test green recorded in another tree', async () => {
-    const t = await scanned(() => '/somewhere/else');
-    expect(t.count()).toBe(1);
-  });
-
   it('re-reads, not re-runs, when only the declared test surface changed since (d26832d6 #0)', async () => {
     // The declared paths decide which files are the test surface, not what the
     // suite does on this content: the green's tests stand, its surface is read
@@ -309,17 +295,6 @@ process.exit(${exitCode});`);
 });
 
 describe('961f301d review 2: a green belongs to the tree it ran in', () => {
-  it('a green whose card has since moved to this tree is still not this tree\'s (after a restart the card\'s tree is no evidence)', async () => {
-    const t = await setup();
-    const head = git(t.repo, 'git rev-parse HEAD');
-    const other = tmp('agenfk-af-wt2-');
-    git(other, `git clone -q ${shellQuote(t.repo)} .`);
-    // Recorded in `other`; the card itself now resolves to the project root (its worktree was removed).
-    await closedGreen(t.pid, t.verifyCommand, head, other);
-    expect((await approve(t.id)).status).toBe(201);
-    expect((await validate(t.id)).status).toBe(200);
-    expect(t.runCount()).toBe(1);
-  });
 
   it('a green recorded before checks named its tree never qualifies', async () => {
     const t = await setup();

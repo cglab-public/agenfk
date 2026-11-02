@@ -250,6 +250,16 @@ operator actually sets — which is almost nothing, plus one flag for a parent o
 private network — and why enrolment is deliberately a decision made in the UI
 rather than a variable in the environment.
 
+## Airlock runtime (smolvm)
+
+Airlock (GH-294) sandboxes pi and OpenCode sessions. Since CGLAB-696 its only runtime is smolvm (`packages/cli/src/airlock/smolvm.ts`): the Sandbox Runtime (ASRT) it replaced could not mediate non-HTTP egress.
+
+- **One machine per workspace.** `machineNameOf(workspace)`; created on first launch from the policy's image (`image.ts`), started for a session, stopped by the last session out. Concurrent sessions share it only on identical terms (network, model keys, protections, mounts); a command the server runs (`exec.ts`) joins a live session on that session's terms, in a mount namespace of its own.
+- **Egress.** smolvm's mediated egress hands each guest flow to a per-machine decider (`egress.ts`, run detached from `egressMain.js` so it outlives the session that started the machine). It names the flow by SNI / HTTP Host / the DNS audit, applies the policy (`enforce` allow+deny, `observe` deny only and report), and redirects the session's relay and inference flows to host-side services (`serverRelay.ts`, `keyInjector.ts`). Decisions reach the server through the launcher's reporter (`proxyReport.ts`).
+- **Files.** Only the spec's write roots are mounted; a root script applies read-only binds and hides (`guestSetupScript`) before the session, which runs as the host user's uid.
+- **Install.** `smolvmInstall.ts` pins the release tarball per platform by sha256 into `~/.agenfk/smolvm/<version>`; the desktop app bundles the same release (`packages/desktop/scripts/bundle-airlock.mjs`).
+- **Conformance.** `airlock-sandbox-conformance.test.ts` runs the guarantees against the pinned smolvm, the base image and the real decider; CI runs it on a KVM Linux runner (`ci.yml`, `airlock-conformance`).
+
 ## Tech Stack
 - **Language**: TypeScript (Strong typing across the stack)
 - **Backend**: Node.js, Express, Socket.io

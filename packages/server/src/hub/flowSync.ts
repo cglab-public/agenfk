@@ -13,6 +13,9 @@ import type { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import type { Flow } from '@agenfk/core';
 import { flowChecksErrors, normalizeFlowSteps } from '@agenfk/core';
 import type { HubConfig } from './types.js';
+import { syncRepoSettings, declaredVerifyCommand } from './repoSettingsSync.js';
+import { publishPendingReceipts } from './receiptPublisher.js';
+import { runAirlockSync, currentAirlockGeneration, type AirlockApplyReporter } from './airlockSync.js';
 
 export type FetchLike = (url: string, opts: any) => Promise<{
   status: number;
@@ -171,40 +174,6 @@ async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<Re
   return { outcome: 'updated', etag, localFlowId: localId };
 }
 
-// ── Backwards-compat single-shot reconciler ─────────────────────────────────
-// Kept as a thin wrapper for callers that don't yet thread project context.
-
-export interface ReconcileArgs {
-  storage: SQLiteStorageProvider;
-  hubConfig: HubConfig;
-  lastEtag: string | null;
-  fetchImpl: FetchLike;
-  emit: (event: string, payload: any) => void;
-}
-
-export async function reconcileHubFlow(args: ReconcileArgs): Promise<ReconcileOutcome> {
-  const result = await reconcileProjectFlow({
-    storage: args.storage,
-    hubConfig: args.hubConfig,
-    projectId: null,
-    lastEtag: args.lastEtag,
-    fetchImpl: args.fetchImpl,
-    emit: args.emit,
-  });
-  // Org-scope path retains the old behaviour of re-binding every project to the
-  // org-default flow — the per-project loop is the new normal but this keeps
-  // the (test-only) single-shot path working.
-  if (result.outcome === 'updated') {
-    const projects = await args.storage.listProjects();
-    for (const p of projects) {
-      if (p.flowId !== result.localFlowId) {
-        await args.storage.updateProject(p.id, { flowId: result.localFlowId });
-      }
-    }
-  }
-  return result;
-}
-
 // ── Per-tick polling ────────────────────────────────────────────────────────
 
 export interface RunTickArgs {
@@ -217,11 +186,39 @@ export interface RunTickArgs {
   /** Resolve a project's raw git remote URL for the repo-keyed hub query.
    *  Returns null when the project has no remote (falls back to projectId). */
   resolveRepo?: (projectId: string) => Promise<string | null>;
+  /** Where the Airlock sync rewrites the adapters' state file (default ~/.agenfk/airlock-state.json). */
+  airlockStateFile?: string;
+  /** The hub this installation is joined to now, so a tick that outlived a repoint writes nothing. */
+  activeHubConfig?: () => Pick<HubConfig, 'url' | 'orgId'> | null;
+  /** Tells the hub which Airlock policy revision this installation applies (HUB-2). */
+  reportAirlock?: AirlockApplyReporter;
+}
+
+/** The org's Airlock policy, once per tick; contained, so it never costs the tick anything else. */
+async function syncAirlockForTick(args: RunTickArgs, generation: number): Promise<void> {
+  try {
+    await runAirlockSync({
+      storage: args.storage,
+      hubConfig: args.hubConfig,
+      fetchImpl: args.fetchImpl,
+      stateFile: args.airlockStateFile,
+      emit: args.emit,
+      generation,
+      activeHubConfig: args.activeHubConfig,
+      report: args.reportAirlock,
+    });
+  } catch (e) {
+    console.error('[HUB_AIRLOCK] Unexpected error:', (e as Error).message);
+  }
 }
 
 export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
+  // Before the first await: the configuration this tick belongs to. A tick that
+  // outlives a repoint or a logout must not sync Airlock with the old credential.
+  const airlockGeneration = currentAirlockGeneration();
   const projects = await args.storage.listProjects();
-  if (projects.length === 0) return;
+  // Airlock is org-scoped: an installation with no project still has agents to protect.
+  if (projects.length === 0) return syncAirlockForTick(args, airlockGeneration);
 
   for (const project of projects) {
     const lastEtag = args.etagCache.get(project.id) ?? null;
@@ -246,6 +243,49 @@ export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
       continue;
     }
     if (result.etag) args.etagCache.set(project.id, result.etag);
+
+    // RFC-002: the hub's authoritative repository settings, after the flow
+    // reconcile so a hub outage on one channel never blocks the other. Only a
+    // project with a git remote can be keyed on the hub, and its settings ride
+    // their own ETag cache key so a 304 on the flow does not skip them.
+    if (remoteUrl) {
+      try {
+        const repoResult = await syncRepoSettings({
+          storage: args.storage,
+          hubConfig: args.hubConfig,
+          projectId: project.id,
+          remoteUrl,
+          localCommand: declaredVerifyCommand((project as any).projectRoot) ?? (typeof (project as any).verifyCommand === 'string' && (project as any).verifyCommand ? (project as any).verifyCommand : null),
+          projectRoot: (project as any).projectRoot ?? null,
+          lastEtag: args.etagCache.get('repo:' + project.id) ?? null,
+          fetchImpl: args.fetchImpl,
+        });
+        if (repoResult.etag) args.etagCache.set('repo:' + project.id, repoResult.etag);
+      } catch (e) {
+        // Contained per project, exactly like the flow reconcile above.
+        console.error(`[HUB_REPO_SETTINGS] Unexpected error for project ${project.id}:`, (e as Error).message);
+      }
+    }
+  }
+
+  // GH-294: the org's Airlock policy. Org-scoped, so once per tick and not per
+  // project, after the loop and in its own try/catch: neither a hub outage on
+  // this channel nor a throw here may cost a flow reconcile or a receipt.
+  await syncAirlockForTick(args, airlockGeneration);
+
+  // RFC-002: receipts a card is still holding go to the hub now. After the
+  // per-project loop and in its own try/catch: publishing is per CARD, not per
+  // project, so it has nothing to do with the reconcile above, and a hub that
+  // is unreachable on the flow channel must not be the reason a receipt is
+  // never sent (nor a throw here the reason a flow never reconciled).
+  try {
+    await publishPendingReceipts({
+      storage: args.storage,
+      hubConfig: args.hubConfig,
+      fetchImpl: args.fetchImpl,
+    });
+  } catch (e) {
+    console.error('[HUB_RECEIPTS] publish failed:', (e as Error).message);
   }
 }
 
@@ -269,6 +309,10 @@ export interface StartFlowSyncArgs {
   etagCache?: Map<string, string>;
   /** Resolve a project's raw git remote URL for the repo-keyed hub query. */
   resolveRepo?: (projectId: string) => Promise<string | null>;
+  /** The hub this installation is joined to now (the server's live config). */
+  activeHubConfig?: () => Pick<HubConfig, 'url' | 'orgId'> | null;
+  /** Tells the hub which Airlock policy revision this installation applies (HUB-2). */
+  reportAirlock?: AirlockApplyReporter;
 }
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -291,6 +335,9 @@ export function startFlowSync(args: StartFlowSyncArgs): FlowSyncHandle {
         emit: args.emit,
         etagCache,
         resolveRepo: args.resolveRepo,
+        // A stopped loop's tick is not the current configuration's: it adopts nothing.
+        activeHubConfig: () => (stopped ? null : (args.activeHubConfig ? args.activeHubConfig() : args.hubConfig)),
+        reportAirlock: args.reportAirlock,
       });
       consecutiveErrors = 0;
     } catch (e) {

@@ -131,17 +131,8 @@ describe('acceaa54: a test-only change runs only the changed test files', () => 
     expect(verdicts(lazy.tests)).toEqual(verdicts(full.body.tests));
   });
 
-  it('re-runs an edited test file, replacing its entry results', async () => {
-    const t = await setup();
-    await enterTests(t);
-    fs.writeFileSync(path.join(t.repo, 'a.test.js'), 'pass adds\nfail subtracts\n');
-    await validate(t.id);
-    expect(t.runs().slice(1)).toEqual([['a.test.js']]);
-    const lazy = await captureAt(t.id, 'TESTS');
-    const byName = Object.fromEntries(lazy.tests.map((x: any) => [x.name.split(' > ').pop(), x.status]));
-    expect(byName).toEqual({ adds: 'passed', subtracts: 'failed' });
-  });
-
+  // An edited test file re-runs and replaces its entry results: "a project in a subdirectory of its repository sees
+  // its changed files by their own paths" edits a.test.js the same way and asserts the merged verdicts.
   it("a deleted test file's tests disappear", async () => {
     const t = await setup();
     await enterTests(t);

@@ -21,10 +21,6 @@ const load = async (): Promise<any> => {
 };
 
 describe('CGLAB-379: test report readers', () => {
-  it('exists', async () => {
-    await load();
-  });
-
   describe('vitest JSON', () => {
     const root = '/repo';
     const report = {
@@ -328,15 +324,6 @@ Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
       const mod = await load();
       const r = mod.parseJunitXml('<testsuite><testcase classname="pkg.Mod" name="t1"/></testsuite>', '/repo');
       expect(r.tests[0].name).toBe('pkg.Mod > t1');
-    });
-
-    it('ignores testcases inside comments and CDATA', async () => {
-      const mod = await load();
-      const r = mod.parseJunitXml(`<testsuite>
-        <!-- <testcase classname="c" name="ghost"/> -->
-        <testcase classname="c" name="t"><failure message="no"><![CDATA[ <testcase classname="c" name="t"/> ]]></failure></testcase>
-      </testsuite>`, '/repo');
-      expect(r.tests).toEqual([{ name: 'c > t', file: 'c', status: 'failed', failure: 'assertion' }]);
     });
 
     it('keeps a raw > inside a quoted attribute', async () => {

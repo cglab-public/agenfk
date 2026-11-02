@@ -12,6 +12,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ItemTypePicker } from '../components/ItemTypePicker';
 import { ItemType } from '../types';
 import { itemTypeHint } from '../components/ItemTypeSquare';
+import { paintedTypes } from './helpers/typeGrammar';
 
 afterEach(() => cleanup());
 
@@ -25,6 +26,15 @@ it('shows the chosen type with its square, closed', () => {
   expect(screen.getByTestId('item-type-picker').textContent).toContain('TASK');
   expect(screen.getByTestId('item-type-picker-square')).toBeDefined();
   expect(screen.queryByRole('listbox')).toBeNull();
+});
+
+it('paints the chosen square, and every option, in its own type from the grammar', () => {
+  open(ItemType.STORY);
+  expect(paintedTypes(screen.getByTestId('item-type-picker-square'))).toEqual([ItemType.STORY]);
+  fireEvent.click(screen.getByTestId('item-type-picker'));
+  for (const type of [ItemType.EPIC, ItemType.STORY, ItemType.TASK, ItemType.BUG]) {
+    expect(paintedTypes(screen.getByTestId(`item-type-picker-option-${type}`)), type).toEqual([type]);
+  }
 });
 
 it('offers all four, each with what it means', () => {

@@ -13,9 +13,9 @@
  * settings screen down — the user could not change any setting at all because
  * of one method that only draws a warning label.
  *
- * That the CURRENT preload exposes everything is guarded elsewhere, at the
- * source, by packages/desktop/src/test/ipcSurface.test.ts comparing the
- * handler list to the preload. This file covers the other case: a host that is
+ * That the CURRENT preload exposes everything is guarded elsewhere, by
+ * packages/desktop/src/test/ipcSurfaceBehaviour.test.ts calling every bridge
+ * the preload exposes and checking main handles each channel. This file covers the other case: a host that is
  * older, or absent entirely.
  */
 import { describe, it, expect, afterEach } from 'vitest';

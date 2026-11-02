@@ -194,7 +194,11 @@ describe('an agent that starts waiting for a person', () => {
     expect(played).not.toHaveBeenCalled();
     expect(noticeCalls).toHaveLength(0);
   });
+});
 
+describe('the settings actually gate it', () => {
+  // Kept (GH-281 review): the pure tests pass the "already alerted" map in themselves; only these
+  // see the component keep it between events.
   it('alerts once, not on every repeat of the same state', async () => {
     // screenActivity re-reports 'blocked' for as long as the agent waits.
     await openTerminal();
@@ -214,19 +218,9 @@ describe('an agent that starts waiting for a person', () => {
     await report('blocked');
     await waitFor(() => expect(played).toHaveBeenCalledTimes(2));
   });
-});
 
-describe('the settings actually gate it', () => {
-  it('stays silent with alerts turned off', async () => {
-    // Read from the same query key the settings screen writes. A path with its
-    // own copy of the preference is a second source of truth.
-    vi.mocked(api.getSettings).mockResolvedValue({ ...ALL_ON, attentionAlerts: false } as never);
-    await openTerminal();
-    await report('blocked');
-    expect(played).not.toHaveBeenCalled();
-    expect(noticeCalls).toHaveLength(0);
-  });
-
+  // Kept (GH-281 review): attentionAlert.test.ts proves the plan; these prove the component
+  // carries out each half of it, so sound and banner cannot be swapped unseen.
   it('shows the banner without the sound when only the sound is off', async () => {
     vi.mocked(api.getSettings).mockResolvedValue({ ...ALL_ON, attentionSound: false } as never);
     await openTerminal();
@@ -240,6 +234,16 @@ describe('the settings actually gate it', () => {
     await openTerminal();
     await report('blocked');
     await waitFor(() => expect(played).toHaveBeenCalled());
+    expect(noticeCalls).toHaveLength(0);
+  });
+
+  it('stays silent with alerts turned off', async () => {
+    // Read from the same query key the settings screen writes. A path with its
+    // own copy of the preference is a second source of truth.
+    vi.mocked(api.getSettings).mockResolvedValue({ ...ALL_ON, attentionAlerts: false } as never);
+    await openTerminal();
+    await report('blocked');
+    expect(played).not.toHaveBeenCalled();
     expect(noticeCalls).toHaveLength(0);
   });
 });

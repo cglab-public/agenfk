@@ -34,21 +34,6 @@ describe('hub-ui pre-paint theme bootstrap', () => {
     expect(inlineAt).toBeLessThan(bundleAt);
   });
 
-  it('applies the same markers and storage key as ThemeContext', () => {
-    const html = readHtml();
-    const inline = html.slice(html.indexOf('<script>'), html.indexOf('</script>'));
-    expect(inline).toContain("'theme'");
-    expect(inline).toContain('data-theme');
-    expect(inline).toContain('classList');
-    expect(inline).toContain('prefers-color-scheme: dark');
-    expect(inline).toContain('colorScheme');
-  });
-
-  it('is resilient to blocked storage so a throwing localStorage cannot white-screen the hub', () => {
-    const inline = readHtml();
-    expect(inline.slice(inline.indexOf('<script>'), inline.indexOf('</script>'))).toMatch(/try\s*\{/);
-  });
-
   it('reproduces the provider\'s precedence: stored choice wins, else OS', () => {
     // Execute the extracted snippet against a stubbed environment and assert
     // the resulting marker, so the two implementations cannot silently diverge.
@@ -88,5 +73,53 @@ describe('hub-ui pre-paint theme bootstrap', () => {
     expect(run(null, true)).toEqual({ cls: 'dark', attr: 'dark' });
     expect(run(null, false)).toEqual({ cls: 'light', attr: 'light' });
     expect(run('banana', true)).toEqual({ cls: 'dark', attr: 'dark' });
+  });
+});
+
+/*
+ * The same snippet, EXECUTED against a stand-in document, for what the tests
+ * above only looked for as words: the storage key, the colour scheme, and the
+ * try/catch around blocked storage.
+ */
+describe('hub-ui pre-paint theme bootstrap, executed', () => {
+  const snippet = () => {
+    const html = readHtml();
+    return html.slice(html.indexOf('<script>') + '<script>'.length, html.indexOf('</script>'));
+  };
+  const run = (getItem: (key: string) => string | null, prefersDark = false) => {
+    const root = { classes: new Set<string>(), attrs: {} as Record<string, string>, style: {} as Record<string, string> };
+    const doc = {
+      documentElement: {
+        classList: {
+          remove: (...cs: string[]) => cs.forEach(c => root.classes.delete(c)),
+          add: (c: string) => root.classes.add(c),
+        },
+        setAttribute: (k: string, v: string) => { root.attrs[k] = v; },
+        style: root.style,
+      },
+    };
+    const storage = { getItem };
+    const win = { localStorage: storage, matchMedia: (q: string) => ({ matches: prefersDark && q === '(prefers-color-scheme: dark)' }) };
+    // eslint-disable-next-line no-new-func
+    new Function('document', 'window', 'localStorage', 'matchMedia', snippet())(doc, win, storage, win.matchMedia);
+    return root;
+  };
+
+  it("reads the choice from the key ThemeContext writes ('theme')", () => {
+    const root = run(key => (key === 'theme' ? 'dark' : null));
+    expect([...root.classes]).toEqual(['dark']);
+    expect(root.attrs['data-theme']).toBe('dark');
+  });
+
+  it('sets the colour scheme to the chosen theme, so native controls follow it', () => {
+    expect(run(() => 'dark').style.colorScheme).toBe('dark');
+    expect(run(() => 'light', true).style.colorScheme).toBe('light');
+  });
+
+  it('survives storage that throws, leaving the page to its CSS defaults', () => {
+    let root: ReturnType<typeof run> | undefined;
+    expect(() => { root = run(() => { throw new Error('SecurityError: storage is blocked'); }, true); }).not.toThrow();
+    expect(root!.classes.size).toBe(0);
+    expect(root!.attrs['data-theme']).toBeUndefined();
   });
 });

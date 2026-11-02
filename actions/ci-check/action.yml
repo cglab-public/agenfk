@@ -1,0 +1,162 @@
+name: AgEnFK receipt check
+description: >-
+  Ask the AgEnFK hub whether a verification or independent-review receipt
+  certifies this pull request's exact content (RFC-002). Gate the expensive
+  STEPS of a job on the `run` output, never the whole job: GitHub counts a
+  skipped job as a passing required check.
+
+inputs:
+  kind:
+    description: "What the gated steps stand for: verification or review."
+    required: true
+  lens:
+    description: "For kind review: the lens the gated steps perform (general, security, ...)."
+    required: false
+    default: ""
+  policy:
+    description: "run (default): run the steps when nothing qualifies. require: fail the job instead."
+    required: false
+    default: "run"
+  hub-url:
+    description: "The AgEnFK hub URL."
+    required: true
+  token:
+    description: "A ci_ token an org admin minted on the hub (store it as a secret)."
+    required: true
+  max-age:
+    description: "Only reuse a receipt younger than this many days."
+    required: false
+    default: ""
+  report-dir:
+    description: "Where the reused report or findings are written (default .agenfk-ci)."
+    required: false
+    default: ""
+  agenfk-version:
+    description: "The agenfk release to run (e.g. 2.1.0). Pin it: latest is the newest stable release, which may predate ci check."
+    required: false
+    default: "latest"
+  agenfk-sha256:
+    description: "The SHA-256 of that release's agenfk-dist.tar.gz. When set, a download that does not match fails the job and nothing from it runs. Pin it beside the version."
+    required: false
+    default: ""
+
+outputs:
+  run:
+    description: "'false' when a receipt lets the gated steps be skipped; 'true' otherwise. Gate steps with `!= 'false'`, so a check that never wrote it runs them."
+    value: ${{ steps.check.outputs.run }}
+  decision:
+    description: "reuse, run or block."
+    value: ${{ steps.check.outputs.decision }}
+  reason:
+    description: "Why, as a code (matched, tree_mismatch, hub_unavailable, ...)."
+    value: ${{ steps.check.outputs.reason }}
+  receipt-id:
+    description: "The receipt reused (or that Shadow would have reused)."
+    value: ${{ steps.check.outputs.receipt-id }}
+  would-reuse:
+    description: "Whether Enforce would reuse a receipt here; what Shadow measures."
+    value: ${{ steps.check.outputs.would-reuse }}
+  integrity:
+    description: "'mismatch' when the downloaded release did not match agenfk-sha256. The action fails then; a caller that tolerates its failure (continue-on-error) should refuse this itself."
+    value: ${{ steps.install.outputs.integrity }}
+
+runs:
+  using: composite
+  steps:
+    # agenfk is not on npm: it ships as a GitHub release asset. Install that
+    # release's runtime dependencies (no scripts) and call the built CLI. Never
+    # bin/agenfk.js, which is the installer. A release that cannot be installed
+    # leaves no `cli` output, and the check step decides what that means.
+    - id: install
+      shell: bash
+      env:
+        AGENFK_VERSION: ${{ inputs.agenfk-version }}
+        AGENFK_SHA256: ${{ inputs.agenfk-sha256 }}
+      run: |
+        version="${AGENFK_VERSION:-latest}"
+        version="${version#v}"
+        releases="https://github.com/cglab-public/agenfk/releases"
+        if [ "$version" = "latest" ]; then
+          url="$releases/latest/download/agenfk-dist.tar.gz"
+        else
+          case "$version" in
+            *[!0-9A-Za-z.+-]*) echo "::warning::agenfk-version is not a version; running the gated steps."; exit 0 ;;
+          esac
+          url="$releases/download/v$version/agenfk-dist.tar.gz"
+        fi
+        dir="$RUNNER_TEMP/agenfk-ci-$version"
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        if ! curl -fsSL --retry 3 -o "$dir/agenfk-dist.tar.gz" "$url"; then
+          echo "::warning::Could not download agenfk $version from its GitHub release."
+          exit 0
+        fi
+        # A version names a release; the digest pins its bytes. A mismatch is not
+        # an outage to route around: it fails the job, and nothing from it runs.
+        if [ -n "$AGENFK_SHA256" ]; then
+          actual="$( (sha256sum "$dir/agenfk-dist.tar.gz" 2>/dev/null || shasum -a 256 "$dir/agenfk-dist.tar.gz") | cut -d' ' -f1)"
+          if [ "$actual" != "$AGENFK_SHA256" ]; then
+            echo "integrity=mismatch" >> "$GITHUB_OUTPUT"
+            echo "::error::agenfk-dist.tar.gz for $version does not match the pinned agenfk-sha256."
+            exit 1
+          fi
+        fi
+        if ! tar -xzf "$dir/agenfk-dist.tar.gz" -C "$dir" \
+          || ! (cd "$dir" && ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --omit=dev --ignore-scripts --no-audit --no-fund); then
+          echo "::warning::Could not install agenfk $version from its GitHub release."
+          exit 0
+        fi
+        echo "cli=$dir/packages/cli/dist/index.js" >> "$GITHUB_OUTPUT"
+    - id: check
+      shell: bash
+      # Inputs reach the script as environment variables only, never spliced
+      # into its text, so an input cannot become code.
+      env:
+        KIND: ${{ inputs.kind }}
+        LENS: ${{ inputs.lens }}
+        POLICY: ${{ inputs.policy }}
+        MAX_AGE: ${{ inputs.max-age }}
+        REPORT_DIR: ${{ inputs.report-dir }}
+        AGENFK_CLI: ${{ steps.install.outputs.cli }}
+        AGENFK_HUB_URL: ${{ inputs.hub-url }}
+        AGENFK_CI_TOKEN: ${{ inputs.token }}
+      run: |
+        # No agenfk, no answer: run the gated steps, or fail where a receipt is required.
+        if [ -z "$AGENFK_CLI" ]; then
+          if [ "${POLICY:-run}" = "require" ]; then
+            echo "::error::agenfk could not be installed, and the policy requires a receipt."
+            exit 1
+          fi
+          { echo "run=true"; echo "decision=run"; echo "reason=install_failed"; } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        args=(ci check --kind "$KIND" --policy "${POLICY:-run}")
+        if [ -n "$LENS" ]; then args+=(--lens "$LENS"); fi
+        if [ -n "$MAX_AGE" ]; then args+=(--max-age "$MAX_AGE"); fi
+        if [ -n "$REPORT_DIR" ]; then args+=(--report-dir "$REPORT_DIR"); fi
+        # The CLI echoes inputs in its diagnostics: what it prints is never read
+        # as a workflow command.
+        stop="agenfk-$(date +%s)-$$-$RANDOM"
+        written=$(wc -l < "$GITHUB_OUTPUT")
+        echo "::stop-commands::$stop"
+        set +e
+        node "$AGENFK_CLI" "${args[@]}"
+        code=$?
+        set -e
+        echo "::$stop::"
+        decision=$(tail -n +"$((written + 1))" "$GITHUB_OUTPUT" | sed -n 's/^decision=//p' | tail -n 1)
+        # 0 reuse and 10 run are answers. So is 1 WITH a written decision=block:
+        # the policy requires a receipt and none qualifies, which fails the job.
+        # Anything else is no answer (a crash, or a release with no ci check,
+        # which also exits 1): the gated steps run, or the job fails where a
+        # receipt is required. A failed CLI never leaves run=false behind: the
+        # last line written for an output is the one GitHub keeps.
+        case "$code" in
+          0|10) exit 0 ;;
+        esac
+        echo "run=true" >> "$GITHUB_OUTPUT"
+        if [ "$code" -eq 1 ] && [ "$decision" = "block" ]; then exit 1; fi
+        if [ "${POLICY:-run}" = "require" ]; then exit "$code"; fi
+        echo "::warning::agenfk ci check exited $code without an answer; running the gated steps."
+        { echo "decision=run"; echo "reason=check_failed"; } >> "$GITHUB_OUTPUT"
+        exit 0

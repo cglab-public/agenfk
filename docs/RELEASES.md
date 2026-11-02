@@ -60,7 +60,7 @@ git add package.json package-lock.json packages/*/package.json
 git commit -m "chore: bump version to 2.0.0-beta.<N+1>"
 ```
 
-- **CHANGELOG entry is mandatory**: a `hub-docs-tenancy` test fails the build if the
+- **CHANGELOG entry is mandatory**: `packages/hub/src/test/release-changelog.test.ts` fails the build if the
   current version has no `CHANGELOG.md` entry. Add one before or with the bump commit.
 - Package and verify the distributable: `node scripts/package-dist.mjs`, then check
   the tarball carries no macOS metadata (see `.claude/commands/agenfk-release-beta.md`

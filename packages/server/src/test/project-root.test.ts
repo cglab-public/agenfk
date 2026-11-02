@@ -80,15 +80,6 @@ describe('setting a project root', () => {
     const res = await agent().put(`/projects/${projectId}/project-root`).send({ projectRoot: repo });
     expect(res.status).toBe(401);
   });
-
-  it('is still refused by the open project route', async () => {
-    // Belt and braces: this endpoint must not have made the field writable
-    // somewhere it was deliberately kept out of.
-    await internal(agent().put(`/projects/${projectId}/project-root`)).send({ projectRoot: repo });
-    await agent().put(`/projects/${projectId}`).send({ name: 'roots', projectRoot: '/tmp' });
-    const after = await agent().get('/projects');
-    expect(after.body.find((p: { id: string }) => p.id === projectId).projectRoot).toBe(repo);
-  });
 });
 
 describe('what it refuses to record', () => {

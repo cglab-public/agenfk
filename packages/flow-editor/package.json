@@ -2,14 +2,14 @@
   "name": "@agenfk/flow-editor",
   "private": true,
   "license": "Apache-2.0",
-  "version": "2.0.0",
+  "version": "2.1.0-beta.13",
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
   },
   "peerDependencies": {
-    "@tanstack/react-query": "^5.104.3",
+    "@tanstack/react-query": "^5.105.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.574.0",
     "mermaid": "^11.17.2",

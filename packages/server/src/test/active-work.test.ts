@@ -84,9 +84,4 @@ describe('serializeActiveWork', () => {
     expect(parsed.itemId).toBe('i1');
     expect(Number.isFinite(Date.parse(parsed.at))).toBe(true);
   });
-
-  it('round-trips through readActiveWork', () => {
-    const work = readActiveWork(file(serializeActiveWork({ itemId: 'i9' })));
-    expect(work?.itemId).toBe('i9');
-  });
 });

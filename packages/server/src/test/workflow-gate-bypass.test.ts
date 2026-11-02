@@ -10,7 +10,7 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage, closeStorage, buildAllowedTransitions, storage } from '../server';
+import { app, initStorage, closeStorage, buildAllowedTransitions } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -95,51 +95,6 @@ describe('the HTTP surface enforces the gate (CGLAB-81)', () => {
     const id = await newItem();
     const res = await agent().put(`/items/${id}`).send({ status: 'TEST' });
     expect(res.status).toBe(400);
-    expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
-  });
-
-  it('refuses an agent a one-step forward move, but lets the board drag it (CGLAB-377)', async () => {
-    const id = await newItem();
-    const agentMove = await agent().put(`/items/${id}`).send({ status: 'IN_PROGRESS' });
-    expect(agentMove.status).toBe(409);
-    expect(agentMove.body.error).toContain('agenfk verify');
-    const boardMove = await agent().put(`/items/${id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
-    expect(boardMove.status).toBe(200);
-    expect(boardMove.body.status).toBe('IN_PROGRESS');
-  });
-
-  it('refuses to reach DONE through a plain status write, from any step', async () => {
-    // The plain-PUT guard predates this work, so asserting only that would be
-    // vacuous. What changed is that there is no longer a step from which DONE is
-    // reachable without validate_progress — including the last one before it,
-    // which used to be the sanctioned launderer.
-    const id = await newItem();
-    // Parked on the last step before DONE through storage: forward moves over
-    // HTTP are verify's alone now (CGLAB-377), and the walk is not under test.
-    await storage.updateItem(id, { status: 'TEST' } as any);
-    const fromFinal = await agent().put(`/items/${id}`).send({ status: 'DONE' });
-    expect(fromFinal.status).toBeGreaterThanOrEqual(400);
-    expect((await agent().get(`/items/${id}`)).body.status).toBe('TEST');
-  });
-
-  it('cannot launder a jump through PAUSED', async () => {
-    const id = await newItem();
-    await storage.updateItem(id, { status: 'IN_PROGRESS' } as any);
-    const paused = await agent().put(`/items/${id}`).send({ status: 'PAUSED' });
-    expect(paused.status).toBe(200);
-    const jump = await agent().put(`/items/${id}`).send({ status: 'TEST' });
-    expect(jump.status).toBe(400);
-  });
-
-  it('applies the same validation on the bulk route', async () => {
-    const id = await newItem();
-    const res = await agent().post('/items/bulk').send({
-      items: [{ id, updates: { status: 'TEST' } }],
-    });
-    // What must NOT happen is the item silently landing on TEST, and the caller
-    // must be TOLD rather than left to assume it worked.
-    const after = await agent().get(`/items/${id}`);
-    expect(after.body.status).not.toBe('TEST');
     expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
   });
 });

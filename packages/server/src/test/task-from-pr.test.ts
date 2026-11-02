@@ -210,17 +210,7 @@ afterEach(() => {
 });
 
 describe('POST /projects/:id/tasks-from-pr', () => {
-  it('creates a card carrying the PR title, body and link', async () => {
-    const res = await post({ prNumber: 42 });
-    expect(res.status).toBe(201);
-    expect(res.body.item.title).toBe('Make the thing faster');
-    expect(res.body.item.description).toContain('Caches the lookup.');
-    expect(res.body.item.description).toContain('https://github.com/acme/app/pull/42');
-    expect(res.body.item.branchName).toBe('feat/from-pr');
-    expect(res.body.item.prNumber).toBe(42);
-  });
-
-  it("cuts the worktree on the PR's commits, not on local main", async () => {
+  it("creates a card carrying the PR title, body and link, with its worktree cut on the PR's commits, not on local main", async () => {
     /*
      * THE test for this route, and the first version of it was worthless: it
      * asserted that a directory existed and nothing about what was in it, so
@@ -235,28 +225,23 @@ describe('POST /projects/:id/tasks-from-pr', () => {
      */
     const res = await post({ prNumber: 42 });
     expect(res.status).toBe(201);
+    expect(res.body.item.title).toBe('Make the thing faster');
+    // Only the body. Comments and reviews go on changing on GitHub, and a
+    // snapshot of them inside a card is a second copy nobody will update.
+    expect(res.body.item.description).toBe('Caches the lookup.\n\nPR #42: https://github.com/acme/app/pull/42');
+    expect(res.body.item.branchName).toBe('feat/from-pr');
+    expect(res.body.item.prNumber).toBe(42);
+
+    // The PR number reaches a shellout as its own argv entry (4c939916). Line by
+    // line, so a single joined argument cannot masquerade as four.
+    const argv = fs.readFileSync(process.env.AGENFK_TEST_GH_ARGV!, 'utf8').split('\n');
+    expect(argv.slice(0, 5)).toEqual(['pr', 'view', '42', '-R', 'acme/app']);
+
     expect(res.body.worktree?.path, res.body.worktreeError ?? '').toBeTruthy();
     expect(fs.existsSync(path.join(res.body.worktree.path, 'f.txt')),
       'the worktree does not contain the PR\'s file — it was branched from local HEAD').toBe(true);
     expect(git(res.body.worktree.path, 'log', '-1', '--format=%s').trim()).toBe('work');
     fs.rmSync(res.body.worktree.path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
-
-  it('passes the PR number as its own argv entry', async () => {
-    // It reaches a shellout. The issue importer carries a comment naming the
-    // bug this was (4c939916).
-    await post({ prNumber: 42 });
-    // Line by line, so a single joined argument cannot masquerade as four.
-    const argv = fs.readFileSync(process.env.AGENFK_TEST_GH_ARGV!, 'utf8').split('\n');
-    expect(argv.slice(0, 5)).toEqual(['pr', 'view', '42', '-R', 'acme/app']);
-  });
-
-  it('does not bring the PR conversation along', async () => {
-    // Only the body. Comments and reviews go on changing on GitHub, and a
-    // snapshot of them inside a card is a second copy nobody will update.
-    setPr({ body: 'Just the body.' });
-    const res = await post({ prNumber: 42 });
-    expect(res.body.item.description).toBe('Just the body.\n\nPR #42: https://github.com/acme/app/pull/42');
   });
 });
 
@@ -289,7 +274,7 @@ describe('a branch that already has a card', () => {
 });
 
 describe('when the worktree cannot be made', () => {
-  it('keeps the card, because the PR exists whether or not the remote is reachable', async () => {
+  it('keeps the card, because the PR exists whether or not the remote is reachable, and says why on the card', async () => {
     // The deliberate divergence from tasks-from-branch, which rolls the item
     // back. There the item exists only to hold a worktree; here it represents
     // a PR, and deleting the user's card because a fetch failed would be the
@@ -299,14 +284,9 @@ describe('when the worktree cannot be made', () => {
     expect(res.status).toBe(201);
     expect(res.body.item.id).toBeTruthy();
     expect(res.body.worktree).toBeNull();
-  });
-
-  it('says why, on the card, where it outlives the response', async () => {
     // A card that looks ready and has no worktree is the exact failure the
     // rollback over there exists to prevent. Silence is what is refused here,
-    // not the card.
-    git(repo, 'remote', 'set-url', 'origin', path.join(os.tmpdir(), 'agenfk-no-such-remote'));
-    const res = await post({ prNumber: 42 });
+    // not the card: the reason goes on the card, where it outlives the response.
     expect(res.body.worktreeError).toBeTruthy();
     const item = await agent().get(`/items/${res.body.item.id}`);
     expect(JSON.stringify(item.body.comments ?? [])).toContain('worktree was not');

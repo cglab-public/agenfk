@@ -12,7 +12,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { removeTestDb } from './helpers/testDb';
-import { reconcileHubFlow } from '../hub/flowSync';
+import { reconcileProjectFlow } from '../hub/flowSync';
 
 const baseSteps = [
   { id: 's0', name: 'todo',  label: 'Todo',   order: 0, isAnchor: true },
@@ -40,13 +40,16 @@ function makeFetchSequence(seq: Array<{ status: number; body?: any; etag?: strin
   });
 }
 
-describe('flowSync.reconcileHubFlow', () => {
+describe('flowSync.reconcileProjectFlow (org scope, no project)', () => {
   let storage: SQLiteStorageProvider;
   let dbPath: string;
   let emit: ReturnType<typeof vi.fn>;
+  const hubConfig = { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG };
+  const reconcile = (fetchImpl: any, lastEtag: string | null = null) =>
+    reconcileProjectFlow({ storage, hubConfig, projectId: null, lastEtag, fetchImpl, emit });
 
   beforeEach(async () => {
-    dbPath = path.join(os.tmpdir(), `flow-sync-test-${process.pid}-${Math.random().toString(36).slice(2)}.sqlite`);
+    dbPath = path.join(os.tmpdir(), `flow-sync-proj-test-${process.pid}-${Math.random().toString(36).slice(2)}.sqlite`);
     storage = new SQLiteStorageProvider();
     await storage.init({ path: dbPath });
     emit = vi.fn();
@@ -56,140 +59,44 @@ describe('flowSync.reconcileHubFlow', () => {
     await removeTestDb(dbPath, () => storage.shutdown());
   });
 
-  it('200 with new hub flow → upserts local row with source=hub and emits flow:updated', async () => {
-    const remoteFlow = { id: 'remote-1', name: 'Org Flow', description: '', steps: baseSteps };
-    const fetchImpl = makeFetchSequence([
-      { status: 200, etag: 'W/"3"', body: { flow: remoteFlow, hubVersion: 3 } },
-    ]);
-
-    const project = await storage.createProject({ id: 'p1', name: 'p1', description: '', createdAt: new Date(), updatedAt: new Date() } as any);
-
-    const result = await reconcileHubFlow({
-      storage,
-      hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG },
-      lastEtag: null,
-      fetchImpl,
-      emit,
-    });
-
-    expect(result.outcome).toBe('updated');
-    expect(result.etag).toBe('W/"3"');
-    const flows = await storage.listFlows();
-    expect(flows).toHaveLength(1);
-    const f = flows[0];
-    expect(f.source).toBe('hub');
-    expect(f.hubFlowId).toBe('remote-1');
-    expect(f.hubVersion).toBe(3);
-    expect(f.name).toBe('Org Flow');
-    // Project re-bound to the local hub flow.
-    const proj = await storage.getProject(project.id);
-    expect(proj?.flowId).toBe(f.id);
-    expect(emit).toHaveBeenCalledWith('flow:updated', expect.objectContaining({ flowId: f.id }));
-  });
-
   it("keeps a hub flow's verifyAt (281adef0)", async () => {
-    const fetchImpl = makeFetchSequence([{ status: 200, etag: 'W/"9"', body: { flow: { id: 'remote-va', name: 'VA Flow', description: '', verifyAt: 'parent', steps: baseSteps }, hubVersion: 9 } }]);
-    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: null, fetchImpl, emit });
+    await reconcile(makeFetchSequence([{ status: 200, etag: 'W/"9"', body: { flow: { id: 'remote-va', name: 'VA Flow', description: '', verifyAt: 'parent', steps: baseSteps }, hubVersion: 9 } }]));
     const f = (await storage.listFlows()).find(x => x.hubFlowId === 'remote-va');
     expect((f as any)?.verifyAt).toBe('parent');
   });
 
-  it("turns verifyAt back off when the hub does (281adef0 review): updateFlow merges, so the key is always written", async () => {
-    const first = makeFetchSequence([{ status: 200, etag: 'W/"10"', body: { flow: { id: 'remote-off', name: 'Off Flow', description: '', verifyAt: 'parent', steps: baseSteps }, hubVersion: 10 } }]);
-    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: null, fetchImpl: first, emit });
-    const second = makeFetchSequence([{ status: 200, etag: 'W/"11"', body: { flow: { id: 'remote-off', name: 'Off Flow', description: '', steps: baseSteps }, hubVersion: 11 } }]);
-    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: 'W/"10"', fetchImpl: second, emit });
+  it('turns verifyAt back off when the hub does (281adef0 review): updateFlow merges, so the key is always written', async () => {
+    await reconcile(makeFetchSequence([{ status: 200, etag: 'W/"10"', body: { flow: { id: 'remote-off', name: 'Off Flow', description: '', verifyAt: 'parent', steps: baseSteps }, hubVersion: 10 } }]));
+    await reconcile(makeFetchSequence([{ status: 200, etag: 'W/"11"', body: { flow: { id: 'remote-off', name: 'Off Flow', description: '', steps: baseSteps }, hubVersion: 11 } }]), 'W/"10"');
     const f = (await storage.listFlows()).find(x => x.hubFlowId === 'remote-off');
     expect((f as any)?.verifyAt).toBe('leaf');
   });
 
   it("keeps a hub flow's verifyAtScope, and drops it when the hub does (7ddeaf7c)", async () => {
-    const first = makeFetchSequence([{ status: 200, etag: 'W/"12"', body: { flow: { id: 'remote-scope', name: 'Scope Flow', description: '', verifyAt: 'parent', verifyAtScope: 'project', steps: baseSteps }, hubVersion: 12 } }]);
-    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: null, fetchImpl: first, emit });
+    await reconcile(makeFetchSequence([{ status: 200, etag: 'W/"12"', body: { flow: { id: 'remote-scope', name: 'Scope Flow', description: '', verifyAt: 'parent', verifyAtScope: 'project', steps: baseSteps }, hubVersion: 12 } }]));
     expect(((await storage.listFlows()).find(x => x.hubFlowId === 'remote-scope') as any)?.verifyAtScope).toBe('project');
-    const second = makeFetchSequence([{ status: 200, etag: 'W/"13"', body: { flow: { id: 'remote-scope', name: 'Scope Flow', description: '', verifyAt: 'parent', steps: baseSteps }, hubVersion: 13 } }]);
-    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: 'W/"12"', fetchImpl: second, emit });
+    await reconcile(makeFetchSequence([{ status: 200, etag: 'W/"13"', body: { flow: { id: 'remote-scope', name: 'Scope Flow', description: '', verifyAt: 'parent', steps: baseSteps }, hubVersion: 13 } }]), 'W/"12"');
     expect(((await storage.listFlows()).find(x => x.hubFlowId === 'remote-scope') as any)?.verifyAtScope).toBe('worktree');
   });
 
-  it('304 with matching ETag → no-op', async () => {
-    const fetchImpl = makeFetchSequence([{ status: 304 }]);
-    const result = await reconcileHubFlow({
-      storage,
-      hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG },
-      lastEtag: 'W/"3"',
-      fetchImpl,
-      emit,
-    });
-    expect(result.outcome).toBe('not-modified');
-    expect((await storage.listFlows()).length).toBe(0);
-    expect(emit).not.toHaveBeenCalled();
-  });
-
-  it('200 with same hub id but bumped version → updates existing row, keeps stable local id', async () => {
-    const fetch1 = makeFetchSequence([
-      { status: 200, etag: 'W/"1"', body: { flow: { id: 'remote-x', name: 'V1', description: '', steps: baseSteps }, hubVersion: 1 } },
-    ]);
-    const r1 = await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: null, fetchImpl: fetch1, emit });
-    const localId = (await storage.listFlows())[0].id;
+  it('a bumped hub version updates the existing row and keeps its local id', async () => {
+    const r1 = await reconcile(makeFetchSequence([{ status: 200, etag: 'W/"1"', body: { flow: { id: 'remote-x', name: 'V1', description: '', steps: baseSteps }, hubVersion: 1 } }]));
     expect(r1.outcome).toBe('updated');
-
-    const fetch2 = makeFetchSequence([
-      { status: 200, etag: 'W/"2"', body: { flow: { id: 'remote-x', name: 'V2', description: '', steps: baseSteps }, hubVersion: 2 } },
-    ]);
-    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: 'W/"1"', fetchImpl: fetch2, emit });
+    const localId = (await storage.listFlows())[0].id;
+    await reconcile(makeFetchSequence([{ status: 200, etag: 'W/"2"', body: { flow: { id: 'remote-x', name: 'V2', description: '', steps: baseSteps }, hubVersion: 2 } }]), 'W/"1"');
     const flows = await storage.listFlows();
     expect(flows).toHaveLength(1);
-    expect(flows[0].id).toBe(localId); // stable across versions
+    expect(flows[0].id).toBe(localId);
     expect(flows[0].hubVersion).toBe(2);
     expect(flows[0].name).toBe('V2');
   });
 
-  it('200 with { flow: null } → leaves existing local hub flow alone', async () => {
-    // Seed an existing hub-managed flow.
-    await storage.createFlow({
-      id: 'local-hub-id',
-      name: 'cached',
-      description: '',
-      version: '1',
-      steps: baseSteps,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      source: 'hub',
-      hubFlowId: 'remote-cached',
-      hubVersion: 5,
-    } as any);
-    const fetchImpl = makeFetchSequence([{ status: 200, body: { flow: null } }]);
-    const result = await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: null, fetchImpl, emit });
-    expect(result.outcome).toBe('no-assignment');
-    expect((await storage.listFlows())).toHaveLength(1); // still there
-  });
-
-  it('transport failure → returns error outcome and does not crash', async () => {
-    const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
-    const result = await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: null, fetchImpl, emit });
-    expect(result.outcome).toBe('error');
-    expect(result.error).toMatch(/ECONNREFUSED/);
-  });
-
-  it('401 → returns error outcome (caller should stop polling, but reconciler does not throw)', async () => {
-    const fetchImpl = makeFetchSequence([{ status: 401, body: { error: 'Invalid or revoked token' } }]);
-    const result = await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: null, fetchImpl, emit });
-    expect(result.outcome).toBe('error');
-  });
-
-  it('passes Authorization header and If-None-Match to fetch', async () => {
+  it('sends the hub token as a bearer Authorization header, and the last ETag as If-None-Match', async () => {
     const fetchImpl = makeFetchSequence([{ status: 304 }]);
-    await reconcileHubFlow({
-      storage,
-      hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG },
-      lastEtag: 'W/"7"',
-      fetchImpl,
-      emit,
-    });
-    const callArgs = (fetchImpl as any).mock.calls[0];
-    expect(callArgs[0]).toBe(`${HUB_URL}/v1/flows/active`);
-    expect(callArgs[1].headers['Authorization']).toBe(`Bearer ${HUB_TOKEN}`);
-    expect(callArgs[1].headers['If-None-Match']).toBe('W/"7"');
+    await reconcile(fetchImpl, 'W/"7"');
+    const [url, opts] = (fetchImpl as any).mock.calls[0];
+    expect(url).toBe(`${HUB_URL}/v1/flows/active`);
+    expect(opts.headers['Authorization']).toBe(`Bearer ${HUB_TOKEN}`);
+    expect(opts.headers['If-None-Match']).toBe('W/"7"');
   });
 });

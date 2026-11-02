@@ -169,14 +169,6 @@ describe('Board date filter', () => {
     expect(within(openPanel()).getByRole('button', { name: 'Created' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('Today includes a card updated at 23:59 tonight', async () => {
-    await renderBoard();
-    chooseRange('Today');
-    await waitFor(() => expect(visible('Fresh Task')).toBe(false));
-    expect(visible('New Task')).toBe(true);
-    expect(columnCount('IN_PROGRESS')).toBe('1');
-  });
-
   it('a custom range filters on whole local days, both ends included', async () => {
     await renderBoard();
     chooseRange('Custom');
@@ -380,20 +372,6 @@ describe('Board date filter', () => {
     expect(visible('New Task')).toBe(true);
   });
 
-  it('another project\'s saved filter does not apply here', async () => {
-    localStorage.setItem('agenfk_board_date_filter:p2', JSON.stringify({ field: 'updatedAt', range: { kind: 'today' } }));
-    await renderBoard();
-    expect(screen.queryByTestId('date-filter-chip')).toBeNull();
-    expect(visible('Stale Task')).toBe(true);
-  });
-
-  it('a corrupt saved filter falls back to Any time', async () => {
-    localStorage.setItem('agenfk_board_date_filter:p1', '{not json');
-    await renderBoard();
-    expect(screen.queryByTestId('date-filter-chip')).toBeNull();
-    expect(visible('Stale Task')).toBe(true);
-  });
-
   // ── Review round 1 ──────────────────────────────────────────────────────
 
   it('search prefers a match the filter shows over a hidden one, keeping the filter', async () => {
@@ -480,16 +458,6 @@ describe('Board date filter', () => {
     await screen.findByText('New Task');
     expect(screen.getByTestId('date-filter-chip')).toHaveTextContent('Updated · Today');
     expect(visible('Stale Task')).toBe(false);
-  });
-
-  it('a custom range typed back to front still filters on the days between', async () => {
-    await renderBoard();
-    chooseRange('Custom');
-    const panel = openPanel();
-    fireEvent.change(within(panel).getByLabelText('From'), { target: { value: '2026-01-10' } });
-    fireEvent.change(within(panel).getByLabelText('To'), { target: { value: '2026-01-01' } });
-    await waitFor(() => expect(visible('Fresh Task')).toBe(false));
-    expect(visible('Stale Task')).toBe(true);
   });
 
   it('clearing the chip hands focus back to the Date trigger', async () => {

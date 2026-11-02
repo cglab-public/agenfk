@@ -80,6 +80,8 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
     const res = await verifyFrom(t.child, t.root);
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(tree(res)).toBe(t.wt);
+    // The refusal from the wrong tree names the way to choose one.
+    expect(res.body.error).toMatch(/agenfk update <id> --worktree/);
   });
 
   it("'none' puts the card in the project root, whatever its parent's worktree", async () => {
@@ -103,6 +105,8 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
     const u = await put(t.child, { worktree: t.wt2 + '/' });
     expect(u.status, JSON.stringify(u.body)).toBe(200);
     expect(u.body.worktreeChoice).toBe(t.wt2);
+    // The card's worktree record names the tree it chose.
+    expect((await agent().get(`/items/${t.child}/worktree`)).body.chosen).toBe(t.wt2);
     // Never in worktreePath: that is the checkout agenfk made, which remove and prune may delete.
     expect(u.body.worktreePath).toBeUndefined();
     expect((await verifyFrom(t.child, t.wt)).status).toBe(409);
@@ -170,12 +174,6 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
     expect(res.body.error).toMatch(/--worktree inherit/);
   });
 
-  it("the card's worktree record names the tree it chose", async () => {
-    const t = await setup();
-    expect((await put(t.child, { worktree: t.wt2 })).status).toBe(200);
-    expect((await agent().get(`/items/${t.child}/worktree`)).body.chosen).toBe(t.wt2);
-  });
-
   it('a symlinked spelling is refused: the tree is what git lists, not a link to it', async () => {
     const t = await setup();
     const link = path.join(path.dirname(t.root), 'link-to-wt2');
@@ -221,9 +219,4 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
     expect(tree(await verifyFrom(t.child, t.root))).toBe(t.wt);
   });
 
-  it('the refusal from the wrong tree names the way to choose one', async () => {
-    const t = await setup();
-    const res = await verifyFrom(t.child, t.root);
-    expect(res.body.error).toMatch(/agenfk update <id> --worktree/);
-  });
 });

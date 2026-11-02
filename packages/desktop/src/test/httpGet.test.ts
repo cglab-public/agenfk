@@ -54,43 +54,57 @@ describe('httpGet', () => {
     expect(seen).toContain('text/html');
   });
 
-  it('settles on a server that dribbles bytes forever instead of hanging', async () => {
-    // The reproduced bug: each chunk resets Node's inactivity timer, so
-    // without a wall-clock bound this never resolves.
-    const port = await listen((_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      const timer = setInterval(() => res.write('x'), 50);
-      res.on('close', () => clearInterval(timer));
-    });
-
-    const started = Date.now();
-    const result = await httpGet(port, '/version');
-    const elapsed = Date.now() - started;
-
-    expect(result === null || typeof result.status === 'number').toBe(true);
-    expect(elapsed).toBeLessThan(5000);
-  }, 10000);
-
-  it('settles on a server that accepts the connection and never replies', async () => {
-    const port = await listen(() => { /* deliberately no response */ });
-    const started = Date.now();
-    await httpGet(port, '/version');
-    expect(Date.now() - started).toBeLessThan(5000);
-  }, 10000);
-
   it('resolves null when nothing is listening', async () => {
     // Port 1 is privileged and unbound in every environment we run in.
     expect(await httpGet(1, '/version')).toBeNull();
   }, 10000);
+});
 
-  it('never resolves twice, even when the response also errors', async () => {
+/*
+ * The two hang cases. Node's `timeout` is an inactivity timer, so a server
+ * that dribbles bytes resets it forever; only the wall-clock deadline settles
+ * the probe. The deadline is a parameter so this takes 150ms, not the real 2s,
+ * and each test asserts BOTH ends: it gave up, and at the deadline it was given.
+ */
+describe('httpGet with the deadline it is given', () => {
+  const DEADLINE = 150;
+  const timed = async (port: number) => {
+    const started = Date.now();
+    const result = await httpGet(port, '/version', {}, DEADLINE);
+    return { result, elapsed: Date.now() - started };
+  };
+
+  it('settles on a server that dribbles bytes forever, at that deadline', async () => {
+    const port = await listen((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      const timer = setInterval(() => res.write('x'), 20);
+      res.on('close', () => clearInterval(timer));
+    });
+    const { result, elapsed } = await timed(port);
+    expect(result).toBeNull();
+    expect(elapsed).toBeGreaterThanOrEqual(DEADLINE - 20);
+    expect(elapsed, 'the deadline passed in was ignored').toBeLessThan(1000);
+  });
+
+  it('settles on a server that accepts the connection and never replies, at that deadline', async () => {
+    const port = await listen(() => { /* deliberately no response */ });
+    const { result, elapsed } = await timed(port);
+    expect(result).toBeNull();
+    expect(elapsed).toBeGreaterThanOrEqual(DEADLINE - 20);
+    expect(elapsed, 'the deadline passed in was ignored').toBeLessThan(1000);
+  });
+});
+
+describe('a response that dies half-way', () => {
+  // An error after the headers must settle the probe, not hang or reject it.
+  // The deadline is set far past the test's own timeout, so only the error
+  // path can settle it in time.
+  it('settles with null rather than hanging or rejecting', async () => {
     const port = await listen((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.write('{"version":');
       res.destroy();
     });
-    // A double-resolve would be invisible here, but an unhandled rejection or
-    // a crash would not — this pins that the error path is wired safely.
-    await expect(httpGet(port, '/version')).resolves.not.toThrow;
-  }, 10000);
+    await expect(httpGet(port, '/version', {}, 60_000)).resolves.toBeNull();
+  }, 1500);
 });

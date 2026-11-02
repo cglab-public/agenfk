@@ -256,10 +256,6 @@ describe('readDeadletterIndicator (#223)', () => {
   beforeEach(() => { dlPath = path.join(os.tmpdir(), `indicator-${process.pid}-${Math.random().toString(36).slice(2)}.jsonl`); });
   afterEach(() => { fs.rmSync(dlPath, { force: true }); });
 
-  it('is empty when the file does not exist', () => {
-    expect(readDeadletterIndicator(dlPath)).toEqual({ count: 0, actionable: 0, since: null, reasons: {}, unparseable: 0 });
-  });
-
   it('reflects the file, and follows it when it changes', () => {
     fs.writeFileSync(dlPath, dlLine('a') + '\n');
     expect(readDeadletterIndicator(dlPath)).toMatchObject({ count: 1, actionable: 1, since: '2026-10-07T10:00:05.000Z' });

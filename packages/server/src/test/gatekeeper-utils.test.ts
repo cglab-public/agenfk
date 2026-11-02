@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   getActiveStepItems,
-  getCodingStepName,
-  getCodingStepItems,
   type GatekeeperFlow,
   type GatekeeperItem,
 } from '../gatekeeper-utils';
@@ -109,44 +107,5 @@ describe('getActiveStepItems', () => {
   it('returns an empty array on empty input', () => {
     expect(getActiveStepItems([], defaultFlow)).toEqual([]);
     expect(getActiveStepItems([], null)).toEqual([]);
-  });
-});
-
-describe('getCodingStepName (deprecated)', () => {
-  it('returns IN_PROGRESS when flow is null', () => {
-    expect(getCodingStepName(null)).toBe('IN_PROGRESS');
-  });
-
-  it('returns the first non-anchor step ordered by `order`', () => {
-    const flow: GatekeeperFlow = {
-      steps: [
-        { name: 'IN_PROGRESS', order: 2 },
-        { name: 'DONE', order: 3, isAnchor: true },
-        { name: 'TODO', order: 0, isAnchor: true },
-        { name: 'DISCOVERY', order: 1 },
-      ],
-    };
-    expect(getCodingStepName(flow)).toBe('DISCOVERY');
-  });
-
-  it('falls back to IN_PROGRESS when every step is an anchor', () => {
-    const flow: GatekeeperFlow = {
-      steps: [
-        { name: 'TODO', order: 0, isAnchor: true },
-        { name: 'DONE', order: 1, isAnchor: true },
-      ],
-    };
-    expect(getCodingStepName(flow)).toBe('IN_PROGRESS');
-  });
-});
-
-describe('getCodingStepItems (deprecated)', () => {
-  it('matches step name case-insensitively', () => {
-    const items = [item('1', 'IN_PROGRESS'), item('2', 'review'), item('3', 'in_progress')];
-    expect(getCodingStepItems(items, 'in_progress').map(i => i.id)).toEqual(['1', '3']);
-  });
-
-  it('returns an empty array when no items match', () => {
-    expect(getCodingStepItems([item('1', 'TODO')], 'IN_PROGRESS')).toEqual([]);
   });
 });

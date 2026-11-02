@@ -220,10 +220,45 @@ interface KeyRow {
   gitEmail?: string | null;
 }
 
+/** A read-only CI token (RFC-002), as /v1/admin/ci-tokens lists it. */
+interface CiTokenRow {
+  tokenHashPreview: string;
+  label: string | null;
+  scope: 'repo' | 'org';
+  repo: string | null;
+  createdAt: string;
+  createdByEmail: string | null;
+  revokedAt: string | null;
+}
+
+/** The select value for "the whole organisation", which no repository URL can be. */
+const ORG_SCOPE = '__org__';
+
 export function AdminKeys() {
   const qc = useQueryClient();
   const { confirm, dialog } = useConfirm();
   const keys = useQuery<KeyRow[]>({ queryKey: ['api-keys'], queryFn: async () => (await api.get('/v1/admin/api-keys')).data });
+  const ciTokens = useQuery<CiTokenRow[]>({
+    queryKey: ['ci-tokens'],
+    queryFn: async () => ((await api.get('/v1/admin/ci-tokens')).data?.tokens ?? []) as CiTokenRow[],
+  });
+  const repos = useQuery<Array<{ remoteUrl: string }>>({
+    queryKey: ['admin-repos'],
+    queryFn: async () => ((await api.get('/v1/admin/repos')).data?.repos ?? []) as Array<{ remoteUrl: string }>,
+  });
+  const issueCi = useMutation({
+    mutationFn: (body: Record<string, string>) => api.post('/v1/admin/ci-tokens', body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['ci-tokens'] }),
+  });
+  const revokeCi = useMutation({
+    mutationFn: (preview: string) => api.delete(`/v1/admin/ci-tokens/${preview}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['ci-tokens'] }),
+  });
+  const [ciLabel, setCiLabel] = useState('');
+  const [ciScope, setCiScope] = useState('');
+  const [issuedCi, setIssuedCi] = useState<string | null>(null);
+  // A repository by default: the first one, until the admin picks.
+  const ciTarget = ciScope || repos.data?.[0]?.remoteUrl || '';
   const create = useMutation({
     mutationFn: (label: string) => api.post('/v1/admin/api-keys', { label }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['api-keys'] }),
@@ -241,11 +276,11 @@ export function AdminKeys() {
   // the browser asks first. (In-app route changes can't be held under
   // BrowserRouter; the notice above the token says to save it now.)
   useEffect(() => {
-    if (!issued) return;
+    if (!issued && !issuedCi) return;
     const onLeave = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = 'unsaved'; };
     window.addEventListener('beforeunload', onLeave);
     return () => window.removeEventListener('beforeunload', onLeave);
-  }, [issued]);
+  }, [issued, issuedCi]);
   interface InviteEntry { id: string; joinCommand: string; expiresAt: string }
   const [invites, setInvites] = useState<InviteEntry[]>([]);
 
@@ -337,19 +372,60 @@ export function AdminKeys() {
         )}
       </section>
 
+
+      <section aria-label="Issue a CI token" className={`${cardCls} max-w-form`}>
+        <header>
+          <h3 className="text-body font-semibold text-ink">Issue a CI token</h3>
+          <p className="mt-0.5 text-small text-ink-tertiary">
+            Read-only: CI uses it to look up receipts and download their reports, and nothing else. It cannot send events,
+            publish receipts or change any setting. Store it as a CI secret (<span className="font-mono">AGENFK_CI_TOKEN</span>).
+          </p>
+        </header>
+        <form className="mt-3 grid sm:grid-cols-[1fr_1fr_auto] gap-2" onSubmit={async (e) => {
+          e.preventDefault();
+          const body: Record<string, string> = ciTarget === ORG_SCOPE ? { scope: 'org' } : { repo: ciTarget };
+          if (ciLabel.trim()) body.label = ciLabel.trim();
+          const r = await issueCi.mutateAsync(body).catch(() => null);
+          if (!r) return;
+          setIssuedCi((r.data as any).token);
+          setCiLabel('');
+        }}>
+          <input className={inputCls} aria-label="Token label" placeholder="e.g. github-actions" value={ciLabel} onChange={(e) => setCiLabel(e.target.value)} />
+          <select className={inputCls} aria-label="What it can read" value={ciTarget} onChange={(e) => setCiScope(e.target.value)}>
+            {(repos.data ?? []).length === 0 && <option value="">No repositories yet</option>}
+            {(repos.data ?? []).map(r => <option key={r.remoteUrl} value={r.remoteUrl}>{r.remoteUrl}</option>)}
+            <option value={ORG_SCOPE}>The whole organisation</option>
+          </select>
+          <button type="submit" className={primaryBtnCls} disabled={!ciTarget || issueCi.isPending}>Issue CI token</button>
+        </form>
+        <InlineError error={issueCi.error} className="mt-2" />
+        {issuedCi && (
+          <div className="mt-3 rounded-xl border border-status-warn-text/40 bg-status-warn-bg p-4">
+            <div className="eyebrow text-status-warn-text">Save this token now — it won't be shown again</div>
+            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono break-all relative overflow-x-auto select-all">{issuedCi}</pre>
+            <div className="mt-2 flex items-center gap-3">
+              <CopyButton value={issuedCi} label="Copy" />
+              <button onClick={() => setIssuedCi(null)} className="text-small font-medium text-ink-tertiary hover:text-ink">I've saved it</button>
+            </div>
+          </div>
+        )}
+      </section>
+
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <h3 className="text-body font-semibold text-ink">Active keys</h3>
-          <span className="text-caption text-ink-tertiary">{(keys.data ?? []).filter(k => !k.revokedAt).length} active · {(keys.data ?? []).length} total</span>
+          <span className="text-caption text-ink-tertiary">{(keys.data ?? []).filter(k => !k.revokedAt).length + (ciTokens.data ?? []).filter(t => !t.revokedAt).length} active · {(keys.data ?? []).length + (ciTokens.data ?? []).length} total</span>
         </header>
         <InlineError error={revoke.error} className="mt-2" />
+        <InlineError error={revokeCi.error} className="mt-2" />
         <div className="mt-3 -mx-5 relative overflow-x-auto">
-          <table className="w-full text-body">
+          <table className="w-full text-body" aria-label="Keys and tokens">
             <thead>
               <tr className="eyebrow text-ink-tertiary">
                 <th className="text-left px-5 py-2">Preview</th>
+                <th className="text-left px-2 py-2">Type</th>
                 <th className="text-left px-2 py-2">Label</th>
-                <th className="text-left px-2 py-2">Installation</th>
+                <th className="text-left px-2 py-2">Installation or scope</th>
                 <th className="text-left px-2 py-2">Created</th>
                 <th className="text-left px-2 py-2">Status</th>
                 <th className="text-right px-5 py-2"></th>
@@ -361,6 +437,7 @@ export function AdminKeys() {
                 return (
                 <tr key={k.tokenHashPreview} className="hover:bg-accent-fill transition-colors">
                   <td className="px-5 py-2.5 font-mono text-small text-ink-secondary">{k.tokenHashPreview}…</td>
+                  <td className="px-2 py-2.5 text-small text-ink-secondary">Installation</td>
                   <td className="px-2 py-2.5 text-ink-secondary">{k.label ?? <span className="text-ink-tertiary">—</span>}</td>
                   <td className="px-2 py-2.5 text-small text-ink-secondary">
                     {ident ? (
@@ -406,14 +483,45 @@ export function AdminKeys() {
                 </tr>
                 );
               })}
+              {(ciTokens.data ?? []).map(t => (
+                <tr key={`ci-${t.tokenHashPreview}`} className="hover:bg-accent-fill transition-colors">
+                  <td className="px-5 py-2.5 font-mono text-small text-ink-secondary">{t.tokenHashPreview}…</td>
+                  <td className="px-2 py-2.5 text-small text-ink-secondary">CI read-only</td>
+                  <td className="px-2 py-2.5 text-ink-secondary">{t.label ?? <span className="text-ink-tertiary">—</span>}</td>
+                  <td className="px-2 py-2.5 text-small text-ink-secondary">
+                    {t.repo ? <span className="font-mono">{t.repo}</span> : 'The whole organisation'}
+                  </td>
+                  <td className="px-2 py-2.5 text-small text-ink-tertiary tabular-nums">{<LocalTime value={t.createdAt} format="date" />}</td>
+                  <td className="px-2 py-2.5">
+                    {t.revokedAt
+                      ? <span className="px-2 py-0.5 rounded-md text-caption font-mono bg-status-danger-bg text-status-danger-text border border-status-danger-text/40">revoked</span>
+                      : <span className="px-2 py-0.5 rounded-md text-caption font-mono bg-status-ok-bg text-status-ok-text border border-status-ok-text/40">active</span>}
+                  </td>
+                  <td className="px-5 py-2.5 text-right">
+                    {!t.revokedAt && (
+                      <button onClick={async () => {
+                                if (await confirm({
+                                  title: `Revoke the CI token ${t.label ?? t.tokenHashPreview}?`,
+                                  body: 'CI jobs using it can no longer look up receipts, so they run every step until they get a new token.',
+                                  confirmLabel: 'Revoke token',
+                                })) revokeCi.mutate(t.tokenHashPreview);
+                              }}
+                              aria-label={`Revoke CI token ${t.label ?? t.tokenHashPreview}`}
+                              className="inline-flex items-center gap-1 text-small font-semibold text-ink-tertiary hover:text-status-danger-text">
+                        <Trash2 className="w-3 h-3" /> Revoke
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
               {keys.isError && (
-                <tr><td colSpan={6} className="px-5 py-4"><QueryError error={keys.error} onRetry={() => keys.refetch()} /></td></tr>
+                <tr><td colSpan={7} className="px-5 py-4"><QueryError error={keys.error} onRetry={() => keys.refetch()} /></td></tr>
               )}
               {keys.isPending && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary" role="status">Loading…</td></tr>
+                <tr><td colSpan={7} className="px-5 py-6 text-center text-body text-ink-tertiary" role="status">Loading…</td></tr>
               )}
-              {keys.data?.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary">No keys yet.</td></tr>
+              {keys.data?.length === 0 && (ciTokens.data ?? []).length === 0 && (
+                <tr><td colSpan={7} className="px-5 py-6 text-center text-body text-ink-tertiary">No keys yet.</td></tr>
               )}
             </tbody>
           </table>

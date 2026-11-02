@@ -86,13 +86,6 @@ async function cardOnWork() {
 const result = (body: any, id: string) => (body.checks ?? []).find((c: any) => c.id === id);
 
 describe('authoredTests stored by reference, judged in a real verify', () => {
-  it('is stored as a reference to its capture, not a copy of the names', async () => {
-    const t = await cardOnWork();
-    const rec = ((await storage.getItem(t.id)) as any).stepRecords.find((r: any) => r.name === 'authoredTests');
-    expect(rec.value).toEqual({ fromCapture: true, excluded: [] });
-    expect(rec.tests.map((x: any) => x.name)).toEqual(['a.test.js > keeps working', 'a.test.js > old behaviour', 'a.test.js > new behaviour']);
-  });
-
   it('still holds a card that deletes a test that existed before the tests were written', async () => {
     const t = await cardOnWork();
     t.write('pass keeps working\npass new behaviour\n');
@@ -104,8 +97,11 @@ describe('authoredTests stored by reference, judged in a real verify', () => {
     expect(c.detail).toMatch(/old behaviour/);
   });
 
-  it('lets a card through that kept every test', async () => {
+  it('is stored as a reference to its capture, not a copy of the names, and lets a card through that kept every test', async () => {
     const t = await cardOnWork();
+    const rec = ((await storage.getItem(t.id)) as any).stepRecords.find((r: any) => r.name === 'authoredTests');
+    expect(rec.value).toEqual({ fromCapture: true, excluded: [] });
+    expect(rec.tests.map((x: any) => x.name)).toEqual(['a.test.js > keeps working', 'a.test.js > old behaviour', 'a.test.js > new behaviour']);
     t.write('pass keeps working\npass old behaviour\npass new behaviour\n');
     const r = await t.validate();
     expect(r.status, JSON.stringify(r.body)).toBe(200);

@@ -21,6 +21,7 @@ import { ItemTypePicker } from './ItemTypePicker';
 import { StepChecksPanel } from './StepChecksPanel';
 import { CheckHistoryTab } from './CheckHistoryTab';
 import { FlowAdherenceTab } from './FlowAdherenceTab';
+import { CardAirlockDecisions } from './CardAirlockDecisions';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -654,6 +655,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 </div>
               </div>
               )}
+
+              {/* GH-294 TEL-2: this card's Airlock decisions; renders nothing when there are none. */}
+              {!isNew && <CardAirlockDecisions itemId={item.id} />}
 
               {/* Progress Comments Section — a log of what happened to a card
                   that has not happened yet is an empty box with a heading. */}

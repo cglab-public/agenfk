@@ -283,6 +283,22 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     expect(JSON.stringify(s.hooks.PostToolUse)).toContain('user-hook');
   });
 
+  // Behaviour behind run-hook-close.test.ts's scan of uninstall.mjs (GH-281): the
+  // run hook lives on SessionEnd (and, on older installs, Stop). Left behind, it
+  // runs a deleted binary at the end of every Claude Code session.
+  it('strips the run hook from SessionEnd and from a leftover Stop, keeping unrelated entries', () => {
+    const s0 = readJson('.claude', 'settings.json');
+    s0.hooks.SessionEnd = [{ hooks: [{ type: 'command', command: '/h/agenfk-run-hook --client claude-code', timeout: 10 }] }, UNRELATED];
+    s0.hooks.Stop = [{ hooks: [{ type: 'command', command: '/h/agenfk-run-hook --client claude-code' }] }, UNRELATED];
+    writeFileSync(p('.claude', 'settings.json'), JSON.stringify(s0, null, 2));
+    expect(runUninstall(['-y']).status).toBe(0);
+    const s = readJson('.claude', 'settings.json');
+    expect(JSON.stringify(s.hooks.SessionEnd ?? [])).not.toContain('agenfk-');
+    expect(JSON.stringify(s.hooks.Stop ?? [])).not.toContain('agenfk-');
+    expect(JSON.stringify(s.hooks.SessionEnd)).toContain('user-hook');
+    expect(JSON.stringify(s.hooks.Stop)).toContain('user-hook');
+  });
+
   it('strips pr-hook from codex hooks.json, gemini AfterTool, and cursor afterShellExecution (Bug 3)', () => {
     runUninstall(['-y']);
     const codex = readJson('.codex', 'hooks.json');

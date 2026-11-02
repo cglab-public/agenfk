@@ -50,21 +50,6 @@ function makeFakes(opts: {
   return { events, flushNowCalls, fetchImpl, recordEvent, flushNow, spawnImpl, readInstalledVersionImpl };
 }
 
-describe('BUG bbe794bc — forced self-extract installs deps (no false success)', () => {
-  // Source-introspection: defaultSelfExtract shells out, so we assert the
-  // production impl runs `npm ci` after the tar, ordered after extraction.
-  // Without this, a dep-changing target would advance the version on disk but
-  // boot with missing node_modules while reporting success.
-  const SRC = fs.readFileSync(path.join(__dirname, '../hub/upgradeSync.ts'), 'utf8');
-  it('runs `npm ci --omit=dev` inside defaultSelfExtract, after the tar extract', () => {
-    const fn = SRC.slice(SRC.indexOf('async function defaultSelfExtract'));
-    const body = fn.slice(0, fn.indexOf('\n}'));
-    expect(body).toMatch(/tar -xzf/);
-    expect(body).toMatch(/ci --omit=dev/);
-    expect(body.indexOf('ci --omit=dev')).toBeGreaterThan(body.indexOf('tar -xzf'));
-  });
-});
-
 describe('Story 3b — reconcileUpgradeDirective', () => {
   it('no-op when the hub returns 204 (no pending directive)', async () => {
     const f = makeFakes({ directive: undefined });

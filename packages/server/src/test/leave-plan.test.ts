@@ -137,7 +137,10 @@ describe('GET /items/:id/leave-plan', () => {
     expect(p.advice).toMatch(/TESTS/);
     const res = await validate(id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(await capturesOf(id, 'PLAN')).toHaveLength(1);
+    const caps = await capturesOf(id, 'PLAN');
+    expect(caps).toHaveLength(1);
+    // The capture is the entry record, per test: the report's two tests.
+    expect(caps[0].tests).toHaveLength(2);
   });
 
   it('a next step that needs a per-test baseline this project cannot record: the plan says the card will be held, and runs nothing - as verify does', async () => {
@@ -191,7 +194,7 @@ describe('GET /items/:id/leave-plan', () => {
     return { log, command: nodeCommand(source), runs: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean) : []) };
   };
 
-  it('the final step with a test report whose command IS the verify command: the suite runs once, and its green closes the card (36c5ca25)', async () => {
+  it('the final step with a test report whose command IS the verify command: the plan and the dry run say one run closes the card, the suite runs once, and its green closes it (36c5ca25)', async () => {
     const dir = makeRepo();
     const suite = counted('suite', { junit: true });
     const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true, role: 'closing' })]),
@@ -201,6 +204,13 @@ describe('GET /items/:id/leave-plan', () => {
     expect(p.runs).toBe('suite');
     expect(p.thenCommand, 'the plan promised a second run of the same command').toBeUndefined();
     expect(p.advice).not.toMatch(/then the project's verify command/i);
+    // The dry run on this tree says the same: one run, and it closes the card.
+    const predicted = (await agent().get(`/items/${id}/leave-plan?predict=1`)).body;
+    expect(predicted.closesOnCapture).toBe(true);
+    expect(predicted.thenCommand).toBeUndefined();
+    expect(predicted.prediction.command, 'predicted a second run of the same command').toBeUndefined();
+    expect(predicted.prediction.advice).toMatch(/closes the card/i);
+    expect(suite.runs(), 'the dry run ran the suite').toHaveLength(0);
     const res = await validate(id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.status).toBe('END');

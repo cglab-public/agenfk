@@ -6,13 +6,13 @@
  * themselves are the editor's (flow-editor tests); this pins the wiring, since
  * a flag that never reaches the editor is the same as no flag.
  */
-import { render, waitFor, cleanup } from '@testing-library/react';
+import { render, waitFor, cleanup, fireEvent, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AdminFlows } from '../pages/AdminFlows';
 import { api } from '../api';
-import { ThemeProvider } from '../ThemeContext';
+import { ThemeProvider, useTheme } from '../ThemeContext';
 
 const seen: Array<Record<string, unknown>> = [];
 vi.mock('@agenfk/flow-editor', async (orig) => ({
@@ -39,5 +39,43 @@ describe('Admin → Flows lets the hub admin switch checks off', () => {
     render(<QueryClientProvider client={qc}><ThemeProvider><AdminFlows /></ThemeProvider></QueryClientProvider>);
     await waitFor(() => expect(seen.length).toBeGreaterThan(0));
     expect(seen[seen.length - 1].canDisableChecks).toBe(true);
+  });
+});
+
+/*
+ * The shared editor styles itself and initialises mermaid from its `theme`
+ * prop. A hub page that passed a constant left the editor and its diagrams
+ * light inside a dark hub. Asserted as the prop it receives, following the
+ * hub's theme as it changes - not as text in AdminFlows.tsx.
+ */
+describe('Admin → Flows hands the flow editor the live theme', () => {
+  const Toggle = () => {
+    const { toggleTheme } = useTheme();
+    return <button onClick={toggleTheme}>toggle theme</button>;
+  };
+  const renderWithStoredTheme = (stored: 'light' | 'dark') => {
+    localStorage.setItem('theme', stored);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={qc}><ThemeProvider><AdminFlows /><Toggle /></ThemeProvider></QueryClientProvider>);
+  };
+  afterEach(() => localStorage.clear());
+
+  it('passes dark when the hub is dark', async () => {
+    renderWithStoredTheme('dark');
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0));
+    expect(seen[seen.length - 1].theme).toBe('dark');
+  });
+
+  it('passes light when the hub is light', async () => {
+    renderWithStoredTheme('light');
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0));
+    expect(seen[seen.length - 1].theme).toBe('light');
+  });
+
+  it('follows a theme change made while the page is open', async () => {
+    renderWithStoredTheme('light');
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'toggle theme' }));
+    await waitFor(() => expect(seen[seen.length - 1].theme).toBe('dark'));
   });
 });

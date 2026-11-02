@@ -258,14 +258,8 @@ describe('a rollback: greens kept for reuse, frozen tests not laundered', () => 
     expect(r.status, JSON.stringify(r.body)).toBe(200);
   });
 
-  it('counts a new test file in another language as a change to frozen tests (a Go test added on the refactoring step)', async () => {
-    const t = await atTidy();
-    write(t.dir, 'pkg/thing_test.go', 'package pkg\n');
-    const r = await agent().put(`/items/${t.id}`).send({ status: 'BUILD' });
-    expect(r.status).toBe(409);
-    expect(r.body.error).toMatch(/pkg\/thing_test\.go/);
-  });
-
+  // A test file in another language (a Go test) is caught by the same ANY_TEST_FILE_PATTERN: see
+  // "knows other languages' test names, and not a production class named like one" below.
   it('closes the way round through PAUSED: pausing, then sending the card to the coding step, is refused the same', async () => {
     const t = await atTidy();
     write(t.dir, 'tests/mul.test.js', 'T mul_renamed mul=12\n');

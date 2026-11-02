@@ -9,7 +9,7 @@ import readline from 'readline';
 import { writePrivateFileSync } from './private-file.mjs';
 import { forceLocalFlag, tarPath } from '../bin/tar-flags.mjs';
 import { runTool } from './client-cli.mjs';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, withSkillName, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, withSkillName, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive, probeServerPort, installAirlockRuntime } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -127,17 +127,18 @@ async function run() {
         } else {
             debugLog('~/.agenfk/config.json: NOT FOUND');
         }
-        // Check if an agenfk server is already reachable on the persisted (or default) port
-        let serverPort = process.env.AGENFK_PORT || '3000';
-        try {
-            const persistedPort = fs.readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
-            if (persistedPort) serverPort = persistedPort;
-        } catch { /* ignore */ }
-        const serverCheck = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${serverPort}/`], { encoding: 'utf8', windowsHide: true });
-        const serverReachable = serverCheck.status === 0 && serverCheck.stdout.trim() !== '000';
-        debugLog(`server on localhost:${serverPort}:`, serverReachable ? `REACHABLE (HTTP ${serverCheck.stdout.trim()})` : 'NOT REACHABLE');
-        wasReachableBeforeInstall = serverReachable;
-        preInstallServerPort = serverPort;
+        // Check if this install's server is reachable on the port it persisted (BUG d95009ff:
+        // never the bare default - in a HOME that has run no server, 3000 is somebody else's).
+        const serverPort = probeServerPort({ env: process.env, readPortFile: () => readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8') });
+        if (serverPort) {
+            const serverCheck = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${serverPort}/`], { encoding: 'utf8', windowsHide: true });
+            const serverReachable = serverCheck.status === 0 && serverCheck.stdout.trim() !== '000';
+            debugLog(`server on localhost:${serverPort}:`, serverReachable ? `REACHABLE (HTTP ${serverCheck.stdout.trim()})` : 'NOT REACHABLE');
+            wasReachableBeforeInstall = serverReachable;
+            preInstallServerPort = serverPort;
+        } else {
+            debugLog('server: no persisted port and no AGENFK_PORT - nothing of this install\'s to probe');
+        }
     }
 
     // BUG 174270e6: even when --debuglog is OFF we still need to know if a
@@ -145,13 +146,11 @@ async function run() {
     // Cheap (one localhost curl with 1s timeout). The debug branch above will
     // overwrite this with the same value if --debuglog is on; idempotent.
     if (!wasReachableBeforeInstall) {
-        let probePort = process.env.AGENFK_PORT || '3000';
-        try {
-            const persistedPort = readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
-            if (persistedPort) probePort = persistedPort;
-        } catch { /* ignore */ }
-        const probe = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${probePort}/`], { encoding: 'utf8', windowsHide: true });
-        if (probe.status === 0 && probe.stdout.trim() !== '000') {
+        const probePort = probeServerPort({ env: process.env, readPortFile: () => readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8') });
+        const probe = probePort
+            ? spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${probePort}/`], { encoding: 'utf8', windowsHide: true })
+            : null;
+        if (probe && probe.status === 0 && probe.stdout.trim() !== '000') {
             wasReachableBeforeInstall = true;
             preInstallServerPort = probePort;
         }
@@ -187,7 +186,7 @@ async function run() {
         // not depend on HTTP timing or hub connectivity — if the process is
         // there, we restart it onto the new code.
         const run = (file, args, opts) => spawnSync(file, args, { ...opts, windowsHide: true });
-        if (!wasReachableBeforeInstall && serverProcessAlive(run)) {
+        if (!wasReachableBeforeInstall && serverProcessAlive(run, { root: rootDir })) {
             wasReachableBeforeInstall = true;
         }
         // Resolve the .agenfk dir the server uses, mirroring the server's own
@@ -697,7 +696,7 @@ async function run() {
         const isNewInstall = !existsSync(dbPath);
         if (isNewInstall && existsSync(backupDir)) {
             const backups = readdirSync(backupDir)
-                .filter(f => f.startsWith('agenfk-backup-') && f.endsWith('.json'))
+                .filter(f => f.startsWith('agenfk-backup-') && (f.endsWith('.sqlite') || f.endsWith('.json')))
                 .sort()
                 .reverse();
             if (backups.length > 0) {
@@ -707,8 +706,13 @@ async function run() {
                 try {
                     const ans = await ask(rl2, `  Restore latest backup? [y/N]: `);
                     if (ans.trim().toLowerCase() === 'y') {
-                        const migrationPath = path.join(agenfkHome, 'migration.json');
-                        copyFileSync(path.join(backupDir, backups[0]), migrationPath);
+                        // GH-288: a .sqlite snapshot is the whole database, which the
+                        // server puts in place on first start; a .json dump (older
+                        // versions) is imported into a new one.
+                        const migrationPath = path.join(agenfkHome, backups[0].endsWith('.sqlite') ? 'migration.sqlite' : 'migration.json');
+                        // Copied aside and renamed, so an install cut short never stages half a backup.
+                        copyFileSync(path.join(backupDir, backups[0]), `${migrationPath}.partial`);
+                        renameSync(`${migrationPath}.partial`, migrationPath);
                         console.log(`  ${GREEN}Backup staged for restore — will be imported on first server start.${NC}`);
                     }
                 } finally {
@@ -1316,7 +1320,9 @@ async function run() {
     const gatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper.mjs');
     const internalBinDir = path.join(agenfkHome, 'bin');
     await fs.mkdir(internalBinDir, { recursive: true });
-    for (const script of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs']) {
+    // agenfk-airlock.mjs (GH-294) is spawned by pi and imported by the OpenCode
+    // Airlock plugin; it imports resolveApiUrl from agenfk-gatekeeper.mjs beside it.
+    for (const script of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs', 'agenfk-airlock.mjs']) {
         const src = path.join(rootDir, 'bin', script);
         if (existsSync(src)) {
             await fs.copyFile(src, path.join(internalBinDir, script));
@@ -1417,6 +1423,12 @@ async function run() {
             if (existsSync(opencodePrHookSource)) {
                 await fs.copyFile(opencodePrHookSource, path.join(opencodePluginsDir, 'agenfk-pr-hook.mjs'));
                 detail(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-pr-hook.mjs')}`);
+            }
+            // GH-294: Airlock judges tool calls through ~/.agenfk/bin/agenfk-airlock.mjs.
+            const opencodeAirlockSource = path.join(rootDir, 'bin', 'agenfk-airlock-opencode.mjs');
+            if (existsSync(opencodeAirlockSource)) {
+                await fs.copyFile(opencodeAirlockSource, path.join(opencodePluginsDir, 'agenfk-airlock.mjs'));
+                detail(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-airlock.mjs')}`);
             }
         } else if (!onlyPlatform) {
             detail(`  Opencode not found. Skipping Opencode plugin installation.`);
@@ -1679,6 +1691,12 @@ async function run() {
             await fs.writeFile(cursorHooksPath, JSON.stringify(config, null, 2), 'utf8');
             detail(`  Registered afterShellExecution hook in ${cursorHooksPath}`);
         }
+    }
+
+    // CGLAB-696: Airlock's pinned smolvm, where Airlock is in use - asked of the server still
+    // running (before the restart below), or because an earlier smolvm was installed.
+    if (!onlyPlatform && process.platform !== 'win32') {
+        installAirlockRuntime({ run: (file, args, opts) => spawnSync(file, args, { ...opts, windowsHide: true }), rootDir, warn, detail });
     }
 
     // BUG 174270e6: if a server was running before we replaced the files on
