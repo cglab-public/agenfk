@@ -55,6 +55,16 @@ describe('resolveMaxWorkers — win32 has its own rule (#313)', () => {
   });
 });
 
+describe('resolveMaxWorkers — win32 on a large machine (#313 review)', () => {
+  // Measured up to 14 CPUs (8 workers was already slower than 6): the rule stays
+  // inside that, and falls back to the POSIX quarter once that is higher.
+  it('caps at 8 workers, but never below the POSIX rule', () => {
+    expect(resolveMaxWorkers({ platform: 'win32', cpus: 20 })).toBe(8);
+    expect(resolveMaxWorkers({ platform: 'win32', cpus: 32 })).toBe(8);
+    expect(resolveMaxWorkers({ platform: 'win32', cpus: 64 })).toBe(16);
+  });
+});
+
 describe('resolveMaxWorkers — a CPU count it cannot use', () => {
   // os.availableParallelism() should never return these, but a bad value must
   // not reach vitest as NaN/0 (it would fail the whole run, not one test).

@@ -7,8 +7,17 @@
  * EPOCHS. An answer stands only until the tree may have moved under it: any
  * non-git child (the suite, a command check) at its start AND at its exit, and
  * any git command that is not a known read. Those events bump a process-wide
- * generation (any request's child counts: conservative, never stale), and a
+ * generation (any request's child counts, not only this verify's), and a
  * memo whose generation is behind forgets everything it held.
+ *
+ * WHAT AN EPOCH CANNOT SEE. Only this server's own children and git writes end
+ * an epoch. Another agent writing to a shared worktree (MULTI_AGENT.md), or a
+ * child that started before the memo's first read and is still writing, ends
+ * nothing: within one epoch the memo answers with the tree as it was at the
+ * first read. So every decision that CLOSES a card or SKIPS a run on "the tree
+ * is still in that state" reads through `fence` (F1, F3, F4, F5, the sibling
+ * propagation), and a capture that waited for its slot or the report lock
+ * starts a new epoch before the run (GH #312 review).
  *
  * FENCES. Some reads are re-read ON PURPOSE inside one epoch, to catch another
  * agent writing to the shared tree between two of the server's own reads. Those
@@ -104,7 +113,9 @@ function subcommandOf(args: readonly string[]): { sub: string; rest: readonly st
 export function isReadOnlyGit(args: readonly string[]): boolean {
   const { sub, rest } = subcommandOf(args);
   if (sub === 'remote') return rest.length === 0 || rest[0] === 'get-url';
-  if (sub === 'config') return rest.some(a => a === '--get' || a === '--get-all' || a === '--list' || a === '-l');
+  // `config <key>` alone reads it, as --get does; a value or any other flag may write.
+  if (sub === 'config') return rest.some(a => a === '--get' || a === '--get-all' || a === '--list' || a === '-l') || (rest.length === 1 && !rest[0].startsWith('-'));
+  if (sub === 'branch') return rest.length === 1 && rest[0] === '--show-current';
   return READ_ONLY.has(sub);
 }
 

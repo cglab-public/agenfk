@@ -71,7 +71,7 @@ export default defineConfig({
      * an 817s run) and the heaviest end-to-end tests passed 60s; at 4 workers the
      * server files ran ~1.35x slower than alone, all green.
      *
-     * win32 - 40% of the CPUs, rounded, at least 2 and at most the CPUs (#313).
+     * win32 - 40% of the CPUs, rounded, at most 8, never fewer than POSIX (#313).
      * There the same files are wait-bound, not CPU-bound: each spawn waits on
      * process creation and on the EDR sensor scanning it, so more workers overlap
      * that wait instead of fighting for CPU. Measured on a 14-CPU Windows 11

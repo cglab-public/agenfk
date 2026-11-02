@@ -82,6 +82,13 @@
  *      repeats here too and stays un-excused (the reason given under F3; Holden confirmed).
  *      Measured (SPAWN_DUMP): the post-commit epoch has 13 reads, 7 distinct = 7 + 5 (F4) + 1
  *      repeated `rev-parse --show-prefix`. (g) pins that F4 still SEES another agent's commit.
+ * Added by the review of the memo (GH #312), both closing a card without running the command:
+ *   F5 ownCaptureGreenOf, the close on this move's own capture: the capture read the tree right
+ *      after the suite, in the same epoch; it asks git again before closing. (h) pins it.
+ *   F6 the close on a sibling's green: siblingGreenOf matches the memo's tree, then the handler
+ *      asks git again (readCleanTreeSha + treeStateOf) before closing - only when a sibling
+ *      green would close the card, so the measured closes below spawn nothing for it. (i) pins it.
+ *   Neither runs on the closes measured in (a)/(b), so neither needs an allowance there.
  * (b) allows exactly F1 + F3 in the epochs before the close commit and F4 in the epoch it opens
  * (FENCE_REREADS.close, keyed by the epoch's place relative to the git write), and nothing on the
  * coding step. The fence tests pin that each still SEES a write: (e) F1, (f) F3, (g) F4.
@@ -163,7 +170,7 @@ vi.mock('axios', () => {
 
 import { execSync } from 'child_process';
 import { posixShell } from './helpers/posixShell';
-import { AUTHOR, atBuild, atLook, impl, item, lines, reviewed, reviewerBegins, useEngineServer, validate, write } from './helpers/engineTests';
+import { AUTHOR, REPORT, atBuild, atLook, card, flow, impl, item, lines, makeRepo, project, reviewed, reviewerBegins, s, useEngineServer, validate, write } from './helpers/engineTests';
 
 useEngineServer('verify-git-spawns-test-db.sqlite');
 
@@ -191,7 +198,9 @@ const READ_ONLY = new Set(['rev-parse', 'status', 'ls-files', 'diff', 'log', 'sh
 function readOnly(s: Spawn): boolean {
   const sub = subcommand(s.args);
   if (sub === 'remote') return s.args.includes('get-url') || s.args.length === 1;
-  if (sub === 'config') return s.args.some(a => a === '--get' || a === '--get-all' || a === '--list' || a === '-l');
+  const rest = s.args.slice(s.args.indexOf(sub) + 1);
+  if (sub === 'config') return s.args.some(a => a === '--get' || a === '--get-all' || a === '--list' || a === '-l') || (rest.length === 1 && !rest[0].startsWith('-'));
+  if (sub === 'branch') return rest.length === 1 && rest[0] === '--show-current';
   return READ_ONLY.has(sub);
 }
 const keyOf = (s: Spawn) => `${s.cwd} :: ${s.args.join(' ')}`;
@@ -577,6 +586,120 @@ describe('GH #312: git spawns per verify', () => {
         expect(out.status, JSON.stringify(out.body)).toBe(200);
         expect(out.body.output, 'the close went through closeOnGreen, as in the control').toBe('Green on record');
         expect(await stampedRecords(id), 'no green stamped on a commit the tree no longer sits at').toEqual([]);
+      } finally {
+        rec.beforeGit = null;
+      }
+    }, 300_000);
+  });
+
+  /*
+   * F5 (review of #312): the close on THIS move's own capture (36c5ca25). The capture
+   * ran the verify command green and read the tree right after it; ownCaptureGreenOf
+   * then asks "is the tree still in that state?" before closing without running the
+   * command again. Nothing between the two spawns a non-git child or a git write, so
+   * both reads fall in ONE epoch - and another agent sharing the worktree (MULTI_AGENT.md)
+   * can edit a clean tracked file in between. A memo answering that question from the
+   * capture's read closes the card on a tree nobody ran, and the close commit then takes
+   * the other agent's edit along as verified. It must go to git: the fence.
+   */
+  describe('(h) the close on this move\'s own capture (F5) still sees another agent', () => {
+    /** A card on a testing step whose capture IS the verify command: one run may close it. */
+    async function atOwnCaptureClose() {
+      const dir = makeRepo();
+      const steps = [s('START', 0, { isAnchor: true }), s('TEST', 1, { role: 'testing' }), s('END', 2, { isAnchor: true, role: 'closing' })];
+      const pid = await project(await flow(steps), { projectRoot: dir, verifyCommand: 'node runner.cjs', testReport: REPORT });
+      return { dir, id: await card(pid, 'TEST') };
+    }
+    const suiteRuns = (spawns: Spawn[]) => spawns.filter(isSuite).length;
+
+    it('control: with nobody else writing, the close stands on the step capture and runs the suite once', async () => {
+      const { id } = await atOwnCaptureClose();
+      const { out, spawns } = await spawnsDuring(() => validate(id, AUTHOR));
+      expect(out.status, JSON.stringify(out.body)).toBe(200);
+      expect(out.body.output, 'the close went through the own-capture branch (without it, (h) proves nothing)').toBe('Step capture');
+      expect(suiteRuns(spawns)).toBe(1);
+    }, 300_000);
+
+    it('another agent editing a clean tracked file after the capture read the tree: the capture does not close the card, the command runs', async () => {
+      const { id, dir } = await atOwnCaptureClose();
+      /*
+       * The other agent: a content change to a file the capture saw CLEAN (so it is in
+       * none of the lists the capture's tree read kept), made before the first git spawn
+       * whose stack is in ownCaptureGreenOf. A memo that answers it from the capture's
+       * read spawns nothing there, the other agent never gets in and the injection count
+       * stays 0: red. Were the edit made anyway, a memoised read matches the old state
+       * and closes on 'Step capture': red too. If this goes red after a rename of that
+       * function, re-point the name; never drop the spec.
+       */
+      let injected = 0;
+      rec.beforeGit = () => {
+        if (injected || !/\bownCaptureGreenOf\b/.test(stackNow())) return;
+        fs.appendFileSync(`${dir}/.gitignore`, '# another agent\n');
+        injected++;
+      };
+      try {
+        const { out, spawns } = await spawnsDuring(() => validate(id, AUTHOR));
+        expect(injected, 'F5 spawned git in ownCaptureGreenOf (a memoised read spawns none, and the other agent never gets in)').toBe(1);
+        expect(out.status, JSON.stringify(out.body)).toBe(200);
+        expect(out.body.output, 'the capture closed a tree that moved after it').not.toBe('Step capture');
+        expect(suiteRuns(spawns), 'the command ran on the tree as it now is').toBe(2);
+      } finally {
+        rec.beforeGit = null;
+      }
+    }, 300_000);
+  });
+
+  /*
+   * F6 (review of #312): closing on a SIBLING's green. siblingGreenOf matches the tree as
+   * the verify's memo holds it - possibly the read the request began with - so before the
+   * close stands on another card's green, the tree is asked again, from git.
+   */
+  describe('(i) the close on a sibling green (F6) still sees another agent', () => {
+    /** Two top-level cards on one clean tree; the first has closed green, the second is about to. */
+    async function afterTheFirstCloses() {
+      const dir = makeRepo();
+      const steps = [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true, role: 'closing' })];
+      const pid = await project(await flow(steps), { projectRoot: dir, verifyCommand: 'node runner.cjs' });
+      const first = await card(pid, 'WORK');
+      const second = await card(pid, 'WORK');
+      const r = await validate(first, AUTHOR);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      return { dir, id: second };
+    }
+
+    it("control: with nobody else writing, the second card closes on the first one's green and runs nothing", async () => {
+      const { id } = await afterTheFirstCloses();
+      const { out, spawns } = await spawnsDuring(() => validate(id, AUTHOR));
+      expect(out.status, JSON.stringify(out.body)).toBe(200);
+      expect(out.body.output, 'the close went through sibling propagation (without it, (i) proves nothing)').toBe('Sibling propagation');
+      expect(spawns.some(isSuite)).toBe(false);
+    }, 300_000);
+
+    it('another agent editing a file after siblingGreenOf matched the tree: the sibling green does not close the card, the command runs', async () => {
+      const { id, dir } = await afterTheFirstCloses();
+      /*
+       * The other agent edits a clean tracked file at the first git spawn of a tree read
+       * made after siblingGreenOf ran and outside it: F6's window. A memo answering F6
+       * from the earlier read spawns nothing there and the injection count stays 0: red.
+       * If this goes red after a rename of those functions, re-point the names; never
+       * drop the spec.
+       */
+      let matched = false;
+      let injected = 0;
+      rec.beforeGit = () => {
+        if (injected) return;
+        const stack = stackNow();
+        if (/\bsiblingGreenOf\b/.test(stack)) { matched = true; return; }
+        if (!matched || !/\breadCleanTreeSha\b/.test(stack)) return;
+        fs.appendFileSync(`${dir}/.gitignore`, '# another agent\n');
+        injected++;
+      };
+      try {
+        const { out, spawns } = await spawnsDuring(() => validate(id, AUTHOR));
+        expect(injected, 'F6 spawned git after siblingGreenOf (a memoised re-read spawns none, and the other agent never gets in)').toBe(1);
+        expect(out.status, JSON.stringify(out.body)).toBe(200);
+        expect(out.body.output, 'a sibling green closed a tree that moved after it was matched').not.toBe('Sibling propagation');
+        expect(spawns.some(isSuite), 'the command ran on the tree as it now is').toBe(true);
       } finally {
         rec.beforeGit = null;
       }

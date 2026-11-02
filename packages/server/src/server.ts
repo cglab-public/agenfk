@@ -5286,16 +5286,21 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
   const running: VerifyPhase = !lazy ? { state: 'running', kind: 'whole' }
     : lazy.related ? { state: 'running', kind: 'affected', files: lazy.changed.length } : { state: 'running', kind: 'tests-only', files: lazy.ran.length };
   // f8d0a752: inside the report lock, so a card waiting on the lock holds no suite-run slot.
+  // GH #312 review: a wait (the report lock, a suite slot) can last minutes, and another agent may write meanwhile.
+  let waited = false;
   const record = await withReportLock(lockKey, async () => {
     const release = await acquireSuiteRun(item.projectId, (w, line) => {
+      waited = true;
       opts?.onOutput?.(line);
       opts?.onPhase?.({ state: 'queued', ahead: w.ahead });
     }, item.id);
     try {
+      // What was read before a wait is not the tree the run starts on: read it afresh.
+      if (waited) gitStateMayHaveMoved();
       opts?.onPhase?.(running);
       return await runAndRead(item, root, setting, command, cleanSha, opts, lazy, opts?.git ?? gitRun);
     } finally { release(); }
-  }, opts?.onOutput, () => opts?.onPhase?.({ state: 'waiting', on: 'report' }));
+  }, opts?.onOutput, () => { waited = true; opts?.onPhase?.({ state: 'waiting', on: 'report' }); });
   if (record === null) return LAZY_FALLBACK;
   // The card may have moved while the command ran: a record for a step it
   // no longer occupies (or was rolled back over) must not be written.
@@ -10663,7 +10668,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // The gate just ran the verify command as its capture, green, on this very tree: running it again proves nothing new.
   // A command check on this step runs after the capture (a build, say, into ignored files the tree state cannot see): the command then runs after it, as before.
   if (endsFlow && resolvedCommand && gate?.capture && !stepHasCommandChecks(activeFlow, item.status) && !freshRootClose(item, project)) {
-    const own = ownCaptureGreenOf(gate.capture, resolvedCommand, effectiveRoot, project, vgit);
+    // GH #312 review: a deliberate re-read (F5) - the capture's own tree read is in this epoch, and another agent may have written since.
+    const own = ownCaptureGreenOf(gate.capture, resolvedCommand, effectiveRoot, project, vgit.fence);
     if (own) {
       const green = { ...(own.clean === true && typeof own.head === 'string' ? { commit: own.head } : {}), treeState: stateOfRecord(own), treeStateVersion: STATE_VERSION, commitRoot: effectiveRoot };
       return closeOnGreen(res, {
@@ -10707,8 +10713,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * (CGLAB-366).
        */
       const gateRoot = effectiveRoot;
-      const { pass, refusal, treeState } = await siblingGreenOf(item, siblings, activeFlow as TransitionFlow, project, gateRoot, resolvedCommand!, vgit);
-      if (pass) {
+      const { pass, refusal: refused, treeSha, treeState } = await siblingGreenOf(item, siblings, activeFlow as TransitionFlow, project, gateRoot, resolvedCommand!, vgit);
+      /*
+       * GH #312 review: a deliberate re-read (F6). siblingGreenOf matched the tree as the
+       * verify's memo holds it, which can be the read the request began with; another agent
+       * may have written since. Before closing on another card's green, git is asked again.
+       */
+      const stillThere = !!pass && readCleanTreeSha(gateRoot!, vgit.fence) === treeSha && treeStateOf(gateRoot!, project, vgit.fence) === treeState;
+      const refusal = pass && !stillThere ? 'the tree changed since it was matched to the sibling green' : refused;
+      if (pass && stillThere) {
         const { sibling: passedSibling, test: siblingTest } = pass;
         const where = siblingTest.commit ? `\`${String(siblingTest.commit).slice(0, 12)}\`` : `\`${String(siblingTest.treeState).slice(0, 12)}\` with the same uncommitted content`;
         const inherited = { ...(siblingTest.commit ? { commit: siblingTest.commit } : {}), ...(currentTreeState(siblingTest) ? { treeState: siblingTest.treeState, treeStateVersion: STATE_VERSION } : {}), commitRoot: gateRoot };
