@@ -4,6 +4,24 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.15] — 2026-11-02
+
+**Airlock** (#345)
+
+- **`*` in a host list: every host but the always-denied ones.** `* download` allows every download while uploads
+  stay limited to the hosts allowed for them; `*` both ways allows every host. The cloud metadata endpoints, the IOC
+  hosts and the deny list still refuse, since they are judged before any allow; a range that names a metadata address
+  (`0.0.0.0/0`) is still refused. In the sandbox, `*` opens the network the way observe mode does - every host not
+  denied is reachable and every name not denied resolves - and which way data goes stays judged on tool calls: the
+  network cannot see direction, so under a one-way `*` a script that names no host can still upload, and a host
+  denied by name is not recognised when reached by its address with no lookup. Adding `*` to a running session
+  applies from its next start, and says so. Learning keeps proposing a host only a one-way `*` covers.
+- **The host lists are lists.** On the board and the hub, for the policy and project overrides: one row per host with
+  Download and Upload boxes (on the deny side, which way it is blocked), a remove button, and a field that adds a
+  host on Enter or several pasted at once, one per line. The saved policy is unchanged.
+
+The hub needs this version for its editor.
+
 ## [2.1.0-beta.14] — 2026-11-02
 
 **Airlock** (#344)
