@@ -59,6 +59,10 @@ const DEV_TOOLING: Advisory[] = [
   { name: '@humanfs/node', vulnerable: '<0.16.8', safe: '0.16.8' },
 ];
 
+// Desktop shell (Story 1, card fa492cbf). Every Electron advisory is fixed in
+// 42.11.9 or later; electron-builder rides along on its own line.
+const DESKTOP: Advisory[] = [{ name: 'electron', vulnerable: '<42.11.9', safe: '42.11.9' }];
+
 // Every installed copy of `name` in the lockfile: its `packages` key and version.
 // Workspace links and entries without a version are not installed copies.
 function installedCopies(name: string): { at: string; version: string }[] {
@@ -92,6 +96,26 @@ function guard(title: string, advisories: Advisory[]) {
 
 guard('runtime dependencies are outside their vulnerable ranges', RUNTIME);
 guard('dev and build tooling is outside its vulnerable ranges', DEV_TOOLING);
+guard('desktop shell is outside its vulnerable ranges', DESKTOP);
+
+describe('packages/desktop pins a fixed Electron', () => {
+  const desktop = JSON.parse(readFileSync(path.join(ROOT, 'packages/desktop/package.json'), 'utf8')) as {
+    devDependencies: Record<string, string>;
+  };
+
+  it('declares an electron version at or above 42.11.9 (alerts are raised on the manifest too)', () => {
+    const declared = desktop.devDependencies.electron;
+    const floor = semver.minVersion(declared);
+    expect(floor, `electron "${declared}" is not a version range`).not.toBeNull();
+    expect(semver.gte(floor!, '42.11.9'), `electron "${declared}" allows a version below 42.11.9`).toBe(true);
+  });
+
+  it('locks an electron copy that satisfies the manifest range', () => {
+    const [copy] = installedCopies('electron');
+    expect(copy, 'electron is not in package-lock.json').toBeDefined();
+    expect(semver.satisfies(copy.version, desktop.devDependencies.electron)).toBe(true);
+  });
+});
 
 // Versions the published advisories (GitHub Dependabot data, every alert state)
 // name as affected: for each guarded package, the floor of its widest advisory
@@ -137,12 +161,14 @@ const ADVISORY_AFFECTED: { name: string; version: string; advisory: string }[] =
   { name: '@vitest/mocker', version: '3.2.4', advisory: '>= 2.1.0-beta.7, < 4.1.12' },
   { name: '@vitest/mocker', version: '4.1.11', advisory: '>= 4.1.11, < 4.1.12' },
   { name: '@humanfs/node', version: '0.16.7', advisory: '< 0.16.8' },
+  { name: 'electron', version: '40.10.6', advisory: '< 42.11.9' },
+  { name: 'electron', version: '42.11.8', advisory: '< 42.11.9' },
 ];
 
 describe('guard ranges cover what the advisories mark as affected', () => {
   for (const { name, version, advisory } of ADVISORY_AFFECTED) {
     it(`${name}@${version} (advisory ${advisory}) is inside the guard range`, () => {
-      const guarded = [...RUNTIME, ...DEV_TOOLING].find(a => a.name === name);
+      const guarded = [...RUNTIME, ...DEV_TOOLING, ...DESKTOP].find(a => a.name === name);
       expect(guarded, `${name} is not guarded`).toBeDefined();
       expect(
         semver.satisfies(version, guarded!.vulnerable, { includePrerelease: true }),
@@ -192,7 +218,7 @@ describe('overridden katex still serves the call mermaid 11 makes', () => {
 
 describe('vulnerability guard is not vacuous', () => {
   it('every guarded package is present in package-lock.json at least once', () => {
-    const missing = [...RUNTIME, ...DEV_TOOLING]
+    const missing = [...RUNTIME, ...DEV_TOOLING, ...DESKTOP]
       .map(a => a.name)
       .filter(name => installedCopies(name).length === 0);
     expect(missing, `not found in package-lock.json: ${missing.join(', ')}`).toEqual([]);

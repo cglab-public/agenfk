@@ -42,7 +42,7 @@ await build({
   outfile: path.join(outdir, 'server.js'),
   bundle: true,
   platform: 'node',
-  // Electron 40 ships Node 24; targeting it avoids needless down-levelling of
+  // Electron 42 ships Node 24; targeting it avoids needless down-levelling of
   // syntax the runtime supports natively.
   target: 'node22',
   format: 'cjs',

@@ -10,7 +10,7 @@
  * found" — which is why src/test/buildConfig.test.ts asserts they agree.
  *
  * No native modules today: storage uses Node's built-in `node:sqlite` and
- * Electron 40 ships Node 24.15, so all three platforms build from one source
+ * Electron 42 ships Node 24, so all three platforms build from one source
  * tree with no `electron-rebuild`. That changes the day `node-pty` lands
  * (CGLAB-169) — it is native, and each platform and Electron ABI needs its own
  * compile.
