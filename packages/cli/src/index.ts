@@ -5776,6 +5776,15 @@ program.helpInformation = function () {
   return output;
 };
 
+// Strict mode (commander >= 13): every subcommand refuses positional arguments
+// it does not declare, so a stray word is an error rather than silently dropped.
+// The root is the one exception: its action turns leftover tokens into
+// "unknown command 'x'" plus a suggestion (reportUnknownCommand), and strict
+// mode would refuse them first with "too many arguments". commander copies this
+// setting into each subcommand when `.command()` creates it, so it is set here,
+// after every subcommand is registered, to reach the root alone.
+program.allowExcessArguments();
+
 if (process.env.NODE_ENV !== 'test') {
   // BUG 7f85715b: handle a bare `agenfk --version` / `agenfk -V` here, since we
   // intentionally did not bind the long `--version` to commander's global flag

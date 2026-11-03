@@ -4,6 +4,16 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+**CLI** (#316)
+
+- **A command refuses positional arguments it does not take**, now that the CLI is on commander 15. A stray word
+  used to be dropped silently: an unquoted `agenfk create TASK Fix the thing` made a card titled "Fix", and
+  `agenfk verify <id> --evidence ... -- npm test` ran `npm`. It now exits 1 with "too many arguments", so quote a
+  value of several words. A mistyped command still says "unknown command" and suggests the right one.
+- **The CLI needs Node `^22.13.0` or `>=23.5.0`**, as its engines already said: commander 15 loads only there. The
+  `ci-check` GitHub Action does not set Node up, so on an older runner Node it now warns and runs the gated steps
+  (or fails under `policy: require`), as for a release it cannot install.
+
 ## [2.1.0-beta.16] — 2026-11-02
 
 **Hub sync** (#346, #347)
