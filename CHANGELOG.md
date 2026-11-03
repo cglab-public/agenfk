@@ -17,6 +17,12 @@ All notable changes to AgEnFK are documented here.
   directives every 30 s, not every 60 s. `AGENFK_HUB_SYNC_INTERVAL_MS` and `AGENFK_HUB_SYNC_FIRST_DELAY_MS` replace
   `AGENFK_HUB_FLOW_SYNC_INTERVAL_MS`, `AGENFK_HUB_REPOINT_SYNC_INTERVAL_MS`, `AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS`
   and `AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS`.
+- **A hub repoint moves every channel, not just events.** After a repoint campaign moved an installation to a new
+  hub name, only its events followed: flows, repo settings, Airlock, receipts and upgrade checks kept the old name
+  until the server restarted, so once the old name was retired the installation silently stopped taking policy,
+  flows and upgrades. The move now restarts the hub loop on the verified target, exactly as
+  `POST /internal/hub/reload` does. A repoint overtaken by a newer login or token no longer puts the older token
+  back, and restarting the hub loop no longer reports an upgrade still in progress as failed.
 
 ## [2.1.0-beta.15] — 2026-11-02
 

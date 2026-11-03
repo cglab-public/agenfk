@@ -215,12 +215,17 @@ async function syncAirlockForTick(args: RunTickArgs, generation: number): Promis
 
 /** Every local project's flow, then its repo settings when it has a git remote. */
 async function syncProjectsForTick(args: RunTickArgs): Promise<void> {
+  // A pass whose loop was replaced (repoint, reload) asks the old hub for nothing
+  // more: checked before each request it would start, not only per project.
+  const replaced = (): boolean => !!args.activeHubConfig && !args.activeHubConfig();
   const projects = await args.storage.listProjects();
   for (const project of projects) {
+    if (replaced()) return;
     const lastEtag = args.etagCache.get(project.id) ?? null;
     let remoteUrl: string | null = null;
     if (args.resolveRepo) {
       try { remoteUrl = await args.resolveRepo(project.id); } catch { remoteUrl = null; }
+      if (replaced()) return;
     }
     let result: ReconcileOutcome;
     try {
@@ -245,6 +250,7 @@ async function syncProjectsForTick(args: RunTickArgs): Promise<void> {
     // project with a git remote can be keyed on the hub, and its settings ride
     // their own ETag cache key so a 304 on the flow does not skip them.
     if (remoteUrl) {
+      if (replaced()) return;
       try {
         const repoResult = await syncRepoSettings({
           storage: args.storage,

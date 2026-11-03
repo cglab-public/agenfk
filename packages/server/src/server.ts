@@ -1809,18 +1809,20 @@ if (hubDisabledForTests) {
       fs.writeFileSync(target, JSON.stringify(cfg, null, 2), { mode: 0o600 });
       try { fs.chmodSync(target, 0o600); } catch { /* best effort */ }
     },
-    // Swap the live transport in-process. The Flusher bakes its baseURL and
-    // bearer token in at construction and nothing re-reads hub.json, so
-    // without this the confirmation would be POSTed to the OLD host — where
-    // the hub correctly refuses it and resets the target to pending, forever.
-    // The outbox is in SQLite, not in the Flusher, so the pending
-    // confirmation survives the swap.
+    // Adopt the verified hub in-process, on EVERY channel (GH-346 review): the
+    // Flusher and the loop's channels bake their base URL and token in, and
+    // nothing re-reads hub.json. Swapping only the Flusher used to leave flows,
+    // Airlock, receipts and upgrades on the old host until a restart. A fresh
+    // loop replaces this one (whose answers then adopt nothing), and the
+    // confirmation below goes out through its new Flusher. The outbox is in
+    // SQLite, not in the Flusher, so the pending confirmation survives the swap.
     rebuildTransportImpl: async (cfg: HubConfig) => {
-      hubFlusher = new Flusher(storage as SQLiteStorageProvider, cfg, getInstallationId());
-      console.log(`[HUB_REPOINT_SYNC] Repointed to ${cfg.url}; transport rebuilt.`);
+      adoptHubConfig(() => cfg);
+      console.log(`[HUB_REPOINT_SYNC] Repointed to ${cfg.url}; hub sync restarted.`);
     },
     recordEvent,
     flushNow: (timeoutMs?: number) => hubFlusher!.flushNow(timeoutMs),
+    isCurrent: () => !loopStopped,
   };
 
   const upgradeArgs: Parameters<typeof reconcileUpgradeDirective>[0] = {
@@ -1883,6 +1885,21 @@ if (hubDisabledForTests) {
   console.log(`[HUB] Hub sync running against ${hubClient.hubConfig.url}`);
 
 }
+};
+
+/**
+ * Take a hub configuration on in this process: restart the hub loop on it and
+ * drop the answers of Airlock syncs started under the old one (GH-294). Used by
+ * POST /internal/hub/reload (from hub.json) and by a repoint (the verified
+ * target). Returns whether anything changed.
+ */
+const adoptHubConfig = (loader?: () => HubConfig | null): boolean => {
+  const changed = hubClient.reloadConfig(loader);
+  if (changed) {
+    startHubSubsystems();
+    invalidateAirlockSyncs();
+  }
+  return changed;
 };
 
 
@@ -11660,12 +11677,9 @@ app.post('/internal/hub/reload', asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: 'Forbidden: hub reload requires internal token.' });
   }
-  const changed = hubClient.reloadConfig();
-  if (changed) startHubSubsystems();
-  // GH-294: answers to Airlock syncs started under the old config are not
-  // adopted. Leaving the hub (hub.json confirmed gone, not merely unreadable)
-  // keeps the org's Airlock policy, now as the local one.
-  if (changed) invalidateAirlockSyncs();
+  const changed = adoptHubConfig();
+  // Leaving the hub (hub.json confirmed gone, not merely unreadable) keeps the
+  // org's Airlock policy, now as the local one.
   if (changed && !hubClient.isEnabled && hubConfirmedAbsent()) await releaseHubAirlockOnLeave();
   // A rejoin or repoint may change which org's JIRA this installation sees.
   clearHubJiraStatusCache();

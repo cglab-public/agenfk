@@ -178,6 +178,13 @@ export interface ReconcileRepointArgs {
   flushNow: (timeoutMs?: number) => Promise<void>;
   fetchImpl?: FetchRepointImpl;
   getImpl?: GetImpl;
+  /**
+   * Whether the configuration this run started under is still the one in force.
+   * A run outlives it when a login or token rotation is adopted while it waits on
+   * the target: writing hub.json and adopting the move would then put the older
+   * credential back.
+   */
+  isCurrent?: () => boolean;
 }
 
 let inflight = false;
@@ -250,6 +257,7 @@ export async function reconcileRepointDirective(args: ReconcileRepointArgs): Pro
 
     const target = new URL(directive.targetUrl).origin;
     const cfg: HubConfig = { url: target, token: args.hubToken, orgId: args.orgId };
+    if (args.isCurrent && !args.isCurrent()) return; // superseded while it verified: the next tick asks again
     if (target !== args.hubUrl.replace(/\/$/, '')) {
       args.writeConfigImpl(cfg);
       if (args.rebuildTransportImpl) {

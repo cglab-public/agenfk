@@ -248,6 +248,58 @@ describe('flowSyncChannels: Airlock does not wait on the projects (GH-346)', () 
     expect(names).toEqual(['flows', 'airlock', 'receipts']);
   });
 
+  it('a flow pass whose loop was stopped asks no further project of the old hub (GH-346 review)', async () => {
+    let stopped = false;
+    const asked: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      asked.push(url);
+      stopped = true; // the loop is replaced while the first project's request is out
+      return { status: 200, ok: true, headers: { get: () => null }, json: async () => ({ flow: null }) };
+    });
+    const [flows] = flowSyncChannels({
+      storage, hubConfig: HUB_A, fetchImpl: fetchImpl as any, emit: vi.fn(), etagCache: new Map(), airlockStateFile: stateFile,
+      activeHubConfig: () => (stopped ? null : HUB_A),
+    });
+    await flows.run();
+    expect(asked.filter(u => u.includes('/v1/flows/active'))).toHaveLength(1);
+  });
+
+  it('a pass stopped while a project resolves its remote, or mid flow request, asks nothing more for that project', async () => {
+    let stopped = false;
+    const asked: string[] = [];
+    let release!: () => void;
+    const remoteHeld = new Promise<void>((r) => { release = r; });
+    let resolving = false;
+    const fetchImpl = vi.fn(async (url: string) => {
+      asked.push(url);
+      stopped = true; // replaced while the flow request is out
+      return { status: 200, ok: true, headers: { get: () => null }, json: async () => ({ flow: null }) };
+    });
+    const [flows] = flowSyncChannels({
+      storage, hubConfig: HUB_A, fetchImpl: fetchImpl as any, emit: vi.fn(), etagCache: new Map(), airlockStateFile: stateFile,
+      activeHubConfig: () => (stopped ? null : HUB_A),
+      resolveRepo: async (id) => { if (id === 'p1') { resolving = true; await remoteHeld; } return `https://github.com/acme/${id}.git`; },
+    });
+    const pass = flows.run();
+    while (!resolving) await new Promise(r => setTimeout(r, 1));
+    // Replaced while p1 resolves its remote: no flow request for p1 may follow.
+    stopped = true;
+    release();
+    await pass;
+    expect(asked).toEqual([]);
+
+    // Mid flow request: the response lands, but no repo-settings request follows.
+    stopped = false;
+    const again = flowSyncChannels({
+      storage, hubConfig: HUB_A, fetchImpl: fetchImpl as any, emit: vi.fn(), etagCache: new Map(), airlockStateFile: stateFile,
+      activeHubConfig: () => (stopped ? null : HUB_A),
+      resolveRepo: async (id) => `https://github.com/acme/${id}.git`,
+    })[0];
+    await again.run();
+    expect(asked.filter(u => u.includes('/v1/flows/active'))).toHaveLength(1);
+    expect(asked.filter(u => u.includes('/v1/repo-settings'))).toEqual([]);
+  });
+
   it('applies a new Airlock revision while every project request hangs', async () => {
     const fetchImpl = vi.fn((url: string) => {
       if (url.includes('/v1/airlock/policy')) {

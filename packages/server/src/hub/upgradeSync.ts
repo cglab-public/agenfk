@@ -503,6 +503,10 @@ export async function reconcileUpgradeDirective(args: ReconcileArgs): Promise<vo
 }
 
 export async function replayPendingUpgradeOutcome(args: ReplayArgs): Promise<void> {
+  // This process is still running that upgrade (a repoint or reload restarted the
+  // hub subsystems mid-upgrade): its outcome is not a leftover, and the marker is
+  // what a boot replay needs if the upgrade ends by restarting this server.
+  if (inflight) return;
   const state: UpgradeState | null = readUpgradeState(args.dbDir);
   if (!state) return;
   if (state.outcome !== 'started') return;
