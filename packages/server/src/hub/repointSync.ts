@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { HubConfig } from './types.js';
+import { hubRequestTimeoutMs, hubRequestSignal } from './hubRequest.js';
 
 /**
  * Repoint campaign — client side (CGLAB-66).
@@ -43,7 +44,6 @@ export interface RecordRepointEvent {
 
 export type VerifyResult = { ok: true } | { ok: false; error: string };
 
-const REQUEST_TIMEOUT_MS = 10_000;
 
 /**
  * Hosts a campaign may never point at. Every fleet machine fetches the target
@@ -73,7 +73,7 @@ function isDisallowedHost(hostname: string): boolean {
 }
 
 const defaultGet: GetImpl = (url, opts) =>
-  axios.get(url, { timeout: REQUEST_TIMEOUT_MS, headers: opts?.headers });
+  axios.get(url, { timeout: hubRequestTimeoutMs(), signal: hubRequestSignal(), headers: opts?.headers });
 
 /**
  * Is this endpoint really our hub, for our org, reachable with the token we
@@ -151,7 +151,8 @@ export async function verifyRepointTarget(input: {
 
 const defaultFetch: FetchRepointImpl = async ({ hubUrl, hubToken, installationId }) => {
   const resp = await axios.get(`${hubUrl.replace(/\/$/, '')}/v1/repoint-directive`, {
-    timeout: REQUEST_TIMEOUT_MS,
+    timeout: hubRequestTimeoutMs(),
+    signal: hubRequestSignal(),
     headers: { Authorization: `Bearer ${hubToken}`, 'X-Installation-Id': installationId },
     validateStatus: () => true,
   } as any);
@@ -177,6 +178,13 @@ export interface ReconcileRepointArgs {
   flushNow: (timeoutMs?: number) => Promise<void>;
   fetchImpl?: FetchRepointImpl;
   getImpl?: GetImpl;
+  /**
+   * Whether the configuration this run started under is still the one in force.
+   * A run outlives it when a login or token rotation is adopted while it waits on
+   * the target: writing hub.json and adopting the move would then put the older
+   * credential back.
+   */
+  isCurrent?: () => boolean;
 }
 
 let inflight = false;
@@ -249,6 +257,7 @@ export async function reconcileRepointDirective(args: ReconcileRepointArgs): Pro
 
     const target = new URL(directive.targetUrl).origin;
     const cfg: HubConfig = { url: target, token: args.hubToken, orgId: args.orgId };
+    if (args.isCurrent && !args.isCurrent()) return; // superseded while it verified: the next tick asks again
     if (target !== args.hubUrl.replace(/\/$/, '')) {
       args.writeConfigImpl(cfg);
       if (args.rebuildTransportImpl) {
@@ -263,7 +272,7 @@ export async function reconcileRepointDirective(args: ReconcileRepointArgs): Pro
           return;
         }
       }
-      // Follow the move ourselves. startRepointSync closes over this same args
+      // Follow the move ourselves. The hub loop's `repoint` channel passes this same args
       // object, so without this every later tick would still see the old url and
       // repoint again — rewriting the file and rebuilding the transport on a
       // loop for as long as the campaign stays open.
@@ -275,42 +284,4 @@ export async function reconcileRepointDirective(args: ReconcileRepointArgs): Pro
   } finally {
     inflight = false;
   }
-}
-
-const DEFAULT_INTERVAL_MS = 5 * 60_000;
-
-export interface RepointSyncHandle { stop: () => void }
-
-export interface StartRepointSyncArgs extends ReconcileRepointArgs {
-  intervalMs?: number;
-}
-
-/**
- * Poll for a repoint campaign. Deliberately slow (5min default): a campaign is
- * a rare administrative event and every tick is a request the old hostname has
- * to keep serving until the fleet drains.
- */
-export function startRepointSync(args: StartRepointSyncArgs): RepointSyncHandle {
-  let stopped = false;
-  let timer: NodeJS.Timeout | null = null;
-  const interval = args.intervalMs ?? DEFAULT_INTERVAL_MS;
-
-  const tick = async () => {
-    if (stopped) return;
-    try {
-      await reconcileRepointDirective(args);
-    } catch (e) {
-      console.error('[HUB_REPOINT_SYNC] tick failed:', (e as Error).message);
-    }
-    if (!stopped) timer = setTimeout(tick, interval);
-  };
-  timer = setTimeout(tick, 3_000);
-  timer.unref?.();
-
-  return {
-    stop: () => {
-      stopped = true;
-      if (timer) { clearTimeout(timer); timer = null; }
-    },
-  };
 }

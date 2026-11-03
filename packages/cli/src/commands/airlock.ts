@@ -19,6 +19,7 @@ import { defaultEgressBroker } from '../airlock/egress.js';
 import { baseImageFor, AIRLOCK_BASE_IMAGE } from '../airlock/image.js';
 import { PROXY_REPORT_TIMEOUT_MS } from '../airlock/proxyReport.js';
 import { runLearnImport, learnImportSummary, defaultPiSessionsDir } from '../airlock/learnImport.js';
+import { parseHintProvider, type HintProvider } from '../airlock/learnHints.js';
 import { runDatasetImport, defaultOpenCodeDb, DatasetImportError } from '../airlock/datasetImport.js';
 
 /**
@@ -398,9 +399,11 @@ export function registerAirlockCommands(
 
   airlock
     .command('learn')
-    .description('Learning mode: add to the proposed allowlist. --import-pi-sessions reads the pi session logs on this machine and sends only host names and counts. A person accepts the proposal on the board, or on the hub for a hub-joined installation. Writes no policy.')
+    .description('Learning mode: add to the proposed allowlist. --import-pi-sessions reads the pi session logs on this machine and sends host names, counts, the projects that reached each host and an address\'s reverse DNS name - never a command. With --hints, a model you pick writes one sentence per host from a few of its commands (secrets removed); the commands go to that model only. A person accepts the proposal on the board, or on the hub for a hub-joined installation. Writes no policy.')
     .option('--import-pi-sessions', 'Import the hosts existing pi sessions reached')
     .option('--dir <dir>', 'Where the pi session logs are (default ~/.pi/agent/sessions)')
+    .option('--hints <provider>', 'Who writes a hint per host: claude, codex or pi (your own CLI and login), or the http(s) URL of an OpenAI-compatible server (key in AGENFK_HINTS_API_KEY)')
+    .option('--hints-model <id>', 'The model --hints asks (default: the provider\'s own)')
     .option('--json', 'Print the result as JSON')
     .action(async (options) => {
       if (!options.importPiSessions) {
@@ -408,8 +411,16 @@ export function registerAirlockCommands(
         exit(1);
         return;
       }
+      let hints: HintProvider | undefined;
       try {
-        const result = await runLearnImport({ dir: options.dir }, {
+        hints = options.hints === undefined ? undefined : parseHintProvider(options.hints);
+      } catch (e) {
+        console.error(chalk.red((e as Error).message));
+        exit(1);
+        return;
+      }
+      try {
+        const result = await runLearnImport({ dir: options.dir, hints, hintsModel: options.hintsModel }, {
           post: (url, body) => axios.post(url, body, { timeout: 30_000 }),
           apiUrl: getApiUrl(),
           log: (m) => { if (!options.json) console.log(chalk.gray(m)); },

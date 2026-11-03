@@ -676,6 +676,7 @@ const SCHEMA_PG = `
     proxy_hits INTEGER NOT NULL DEFAULT 0,
     upload_hits INTEGER NOT NULL DEFAULT 0,
     clients_json TEXT NOT NULL DEFAULT '[]',
+    context_json TEXT,
     first_seen TEXT,
     last_seen TEXT,
     reported_at TEXT NOT NULL,
@@ -947,6 +948,8 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     ['upgrade_dispatch_fanout', 'reported_json', 'reported_json TEXT'],
     // How often an installation's sessions sent a host data (2026-11-02).
     ['airlock_learning_reports', 'upload_hits', 'upload_hits INTEGER NOT NULL DEFAULT 0'],
+    // What the installation's import knew of a host (2026-11-02).
+    ['airlock_learning_reports', 'context_json', 'context_json TEXT'],
   ] as const) {
     // Scope the probe to `public`. information_schema.columns spans every
     // schema the role can see, so an unrelated application's `users.name`

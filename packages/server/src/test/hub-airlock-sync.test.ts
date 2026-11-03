@@ -373,38 +373,41 @@ describe('hub airlockSync', () => {
   });
 
   describe('a tick that outlives its hub configuration', () => {
-    /** The old tick's fetch: its project flow fetch waits for the spec; its Airlock fetch answers `airlock`. */
+    /**
+     * The old tick's fetch: its Airlock answer (`airlock`) waits for the spec, so the
+     * configuration changes while that tick's Airlock sync is in flight. The tick's
+     * channels run side by side (GH-346), so this is where a tick outlives its hub.
+     */
     function staleTickFetch(airlock: Answer) {
-      let releaseFlow!: () => void;
-      const flowHeld = new Promise<void>(r => { releaseFlow = r; });
-      let flowStarted = false;
+      let releaseAirlock!: () => void;
+      const airlockHeld = new Promise<void>(r => { releaseAirlock = r; });
       const airlockCalls: string[] = [];
       const fetchImpl = vi.fn(async (url: string) => {
-        if (url.includes('/v1/flows/active')) {
-          flowStarted = true;
-          await flowHeld;
-          return answer({ status: 200, body: { flow: null } });
+        if (url.includes('/v1/airlock/policy')) {
+          airlockCalls.push(url);
+          await airlockHeld;
+          return answer(airlock);
         }
-        if (url.includes('/v1/airlock/policy')) { airlockCalls.push(url); return answer(airlock); }
+        if (url.includes('/v1/flows/active')) return answer({ status: 200, body: { flow: null } });
         return answer({ status: 404, body: {} });
       });
-      const waitForFlow = async () => { while (!flowStarted) await new Promise(r => setTimeout(r, 1)); };
-      return { fetchImpl: fetchImpl as any, releaseFlow, waitForFlow, airlockCalls };
+      const waitForAirlock = async () => { while (airlockCalls.length === 0) await new Promise(r => setTimeout(r, 1)); };
+      return { fetchImpl: fetchImpl as any, releaseAirlock, waitForAirlock, airlockCalls };
     }
 
     it("repointed to org B mid-tick: the old tick does not replace B's policy with A's", async () => {
       await storage.createProject({ id: 'p1', name: 'p1', description: '', createdAt: new Date(), updatedAt: new Date() } as any);
       const old = staleTickFetch(ok(hubPolicy({ mode: 'off' }), 50));
       const tick = runFlowSyncTick({ storage, hubConfig: HUB_A, fetchImpl: old.fetchImpl, emit: vi.fn(), etagCache: new Map(), airlockStateFile: stateFile });
-      await old.waitForFlow();
+      await old.waitForAirlock();
 
       invalidateAirlockSyncs(); // the repoint
       const b = makeFetch(ok(hubPolicy({ mode: 'enforce', hosts: { allow: ['b.example'], deny: [] } }), 2));
       expect((await sync(b.fetchImpl, HUB_B)).outcome).toBe('adopted');
 
-      old.releaseFlow();
+      old.releaseAirlock();
       await tick;
-      expect(old.airlockCalls).toHaveLength(0);
+      expect(old.airlockCalls).toHaveLength(1);
       const row = await storage.getAirlockPolicy('hub');
       expect(row?.updatedBy).toBe(airlockAuthorityOf(HUB_B));
       expect(row?.policy.mode).toBe('enforce');
@@ -415,11 +418,11 @@ describe('hub airlockSync', () => {
       await seedHubRow(3, 'enforce');
       const old = staleTickFetch(ok(hubPolicy({ mode: 'off' }), 50));
       const tick = runFlowSyncTick({ storage, hubConfig: HUB_A, fetchImpl: old.fetchImpl, emit: vi.fn(), etagCache: new Map(), airlockStateFile: stateFile });
-      await old.waitForFlow();
+      await old.waitForAirlock();
 
       await releaseHubAirlockPolicy({ storage, stateFile }); // the logout
 
-      old.releaseFlow();
+      old.releaseAirlock();
       await tick;
       expect(await storage.getAirlockPolicy('hub')).toBeNull();
       const view = await resolveAirlockPolicy(storage, false);

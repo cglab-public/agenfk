@@ -222,6 +222,23 @@ describe('reconcileRepointDirective', () => {
     __resetRepointInflight();
   });
 
+  it('a run whose configuration was replaced while it verified writes and adopts nothing (GH-346 review)', async () => {
+    // A login or token rotation adopted a newer hub configuration while this run
+    // waited on the target: writing its own (older) token now would undo that.
+    const rebuildTransportImpl = vi.fn(async () => {});
+    await reconcileRepointDirective({ ...baseArgs(), fetchImpl: fetchOk, rebuildTransportImpl, isCurrent: () => false });
+    expect(written).toEqual([]);
+    expect(rebuildTransportImpl).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
+  it('a run whose configuration is still current moves as before', async () => {
+    const rebuildTransportImpl = vi.fn(async () => {});
+    await reconcileRepointDirective({ ...baseArgs(), fetchImpl: fetchOk, rebuildTransportImpl, isCurrent: () => true });
+    expect(written).toHaveLength(1);
+    expect(rebuildTransportImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('does nothing when there is no campaign', async () => {
     await reconcileRepointDirective({ ...baseArgs(), fetchImpl: fetch204 });
     expect(written).toEqual([]);

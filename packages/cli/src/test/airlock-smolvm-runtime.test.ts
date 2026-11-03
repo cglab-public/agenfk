@@ -1221,6 +1221,14 @@ describePosix('a network policy changed while the session runs (story review 2)'
     expect(warnings.join('\n')).toMatch(/new\.example\.com[\s\S]*next/);
   });
 
+  it('says every host (*) newly allowed reaches the machine only from its next start (review, 2026-11-02)', async () => {
+    const warnings: string[] = [];
+    const { rt } = runtime({ warn: (m: string) => warnings.push(m) });
+    await rt.launch(policySpec({}), cmd());
+    await rt.updateNetwork(workspace, async () => policySpec({ allow: ['api.github.com', '*'] }));
+    expect(warnings.join('\n')).toMatch(/every host \(\*\)[\s\S]*next start/);
+  });
+
   // Fourth pass: no clock or revision can order the server's answers; fetched and applied under the
   // machine's lock, they are applied in the order they were fetched, the last fetched last.
   it('fetches and applies under the machine\'s lock: two launchers\' updates never interleave', async () => {

@@ -247,7 +247,14 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     return true;
   };
   // A host allowed in either direction is reachable; which way its data goes is judged on tool calls.
-  networkAllow(policy.hosts).forEach((h) => addAllow(h));
+  // `*` (every host, user decision 2026-11-02) opens the network: the decider and the guest resolver
+  // still refuse the deny list, the IOC hosts and the metadata endpoints.
+  const allowed = networkAllow(policy.hosts);
+  if (allowed.includes('*')) {
+    if (denyPatterns.some((d) => d.trim() === '*')) skipped.push({ entry: '*', reason: 'denied by the policy (*)' });
+    else allow.push('*');
+  }
+  allowed.filter((h) => h !== '*').forEach((h) => addAllow(h));
   const inference: string[] = [];
   for (const raw of session.inferenceHosts) {
     const c = classify(raw);
@@ -285,6 +292,9 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     const e = classify(raw);
     if (e.kind === 'host') deny.push(e.value);
     else if (e.kind === 'cidr') denyResolved.push(e.value);
+    // With every host allowed, leaving allows out enforces nothing: the decider and the guest
+    // resolver match the pattern as written (`*.org`, a single label) instead (review 2026-11-02).
+    else if (allow.includes('*') && /^[a-z0-9*._-]+$/i.test(raw.trim())) deny.push(raw.trim().toLowerCase());
     // The runtime cannot express this one; every allow it matches was left
     // out above, so nothing it names is reachable. Reported all the same.
     else skipped.push({ entry: raw, reason: `deny: ${e.reason ?? 'not a host'}; enforced by leaving out every allow it matches` });

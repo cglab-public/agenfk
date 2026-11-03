@@ -4,6 +4,77 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.16] — 2026-11-02
+
+**Hub sync** (#346, #347)
+
+- **One loop, and no hub request that can hang it.** An installation could stop applying new Airlock policy
+  revisions, with nothing logged, until the server restarted: the flow reconciler pulled flows, repo settings,
+  Airlock and receipts one after another, with no request timeout, and started its next tick only once the last one
+  had finished. The four timers the server ran against the hub (events, flows, repoint, upgrade) are now one loop,
+  every 30 s. Each tick starts every channel at once, a channel still running is skipped rather than run twice, and a
+  failing channel logs one `[HUB_SYNC]` line and holds up no other. Every hub request gives up after 15 s
+  (`AGENFK_HUB_REQUEST_TIMEOUT_MS`).
+- Flows, repo settings, Airlock and repoint directives are now checked every 30 s, not every 5 minutes, and upgrade
+  directives every 30 s, not every 60 s. `AGENFK_HUB_SYNC_INTERVAL_MS` and `AGENFK_HUB_SYNC_FIRST_DELAY_MS` replace
+  `AGENFK_HUB_FLOW_SYNC_INTERVAL_MS`, `AGENFK_HUB_REPOINT_SYNC_INTERVAL_MS`, `AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS`
+  and `AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS`.
+- **A hub repoint moves every channel, not just events.** After a repoint campaign moved an installation to a new
+  hub name, only its events followed: flows, repo settings, Airlock, receipts and upgrade checks kept the old name
+  until the server restarted, so once the old name was retired the installation silently stopped taking policy,
+  flows and upgrades. The move now restarts the hub loop on the verified target, exactly as
+  `POST /internal/hub/reload` does. A repoint overtaken by a newer login or token no longer puts the older token
+  back, and restarting the hub loop no longer reports an upgrade still in progress as failed.
+
+## [2.1.0-beta.15] — 2026-11-02
+
+**Airlock** (#345)
+
+- **`*` in a host list: every host but the always-denied ones.** `* download` allows every download while uploads
+  stay limited to the hosts allowed for them; `*` both ways allows every host. The cloud metadata endpoints, the IOC
+  hosts and the deny list still refuse, since they are judged before any allow; a range that names a metadata address
+  (`0.0.0.0/0`) is still refused. In the sandbox, `*` opens the network the way observe mode does - every host not
+  denied is reachable and every name not denied resolves - and which way data goes stays judged on tool calls: the
+  network cannot see direction, so under a one-way `*` a script that names no host can still upload, and a host
+  denied by name is not recognised when reached by its address with no lookup. Adding `*` to a running session
+  applies from its next start, and says so. Learning keeps proposing a host only a one-way `*` covers.
+- **The host lists are lists.** On the board and the hub, for the policy and project overrides: one row per host with
+  Download and Upload boxes (on the deny side, which way it is blocked), a remove button, and a field that adds a
+  host on Enter or several pasted at once, one per line. The saved policy is unchanged.
+
+The hub needs this version for its editor.
+
+## [2.1.0-beta.14] — 2026-11-02
+
+**Airlock** (#344)
+
+- **Each learned host says what it is, so a person can decide on it.** Every import
+  (`agenfk airlock learn --import-pi-sessions`) now brings the projects whose sessions reached a host (the working
+  folder's name, never its path) and an address's reverse DNS name, and the board and the hub label what can be said
+  for certain: a public DNS resolver, a cloud machine (the address is someone else's once it is gone), a network
+  address (`x.x.x.0`), an address with no name. The hub lists every installation's projects (25, then a count) and
+  the newest name and hint; `agenfk hub admin airlock learning list` prints them too. Display only: nothing here
+  allows, excludes or accepts a host.
+- **`--hints <provider>` writes one sentence per host.** Opt-in: `--hints claude`, `codex` or `pi` runs your own CLI
+  with your own login, or `--hints <http(s) URL>` asks an OpenAI-compatible server (a local llama-server or Ollama,
+  a self-hosted model; key in `AGENFK_HINTS_API_KEY`), with `--hints-model <id>` to pick the model. It is given up to
+  three example commands per host with secrets removed (the log redaction, plus the credentials a command spells out:
+  `curl -u`, authorization and cookie headers, a URL's user:password, `sshpass -p`, password options and
+  `*_PASSWORD=` style assignments), 30 hosts per call; the commands go to that provider only, never to the server or
+  the hub. A provider that fails or takes too long is stopped with everything it started, and the import goes on
+  without hints for those hosts. A later import replaces a host's projects and reverse DNS name, and keeps its hint
+  unless it brings a new one.
+- **Fixed:** the dropdowns in the board's Airlock settings took the whole row, squeezing each rule's name and
+  description to one word per line; the hub's learning direction picker had the same fault.
+- **Fixed:** the guest resolver could fail to start on Windows when the TCP side of the port it picked was reserved;
+  it now tries another port.
+
+The hub needs this version to show context and hints; an older hub ignores them in a forward.
+
+**Fixes**
+
+- A stopped `git am` declines the close commit as "a git am session is in progress", not as a rebase (#309).
+
 ## [2.1.0-beta.13] — 2026-11-02
 
 **Airlock** (#319)

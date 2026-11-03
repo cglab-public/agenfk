@@ -21,7 +21,8 @@ import * as fs from 'fs';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { normalizeAirlockPolicy } from '@agenfk/core';
 import { removeTestDb } from './helpers/testDb';
-import { runFlowSyncTick, startFlowSync } from '../hub/flowSync';
+import { runFlowSyncTick, flowSyncChannels } from '../hub/flowSync';
+import { startHubSync } from '../hub/hubSync';
 import { runAirlockSync, invalidateAirlockSyncs, airlockAuthorityOf, AIRLOCK_REPORT_RESEND_MS, type AirlockApplyReport, type AirlockApplyReporter } from '../hub/airlockSync';
 
 const HUB_A = { url: 'http://hub.example.test', token: 'agk_test', orgId: 'org-a' };
@@ -235,17 +236,19 @@ describe('the installation reports the Airlock revision it applies', () => {
     expect(reports).toEqual([{ type: 'airlock.policy-applied', payload: { revision: 2, iocRevision: 1 } }]);
   });
 
-  it('startFlowSync hands its reporter to every tick', async () => {
-    vi.stubEnv('AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS', '0');
-    const handle = startFlowSync({
-      storage, hubConfig: HUB_A, fetchImpl: fetchAnswering(ok(hubPolicy(), 2)), emit: vi.fn(), reportAirlock: report,
+  it('the hub loop hands the reporter to its Airlock channel', async () => {
+    const handle = startHubSync({
+      channels: flowSyncChannels({
+        storage, hubConfig: HUB_A, fetchImpl: fetchAnswering(ok(hubPolicy(), 2)), emit: vi.fn(),
+        etagCache: new Map(), airlockStateFile: stateFile, reportAirlock: report,
+      }),
+      firstDelayMs: 0,
     });
     try {
       const deadline = Date.now() + 3000;
       while (reports.length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
     } finally {
       handle.stop();
-      vi.unstubAllEnvs();
     }
     expect(reports[0]).toEqual({ type: 'airlock.policy-applied', payload: { revision: 2, iocRevision: 1 } });
   });
