@@ -11,8 +11,8 @@
  * Contract (pinned by gitFixture.test.ts):
  *  - a clone is a real, independent repository: clean status, its own .git,
  *    writes and commits in one clone are invisible to every other clone and
- *    to the template. A clone is `fs.cpSync(template, mkdtemp, { recursive,
- *    preserveTimestamps })`, so file mtimes match the template's;
+ *    to the template. A clone is `copyTree(template, mkdtemp)` (cpSync with
+ *    preserveTimestamps, in plain JS), so file mtimes match the template's;
  *  - `build` runs once per key per worker - across the worker's files too, so
  *    the template lives on disk, not only in memory - and a build that throws
  *    caches nothing and leaves nothing behind;
@@ -189,12 +189,40 @@ export function cloneGitTemplate(key: string, build: GitTemplateBuild, prefix = 
   const template = gitTemplate(key, build);
   const dir = fs.mkdtempSync(path.join(longForm(os.tmpdir()), prefix));
   try {
-    fs.cpSync(template, dir, { recursive: true, preserveTimestamps: true });
+    copyTree(template, dir);
   } catch (err) {
     removeDir(dir);
     throw err;
   }
   return dir;
+}
+
+/**
+ * Copies the directory tree `src` into `dst` (an existing directory), keeping
+ * each file's modification time - as `fs.cpSync(src, dst, { recursive,
+ * preserveTimestamps })` would, in plain JS. Node 22's cpSync aborts the
+ * process natively on Windows when a path has non-ASCII letters (no exception:
+ * the vitest worker just dies), and the Windows CI job runs every spec under
+ * such a HOME (AGENFK_TEST_UNICODE_HOME, #201). A fixture repo holds no
+ * symbolic link, and one could not be recreated faithfully on Windows (file vs
+ * directory link, junctions, EPERM without Developer Mode), so a link throws
+ * rather than being followed out of the tree or copied wrong.
+ */
+export function copyTree(src: string, dst: string): void {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dst, entry.name);
+    if (entry.isDirectory()) {
+      copyTree(from, to);
+    } else if (entry.isSymbolicLink()) {
+      throw new Error(`copyTree: ${from} is a symbolic link; fixture trees must not contain links`);
+    } else {
+      fs.copyFileSync(from, to);
+      const st = fs.statSync(from);
+      fs.utimesSync(to, st.atime, st.mtime);
+    }
+  }
 }
 
 /** Variables that would point git at another repository than `cwd`'s (set inside git hooks). */

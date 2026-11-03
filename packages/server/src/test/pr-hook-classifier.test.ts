@@ -6,7 +6,7 @@ import path from 'node:path';
 // Importing the .mjs hook script directly. Pure helpers are exported by name.
 // @ts-ignore — .mjs has no .d.ts; the helpers are JS functions.
 import { classifyTrigger, buildDirective } from '../../../../bin/agenfk-pr-hook.mjs';
-import { gitTemplate, gitSync } from './helpers/gitFixture';
+import { copyTree, gitTemplate, gitSync } from './helpers/gitFixture';
 
 /**
  * A repo on `main` with one commit of `file.txt`, at `dir` (created if absent).
@@ -22,7 +22,7 @@ function initRepoFromTemplate(dir: string): void {
     gitSync(d, 'commit', '-qm', 'init');
   });
   fs.mkdirSync(dir, { recursive: true });
-  fs.cpSync(template, dir, { recursive: true, preserveTimestamps: true });
+  copyTree(template, dir);
 }
 
 describe('classifyTrigger', () => {

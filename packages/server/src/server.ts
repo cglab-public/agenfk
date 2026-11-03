@@ -4557,7 +4557,8 @@ function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: 
     // CREATE_NO_WINDOW, and cmd.exe then gives every console grandchild
     // (npx, npm, node) a visible window (GH #200). Process groups are POSIX-only anyway.
     // GH #312: the run may write the tree - its start and its exit end every verify memo's epoch.
-    const child = noteChildProcess(spawn(command, { shell: true, cwd, stdio: onOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore', detached: process.platform !== 'win32', windowsHide: true }));
+    const child = spawn(command, { shell: true, cwd, stdio: onOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore', detached: process.platform !== 'win32', windowsHide: true });
+    noteChildProcess(child);
     if (onOutput) for (const s of [child.stdout, child.stderr]) {
       // Whole characters only: a chunk can end inside a multi-byte one.
       const decoder = new StringDecoder('utf8');
@@ -10894,10 +10895,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     }>((resolve) => {
     // A sandboxed run is a process group of its own, so a timeout's group kill takes all of it (SX-3 review).
     // GH #312: the command may write the tree - its start and its exit end every verify memo's epoch.
-    const child = noteChildProcess(spawn(airlockRun.command, {
+    const child = spawn(airlockRun.command, {
       shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' }, windowsHide: true,
       ...(airlockRun.sandboxed && process.platform !== 'win32' ? { detached: true } : {}),
-    }));
+    });
+    noteChildProcess(child);
     let killed = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -11391,13 +11393,14 @@ function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: st
 
 function runWorktreeSetup(item: any, decision: SetupDecision, worktreePath: string, commandLine: string): void {
   // GH #312: a setup command writes a tree a verify may be reading.
-  const child = noteChildProcess(spawn(commandLine, {
+  const child = spawn(commandLine, {
     shell: true,
     cwd: worktreePath,
     detached: process.platform !== 'win32',
     env: { ...process.env, FORCE_COLOR: '0' },
     windowsHide: true,
-  }));
+  });
+  noteChildProcess(child);
   let output = '';
   let timedOut = false;
   // A ROLLING TAIL, not a head. The diagnosis is at the END of an install log,

@@ -31,7 +31,7 @@ const recordChildProcess = vi.hoisted(() => async (importOriginal: () => Promise
 vi.mock('child_process', (importOriginal) => recordChildProcess(importOriginal));
 vi.mock('node:child_process', (importOriginal) => recordChildProcess(importOriginal));
 
-import { cloneGitTemplate, gitTemplate, gitTemplateRoot, type GitTemplateBuild } from './helpers/gitFixture';
+import { cloneGitTemplate, copyTree, gitTemplate, gitTemplateRoot, type GitTemplateBuild } from './helpers/gitFixture';
 
 /** Per file run, so a key never meets a template another file left in this worker's cache. */
 const NONCE = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -259,7 +259,7 @@ describe('the build runs once per key per worker', () => {
         fs.writeFileSync(path.join(dir, 'half-built.txt'), 'x\n');
         stash = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-git-fixture-stash-'));
         made.push(stash);
-        fs.cpSync(dir, stash, { recursive: true });
+        copyTree(dir, stash);
         throw new Error('killed mid-build');
       }
       repoBuild('killed')(dir);
@@ -267,7 +267,7 @@ describe('the build runs once per key per worker', () => {
     expect(() => cloneGitTemplate(k, build)).toThrow('killed mid-build');
     const partial = handed[0];
     expect(inside(partial, gitTemplateRoot()), 'the build runs inside the template root, so the rename stays on one volume').toBe(true);
-    fs.cpSync(stash, partial, { recursive: true });
+    copyTree(stash, partial);
 
     // The next worker given this pool id: a fresh module, the stale partial still on disk.
     crash = false;
@@ -421,5 +421,59 @@ describe('where templates and clones live', () => {
     expect(gitTemplateRoot()).not.toMatch(shortSegment);
     expect(gitTemplate(k, build)).not.toMatch(shortSegment);
     expect(dir).toBe(fs.realpathSync.native(dir));
+  });
+});
+
+/*
+ * Node 22's fs.cpSync aborts the process natively on Windows when a path has
+ * non-ASCII letters - no exception, the vitest fork just dies ("Worker exited
+ * unexpectedly"). The Windows CI job runs every spec under such a HOME
+ * (AGENFK_TEST_UNICODE_HOME, #201), so the helpers copy with copyTree instead.
+ */
+describe('copying works under a path with a space and non-ASCII letters (Node 22 cpSync aborts there)', () => {
+  const ACCENTED = 'agenfk fixture hôme ção-';
+
+  it('copyTree copies files, nested and empty directories, and keeps modification times', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), ACCENTED));
+    made.push(base);
+    const src = path.join(base, 'src é');
+    fs.mkdirSync(path.join(src, 'a', 'b'), { recursive: true });
+    fs.mkdirSync(path.join(src, 'empty'));
+    fs.writeFileSync(path.join(src, 'top.txt'), 'top');
+    fs.writeFileSync(path.join(src, 'a', 'b', 'deep ü.txt'), 'deep');
+    const past = new Date('2020-01-02T03:04:05Z');
+    fs.utimesSync(path.join(src, 'top.txt'), past, past);
+    const dst = fs.mkdtempSync(path.join(base, 'dst à-'));
+
+    copyTree(src, dst);
+
+    expect(fs.readFileSync(path.join(dst, 'top.txt'), 'utf8')).toBe('top');
+    expect(fs.readFileSync(path.join(dst, 'a', 'b', 'deep ü.txt'), 'utf8')).toBe('deep');
+    expect(fs.statSync(path.join(dst, 'empty')).isDirectory()).toBe(true);
+    expect(fs.readdirSync(path.join(dst, 'empty'))).toEqual([]);
+    expect(Math.abs(fs.statSync(path.join(dst, 'top.txt')).mtimeMs - past.getTime())).toBeLessThan(2000);
+    // A copy, not a link: changing it leaves the source alone.
+    fs.writeFileSync(path.join(dst, 'top.txt'), 'changed');
+    expect(fs.readFileSync(path.join(src, 'top.txt'), 'utf8')).toBe('top');
+  });
+
+  it('a clone into an accented, spaced directory is a real repository', () => {
+    const dir = clone(key('accented'), repoBuild('accented'), ACCENTED);
+    expect(path.basename(dir).startsWith(ACCENTED)).toBe(true);
+    expect(gitNoLocks(dir, 'status', '--porcelain')).toBe('');
+    expect(gitNoLocks(dir, 'rev-list', '--count', 'HEAD')).toBe('1');
+  });
+
+  it('the fixture helpers never call fs.cpSync', () => {
+    const sources = [
+      path.join(__dirname, 'helpers', 'gitFixture.ts'),
+      path.join(__dirname, 'pr-hook-classifier.test.ts'),
+    ];
+    for (const file of sources) {
+      // Comments may name cpSync (they say why it is gone): only comment-only lines and blocks are dropped,
+      // and any mention left in code fails - a call, fs['cpSync'], an alias or cpSync.call alike.
+      const code = fs.readFileSync(file, 'utf8').replace(/^\s*\/\*[\s\S]*?\*\//gm, '').replace(/^\s*\/\/.*$/gm, '');
+      expect(code, file).not.toMatch(/\bcpSync\b/);
+    }
   });
 });
