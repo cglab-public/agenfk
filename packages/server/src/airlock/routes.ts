@@ -718,7 +718,7 @@ export function registerAirlockRoutes(app: any, deps: AirlockRouteDeps): void {
 
   /**
    * `?refresh=1` (or true): pull the hub's Airlock configuration now instead of at the next
-   * flow-sync tick - the policy and the dataset switch both come with it. A hub that fails
+   * hub loop tick - the policy and the dataset switch both come with it. A hub that fails
    * leaves what is stored, as the tick does.
    */
   /**

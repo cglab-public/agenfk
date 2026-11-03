@@ -7,7 +7,9 @@ import { HubConfig, FlusherStatus } from './types.js';
 import { PENDING_ORG } from './hubClient.js';
 import { readDeadletterIndicator } from './deadletter.js';
 import { airlockDatasetDecidedOff } from './airlockSync.js';
+import { hubRequestTimeoutMs, hubRequestSignal } from './hubRequest.js';
 
+/** The hub loop's interval (hubSync.ts), which runs flush(): the base of the backoff. */
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 500;
 /**
@@ -127,7 +129,6 @@ function isAuthoritativeRejection(data: unknown): boolean {
 }
 
 export class Flusher {
-  private timer: NodeJS.Timeout | null = null;
   private inflight: Promise<void> | null = null;
   private status: FlusherStatus;
   private http: AxiosInstance;
@@ -145,7 +146,7 @@ export class Flusher {
   ) {
     this.http = httpClient ?? axios.create({
       baseURL: config.url,
-      timeout: 15_000,
+      timeout: hubRequestTimeoutMs(),
       headers: {
         'Authorization': `Bearer ${config.token}`,
         'X-Installation-Id': installationId,
@@ -153,6 +154,8 @@ export class Flusher {
         'Content-Type': 'application/json',
       },
     });
+    // The whole-request deadline (GH-346): axios's timeout alone stops at the headers.
+    if (!httpClient) this.http.interceptors.request.use((c) => { c.signal ??= hubRequestSignal(); return c; });
     this.status = {
       enabled: true,
       lastFlushAt: null,
@@ -164,16 +167,6 @@ export class Flusher {
       staleOrgDepth: 0,
       deadletterDepth: 0,
     };
-  }
-
-  start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(() => { this.flush().catch(() => { /* logged in flush */ }); }, this.intervalMs);
-    this.timer.unref?.();
-  }
-
-  stop(): void {
-    if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
   getStatus(): FlusherStatus {
