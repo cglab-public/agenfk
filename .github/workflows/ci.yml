@@ -110,6 +110,14 @@ jobs:
       - name: Home-integrity verify (item 9c297075)
         run: node scripts/home-integrity.mjs verify
 
+      # Issue #341 (EPIC #320): a new HIGH or CRITICAL advisory in a runtime
+      # dependency fails the build, on every PR and push (a graduation PR or a
+      # hotfix to main is audited too). It runs LAST so a red audit never hides
+      # the test results. Dev-only tooling is left out: it never ships to a
+      # user's machine, and its findings are tracked on the board instead.
+      - name: Audit runtime dependencies (high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
   # Issue #208 — the WHOLE suite on Windows (it replaced the #201 subset run).
   #
   # Independent of `build-and-test` (no `needs:`), so both start together. A
