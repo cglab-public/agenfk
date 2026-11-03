@@ -302,6 +302,42 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub airlock learning proposals (
       expect((await list()).body.revision).toBe(1);
     });
   });
+
+  describe('a forwarded host\'s context (2026-11-02)', () => {
+    const ctx = (over: Record<string, unknown> = {}) => ({ projects: [], reverseDns: null, hint: null, hintBy: null, ...over });
+
+    it('is listed with the labels it implies', async () => {
+      const context = ctx({ projects: ['spark'], reverseDns: 'ec2-16-170-214-92.eu-north-1.compute.amazonaws.com', hint: 'A build box.', hintBy: 'pi' });
+      await send(keyAlice, 'inst-alice', [proposed('16.170.214.92', { context })]);
+      expect((await list()).body.hosts[0]).toMatchObject({ host: '16.170.214.92', context, labels: ['cloud-machine'] });
+    });
+
+    it('across installations: every project, the latest hint any of them sent', async () => {
+      await send(keyAlice, 'inst-alice', [proposed('api.vendor.io', { context: ctx({ projects: ['spark'], hint: 'from alice', hintBy: 'claude' }) })], ago(120));
+      await send(keyBob, 'inst-bob', [proposed('api.vendor.io', { context: ctx({ projects: ['horizon'] }) })], ago(60));
+      const h = (await list()).body.hosts[0];
+      expect([...h.context.projects].sort()).toEqual(['horizon', 'spark']);
+      expect(h.context).toMatchObject({ hint: 'from alice', hintBy: 'claude' });
+    });
+
+    it('lists up to 25 projects across installations and says how many more (review: none hidden silently)', async () => {
+      const ten = (p: string) => ctx({ projects: Array.from({ length: 10 }, (_, i) => `${p}${i}`) });
+      const keyCarol = await issueApiKey(db, 'org-a', 'carol-laptop', { installationId: 'inst-carol' });
+      await send(keyAlice, 'inst-alice', [proposed('api.vendor.io', { context: ten('a') })], ago(180));
+      await send(keyBob, 'inst-bob', [proposed('api.vendor.io', { context: ten('b') })], ago(120));
+      await send(keyCarol, 'inst-carol', [proposed('api.vendor.io', { context: ten('c') })], ago(60));
+      const h = (await list()).body.hosts[0];
+      expect(h.context.projects).toHaveLength(25);
+      expect(h.moreProjects).toBe(5);
+    });
+
+    it('a host forwarded without one lists none; a malformed one is dropped, the host still kept', async () => {
+      await send(keyAlice, 'inst-alice', [proposed('a.vendor.io'), proposed('b.vendor.io', { context: { projects: 'x', hint: 7, command: 'curl https://b.vendor.io/secret' } })]);
+      const hosts = (await list()).body.hosts;
+      expect(hosts.map((h: any) => [h.host, h.context])).toEqual(expect.arrayContaining([['a.vendor.io', null], ['b.vendor.io', null]]));
+      expect(JSON.stringify(await db.all<any>('SELECT * FROM airlock_learning_reports'))).not.toMatch(/secret|curl/);
+    });
+  });
 });
 
 // The Postgres side of the upload_hits backfill is not tested here: pg-mem, the
@@ -331,6 +367,36 @@ describe('a hub learning table from before upload counts (SQLite)', () => {
       const hosts = (await listAirlockLearning(db, 'org-a')).hosts;
       expect(hosts.find(h => h.host === 'old.vendor.io')).toMatchObject({ hits: 4, uploads: 0 });
       expect(hosts.find(h => h.host === 'up.vendor.io')).toMatchObject({ hits: 5, uploads: 2 });
+    } finally {
+      await db.close();
+    }
+  });
+});
+
+describe('a hub learning table from before contexts (SQLite)', () => {
+  const LEGACY = path.join(os.tmpdir(), `agenfk-hub-learning-ctx-${process.pid}.sqlite`);
+  const rm = () => { for (const f of [LEGACY, `${LEGACY}-wal`, `${LEGACY}-shm`]) fs.rmSync(f, { force: true }); };
+  afterEach(rm);
+
+  it('gains context_json, reads old reports as none, and keeps a new context', async () => {
+    rm();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+    const seed = new DatabaseSync(LEGACY);
+    seed.exec(`CREATE TABLE airlock_learning_reports (org_id TEXT NOT NULL, host TEXT NOT NULL, installation_id TEXT NOT NULL,
+      hits INTEGER NOT NULL, proxy_hits INTEGER NOT NULL DEFAULT 0, upload_hits INTEGER NOT NULL DEFAULT 0, clients_json TEXT NOT NULL DEFAULT '[]', first_seen TEXT,
+      last_seen TEXT, reported_at TEXT NOT NULL, PRIMARY KEY (org_id, host, installation_id))`);
+    seed.exec(`INSERT INTO airlock_learning_reports (org_id, host, installation_id, hits, reported_at)
+               VALUES ('org-a', 'old.vendor.io', 'inst-old', 4, '${new Date().toISOString()}')`);
+    seed.close();
+    const db = await openSqliteDb(LEGACY);
+    try {
+      const context = { projects: ['spark'], reverseDns: null, hint: 'A docs site.', hintBy: 'pi' };
+      await recordAirlockLearningProposal(db, 'org-a', { installationId: 'inst-new', occurredAt: new Date().toISOString() },
+        { hosts: [{ host: 'docs.vendor.io', hits: 1, context }] });
+      const hosts = (await listAirlockLearning(db, 'org-a')).hosts;
+      expect(hosts.find(h => h.host === 'old.vendor.io')).toMatchObject({ context: null });
+      expect(hosts.find(h => h.host === 'docs.vendor.io')).toMatchObject({ context });
     } finally {
       await db.close();
     }

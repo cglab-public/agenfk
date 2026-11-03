@@ -24,7 +24,7 @@
  *    still in flight, so a late answer cannot hand ownership back to a hub this
  *    installation has left.
  *
- * It is org-scoped: runFlowSyncTick calls it once per tick, projects or not.
+ * It is org-scoped: the hub loop's `airlock` channel runs it once per tick, projects or not.
  *
  * After each sync, runAirlockSync tells the hub what this installation applies
  * (HUB-2): the revision of the hub row it holds, and a hub policy it refused
@@ -90,7 +90,7 @@ export function airlockAuthorityOf(hubConfig: Pick<HubConfig, 'url' | 'orgId'>):
 
 let generation = 0;
 let tail: Promise<unknown> = Promise.resolve();
-/** How long a reported state goes before it is sent again: twelve flow-sync ticks at the default 5 minutes. */
+/** How long a reported state goes before it is sent again: an hour, however often the hub loop ticks. */
 export const AIRLOCK_REPORT_RESEND_MS = 60 * 60 * 1000;
 
 type Sent = { key: string; at: number } | null;

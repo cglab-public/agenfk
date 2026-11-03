@@ -2,6 +2,7 @@ import { getDomain } from 'tldts';
 import {
   DEFAULT_AIRLOCK_POLICY,
   evidenceOf,
+  hostLabels,
   learnableHost,
   learningExclusionOf,
   normalizeAirlockPolicy,
@@ -9,7 +10,10 @@ import {
   withAcceptedHosts,
   AIRLOCK_PROPOSAL_LIMIT,
   MAX_LEARNED_CLIENTS,
+  sanitizeHostContext,
   type AirlockAcceptedEntry,
+  type AirlockHostContext,
+  type AirlockHostLabel,
   type AirlockLearningEvidence,
   type AirlockProposedWildcard,
 } from '@agenfk/core';
@@ -20,7 +24,9 @@ import { AirlockPolicyError, getAirlockPolicy, putAirlockPolicy, reportTimeOf, t
  * Airlock learning proposals (GH-294, TEL-3). A hub-joined installation cannot
  * change the org's policy, so a person there forwards the hosts its sessions
  * reached as an `airlock.learning-proposal` event: host names and counts, no
- * commands, URLs or card ids. The hub keeps the latest report of each host
+ * commands, URLs or card ids - and what the installation's import knew of each
+ * host (projects, reverse DNS name, a model-written hint; core
+ * sanitizeHostContext cleans it), shown to the admin and never used to decide. The hub keeps the latest report of each host
  * from each installation (airlock_learning_reports) and lists them to the
  * admin one row per host, however many installations proposed it.
  *
@@ -45,6 +51,8 @@ const MAX_CLIENT_CHARS = 64;
 export const LEARNING_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 /** Report rows one org keeps; past it the oldest reports go first. */
 export const MAX_LEARNING_REPORTS_PER_ORG = 20_000;
+/** Projects one host's row lists across installations; the rest are counted (moreProjects). */
+export const MAX_LISTED_PROJECTS = 25;
 /** Grouped hosts read per page while collecting the eligible ones. */
 export const LIST_PAGE = AIRLOCK_PROPOSAL_LIMIT;
 
@@ -80,14 +88,16 @@ export async function recordAirlockLearningProposal(
     const clients = Array.isArray(p.clients)
       ? [...new Set(p.clients.filter((c): c is string => typeof c === 'string' && c.length > 0 && c.length <= MAX_CLIENT_CHARS && !c.includes('\u0000')))].slice(0, MAX_LEARNED_CLIENTS)
       : [];
+    const context = sanitizeHostContext(p.context);
     const result = await db.run(
-      `INSERT INTO airlock_learning_reports (org_id, host, installation_id, hits, proxy_hits, upload_hits, clients_json, first_seen, last_seen, reported_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO airlock_learning_reports (org_id, host, installation_id, hits, proxy_hits, upload_hits, clients_json, context_json, first_seen, last_seen, reported_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (org_id, host, installation_id) DO UPDATE SET
          hits = excluded.hits, proxy_hits = excluded.proxy_hits, upload_hits = excluded.upload_hits, clients_json = excluded.clients_json,
-         first_seen = excluded.first_seen, last_seen = excluded.last_seen, reported_at = excluded.reported_at
+         context_json = excluded.context_json, first_seen = excluded.first_seen, last_seen = excluded.last_seen, reported_at = excluded.reported_at
        WHERE airlock_learning_reports.reported_at <= excluded.reported_at`,
-      [orgId, host, e.installationId, p.hits, proxyHits, uploadHits, JSON.stringify(clients), isoOrNull(p.firstSeen), isoOrNull(p.lastSeen), at],
+      [orgId, host, e.installationId, p.hits, proxyHits, uploadHits, JSON.stringify(clients), context ? JSON.stringify(context) : null,
+        isoOrNull(p.firstSeen), isoOrNull(p.lastSeen), at],
     );
     if (result.changes > 0) kept++;
   }
@@ -118,6 +128,11 @@ export interface AirlockLearningHostView {
   clients: string[];
   firstSeen: string | null;
   lastSeen: string | null;
+  /** What the installations' imports knew of it: their projects, the latest reverse DNS name and hint. */
+  context: AirlockHostContext | null;
+  /** Projects the installations named beyond the MAX_LISTED_PROJECTS listed. */
+  moreProjects: number;
+  labels: AirlockHostLabel[];
 }
 
 const parseList = (text: unknown): string[] => {
@@ -125,6 +140,11 @@ const parseList = (text: unknown): string[] => {
     const v = JSON.parse(String(text));
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
   } catch { return []; }
+};
+
+const contextOf = (text: unknown): AirlockHostContext | null => {
+  if (!text) return null;
+  try { return sanitizeHostContext(JSON.parse(String(text))); } catch { return null; }
 };
 
 const policyOf = (view: AirlockPolicyView) => view.policy ?? normalizeAirlockPolicy(DEFAULT_AIRLOCK_POLICY);
@@ -166,23 +186,42 @@ async function proposedHosts(db: DB, orgId: string, view: AirlockPolicyView, onl
         host: String(g.host), installations: Number(g.installations), hits: Number(g.total_hits ?? 0), proxyHits,
         uploads: Number(g.total_uploads ?? 0),
         evidence: evidenceOf({ tool: 0, import: 0, proxy: proxyHits }), clients: [],
-        firstSeen: iso(g.first_seen), lastSeen: iso(g.last_seen),
+        firstSeen: iso(g.first_seen), lastSeen: iso(g.last_seen), context: null, moreProjects: 0, labels: [],
       });
     }
     if (groups.length < LIST_PAGE) break;
   }
   const page = hosts.slice(0, AIRLOCK_PROPOSAL_LIMIT);
   if (page.length) {
-    // Clients, for the page only: a bounded IN list, no JSON aggregation in SQL.
+    // Clients and contexts, for the page only: a bounded IN list, no JSON aggregation in SQL.
+    // Latest report first, so the newest reverse DNS name and hint win; projects gather in one set per host.
     const byHost = new Map(page.map(h => [h.host, h]));
+    const gathered = new Map<string, { projects: Set<string>; reverseDns: string | null; hint: string | null; hintBy: string | null }>();
     const rows = await db.all<any>(
-      `SELECT host, clients_json FROM airlock_learning_reports WHERE org_id = ? AND host IN (${page.map(() => '?').join(', ')})`,
+      `SELECT host, clients_json, context_json FROM airlock_learning_reports WHERE org_id = ? AND host IN (${page.map(() => '?').join(', ')})
+        ORDER BY reported_at DESC`,
       [orgId, ...page.map(h => h.host)],
     );
     for (const r of rows) {
       const h = byHost.get(String(r.host));
       if (!h) continue;
       for (const c of parseList(r.clients_json)) if (!h.clients.includes(c) && h.clients.length < MAX_LEARNED_CLIENTS) h.clients.push(c);
+      const c = contextOf(r.context_json);
+      if (!c) continue;
+      const g = gathered.get(h.host) ?? { projects: new Set<string>(), reverseDns: null, hint: null, hintBy: null };
+      for (const p of c.projects) g.projects.add(p);
+      g.reverseDns ??= c.reverseDns;
+      if (!g.hint && c.hint) { g.hint = c.hint; g.hintBy = c.hintBy; }
+      gathered.set(h.host, g);
+    }
+    for (const h of page) {
+      const g = gathered.get(h.host);
+      if (g && (g.projects.size || g.reverseDns || g.hint)) {
+        const projects = [...g.projects];
+        h.moreProjects = Math.max(0, projects.length - MAX_LISTED_PROJECTS);
+        h.context = { projects: projects.slice(0, MAX_LISTED_PROJECTS), reverseDns: g.reverseDns, hint: g.hint, hintBy: g.hintBy };
+      }
+      h.labels = hostLabels(h.host, h.context);
     }
   }
   return page;

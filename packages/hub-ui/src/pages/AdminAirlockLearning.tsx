@@ -2,7 +2,8 @@ import { useState, type Dispatch, type SetStateAction } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
-import { Callout, QueryError, buttonClass, cardClass, controlClass, scrollClass } from '../components/ui';
+import { Callout, QueryError, buttonClass, cardClass, cn, controlClass, scrollClass } from '../components/ui';
+import { hostFacts, type HostContextDto, type HostLabelDto } from '../airlockHostText';
 
 /**
  * Admin → Airlock → Proposed hosts (GH-294, TEL-3). Hub-joined installations
@@ -25,6 +26,11 @@ export interface AirlockLearningHost {
   clients: string[];
   firstSeen: string | null;
   lastSeen: string | null;
+  /** What the installations' imports knew of it (absent from a hub before 2026-11-02). */
+  context?: HostContextDto | null;
+  /** Projects beyond those listed. */
+  moreProjects?: number;
+  labels?: HostLabelDto[];
 }
 /** Proposed hosts sharing a registrable domain, offered as one `*.domain` entry. */
 interface AirlockLearningWildcard { pattern: string; hosts: string[]; hits: number; uploads: number; evidence: 'proxy' | 'agent-reported' }
@@ -45,9 +51,26 @@ const sentData = (uploads: number): string => (uploads > 0 ? `sent data ${plural
 
 function DirectionPicker({ pattern, value, onChange }: { pattern: string; value: Direction; onChange: (d: Direction) => void }) {
   return (
-    <select aria-label={`Direction for ${pattern}`} value={value} onChange={e => onChange(e.target.value as Direction)} className={`${controlClass} ml-auto w-auto shrink-0`}>
+    <select aria-label={`Direction for ${pattern}`} value={value} onChange={e => onChange(e.target.value as Direction)} className={cn(controlClass, 'ml-auto w-auto shrink-0')}>
       {DIRECTIONS.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
     </select>
+  );
+}
+
+/** What is known of a host, to decide on it: its labels, reverse DNS name and projects, and a model hint marked as one. */
+function HostContext({ labels, context, moreProjects = 0 }: { labels?: HostLabelDto[]; context?: HostContextDto | null; moreProjects?: number }) {
+  const facts = hostFacts(labels, context, moreProjects);
+  if (!facts.length && !context?.hint) return null;
+  return (
+    <>
+      {facts.length > 0 && <p className="text-ink-tertiary">{facts.join(' · ')}</p>}
+      {context?.hint && (
+        <p className="text-ink-secondary">
+          <span className="text-ink-tertiary">{`Model hint (${context.hintBy ?? 'unknown'}): `}</span>
+          <span className="italic">{context.hint}</span>
+        </p>
+      )}
+    </>
   );
 }
 
@@ -95,6 +118,7 @@ function ProposedHosts({ list, selected, setSelected, directions, setDirections 
                 {` · `}
                 <span className={(h.uploads ?? 0) > 0 ? 'text-status-warn-text' : undefined}>{sentData(h.uploads ?? 0)}</span>
               </p>
+              <HostContext labels={h.labels} context={h.context} moreProjects={h.moreProjects} />
             </div>
             <DirectionPicker pattern={h.host} value={directionOf(h.host, h.uploads ?? 0)} onChange={setDirection(h.host)} />
           </li>

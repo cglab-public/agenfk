@@ -26,6 +26,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { allowTextOf, denyTextOf, hasHostEntries, hostListsOf, DIRECTION_HELP } from '../airlockHostText';
+import { HostListEditor } from './HostListEditor';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   api,
@@ -177,7 +178,11 @@ function problemOf(e: unknown): SaveProblem {
   return { conflict: false, message: data.message ?? data.error ?? 'Could not save the policy; it was not changed.' };
 }
 
-const FIELD = 'w-full rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-60 read-only:opacity-80';
+const CONTROL = 'rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-60 read-only:opacity-80';
+/** A text field spans its column. */
+const FIELD = `w-full ${CONTROL}`;
+/** A dropdown is as wide as its choices: w-full beside w-auto is resolved by CSS order, and w-full wins (bug 351d88ca). */
+const CHOICE = `w-auto ${CONTROL}`;
 const LABEL = 'text-[13px] font-semibold text-ink';
 const HELP = 'mt-0.5 text-[12px] leading-snug text-ink-tertiary';
 const BLOCK = 'border-b border-border-soft py-4 last:border-b-0';
@@ -228,7 +233,7 @@ function SelectorRows({
             value={m.client ?? ''}
             disabled={readOnly}
             onChange={e => setField(i, 'client', e.target.value)}
-            className={clsx(FIELD, 'w-auto')}
+            className={CHOICE}
           >
             {CLIENT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
@@ -310,9 +315,11 @@ function OverrideRows({
                 </button>
               )}
             </div>
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-              <textarea aria-label={`Allowed hosts, override ${n}`} placeholder="added allowed hosts" rows={2} value={o.allow} readOnly={readOnly} onChange={e => edit(i, { allow: e.target.value })} className={clsx(FIELD, 'font-mono')} />
-              <textarea aria-label={`Denied hosts, override ${n}`} placeholder="added denied hosts" rows={2} value={o.deny} readOnly={readOnly} onChange={e => edit(i, { deny: e.target.value })} className={clsx(FIELD, 'font-mono')} />
+            <div className="mt-2 space-y-2">
+              <p className="text-[12px] text-ink-tertiary">Added allowed hosts</p>
+              <HostListEditor label={`Allowed hosts, override ${n}`} value={o.allow} readOnly={readOnly} onChange={v => edit(i, { allow: v })} />
+              <p className="text-[12px] text-ink-tertiary">Added denied hosts</p>
+              <HostListEditor label={`Denied hosts, override ${n}`} value={o.deny} readOnly={readOnly} blocking onChange={v => edit(i, { deny: v })} />
             </div>
             <input
               aria-label={`Machine image, override ${n}`} placeholder="machine image (the policy's when empty)" value={o.image}
@@ -327,7 +334,7 @@ function OverrideRows({
                     value={o.rules[rule.key] ?? ''}
                     disabled={readOnly}
                     onChange={e => setRule(i, rule.key, e.target.value)}
-                    className={clsx(FIELD, 'w-auto shrink-0')}
+                    className={clsx(CHOICE, 'shrink-0')}
                   >
                     <option value="">As the policy says</option>
                     {ACTIONS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
@@ -412,7 +419,7 @@ function PolicyForm({
           value={draft.mode}
           disabled={readOnly}
           onChange={e => set('mode', e.target.value as AirlockModeDto)}
-          className={clsx(FIELD, 'mt-2 w-auto')}
+          className={clsx(CHOICE, 'mt-2')}
         >
           {MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
         </select>
@@ -432,16 +439,16 @@ function PolicyForm({
         </label>
       </div>
 
-      <div className={clsx(BLOCK, 'grid gap-4 sm:grid-cols-2')}>
+      <div className={clsx(BLOCK, 'space-y-4')}>
         <div>
-          <label htmlFor="airlock-allow" className={LABEL}>Allowed hosts</label>
-          <p className={HELP}>{`Hosts tool calls may reach and send data to. One per line: a name, *.domain, or a CIDR. ${DIRECTION_HELP}`}</p>
-          <textarea id="airlock-allow" rows={4} value={draft.allow} readOnly={readOnly} onChange={e => set('allow', e.target.value)} className={clsx(FIELD, 'mt-2 font-mono')} />
+          <p className={LABEL}>Allowed hosts</p>
+          <p className={HELP}>{`Hosts tool calls may reach and send data to: a name, *.domain, a CIDR, or * for every host. ${DIRECTION_HELP}`}</p>
+          <HostListEditor label="Allowed hosts" value={draft.allow} readOnly={readOnly} onChange={v => set('allow', v)} className="mt-2" />
         </div>
         <div>
-          <label htmlFor="airlock-deny" className={LABEL}>Denied hosts</label>
-          <p className={HELP}>{`Hosts no tool call may reach. ${DIRECTION_HELP} Cloud metadata endpoints are always denied.`}</p>
-          <textarea id="airlock-deny" rows={4} value={draft.deny} readOnly={readOnly} onChange={e => set('deny', e.target.value)} className={clsx(FIELD, 'mt-2 font-mono')} />
+          <p className={LABEL}>Denied hosts</p>
+          <p className={HELP}>{`Hosts no tool call may reach, or send data to when it blocks uploads only. ${DIRECTION_HELP} Cloud metadata endpoints are always denied.`}</p>
+          <HostListEditor label="Denied hosts" value={draft.deny} readOnly={readOnly} blocking onChange={v => set('deny', v)} className="mt-2" />
         </div>
       </div>
 
@@ -459,7 +466,7 @@ function PolicyForm({
                 value={draft.rules[rule.key]}
                 disabled={readOnly}
                 onChange={e => setDraft(d => ({ ...d, rules: { ...d.rules, [rule.key]: e.target.value as AirlockRuleActionDto } }))}
-                className={clsx(FIELD, 'w-auto shrink-0')}
+                className={clsx(CHOICE, 'shrink-0')}
               >
                 {ACTIONS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
               </select>
@@ -493,7 +500,7 @@ function PolicyForm({
         </p>
         <select
           id="airlock-home-access" value={draft.homeAccess} disabled={readOnly}
-          onChange={e => set('homeAccess', e.target.value as HomeAccess)} className={clsx(FIELD, 'mt-2 w-auto')}
+          onChange={e => set('homeAccess', e.target.value as HomeAccess)} className={clsx(CHOICE, 'mt-2')}
         >
           {HOME_ACCESS.map(h => <option key={h.value} value={h.value}>{h.label}</option>)}
         </select>
@@ -681,10 +688,10 @@ function Decisions(): React.ReactElement {
     <div className={BLOCK}>
       <h3 className={SUBHEAD}>Recent decisions</h3>
       <div className="mt-2 flex flex-wrap gap-2">
-        <select aria-label="Filter by client" value={client} onChange={e => setClient(e.target.value as typeof client)} className={clsx(FIELD, 'w-auto')}>
+        <select aria-label="Filter by client" value={client} onChange={e => setClient(e.target.value as typeof client)} className={CHOICE}>
           {DECISION_CLIENTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
-        <select aria-label="Filter by source" value={source} onChange={e => setSource(e.target.value as typeof source)} className={clsx(FIELD, 'w-auto')}>
+        <select aria-label="Filter by source" value={source} onChange={e => setSource(e.target.value as typeof source)} className={CHOICE}>
           {DECISION_SOURCES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>

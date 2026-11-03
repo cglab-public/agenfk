@@ -129,3 +129,36 @@ describe('airlock learned hosts', () => {
     expect(rows.every(r => r.lastSeen <= r.receivedAt)).toBe(true);
   });
 });
+
+describe('a learned host\'s context (user decision 2026-11-02)', () => {
+  const context = { projects: ['spark'], reverseDns: 'ec2-1-2-3-4.compute-1.amazonaws.com', hint: 'A build box.', hintBy: 'pi' };
+
+  it('is kept as the latest import brought it, across a restart', async () => {
+    await storage.recordAirlockHostObservations([{ host: '1.2.3.4', source: 'import', client: 'pi', ts: R, receivedAt: R, hits: 2, context }]);
+    await storage.shutdown();
+    storage = new SQLiteStorageProvider();
+    await storage.init({ path: dbPath });
+    expect((await storage.listAirlockLearnedHosts())[0].context).toEqual(context);
+  });
+
+  it('a host learned without one reads as none', async () => {
+    await storage.recordAirlockHostObservations([{ host: 'api.vendor.io', source: 'tool', client: 'pi', ts: R, receivedAt: R }]);
+    expect((await storage.listAirlockLearnedHosts())[0].context ?? null).toBeNull();
+  });
+
+  it('a database from before contexts gains the column, read as none', async () => {
+    await storage.shutdown();
+    const { DatabaseSync } = await import('node:sqlite');
+    const old = path.join(dir, 'old-ctx.sqlite');
+    const raw = new DatabaseSync(old);
+    raw.exec(`CREATE TABLE airlock_learned_hosts (host TEXT PRIMARY KEY, tool_hits INTEGER NOT NULL DEFAULT 0, proxy_hits INTEGER NOT NULL DEFAULT 0,
+      import_hits INTEGER NOT NULL DEFAULT 0, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, received_at TEXT NOT NULL DEFAULT '',
+      clients TEXT NOT NULL DEFAULT '[]', cards TEXT NOT NULL DEFAULT '[]', tool_upload_hits INTEGER NOT NULL DEFAULT 0, import_upload_hits INTEGER NOT NULL DEFAULT 0)`);
+    raw.exec(`INSERT INTO airlock_learned_hosts (host, tool_hits, first_seen, last_seen, received_at) VALUES ('old.vendor.io', 3, '${R}', '${R}', '${R}')`);
+    raw.close();
+    storage = new SQLiteStorageProvider();
+    await storage.init({ path: old });
+    await storage.recordAirlockHostObservations([{ host: 'old.vendor.io', source: 'import', client: 'pi', ts: R, receivedAt: R, hits: 1, context }]);
+    expect((await storage.listAirlockLearnedHosts())[0]).toMatchObject({ host: 'old.vendor.io', context });
+  });
+});

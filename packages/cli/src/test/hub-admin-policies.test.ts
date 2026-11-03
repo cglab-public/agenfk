@@ -181,6 +181,22 @@ describe('airlock policy', () => {
     await hub.run(['hub', 'admin', 'airlock', 'learning', 'accept', 'up.vendor.io', '--direction', 'upload', '--expected-revision', '2', '--yes']);
     expect((await board('get', '/v1/admin/airlock')).body.policy.hosts).toMatchObject({ allowDownload: ['*.datadoghq.com'], allowUpload: ['up.vendor.io'] });
   });
+
+  it('prints what is known of each host under the list: labels, reverse DNS, projects and the model hint', async () => {
+    await board('put', '/v1/admin/airlock').send({ policy: POLICY, expectedRevision: 0 });
+    const key = await issueApiKey(hub.ctx.db, 'org', 'laptop', { installationId: 'inst-c' });
+    const context = { projects: ['spark'], reverseDns: 'ec2-16-170-214-92.eu-north-1.compute.amazonaws.com', hint: 'A build box agents polled over ssh.', hintBy: 'claude' };
+    await supertest(hub.server).post('/v1/events').set('Authorization', `Bearer ${key}`).send({ events: [{
+      eventId: 'ev-learn-c', installationId: 'inst-c', orgId: 'org', occurredAt: new Date(Date.now() - 60_000).toISOString(),
+      actor: { osUser: 't', gitName: null, gitEmail: 'inst-c@x' }, type: 'airlock.learning-proposal',
+      payload: { hosts: [{ host: '16.170.214.92', hits: 3, uploads: 0, sources: { tool: 3, proxy: 0, import: 0 }, evidence: 'agent-reported',
+        clients: ['pi'], firstSeen: '2026-10-20T10:00:00.000Z', lastSeen: '2026-10-27T10:00:00.000Z', cardCount: 0, context }] },
+    }] });
+    hub.clear();
+    await hub.run(['hub', 'admin', 'airlock', 'learning', 'list']);
+    const out = hub.out();
+    for (const s of ['cloud machine', 'ec2-16-170-214-92.eu-north-1.compute.amazonaws.com', 'spark', 'A build box agents polled over ssh.', 'model hint (claude)']) expect(out, s).toContain(s);
+  });
 });
 
 describe('repositories', () => {

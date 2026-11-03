@@ -28,7 +28,7 @@ const savedEnv: Record<string, string | undefined> = {};
 const ENV_KEYS = [
   'HOME', 'USERPROFILE',
   'AGENFK_HUB_URL', 'AGENFK_HUB_TOKEN', 'AGENFK_HUB_ORG',
-  'AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS', 'AGENFK_DB_PATH',
+  'AGENFK_HUB_SYNC_FIRST_DELAY_MS', 'AGENFK_DB_PATH',
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -53,7 +53,7 @@ describe('org-flow routes (hub disabled)', () => {
     delete process.env.AGENFK_HUB_URL;
     delete process.env.AGENFK_HUB_TOKEN;
     delete process.env.AGENFK_HUB_ORG;
-    process.env.AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS = '3600000';
+    process.env.AGENFK_HUB_SYNC_FIRST_DELAY_MS = '3600000';
     process.env.AGENFK_DB_PATH = TEST_DB;
     stubBenignFetch(); // stub before import so any startup fetch is intercepted
     await removeTestDb(TEST_DB); // the server is not loaded yet: nothing is open

@@ -238,6 +238,21 @@ class Upstream {
 }
 
 /** Starts the resolver on UDP and TCP at `host:port` (port 0: one of the system's). */
+/** Tries a port 0 resolver takes before it gives up. */
+const PORT_ATTEMPTS = 5;
+
+/** `bind`, tried again (up to `attempts` times) while it fails because its port is taken or reserved. */
+export async function withPortRetry<T>(attempts: number, bind: () => Promise<T>): Promise<T> {
+  for (let i = 1; ; i++) {
+    try {
+      return await bind();
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException | null)?.code;
+      if (i >= attempts || (code !== 'EADDRINUSE' && code !== 'EACCES')) throw e;
+    }
+  }
+}
+
 export async function startResolver(c: ResolverConfig): Promise<Resolver> {
   const upSocket = dgram.createSocket(net.isIPv6(c.upstream.host) ? 'udp6' : 'udp4');
   upSocket.on('error', () => undefined);
@@ -249,44 +264,55 @@ export async function startResolver(c: ResolverConfig): Promise<Resolver> {
   const refused = reporter ? (name: string, rule: string) => reporter.add(name, rule) : undefined;
   const flusher = reporter ? setInterval(() => reporter.flush(), REPORT_FLUSH_MS) : null;
   flusher?.unref();
-  const udp = dgram.createSocket(net.isIPv6(c.host) ? 'udp6' : 'udp4');
-  udp.on('error', () => undefined);
   let closing = false;
-  udp.on('message', (msg, from) => {
-    void answer(msg, c, ask, refused).then((a) => {
-      // Not after close: a question pending then is failed, and its socket is gone.
-      if (!a || closing) return;
-      try { udp.send(a, from.port, from.address); } catch { /* closed */ }
+  // One UDP and one TCP socket on the same port. With port 0 the UDP port is the
+  // system's pick, and on Windows the same TCP port can sit in a reserved range
+  // (EACCES) or be taken (EADDRINUSE): then the pair is tried again on a new port.
+  const { udp, tcp, port } = await withPortRetry(c.port === 0 ? PORT_ATTEMPTS : 1, async () => {
+    const udp = dgram.createSocket(net.isIPv6(c.host) ? 'udp6' : 'udp4');
+    udp.on('error', () => undefined);
+    udp.on('message', (msg, from) => {
+      void answer(msg, c, ask, refused).then((a) => {
+        // Not after close: a question pending then is failed, and its socket is gone.
+        if (!a || closing) return;
+        try { udp.send(a, from.port, from.address); } catch { /* closed */ }
+      });
     });
-  });
-  await new Promise<void>((resolve, reject) => { udp.once('error', reject); udp.bind(c.port, c.host, () => resolve()); });
-  const port = udp.address().port;
-  const tcp = net.createServer((s) => {
-    let buf = Buffer.alloc(0);
-    let inFlight = 0;
-    s.setTimeout(UPSTREAM_TIMEOUT_MS * 2, () => s.destroy());
-    s.on('error', () => undefined);
-    s.on('data', (d) => {
-      buf = Buffer.concat([buf, d]);
-      if (buf.length > 2 + MAX_TCP_MESSAGE) { s.destroy(); return; }
-      while (buf.length >= 2 && buf.length >= 2 + buf.readUInt16BE(0)) {
-        const msg = buf.subarray(2, 2 + buf.readUInt16BE(0));
-        buf = buf.subarray(2 + msg.length);
-        // An asker that does not read its answers, or asks without end, is cut off.
-        if (++inFlight > MAX_TCP_IN_FLIGHT || s.writableLength > MAX_TCP_QUEUED_BYTES) { s.destroy(); return; }
-        void answer(msg, c, ask, refused).then((a) => {
-          inFlight--;
-          if (!a || s.destroyed) return;
-          const len = Buffer.alloc(2);
-          len.writeUInt16BE(a.length);
-          s.write(Buffer.concat([len, a]));
-          if (s.writableLength > MAX_TCP_QUEUED_BYTES) s.destroy();
-        });
-      }
+    await new Promise<void>((resolve, reject) => { udp.once('error', reject); udp.bind(c.port, c.host, () => resolve()); });
+    const port = udp.address().port;
+    const tcp = net.createServer((s) => {
+      let buf = Buffer.alloc(0);
+      let inFlight = 0;
+      s.setTimeout(UPSTREAM_TIMEOUT_MS * 2, () => s.destroy());
+      s.on('error', () => undefined);
+      s.on('data', (d) => {
+        buf = Buffer.concat([buf, d]);
+        if (buf.length > 2 + MAX_TCP_MESSAGE) { s.destroy(); return; }
+        while (buf.length >= 2 && buf.length >= 2 + buf.readUInt16BE(0)) {
+          const msg = buf.subarray(2, 2 + buf.readUInt16BE(0));
+          buf = buf.subarray(2 + msg.length);
+          // An asker that does not read its answers, or asks without end, is cut off.
+          if (++inFlight > MAX_TCP_IN_FLIGHT || s.writableLength > MAX_TCP_QUEUED_BYTES) { s.destroy(); return; }
+          void answer(msg, c, ask, refused).then((a) => {
+            inFlight--;
+            if (!a || s.destroyed) return;
+            const len = Buffer.alloc(2);
+            len.writeUInt16BE(a.length);
+            s.write(Buffer.concat([len, a]));
+            if (s.writableLength > MAX_TCP_QUEUED_BYTES) s.destroy();
+          });
+        }
+      });
     });
+    tcp.maxConnections = MAX_TCP_CONNECTIONS;
+    try {
+      await new Promise<void>((resolve, reject) => { tcp.once('error', reject); tcp.listen(port, c.host, () => resolve()); });
+    } catch (e) {
+      udp.close();
+      throw e;
+    }
+    return { udp, tcp, port };
   });
-  tcp.maxConnections = MAX_TCP_CONNECTIONS;
-  await new Promise<void>((resolve, reject) => { tcp.once('error', reject); tcp.listen(port, c.host, () => resolve()); });
   return {
     port,
     close: () => new Promise<void>((resolve) => {

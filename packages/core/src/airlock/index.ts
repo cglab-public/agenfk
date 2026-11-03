@@ -22,4 +22,8 @@ export {
   type AirlockLearnSource, type AirlockHostObservation, type AirlockLearnedHost, type AirlockLearningExclusion,
   type AirlockLearningEvidence, type AirlockProposedHost, type AirlockProposal, type AirlockImportTally,
 } from './learn';
+export {
+  EMPTY_HOST_CONTEXT, hostLabels, isAddressHost, sanitizeHostContext, AIRLOCK_HOST_LABEL_TEXT, mergeHostContext, MAX_CONTEXT_PROJECTS, MAX_PROJECT_CHARS, MAX_HINT_CHARS, MAX_HINT_BY_CHARS,
+} from './hostContext';
+export type { AirlockHostContext, AirlockHostLabel } from './learnTypes';
 export { AIRLOCK_SESSION_HEADER, mintAirlockSessionMarker, verifyAirlockSessionMarker, airlockLaunchNonce, airlockMarkerProject } from './sessionMarker';

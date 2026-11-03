@@ -72,4 +72,52 @@ export const hasHostEntries = (h: AirlockHostListsDto): boolean =>
   [h.allow, h.deny, h.allowDownload, h.allowUpload, h.denyUpload, h.denyDownload].some(l => (l?.length ?? 0) > 0);
 
 /** The editors' help for a direction. */
-export const DIRECTION_HELP = 'Add “download” or “upload” after it to make an entry one way only.';
+export const DIRECTION_HELP = 'Tick Download, Upload or both for each host. Paste several at once, one per line; “download” or “upload” after a host is read too.';
+
+/** One row of a host list editor. */
+export interface HostRow { pattern: string; way: Way }
+
+const merge = (a: Way, b: Way): Way => (a === b ? a : 'both');
+
+/** Rows from lines, in order; a host listed twice keeps one row, both ways if its lines differ. */
+export function hostRowsOf(text: string, into: readonly HostRow[] = []): HostRow[] {
+  const rows = into.map(r => ({ ...r }));
+  for (const e of entriesOf(text.replace(/\r/g, ''))) {
+    const pattern = e.pattern.toLowerCase();
+    const at = rows.find(r => r.pattern === pattern);
+    if (at) at.way = merge(at.way, e.way);
+    else rows.push({ pattern, way: e.way });
+  }
+  return rows;
+}
+
+/** A row as the line it saves: the host, and its direction after it when one way. */
+export const hostLineOf = (r: HostRow): string => (r.way === 'both' ? r.pattern : `${r.pattern} ${r.way}`);
+export const hostTextOfRows = (rows: readonly HostRow[]): string => rows.map(hostLineOf).join('\n');
+
+/** What can be said of a learned host for certain (core hostLabels), and what an import knew of it. */
+export type HostLabelDto = 'public-dns-resolver' | 'cloud-machine' | 'network-address' | 'unnamed-address';
+export interface HostContextDto {
+  projects: string[];
+  reverseDns: string | null;
+  /** One sentence a model wrote (agenfk airlock learn --hints): display only. */
+  hint: string | null;
+  hintBy: string | null;
+}
+
+/** Each label as a person reads it: core's AIRLOCK_HOST_LABEL_TEXT, copied (this package does not import core). */
+export const HOST_LABEL_TEXT: Readonly<Record<HostLabelDto, string>> = {
+  'public-dns-resolver': 'public DNS resolver',
+  'cloud-machine': 'cloud machine: the address is someone else\'s once it is gone',
+  'network-address': 'network address: more likely a range or a version number than a machine',
+  'unnamed-address': 'address with no name',
+};
+
+/** A host's facts as one line's parts: its labels, its reverse DNS name and the projects that reached it. */
+export function hostFacts(labels?: readonly string[] | null, context?: HostContextDto | null): string[] {
+  return [
+    ...(labels ?? []).map(l => HOST_LABEL_TEXT[l as HostLabelDto] ?? l),
+    ...(context?.reverseDns ? [`reverse DNS ${context.reverseDns}`] : []),
+    ...(context?.projects?.length ? [`seen in ${context.projects.join(', ')}`] : []),
+  ];
+}
