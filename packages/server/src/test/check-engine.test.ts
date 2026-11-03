@@ -18,7 +18,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -34,7 +33,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
@@ -49,14 +48,19 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 
+/** One commit on `branch` (#311: a template per branch, cloned per test). */
+const buildRepo = (branch: string): GitTemplateBuild => (dir) => {
+  gitSync(dir, 'init', '-q', '-b', branch);
+  gitSync(dir, 'config', 'user.email', 't@t');
+  gitSync(dir, 'config', 'user.name', 't');
+  writeFiles(dir, { 'tests/a.test.js': 'test', '.gitignore': 'report.*\n' });
+  gitSync(dir, 'add', '.');
+  gitSync(dir, 'commit', '-qm', 'one');
+};
+
 function makeRepo(branch = 'main'): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-engine-'));
+  const dir = cloneGitTemplate(`check-engine:repo:branch=${branch}`, buildRepo(branch), 'agenfk-engine-');
   repos.push(dir);
-  execSync(`git init -q -b ${branch} && git config user.email t@t && git config user.name t`, { cwd: dir, shell: posixShell() });
-  fs.mkdirSync(path.join(dir, 'tests'));
-  fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
-  fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 

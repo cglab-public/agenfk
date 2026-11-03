@@ -14,9 +14,8 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell, shellQuote } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -37,22 +36,32 @@ afterAll(async () => {
   for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
+/** A repository with one commit of a single file, cloned from the per-worker template (#311). */
+const oneFileRepo = (file: string, content: string, prefix: string): string => {
+  const build: GitTemplateBuild = (d) => {
+    gitSync(d, 'init', '-q');
+    gitSync(d, 'config', 'user.email', 't@t');
+    gitSync(d, 'config', 'user.name', 't');
+    writeFiles(d, { [file]: content });
+    gitSync(d, 'add', '.');
+    gitSync(d, 'commit', '-qm', 'one');
+  };
+  const dir = cloneGitTemplate(`propagation-integration:one-file:${JSON.stringify([file, content])}`, build, prefix);
+  repos.push(dir);
+  return dir;
+};
+
 let repo: string;
 beforeEach(async () => {
   await initStorage();
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-propgate-'));
-  repos.push(repo);
-  execSync('git init -q', { cwd: repo });
-  execSync('git config user.email t@t', { cwd: repo });
-  execSync('git config user.name t', { cwd: repo });
-  fs.writeFileSync(path.join(repo, 'a.txt'), 'one');
-  execSync('git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
+  repo = oneFileRepo('a.txt', 'one', 'agenfk-propgate-');
 });
 
-const sha = () => execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf8' }).trim();
+const sha = () => gitSync(repo, 'rev-parse', 'HEAD');
 const advanceTheTree = () => {
   fs.writeFileSync(path.join(repo, 'a.txt'), `two-${Date.now()}`);
-  execSync('git add . && git commit -qm two', { cwd: repo, shell: posixShell() });
+  gitSync(repo, 'add', '.');
+  gitSync(repo, 'commit', '-qm', 'two');
 };
 
 /** A project whose verify runs in `repo`, with a parent already made. */
@@ -287,18 +296,13 @@ describe('the sibling gate on a real tree', () => {
      * checkout nothing ever ran in. It must be refused on the ROOT.
      */
     const { make } = await setup();
-    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-other-'));
-    repos.push(other);
-    execSync('git init -q', { cwd: other });
-    execSync('git config user.email t@t', { cwd: other });
-    execSync('git config user.name t', { cwd: other });
-    fs.writeFileSync(path.join(other, 'b.txt'), 'x');
-    execSync('git add . && git commit -qm one', { cwd: other, shell: posixShell() });
-    const otherSha = execSync('git rev-parse HEAD', { cwd: other, encoding: 'utf8' }).trim();
+    const other = oneFileRepo('b.txt', 'x', 'agenfk-other-');
+    const otherSha = gitSync(other, 'rev-parse', 'HEAD');
     const clone = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-clone-'));
     repos.push(clone);
-    execSync(`git clone -q ${shellQuote(other)} ${shellQuote(clone)}`, { shell: posixShell() });
-    expect(execSync('git rev-parse HEAD', { cwd: clone, encoding: 'utf8' }).trim()).toBe(otherSha);
+    // A real `git clone`, on purpose: the same SHA in a checkout of its own.
+    gitSync(path.dirname(clone), 'clone', '-q', other, clone);
+    expect(gitSync(clone, 'rev-parse', 'HEAD')).toBe(otherSha);
 
     const c1 = await make('c1');
     const c2 = await make('c2');
@@ -326,14 +330,8 @@ describe('the sibling gate on a real tree', () => {
      * checkout's commits instead.)
      */
     const { make } = await setup();
-    const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-shared-'));
-    repos.push(shared);
-    execSync('git init -q', { cwd: shared });
-    execSync('git config user.email t@t', { cwd: shared });
-    execSync('git config user.name t', { cwd: shared });
-    fs.writeFileSync(path.join(shared, 'b.txt'), 'x');
-    execSync('git add . && git commit -qm one', { cwd: shared, shell: posixShell() });
-    const sha = execSync('git rev-parse HEAD', { cwd: shared, encoding: 'utf8' }).trim();
+    const shared = oneFileRepo('b.txt', 'x', 'agenfk-shared-');
+    const sha = gitSync(shared, 'rev-parse', 'HEAD');
 
     const c1 = await make('c1');
     const c2 = await make('c2');
@@ -354,7 +352,7 @@ describe('the sibling gate on a real tree', () => {
     // A sibling re-verified after a rollback has two PASSED records for the
     // same command; the older one must not shadow the current one.
     const { make } = await setup();
-    const treeSha = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf8' }).trim();
+    const treeSha = gitSync(repo, 'rev-parse', 'HEAD');
     const c1 = await make('c1');
     await storage.updateItem(c1.id, {
       status: 'DONE',

@@ -707,7 +707,8 @@ export const EVALUATORS: Record<string, Evaluator> = {
         for (const n of names) { own.add(n); if (other && descendants.has(other)) addedBy.set(n, other); }
       }
       for (const f of z(['diff', '--cached', '--no-renames', '--diff-filter=A', '--name-only', '--relative', '-z'])) own.add(f);
-      for (const f of z(['ls-files', '--others', '--exclude-standard', '-z'])) own.add(f);
+      // Spelled as the server's tree read spells it (GH #312): the same query, so a verify asks git once.
+      for (const f of z(['ls-files', '-z', '--others', '--exclude-standard'])) own.add(f);
     } catch (e: any) {
       return { outcome: 'unavailable', soft: true, detail: `git could not list what was added since ${frozen.head.slice(0, 12)}: ${e?.message ?? e}` };
     }

@@ -11,6 +11,7 @@
  * - The environment is the server's, minus agenfk's own variables.
  */
 import { execFile, spawn } from 'child_process';
+import { noteChildProcess } from './gitMemo';
 import * as crypto from 'crypto';
 import type { ResolvedCheck } from '@agenfk/core';
 
@@ -106,7 +107,8 @@ function runArgvGrouped(argv: readonly string[], cwd: string, timeoutMs: number)
     let output = '';
     let timedOut = false;
     let settled = false;
-    const child = spawn(argv[0], argv.slice(1), { cwd, env: commandEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    // GH #312: a command check may write the tree - its start and its exit end every verify memo's epoch.
+    const child = noteChildProcess(spawn(argv[0], argv.slice(1), { cwd, env: commandEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }));
     const collect = (d: Buffer) => { output += d.toString(); if (output.length > 16 * 1024 * 1024) output = output.slice(-TAIL * 4); };
     child.stdout?.on('data', collect);
     child.stderr?.on('data', collect);
@@ -152,12 +154,13 @@ function runArgvGrouped(argv: readonly string[], cwd: string, timeoutMs: number)
 export function runArgv(argv: readonly string[], cwd: string, timeoutMs: number, opts: { processGroup?: boolean } = {}): Promise<ArgvResult> {
   if (opts.processGroup && process.platform !== 'win32') return runArgvGrouped(argv, cwd, timeoutMs);
   return new Promise(resolve => {
-    execFile(argv[0], argv.slice(1), { cwd, env: commandEnv(), timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err: any, stdout, stderr) => {
+    // GH #312: as above - the child is noted so its start and exit end every verify memo's epoch.
+    noteChildProcess(execFile(argv[0], argv.slice(1), { cwd, env: commandEnv(), timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err: any, stdout, stderr) => {
       const output = tail(`${stdout ?? ''}${stderr ?? ''}`);
       if (!err) return resolve({ exitCode: 0, output });
       if (err.code === 'ENOENT') return resolve({ exitCode: null, output, notFound: true });
       resolve({ exitCode: typeof err.code === 'number' ? err.code : null, output, timedOut: !!err.killed });
-    });
+    }));
   });
 }
 

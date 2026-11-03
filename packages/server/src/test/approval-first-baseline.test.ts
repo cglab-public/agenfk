@@ -18,7 +18,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -33,7 +32,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell, shellQuote } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -48,7 +47,17 @@ afterAll(async () => {
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const board = () => ({ 'x-agenfk-ui': '1' });
 const tmp = (prefix: string) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
+/** One commit of `a` on main. */
+const buildOneCommit: GitTemplateBuild = (d) => {
+  gitSync(d, 'init', '-q', '-b', 'main');
+  gitSync(d, 'config', 'user.email', 't@t');
+  gitSync(d, 'config', 'user.name', 't');
+  writeFiles(d, { a: 'a\n' });
+  gitSync(d, 'add', '.');
+  gitSync(d, 'commit', '-qm', 'one');
+};
+/** A clone of the per-worker one-commit template (#311). */
+const oneCommitRepo = (prefix: string) => { const d = cloneGitTemplate('approval-first-baseline:one-commit', buildOneCommit, prefix); dirs.push(d); return d; };
 
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
@@ -68,8 +77,7 @@ async function setup(planChecks: unknown[] = []) {
     s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = tmp('agenfk-af-repo-');
-  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+  const repo = oneCommitRepo('agenfk-af-repo-');
   const runs = path.join(tmp('agenfk-af-runs-'), 'runs');
   const verifyCommand = `echo run >> ${runs}`;
   const p = await agent().post('/projects').send({ name: `af-${++seq}` });
@@ -135,7 +143,7 @@ describe('961f301d (2): a missing approval is answered first', () => {
 describe('961f301d (3): the entry baseline reuses a recorded green', () => {
   it('reuses a green of the same command recorded at the clean HEAD: no suite runs', async () => {
     const t = await setup();
-    const head = git(t.repo, 'git rev-parse HEAD');
+    const head = gitSync(t.repo, 'rev-parse', 'HEAD');
     const from = await closedGreen(t.pid, t.verifyCommand, head);
     expect((await approve(t.id)).status).toBe(201);
     const res = await validate(t.id);
@@ -147,7 +155,7 @@ describe('961f301d (3): the entry baseline reuses a recorded green', () => {
 
   it('captures when the tree is dirty: uncommitted work is content that green never saw', async () => {
     const t = await setup();
-    await closedGreen(t.pid, t.verifyCommand, git(t.repo, 'git rev-parse HEAD'));
+    await closedGreen(t.pid, t.verifyCommand, gitSync(t.repo, 'rev-parse', 'HEAD'));
     fs.writeFileSync(path.join(t.repo, 'b'), 'dirty');
     expect((await approve(t.id)).status).toBe(201);
     expect((await validate(t.id)).status).toBe(200);
@@ -157,9 +165,11 @@ describe('961f301d (3): the entry baseline reuses a recorded green', () => {
 
   it('captures when HEAD moved since the green was recorded', async () => {
     const t = await setup();
-    const old = git(t.repo, 'git rev-parse HEAD');
+    const old = gitSync(t.repo, 'rev-parse', 'HEAD');
     await closedGreen(t.pid, t.verifyCommand, old);
-    git(t.repo, 'echo c > c && git add c && git commit -qm two');
+    writeFiles(t.repo, { c: 'c\n' });
+    gitSync(t.repo, 'add', 'c');
+    gitSync(t.repo, 'commit', '-qm', 'two');
     expect((await approve(t.id)).status).toBe(201);
     expect((await validate(t.id)).status).toBe(200);
     expect(t.runCount()).toBe(1);
@@ -168,7 +178,7 @@ describe('961f301d (3): the entry baseline reuses a recorded green', () => {
 
   it('captures when the recorded green ran a different command', async () => {
     const t = await setup();
-    await closedGreen(t.pid, 'true', git(t.repo, 'git rev-parse HEAD'));
+    await closedGreen(t.pid, 'true', gitSync(t.repo, 'rev-parse', 'HEAD'));
     expect((await approve(t.id)).status).toBe(201);
     expect((await validate(t.id)).status).toBe(200);
     expect(t.runCount()).toBe(1);
@@ -177,7 +187,7 @@ describe('961f301d (3): the entry baseline reuses a recorded green', () => {
   it('captures when the green belongs to another project', async () => {
     const t = await setup();
     const other = await setup();
-    await closedGreen(other.pid, t.verifyCommand, git(t.repo, 'git rev-parse HEAD'));
+    await closedGreen(other.pid, t.verifyCommand, gitSync(t.repo, 'rev-parse', 'HEAD'));
     expect((await approve(t.id)).status).toBe(201);
     expect((await validate(t.id)).status).toBe(200);
     expect(t.runCount()).toBe(1);
@@ -187,9 +197,10 @@ describe('961f301d (3): the entry baseline reuses a recorded green', () => {
 describe('961f301d review: reuse stays in its own tree, and is judged per test when a report is set', () => {
   it('does not reuse a green recorded by a card in ANOTHER checkout at the same commit (CGLAB-366)', async () => {
     const t = await setup();
-    const head = git(t.repo, 'git rev-parse HEAD');
+    const head = gitSync(t.repo, 'rev-parse', 'HEAD');
     const other = tmp('agenfk-af-wt-');
-    git(other, `git clone -q ${shellQuote(t.repo)} .`);
+    // A real `git clone`, on purpose: another checkout at the same commit.
+    gitSync(other, 'clone', '-q', t.repo, '.');
     await closedGreen(t.pid, t.verifyCommand, head, other);
     expect((await approve(t.id)).status).toBe(201);
     expect((await validate(t.id)).status).toBe(200);
@@ -200,7 +211,9 @@ describe('961f301d review: reuse stays in its own tree, and is judged per test w
   /** A project whose report command writes a junit report (git-ignored) and counts its runs outside the tree. */
   async function withReport(exitCode = 0, surface?: string[]) {
     const t = await setup();
-    git(t.repo, 'echo report.xml > .gitignore && git add .gitignore && git commit -qm ignore');
+    writeFiles(t.repo, { '.gitignore': 'report.xml\n' });
+    gitSync(t.repo, 'add', '.gitignore');
+    gitSync(t.repo, 'commit', '-qm', 'ignore');
     const runs = path.join(tmp('agenfk-af-rep-'), 'runs');
     const runner = path.join(path.dirname(runs), 'runner.js');
     fs.writeFileSync(runner, `require('fs').appendFileSync(${JSON.stringify(runs)}, 'run\\n');
@@ -255,7 +268,7 @@ process.exit(${exitCode});`);
   /** Per-test captures written before the server first looked at the project: found by the scan, not by noteGreen. */
   async function scanned(recordRoot: (t: { repo: string }) => string) {
     const t = await withReport();
-    const head = git(t.repo, 'git rev-parse HEAD');
+    const head = gitSync(t.repo, 'rev-parse', 'HEAD');
     const project: any = await storage.getProject(t.pid);
     const c = await agent().post('/items').send({ type: 'TASK', title: `af-scan-${++seq}`, projectId: t.pid });
     await storage.updateItem(c.body.id, { status: 'DONE', stepRecords: [{
@@ -299,7 +312,7 @@ describe('961f301d review 2: a green belongs to the tree it ran in', () => {
   it('a green recorded before checks named its tree never qualifies', async () => {
     const t = await setup();
     const c = await agent().post('/items').send({ type: 'TASK', title: `af-old-${++seq}`, projectId: t.pid });
-    await storage.updateItem(c.body.id, { status: 'DONE', tests: [{ id: 'old', command: t.verifyCommand, output: '', status: 'PASSED', executedAt: new Date(), commit: git(t.repo, 'git rev-parse HEAD') }] } as any);
+    await storage.updateItem(c.body.id, { status: 'DONE', tests: [{ id: 'old', command: t.verifyCommand, output: '', status: 'PASSED', executedAt: new Date(), commit: gitSync(t.repo, 'rev-parse', 'HEAD') }] } as any);
     expect((await approve(t.id)).status).toBe(201);
     expect((await validate(t.id)).status).toBe(200);
     expect(t.runCount()).toBe(1);
@@ -367,8 +380,7 @@ describe('961f301d review: a verify that waits on nobody is judged once', () => 
       s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'human-approval', severity: 'warn' }] }), s('TESTS', 2), s('END', 3, { isAnchor: true }),
     ] });
     expect(f.status, JSON.stringify(f.body)).toBe(201);
-    const repo = tmp('agenfk-af-warn-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const repo = oneCommitRepo('agenfk-af-warn-');
     const p = await agent().post('/projects').send({ name: `af-warn-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `af-warn-${++seq}`, projectId: p.body.id });

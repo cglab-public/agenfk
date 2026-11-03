@@ -19,7 +19,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -38,7 +37,7 @@ process.env.AGENFK_PASSKEY_STORE = STORE;
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { SoftAuthenticator } from './softAuthenticator';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -69,9 +68,8 @@ const gatedFlow = (signed = true) => {
 async function card(status: string, signed = true) {
   const f = await agent().post('/flows').send({ name: `pk-${++seq}`, steps: gatedFlow(signed) });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pk-repo-'));
+  const dir = echoRepo(A, 'agenfk-pk-repo-');
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `pk-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, verifyCommand: 'exit 0' } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `pk-${++seq}`, projectId: p.body.id });

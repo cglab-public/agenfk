@@ -49,6 +49,7 @@ import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { HubClient } from '../hub';
 import { publishPendingReceipts } from '../hub/receiptPublisher';
 import { posixShell } from './helpers/posixShell';
+import { gitSync } from './helpers/gitFixture';
 import { createHubApp } from '../../../hub/src/server';
 import { issueApiKey } from '../../../hub/src/auth/apiKey';
 import { createPasswordUser } from '../../../hub/src/auth/password';
@@ -136,7 +137,6 @@ async function mintCiToken(orgCookie = adminCookie): Promise<string> {
 const hubConfig = () => ({ url: hubUrl, token: producerKey, orgId: ORG });
 
 // ── the producer's repository and card ─────────────────────────────────────
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 
 interface Producer {
   dir: string;
@@ -154,7 +154,13 @@ function makeProducer(): Producer {
   cleanup.push(dir);
   const log = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-receipts-e2e-log-'))), 'runs');
   cleanup.push(path.dirname(log));
-  git(dir, 'git init -q -b main && git config user.email t@t && git config user.name t && git config commit.gpgsign false');
+  // Built per test, not from a template: the hub's receipt lookup by content
+  // tree is not card-scoped, so every test needs a tree of its own (the log
+  // path baked into the suite makes it unique).
+  gitSync(dir, 'init', '-q', '-b', 'main');
+  gitSync(dir, 'config', 'user.email', 't@t');
+  gitSync(dir, 'config', 'user.name', 't');
+  gitSync(dir, 'config', 'commit.gpgsign', 'false');
   fs.mkdirSync(path.join(dir, 'scripts'));
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.writeFileSync(path.join(dir, 'scripts/suite.cjs'),
@@ -163,11 +169,13 @@ function makeProducer(): Producer {
     + `console.log('PASS tests/a.test.js');`);
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
   fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  git(dir, 'git add . && git commit -qm one');
-  const base = git(dir, 'git rev-parse HEAD');
+  gitSync(dir, 'add', '.');
+  gitSync(dir, 'commit', '-qm', 'one');
+  const base = gitSync(dir, 'rev-parse', 'HEAD');
   fs.writeFileSync(path.join(dir, 'src.js'), 'export const a = 1;\n');
-  git(dir, 'git add . && git commit -qm two');
-  const tip = git(dir, 'git rev-parse HEAD');
+  gitSync(dir, 'add', '.');
+  gitSync(dir, 'commit', '-qm', 'two');
+  const tip = gitSync(dir, 'rev-parse', 'HEAD');
   return { dir, base, tip, runs: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).length : 0) };
 }
 
@@ -270,13 +278,15 @@ async function prOpened(cardId: string, prNumber: number) {
 function ciCheckout(p: Producer): string {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-receipts-e2e-ci-')));
   cleanup.push(dir);
-  git(dir, `git clone -q "${p.dir}" co`);
+  gitSync(dir, 'clone', '-q', p.dir, 'co');
   const co = path.join(dir, 'co');
-  git(co, 'git config user.email ci@e2e.test && git config user.name ci && git config commit.gpgsign false');
+  gitSync(co, 'config', 'user.email', 'ci@e2e.test');
+  gitSync(co, 'config', 'user.name', 'ci');
+  gitSync(co, 'config', 'commit.gpgsign', 'false');
   return co;
 }
 
-const treeOf = (dir: string) => git(dir, 'git rev-parse HEAD^{tree}');
+const treeOf = (dir: string) => gitSync(dir, 'rev-parse', 'HEAD^{tree}');
 
 let reviewAgentRuns = 0;
 
@@ -349,7 +359,7 @@ describe('RFC-002 end to end: local verify + review -> hub -> CI reuse (84ad6d8c
     const token = await mintCiToken();
     const co = ciCheckout(p);
     // A new commit with the very same tree (a squash, a re-commit): same content.
-    git(co, 'git commit -q --allow-empty -m "same content"');
+    gitSync(co, 'commit', '-q', '--allow-empty', '-m', 'same content');
     const job = await ciJob(co, { kind: 'verification', token });
     expect(job.exitCode, JSON.stringify(job.result)).toBe(0);
     expect(p.runs()).toBe(1);
@@ -363,8 +373,12 @@ describe('RFC-002 end to end: local verify + review -> hub -> CI reuse (84ad6d8c
       const token = await mintCiToken();
       const co = ciCheckout(p);
       // main gained a commit the card never saw; CI checks out the merge.
-      git(co, `git checkout -q -b base ${p.base} && echo other > other.txt && git add other.txt && git commit -qm base-moved`);
-      git(co, `git checkout -q --detach ${p.tip} && git merge -q --no-edit base`);
+      gitSync(co, 'checkout', '-q', '-b', 'base', p.base);
+      fs.writeFileSync(path.join(co, 'other.txt'), 'other\n');
+      gitSync(co, 'add', 'other.txt');
+      gitSync(co, 'commit', '-qm', 'base-moved');
+      gitSync(co, 'checkout', '-q', '--detach', p.tip);
+      gitSync(co, 'merge', '-q', '--no-edit', 'base');
       const job = await ciJob(co, { kind: 'verification', token, pr });
       expect(job.result.reason).toBe('tree_mismatch');
       expect(p.runs()).toBe(2);

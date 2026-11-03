@@ -17,7 +17,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -32,7 +31,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -56,8 +56,8 @@ const s = (name: string, order: number, extra: Record<string, unknown> = {}) => 
  * `sleepMs`, then exits `exitCode`; `extra` goes into the check's params.
  */
 async function setup({ exitCode = 0, sleepMs = 0, extra = {} as Record<string, string>, writeIntoTree = false } = {}) {
-  const repo = tmp('agenfk-ccs-repo-');
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
+  const repo = echoRepo(A, 'agenfk-ccs-repo-');
+  dirs.push(repo);
   const runs = path.join(tmp('agenfk-ccs-runs-'), 'runs');
   const code = `const fs=require('fs');fs.appendFileSync(${JSON.stringify(runs)},'run\\n');${writeIntoTree ? "fs.writeFileSync('a','changed by the run\\n');" : ''}setTimeout(()=>process.exit(${exitCode}),${sleepMs});`;
   const check = { id: 'command-check', params: { name: 'lint', argv: [process.execPath, '-e', code], ...extra } };
@@ -148,10 +148,10 @@ describe('3ffc9651: a command check\'s pass is shared at the same tree state', (
   it('a different index is another state: a card that staged other files runs it', async () => {
     const t = await setup();
     fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'x\n');
-    execSync('git add notes.txt', { cwd: t.repo });
+    gitSync(t.repo, 'add', 'notes.txt');
     const [a, b] = [await t.card(), await t.card()];
     expect((await verdict(a)).check.outcome).toBe('pass');
-    execSync('git reset -q notes.txt', { cwd: t.repo });
+    gitSync(t.repo, 'reset', '-q', 'notes.txt');
     expect((await verdict(b)).check.outcome).toBe('pass');
     expect(t.count()).toBe(2);
   });
@@ -160,7 +160,7 @@ describe('3ffc9651: a command check\'s pass is shared at the same tree state', (
     const t = await setup();
     const [a, b] = [await t.card(), await t.card()];
     expect((await verdict(a)).check.outcome).toBe('pass');
-    execSync('git commit -q --allow-empty -m other', { cwd: t.repo });
+    gitSync(t.repo, 'commit', '-q', '--allow-empty', '-m', 'other');
     expect((await verdict(b)).check.outcome).toBe('pass');
     expect(t.count()).toBe(2);
   });

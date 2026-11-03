@@ -15,7 +15,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -24,7 +23,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, acquireSuiteRun } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A, IGNORE_REPORT } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 // Loaded per test: the module is new, and a test file that fails to import has no tests to track.
 const slotsModule = () => import('../suiteSlots');
 
@@ -208,9 +208,8 @@ async function twoProjects(kind: 'capture' | 'final', { meet = false } = {}) {
   const cards: string[] = [];
   for (let i = 0; i < 2; i++) {
     const f = await agent().post('/flows').send({ name: `slots-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
-    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-slots-repo-')));
+    const repo = echoRepo({ ...IGNORE_REPORT, ...A }, 'agenfk-slots-repo-');
     dirs.push(repo);
-    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
     const p = await agent().post('/projects').send({ name: `slots-${++seq}` });
     await storage.updateProject(p.body.id, {
       flowId: f.body.id, projectRoot: repo,
@@ -277,9 +276,8 @@ async function exclusiveProject(kind: 'capture' | 'final', exclusive: boolean, r
   const s = (name: string, order: number) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...(name !== 'WORK' ? { isAnchor: true } : {}) });
   const make = async (who: string, extra: Record<string, unknown>) => {
     const f = await agent().post('/flows').send({ name: `excl-${++seq}`, steps: [s('START', 0), s('WORK', 1), s('END', 2)] });
-    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-excl-repo-')));
+    const repo = echoRepo({ ...IGNORE_REPORT, ...A }, 'agenfk-excl-repo-');
     dirs.push(repo);
-    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
     const p = await agent().post('/projects').send({ name: `excl-${++seq}` });
     const cmd = `node ${runner} ${who}`;
     await storage.updateProject(p.body.id, {
@@ -298,7 +296,7 @@ async function exclusiveProject(kind: 'capture' | 'final', exclusive: boolean, r
   const wts = ['one', 'two'].map(n => {
     const wt = `${a.repo}-${n}`;
     dirs.push(wt);
-    execSync(`git worktree add -q -b ${n} ${JSON.stringify(wt)}`, { cwd: a.repo });
+    gitSync(a.repo, 'worktree', 'add', '-q', '-b', n, wt);
     return wt;
   });
   const b = await make('B', {});

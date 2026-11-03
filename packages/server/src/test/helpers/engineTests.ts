@@ -13,8 +13,7 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
-import { posixShell } from './posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './gitFixture';
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../../server';
 
 let __server: import('http').Server;
@@ -86,18 +85,25 @@ if(impl[k]!==v){bad=true;xml+='<failure message="AssertionError: expected"/>';}x
 fs.writeFileSync(process.argv[3]||'report.xml',xml+'</testsuite></testsuites>');process.exit(bad?1:0);
 `;
 
+/** The toy project at its first commit `one` on main (#311: built once per worker, cloned per test). */
+const buildEngineRepo: GitTemplateBuild = (dir) => {
+  gitSync(dir, 'init', '-q', '-b', 'main');
+  gitSync(dir, 'config', 'user.email', 't@t');
+  gitSync(dir, 'config', 'user.name', 't');
+  writeFiles(dir, {
+    'runner.cjs': RUNNER,
+    'junit.cjs': JUNIT_RUNNER,
+    'tests/a.test.js': 'T add_works add=ok\n',
+    'src/impl.json': JSON.stringify({ add: 'ok' }),
+    '.gitignore': 'report.*\n',
+  });
+  gitSync(dir, 'add', '.');
+  gitSync(dir, 'commit', '-qm', 'one');
+};
+
 export function makeRepo(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-engine-tests-'));
+  const dir = cloneGitTemplate('engineTests:repo', buildEngineRepo, 'agenfk-engine-tests-');
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
-  fs.mkdirSync(path.join(dir, 'tests'));
-  fs.mkdirSync(path.join(dir, 'src'));
-  fs.writeFileSync(path.join(dir, 'runner.cjs'), RUNNER);
-  fs.writeFileSync(path.join(dir, 'junit.cjs'), JUNIT_RUNNER);
-  fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'T add_works add=ok\n');
-  fs.writeFileSync(path.join(dir, 'src/impl.json'), JSON.stringify({ add: 'ok' }));
-  fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 export const write = (dir: string, f: string, text: string) => fs.writeFileSync(path.join(dir, f), text);
@@ -106,8 +112,8 @@ export const REPORT = { format: 'vitest-json', command: 'node runner.cjs', repor
 
 /** Record an independent review by a (sandboxed) sub-agent over the whole history, as a review step now requires. */
 export async function reviewed(id: string, dir: string, { startedAt, agent: agentName, promptedAt }: { startedAt?: string; agent?: string; promptedAt?: string } = {}) {
-  const first = execSync('git rev-list --max-parents=0 HEAD', { cwd: dir, encoding: 'utf8' }).trim();
-  const head = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+  const first = gitSync(dir, 'rev-list', '--max-parents=0', 'HEAD');
+  const head = gitSync(dir, 'rev-parse', 'HEAD');
   const tdir = path.join(home, '.claude', 'projects', '-repo', 'sess', 'subagents');
   fs.mkdirSync(tdir, { recursive: true });
   fs.writeFileSync(path.join(home, '.claude', 'projects', '-repo', 'sess.jsonl'), JSON.stringify({ sessionId: 'sess', timestamp: '2099-01-01T00:00:00.000Z' }) + '\n');

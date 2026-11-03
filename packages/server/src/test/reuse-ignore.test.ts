@@ -14,7 +14,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -23,7 +22,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, IGNORE_REPORT } from './helpers/echoRepo';
 // Loaded in a hook with the error swallowed: the module is new, and a failing hook would skip the tests.
 const ignoreModule = () => import('../reuseIgnore');
 
@@ -96,15 +95,15 @@ async function setup(reuseIgnore?: string[]) {
   const s = (name: string, order: number) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...(order === 0 || name === 'END' ? { isAnchor: true } : {}) });
   const f = await agent().post('/flows').send({ name: `ri-${++seq}`, steps: [s('START', 0), s('WORK', 1), s('END', 2)] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ri-repo-')));
+  const repo = echoRepo({
+    'README.md': '# app\n',
+    'CHANGELOG.md': '## 1.0\n',
+    'docs/guide.txt': 'guide\n',
+    'a.js': 'module.exports = 1;\n',
+    'release.test.js': "test('changelog', () => require('fs').readFileSync('CHANGELOG.md'));\n",
+    ...IGNORE_REPORT,
+  }, 'agenfk-ri-repo-');
   dirs.push(repo);
-  fs.mkdirSync(path.join(repo, 'docs'));
-  fs.writeFileSync(path.join(repo, 'README.md'), '# app\n');
-  fs.writeFileSync(path.join(repo, 'CHANGELOG.md'), '## 1.0\n');
-  fs.writeFileSync(path.join(repo, 'docs', 'guide.txt'), 'guide\n');
-  fs.writeFileSync(path.join(repo, 'a.js'), 'module.exports = 1;\n');
-  fs.writeFileSync(path.join(repo, 'release.test.js'), "test('changelog', () => require('fs').readFileSync('CHANGELOG.md'));\n");
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ri-ctl-')));
   dirs.push(outside);
   const runs = path.join(outside, 'runs');

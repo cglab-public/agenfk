@@ -15,7 +15,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -30,7 +29,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -44,7 +43,27 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
+/** A clone of a template (#311), long-form and removed when the file ends, as tmp() gives. */
+const cloned = (key: string, build: GitTemplateBuild, prefix: string) => { const d = fs.realpathSync(cloneGitTemplate(key, build, prefix)); dirs.push(d); return d; };
+/** The one-commit project setup() works in. */
+const buildProject: GitTemplateBuild = (repo) => {
+  writeFiles(repo, { 'a.test.js': 'pass adds\npass subtracts\n', 'lib.js': 'module.exports = 1;\n' });
+  gitSync(repo, 'init', '-q', '-b', 'main');
+  gitSync(repo, 'config', 'user.email', 't@t');
+  gitSync(repo, 'config', 'user.name', 't');
+  writeFiles(repo, { '.gitignore': 'report.xml\n' });
+  gitSync(repo, 'add', '.');
+  gitSync(repo, 'commit', '-qm', 'one');
+};
+/** One file `f` in one commit. */
+const buildOneFile: GitTemplateBuild = (repo) => {
+  gitSync(repo, 'init', '-q', '-b', 'main');
+  gitSync(repo, 'config', 'user.email', 't@t');
+  gitSync(repo, 'config', 'user.name', 't');
+  writeFiles(repo, { f: 'x\n' });
+  gitSync(repo, 'add', '.');
+  gitSync(repo, 'commit', '-qm', 'one');
+};
 
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
@@ -74,10 +93,7 @@ async function setup() {
     s('TESTS', 2, { checks: [{ id: 'existing-tests-still-green' }] }), s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = tmp('agenfk-pr-repo-');
-  fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass adds\npass subtracts\n');
-  fs.writeFileSync(path.join(repo, 'lib.js'), 'module.exports = 1;\n');
-  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one');
+  const repo = cloned('leave-plan-predict:project', buildProject, 'agenfk-pr-repo-');
   const tools = tmp('agenfk-pr-tools-');
   const log = path.join(tools, 'runs');
   const runner = path.join(tools, 'vitest.js');
@@ -144,8 +160,7 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
 
   it('predicts none when leaving runs nothing', async () => {
     const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('A', 1), s('B', 2), s('END', 3, { isAnchor: true })] });
-    const repo = tmp('agenfk-pr-none-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo x > f && git add . && git commit -qm one');
+    const repo = cloned('leave-plan-predict:one-file', buildOneFile, 'agenfk-pr-none-');
     const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `pr-${++seq}`, projectId: p.body.id });
@@ -155,8 +170,7 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
 
   it("predicts a sibling's green on a flow whose exit step is not named DONE - and verify propagates it (6b34e5cc)", async () => {
     const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('A', 1), s('SHIPPED', 2, { isAnchor: true })] });
-    const repo = tmp('agenfk-pr-sib-custom-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo x > f && git add . && git commit -qm one');
+    const repo = cloned('leave-plan-predict:one-file', buildOneFile, 'agenfk-pr-sib-custom-');
     const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const parent = await agent().post('/items').send({ type: 'STORY', title: `pr-${++seq}`, projectId: p.body.id });
@@ -191,8 +205,7 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
 
   it('on a mid-flow boundary, never predicts a sibling green: only the move that ends the flow propagates one', async () => {
     const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('A', 1), s('HOLD', 2, { isSpecial: true }), s('B', 3), s('DONE', 4, { isAnchor: true })] });
-    const repo = tmp('agenfk-pr-bound-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo x > f && git add . && git commit -qm one');
+    const repo = cloned('leave-plan-predict:one-file', buildOneFile, 'agenfk-pr-bound-');
     const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const parent = await agent().post('/items').send({ type: 'STORY', title: `pr-${++seq}`, projectId: p.body.id });

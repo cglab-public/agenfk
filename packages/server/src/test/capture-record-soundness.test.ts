@@ -17,7 +17,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -47,7 +46,8 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { capturedGreen } from '../checkEngine';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, IGNORE_REPORT } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -61,7 +61,6 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...extra });
 
@@ -69,10 +68,8 @@ const s = (name: string, order: number, extra: Record<string, unknown> = {}) => 
 async function setup() {
   const f = await agent().post('/flows').send({ name: `cr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = tmp('agenfk-cr-repo-');
-  fs.writeFileSync(path.join(repo, 'lib.js'), 'module.exports = 1;\n');
-  fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass adds\n');
-  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one');
+  const repo = echoRepo({ 'lib.js': 'module.exports = 1;\n', 'a.test.js': 'pass adds\n', ...IGNORE_REPORT }, 'agenfk-cr-repo-');
+  dirs.push(repo);
   const tools = tmp('agenfk-cr-tools-');
   const runs = path.join(tools, 'runs');
   const marker = path.join(tools, 'ran');
@@ -99,7 +96,7 @@ describe('de5e5a03 (2): a capture records the tree it fenced, not the tree a mom
     const t = await setup();
     const a = await t.card();
     fs.writeFileSync(path.join(t.repo, 'lib.js'), 'module.exports = 2;\n');   // dirty: no clean-commit reuse
-    const ranOn = git(t.repo, 'git hash-object lib.js');
+    const ranOn = gitSync(t.repo, 'hash-object', 'lib.js');
     Object.assign(gap, { marker: t.marker, seenFence: false, edit: () => fs.writeFileSync(path.join(t.repo, 'lib.js'), 'module.exports = 3;\n') });
     const first = await capture(a);
     expect(first.status, JSON.stringify(first.body)).toBe(200);

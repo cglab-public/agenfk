@@ -13,6 +13,10 @@
 import { describe, it, expect } from 'vitest';
 import { createVitest } from 'vitest/node';
 import * as os from 'os';
+import { resolveMaxWorkers } from '../../../../scripts/vitest-workers.mjs';
+
+/** What the root config should resolve to on THIS machine (#313: win32 has its own rule). */
+const expectedWorkers = () => resolveMaxWorkers({ platform: process.platform, cpus: os.availableParallelism() });
 
 /** `fileParallelism` is present on the resolved config at runtime but missing
  *  from vitest's published ResolvedConfig type, so read it through this shape
@@ -45,17 +49,18 @@ describe('root vitest parallelism', () => {
 
   // GH-274: server/hub/cli ran one file at a time because every worker shared the
   // run's HOME sandbox; each worker now has its own (scripts/vitest-home-pin.mjs).
-  // Their files spawn git and node children by the dozen, so the run takes a quarter of the CPUs.
-  it('runs the server/hub/cli files in parallel, on a quarter of the CPUs', async () => {
+  // Their files spawn git and node children by the dozen, so the run takes a capped
+  // worker count: a quarter of the CPUs on POSIX, its own rule on win32 (#313).
+  it('runs the server/hub/cli files in parallel, on the worker count resolveMaxWorkers gives this platform', async () => {
     const r = await resolved();
     expect(r.projects.serial?.fileParallelism).toBe(true);
-    expect(r.global.maxWorkers).toBe(Math.max(2, Math.floor(os.availableParallelism() / 4)));
+    expect(r.global.maxWorkers).toBe(expectedWorkers());
   });
 
   it('leaves the worker count to --maxWorkers when one is given, for every project', async () => {
     // A project's own maxWorkers would win over the flag: the cap lives at the root.
     // One more than the default, so the flag is told apart from the cap on any machine.
-    const flag = Math.max(2, Math.floor(os.availableParallelism() / 4)) + 1;
+    const flag = expectedWorkers() + 1;
     const r = await resolved({ maxWorkers: flag });
     expect(r.global.maxWorkers).toBe(flag);
     for (const [name, cfg] of Object.entries(r.projects)) {

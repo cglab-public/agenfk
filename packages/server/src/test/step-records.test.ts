@@ -15,7 +15,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -32,7 +31,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 // Import AFTER the env var so storage lands in the test DB.
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 import { nodeCommand } from './helpers/nodeCommand';
 import { linkDir } from '../../../cli/src/test/helpers/links';
 
@@ -48,16 +47,21 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 
-/** A clean git repo with one test file committed. */
+/** One commit: a test file and a .gitignore for the reports. */
+const buildOneTest: GitTemplateBuild = (d) => {
+  gitSync(d, 'init', '-q');
+  gitSync(d, 'config', 'user.email', 't@t');
+  gitSync(d, 'config', 'user.name', 't');
+  writeFiles(d, { 'tests/a.test.js': 'test', '.gitignore': 'report.*\n' });
+  gitSync(d, 'add', '.');
+  gitSync(d, 'commit', '-qm', 'one');
+};
+
+/** A clean git repo with one test file committed: a clone of the per-worker template (#311). */
 function makeRepo(): { dir: string; sha: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-steprec-'));
+  const dir = cloneGitTemplate('step-records:one-test', buildOneTest, 'agenfk-steprec-');
   repos.push(dir);
-  execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
-  fs.mkdirSync(path.join(dir, 'tests'));
-  fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
-  fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
-  return { dir, sha: execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim() };
+  return { dir, sha: gitSync(dir, 'rev-parse', 'HEAD') };
 }
 
 let seq = 0;
@@ -255,7 +259,8 @@ describe('CGLAB-379: step records', () => {
       const { dir } = makeRepo();
       fs.mkdirSync(path.join(dir, 'tests/helpers'));
       fs.writeFileSync(path.join(dir, 'tests/helpers/fixture.js'), 'f');
-      execSync('git add . && git commit -qm helpers', { cwd: dir, shell: posixShell() });
+      gitSync(dir, 'add', '.');
+      gitSync(dir, 'commit', '-qm', 'helpers');
       const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: vitestReportCommand('passed'), reportPath: 'report.json', surface: ['tests/helpers'] } });
       const res = await agent().post(`/items/${await card(p, 'IN_PROGRESS')}/step-records/capture`).set(internal());
       expect(Object.keys(res.body.surface.files)).toContain('tests/helpers/fixture.js');
@@ -295,7 +300,8 @@ describe('CGLAB-379: step records', () => {
     it('still detects an edit during the run under a large uncommitted diff', async () => {
       const { dir } = makeRepo();
       fs.writeFileSync(path.join(dir, 'big.txt'), 'x');
-      execSync('git add big.txt && git commit -qm big', { cwd: dir, shell: posixShell() });
+      gitSync(dir, 'add', 'big.txt');
+      gitSync(dir, 'commit', '-qm', 'big');
       fs.writeFileSync(path.join(dir, 'big.txt'), 'y'.repeat(2 * 1024 * 1024));
       const cmd = `node -e "require('fs').writeFileSync('tests/a.test.js','weakened')" && ${vitestReportCommand('passed')}`;
       const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: cmd, reportPath: 'report.json' } });
