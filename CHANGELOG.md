@@ -4,7 +4,9 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
-**Hub sync** (#346)
+## [2.1.0-beta.16] — 2026-11-02
+
+**Hub sync** (#346, #347)
 
 - **One loop, and no hub request that can hang it.** An installation could stop applying new Airlock policy
   revisions, with nothing logged, until the server restarted: the flow reconciler pulled flows, repo settings,
