@@ -4,6 +4,20 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+**Hub sync** (#346)
+
+- **One loop, and no hub request that can hang it.** An installation could stop applying new Airlock policy
+  revisions, with nothing logged, until the server restarted: the flow reconciler pulled flows, repo settings,
+  Airlock and receipts one after another, with no request timeout, and started its next tick only once the last one
+  had finished. The four timers the server ran against the hub (events, flows, repoint, upgrade) are now one loop,
+  every 30 s. Each tick starts every channel at once, a channel still running is skipped rather than run twice, and a
+  failing channel logs one `[HUB_SYNC]` line and holds up no other. Every hub request gives up after 15 s
+  (`AGENFK_HUB_REQUEST_TIMEOUT_MS`).
+- Flows, repo settings, Airlock and repoint directives are now checked every 30 s, not every 5 minutes, and upgrade
+  directives every 30 s, not every 60 s. `AGENFK_HUB_SYNC_INTERVAL_MS` and `AGENFK_HUB_SYNC_FIRST_DELAY_MS` replace
+  `AGENFK_HUB_FLOW_SYNC_INTERVAL_MS`, `AGENFK_HUB_REPOINT_SYNC_INTERVAL_MS`, `AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS`
+  and `AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS`.
+
 ## [2.1.0-beta.15] — 2026-11-02
 
 **Airlock** (#345)

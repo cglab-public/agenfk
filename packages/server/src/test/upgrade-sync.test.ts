@@ -1,8 +1,8 @@
 /**
  * Story 3b — upgradeSync polling reconciler + boot-time outcome replay.
  *
- * The module exports two pure-ish functions that startUpgradeSync wires into
- * a polling timer. We test the pure functions directly with injected deps so
+ * The module exports two pure-ish functions; the server runs the reconciler
+ * as the hub loop's `upgrade` channel. We test the pure functions directly with injected deps so
  * we don't have to mock setTimeout / axios / child_process all at once.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

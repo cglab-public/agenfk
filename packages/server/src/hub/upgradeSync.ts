@@ -10,8 +10,8 @@
 //     process), reconcile by comparing the running version against the
 //     directive's intent and emit the appropriate outcome.
 //
-// `startUpgradeSync` wires both of the above into the polling timer used by
-// the live server.
+// The live server runs the reconciler as the hub loop's `upgrade` channel
+// (hubSync.ts, GH-346).
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -529,40 +529,4 @@ export async function replayPendingUpgradeOutcome(args: ReplayArgs): Promise<voi
     });
   }
   clearUpgradeState(args.dbDir);
-}
-
-// ── Live polling timer (used at server boot) ────────────────────────────────
-const DEFAULT_INTERVAL_MS = 60_000;
-
-export interface UpgradeSyncHandle { stop: () => void }
-
-export interface StartUpgradeSyncArgs extends Omit<ReconcileArgs, never> {
-  intervalMs?: number;
-}
-
-export function startUpgradeSync(args: StartUpgradeSyncArgs): UpgradeSyncHandle {
-  let stopped = false;
-  let timer: NodeJS.Timeout | null = null;
-  const interval = args.intervalMs ?? DEFAULT_INTERVAL_MS;
-
-  const tick = async () => {
-    if (stopped) return;
-    try {
-      await reconcileUpgradeDirective(args);
-    } catch (e) {
-      console.error('[HUB_UPGRADE_SYNC] tick failed:', (e as Error).message);
-    }
-    if (!stopped) timer = setTimeout(tick, interval);
-  };
-
-  // Defer first tick by 2s so boot-time replay (which runs before this) gets
-  // its events into the outbox first.
-  timer = setTimeout(tick, 2_000);
-
-  return {
-    stop: () => {
-      stopped = true;
-      if (timer) { clearTimeout(timer); timer = null; }
-    },
-  };
 }

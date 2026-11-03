@@ -22,7 +22,9 @@ import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEna
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import { hubConfirmedAbsent } from "./hub/hubClient.js";
 import type { RecordEventInput } from "./hub/index.js";
-import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
+import { flowSyncChannels } from "./hub/flowSync.js";
+import { startHubSync, type HubSyncHandle } from "./hub/hubSync.js";
+import { hubFetch, hubRequestTimeoutMs, hubRequestSignal } from "./hub/hubRequest.js";
 import { publishPendingReceipts } from "./hub/receiptPublisher.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
@@ -30,8 +32,9 @@ import { createWorktree, removeWorktree } from "./worktrees.js";
 import { applySetupResult, SETUP_TIMEOUT_MS, type SetupDecision, type SetupRun } from "./worktreeSetup.js";
 import { readGitHubAccount, signOutGitHub } from "./githubAccount.js";
 import { createOutputCapture, formatBytes, type CapturedOutput } from "./verifyCapture.js";
-import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
-import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
+import { reconcileUpgradeDirective, replayPendingUpgradeOutcome } from "./hub/upgradeSync.js";
+import { reconcileRepointDirective } from "./hub/repointSync.js";
+import type { HubConfig } from "./hub/types.js";
 import { requeueDeadletter, readDeadletterIndicator, RequeueRewriteFailed } from "./hub/deadletter.js";
 import { defaultDeadletterPath } from "./hub/flusher.js";
 import { resolveActor } from "./hub/identity";
@@ -169,16 +172,15 @@ let dbPath: string = "";
 const telemetry = new TelemetryClient();
 
 // Corporate Hub sender — dormant when ~/.agenfk/hub.json is absent. Storage is
-// attached after initStorage(); flusher is started at boot if configured.
+// attached after initStorage(); the hub loop starts at boot if configured.
 const hubClient = new HubClient(getInstallationId(), loadHubConfig());
 let hubFlusher: Flusher | null = null;
-let flowSyncHandle: FlowSyncHandle | null = null;
-// Per-project ETag cache for hub flow reconciles. Shared between the polling
-// reconciler (startFlowSync) and on-demand refreshes (GET .../flow?refresh=true)
-// so the two never re-fetch the same unchanged flow.
+// GH-346: the one loop against the hub (hub/hubSync.ts).
+let hubSyncHandle: HubSyncHandle | null = null;
+// Per-project ETag cache for hub flow reconciles. Shared between the hub loop
+// and on-demand refreshes (GET .../flow?refresh=true) so the two never
+// re-fetch the same unchanged flow.
 const flowSyncEtagCache = new Map<string, string>();
-let upgradeSyncHandle: UpgradeSyncHandle | null = null;
-let repointSyncHandle: RepointSyncHandle | null = null;
 
 // recordHubEvent is a thin wrapper kept at module scope so the many existing
 // io.emit('items_updated', ...) sites can be augmented with one line.
@@ -1704,14 +1706,9 @@ const initStorage = async () => {
  * next initStorage().
  */
 const closeStorage = async (): Promise<void> => {
-  hubFlusher?.stop();
+  hubSyncHandle?.stop();
+  hubSyncHandle = null;
   hubFlusher = null;
-  flowSyncHandle?.stop();
-  flowSyncHandle = null;
-  upgradeSyncHandle?.stop();
-  upgradeSyncHandle = null;
-  repointSyncHandle?.stop();
-  repointSyncHandle = null;
   await storage?.shutdown?.();
 };
 
@@ -1719,24 +1716,22 @@ const closeStorage = async (): Promise<void> => {
  * (Re)start every hub subsystem against whatever config HubClient currently
  * holds. Extracted from initStorage so `POST /internal/hub/reload` can adopt a
  * freshly-written ~/.agenfk/hub.json without a server restart: the Flusher and
- * both reconcilers capture their credential and base URL at construction, so
+ * the loop's channels capture their credential and base URL at construction, so
  * after `agenfk hub login` issues a replacement token the old objects would
  * keep presenting the revoked one forever. Safe to call repeatedly — it stops
- * the previous handles first.
+ * the previous loop first.
  */
 const startHubSubsystems = (): void => {
 // Attach the corporate-hub outbox to the storage layer and start the flusher
 // when configured. No-op when ~/.agenfk/hub.json is absent.
 //
-// Stop any pre-existing flusher / flow-sync first. initStorage is re-entrant
-// in tests (each setup calls it), and without these stops every re-entry
-// would leak a setInterval timer holding a stale storage reference, which
-// races against the live test's writes and causes hard-to-diagnose flakes
-// (item.id undefined, GET /flows 500, etc).
-hubFlusher?.stop();
-flowSyncHandle?.stop();
-upgradeSyncHandle?.stop();
-repointSyncHandle?.stop();
+// Stop any pre-existing hub loop first. initStorage is re-entrant in tests
+// (each setup calls it), and without this stop every re-entry would leak a
+// timer holding a stale storage reference, which races against the live
+// test's writes and causes hard-to-diagnose flakes (item.id undefined,
+// GET /flows 500, etc).
+hubSyncHandle?.stop();
+hubSyncHandle = null;
 hubClient.attachStorage(storage as SQLiteStorageProvider);
 
 // Never start the outbound hub machinery under a test runner.
@@ -1757,7 +1752,7 @@ if (hubDisabledForTests) {
   hubFlusher = null;
 } else if (hubClient.isEnabled && hubClient.hubConfig) {
   // Stamp events queued while disconnected (pending-org sentinel '') with
-  // the real orgId BEFORE the flusher starts, so pre-login history delivers
+  // the real orgId BEFORE the hub loop starts flushing, so pre-login history delivers
   // instead of being rejected on orgId mismatch.
   try {
     const stamped = (storage as SQLiteStorageProvider).hubOutboxRewriteOrgId(PENDING_ORG, hubClient.hubConfig.orgId);
@@ -1766,24 +1761,9 @@ if (hubDisabledForTests) {
     console.error('[HUB] Failed to stamp pre-login outbox events:', e?.message || e);
   }
   hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
-  hubFlusher.start();
   console.log(`[HUB] Configured: pushing events to ${hubClient.hubConfig.url} (org=${hubClient.hubConfig.orgId})`);
-
-  // Start pulling the org-assigned flow from the Hub. Poll interval can be
-  // tuned via AGENFK_HUB_FLOW_SYNC_INTERVAL_MS (default 5min).
-  const intervalMs = Number(process.env.AGENFK_HUB_FLOW_SYNC_INTERVAL_MS) || undefined;
-  flowSyncHandle = startFlowSync({
-    storage: storage as SQLiteStorageProvider,
-    hubConfig: hubClient.hubConfig,
-    intervalMs,
-    etagCache: flowSyncEtagCache,
-    emit: (event, payload) => io.emit(event, payload),
-    resolveRepo: resolveProjectRepo,
-    activeHubConfig: () => hubClient.hubConfig,
-    // HUB-2: which Airlock revision this installation applies, through the outbox as fleet upgrades report.
-    reportAirlock: (r) => hubClient.recordEvent({ type: r.type, payload: r.payload }),
-  });
-  console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
+  // A stopped loop's channels are not the current configuration's: they adopt nothing.
+  let loopStopped = false;
 
   // Story 3 — fleet upgrade reconciler.
   const dbDir = path.dirname(dbPath);
@@ -1815,7 +1795,7 @@ if (hubDisabledForTests) {
 
   // CGLAB-66 — repoint campaign reconciler. Applies an admin-issued move to
   // a new hub DNS name, after re-verifying the target's identity locally.
-  repointSyncHandle = startRepointSync({
+  const repointArgs = {
     hubUrl: hubClient.hubConfig.url,
     hubToken: hubClient.hubConfig.token,
     orgId: hubClient.hubConfig.orgId,
@@ -1823,8 +1803,7 @@ if (hubDisabledForTests) {
     // AGENFK_HUB_URL overrides hub.json, so a rewrite would be a no-op here;
     // the reconciler reports blocked_by_env instead of a false success.
     envHubUrl: process.env.AGENFK_HUB_URL ?? null,
-    intervalMs: Number(process.env.AGENFK_HUB_REPOINT_SYNC_INTERVAL_MS) || undefined,
-    writeConfigImpl: (cfg) => {
+    writeConfigImpl: (cfg: HubConfig) => {
       const target = path.join(os.homedir(), '.agenfk', 'hub.json');
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, JSON.stringify(cfg, null, 2), { mode: 0o600 });
@@ -1836,30 +1815,25 @@ if (hubDisabledForTests) {
     // the hub correctly refuses it and resets the target to pending, forever.
     // The outbox is in SQLite, not in the Flusher, so the pending
     // confirmation survives the swap.
-    rebuildTransportImpl: async (cfg) => {
-      const previous = hubFlusher;
-      previous?.stop();
-      const next = new Flusher(storage as SQLiteStorageProvider, cfg, getInstallationId());
-      next.start();
-      hubFlusher = next;
+    rebuildTransportImpl: async (cfg: HubConfig) => {
+      hubFlusher = new Flusher(storage as SQLiteStorageProvider, cfg, getInstallationId());
       console.log(`[HUB_REPOINT_SYNC] Repointed to ${cfg.url}; transport rebuilt.`);
     },
     recordEvent,
-    flushNow: (timeoutMs) => hubFlusher!.flushNow(timeoutMs),
-  });
+    flushNow: (timeoutMs?: number) => hubFlusher!.flushNow(timeoutMs),
+  };
 
-  const upgradeIntervalMs = Number(process.env.AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS) || undefined;
-  upgradeSyncHandle = startUpgradeSync({
+  const upgradeArgs: Parameters<typeof reconcileUpgradeDirective>[0] = {
     dbDir,
     currentVersion,
     installationId,
     hubUrl: hubClient.hubConfig.url,
     hubToken: hubClient.hubConfig.token,
-    intervalMs: upgradeIntervalMs,
     fetchImpl: async ({ hubUrl, hubToken, installationId }) => {
       const r = await axios.get(`${hubUrl}/v1/upgrade-directive`, {
         headers: { Authorization: `Bearer ${hubToken}`, 'X-Installation-Id': installationId },
-        timeout: 10_000,
+        timeout: hubRequestTimeoutMs(),
+        signal: hubRequestSignal(),
         validateStatus: (s) => s < 500,
       });
       return { status: r.status, json: async () => r.data };
@@ -1880,8 +1854,33 @@ if (hubDisabledForTests) {
       child.on('exit', (code) => resolve({ exitCode: code, stdout }));
       child.on('error', () => resolve({ exitCode: 1, stdout }));
     }),
+  };
+
+  // GH-346: ONE loop for everything this installation exchanges with the hub.
+  // Each tick starts every channel at once; a slow or failing channel holds up
+  // no other, and every request gives up after hubRequestTimeoutMs().
+  const loop = startHubSync({
+    channels: [
+      { name: 'events', run: () => hubFlusher?.flush() },
+      ...flowSyncChannels({
+        storage: storage as SQLiteStorageProvider,
+        hubConfig: hubClient.hubConfig,
+        fetchImpl: hubFetch,
+        etagCache: flowSyncEtagCache,
+        emit: (event, payload) => io.emit(event, payload),
+        resolveRepo: resolveProjectRepo,
+        activeHubConfig: () => (loopStopped ? null : hubClient.hubConfig),
+        // HUB-2: which Airlock revision this installation applies, through the outbox as fleet upgrades report.
+        reportAirlock: (r) => hubClient.recordEvent({ type: r.type, payload: r.payload }),
+      }),
+      { name: 'repoint', run: () => reconcileRepointDirective(repointArgs) },
+      { name: 'upgrade', run: () => reconcileUpgradeDirective(upgradeArgs) },
+    ],
+    intervalMs: Number(process.env.AGENFK_HUB_SYNC_INTERVAL_MS) || undefined,
+    firstDelayMs: process.env.AGENFK_HUB_SYNC_FIRST_DELAY_MS ? Number(process.env.AGENFK_HUB_SYNC_FIRST_DELAY_MS) : undefined,
   });
-  console.log(`[HUB] Upgrade reconciler running against ${hubClient.hubConfig.url}/v1/upgrade-directive`);
+  hubSyncHandle = { stop: () => { loopStopped = true; loop.stop(); } };
+  console.log(`[HUB] Hub sync running against ${hubClient.hubConfig.url}`);
 
 }
 };
@@ -3307,7 +3306,7 @@ registerAirlockRoutes(app, {
     await runAirlockSync({
       storage,
       hubConfig: hubClient.hubConfig,
-      fetchImpl: globalThis.fetch as any,
+      fetchImpl: hubFetch,
       emit: (event, payload) => io.emit(event, payload),
       activeHubConfig: () => hubClient.hubConfig,
     });
@@ -4375,7 +4374,7 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
         void publishPendingReceipts({
           storage: storage as SQLiteStorageProvider,
           hubConfig: hubClient.hubConfig,
-          fetchImpl: globalThis.fetch as any,
+          fetchImpl: hubFetch,
         }).catch(e => console.error('[HUB_RECEIPTS]', e?.message || e));
       }
     } catch (e: any) {
@@ -5769,7 +5768,7 @@ app.get("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
       hubConfig: hubClient.hubConfig,
       projectId: req.params.id,
       remoteUrl: await resolveProjectRepo(req.params.id),
-      fetchImpl: globalThis.fetch as any,
+      fetchImpl: hubFetch,
       emit: (event, payload) => io.emit(event, payload),
       etagCache: flowSyncEtagCache,
     });
@@ -5793,7 +5792,7 @@ app.get("/flows/org-available", asyncHandler(async (_req: any, res: any) => {
   }
   const { url, token } = hubClient.hubConfig;
   try {
-    const r = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/flows/available`, {
+    const r = await hubFetch(`${url.replace(/\/$/, "")}/v1/flows/available`, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
     });
@@ -5827,7 +5826,7 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
   // 1) Write the selection to the hub.
   let sel: any;
   try {
-    sel = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/flows/selection`, {
+    sel = await hubFetch(`${url.replace(/\/$/, "")}/v1/flows/selection`, {
       method: "PUT",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(selectionBody),
@@ -5869,7 +5868,7 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
     hubConfig: hubClient.hubConfig,
     projectId: req.params.id,
     remoteUrl: repo,
-    fetchImpl: globalThis.fetch as any,
+    fetchImpl: hubFetch,
     emit: (event: string, payload: any) => io.emit(event, payload),
     etagCache: flowSyncEtagCache,
   });
@@ -6733,7 +6732,7 @@ app.get("/registry/flows", asyncHandler(async (_req: any, res: any) => {
   if (hubClient.isEnabled && hubClient.hubConfig) {
     const { url, token } = hubClient.hubConfig;
     try {
-      const r = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/registry/flows`, {
+      const r = await hubFetch(`${url.replace(/\/$/, "")}/v1/registry/flows`, {
         method: "GET",
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
@@ -6818,7 +6817,7 @@ app.post("/registry/flows/install", limitExpensive, asyncHandler(async (req: any
   if (hubClient.isEnabled && hubClient.hubConfig) {
     const { url: hubUrl, token: hubToken } = hubClient.hubConfig;
     try {
-      const r = await (globalThis.fetch as any)(`${hubUrl.replace(/\/$/, "")}/v1/registry/flows/install`, {
+      const r = await hubFetch(`${hubUrl.replace(/\/$/, "")}/v1/registry/flows/install`, {
         method: "POST",
         headers: { Authorization: `Bearer ${hubToken}`, Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ filename }),
@@ -6961,7 +6960,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
     const publisher = await reportedPublisher();
     let r: any;
     try {
-      r = await (globalThis.fetch as any)(`${url.replace(/\/$/, '')}/v1/registry/flows/publish`, {
+      r = await hubFetch(`${url.replace(/\/$/, '')}/v1/registry/flows/publish`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({
@@ -11055,13 +11054,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
               // it is still this request. Not awaited — a hub that is down must
               // not delay the close's reply by a timeout — and its errors are
               // swallowed here because the receipt stays `pending` on the card
-              // either way, so the flow-sync tick will try again. With no hub
+              // either way, so the hub loop's next tick will try again. With no hub
               // configured there is nobody to ask, and nothing is attempted.
               if (hubClient.hubConfig) {
                 void publishPendingReceipts({
                   storage: storage as SQLiteStorageProvider,
                   hubConfig: hubClient.hubConfig,
-                  fetchImpl: globalThis.fetch as any,
+                  fetchImpl: hubFetch,
                 }).catch(e => console.error('[HUB_RECEIPTS]', e?.message || e));
               }
             } catch (e: any) {
@@ -13426,8 +13425,8 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     const shutdown = async () => {
       console.log('[SHUTDOWN] Writing backup before exit...');
       removeServerPortFile();
+      hubSyncHandle?.stop();
       if (hubFlusher) {
-        hubFlusher.stop();
         await hubFlusher.flush().catch(e => console.error('[HUB] Shutdown drain failed:', (e as Error).message));
       }
       await performBackup().catch(e => console.error('[BACKUP] Shutdown backup failed:', e.message));
