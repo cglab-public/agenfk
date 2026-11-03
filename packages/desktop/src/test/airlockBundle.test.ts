@@ -137,6 +137,20 @@ describe.skipIf(!realRun)('the bundled helper, run where the app would run it (A
     child.on('close', (status) => { clearTimeout(t); resolve({ status, stdout, stderr }); });
   });
 
+  // Electron 42 no longer downloads its binary on install: `require('electron')`
+  // fetches it on demand when `path.txt` is missing, which would hit the network
+  // from inside a test run. Only require it once a binary is already in place.
+  function installedElectron(): string | null {
+    for (const dir of [path.join(desktopDir, 'node_modules', 'electron'), path.join(desktopDir, '..', '..', 'node_modules', 'electron')]) {
+      if (!process.env.ELECTRON_OVERRIDE_DIST_PATH && !fs.existsSync(path.join(dir, 'path.txt'))) continue;
+      try {
+        const found = require(dir) as unknown;
+        if (typeof found === 'string') return found;
+      } catch { /* next candidate */ }
+    }
+    return null;
+  }
+
   it('runs a command in the sandbox with Node', async () => {
     const r = await run(process.execPath, {});
     expect(r.stdout, r.stderr).toContain('marker=command');
@@ -144,9 +158,7 @@ describe.skipIf(!realRun)('the bundled helper, run where the app would run it (A
   }, 300_000);
 
   it('runs it with Electron as Node, as the desktop server does', async (ctx) => {
-    let electron: string | null = null;
-    try { electron = require(path.join(desktopDir, 'node_modules', 'electron')) as unknown as string; } catch { /* hoisted */ }
-    if (!electron) try { electron = require('electron') as unknown as string; } catch { electron = null; }
+    const electron = installedElectron();
     if (!electron || typeof electron !== 'string' || !fs.existsSync(electron)) return ctx.skip();
     const r = await run(electron, { ELECTRON_RUN_AS_NODE: '1' });
     expect(r.stdout, r.stderr).toContain('marker=command');
@@ -155,8 +167,7 @@ describe.skipIf(!realRun)('the bundled helper, run where the app would run it (A
 
   // review (Codex 01a182bc): the boundaries, from inside, not just the marker
   it('inside: the helper\'s own files are unwritable, ELECTRON_RUN_AS_NODE is gone, and a host Unix socket is out of reach', async (ctx) => {
-    let electron: string | null = null;
-    try { electron = require('electron') as unknown as string; } catch { electron = null; }
+    const electron = installedElectron();
     const launcher = electron && typeof electron === 'string' && fs.existsSync(electron) ? electron : process.execPath;
     const sock = path.join(os.tmpdir(), `agenfk-airlock-sock-${process.pid}.sock`);
     fs.rmSync(sock, { force: true });
