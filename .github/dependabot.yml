@@ -15,6 +15,9 @@ updates:
   # construction.
   - package-ecosystem: npm
     directory: "/"
+    # Fixes are made on beta and measured there; they reach main on promotion
+    # (docs/RELEASES.md). Opening bumps against main re-fixes what beta already has.
+    target-branch: beta
     schedule:
       interval: weekly
       day: monday
@@ -44,6 +47,9 @@ updates:
   # packages/hub/Dockerfile builds the hub image that runs in production.
   - package-ecosystem: docker
     directory: "/packages/hub"
+    # Fixes are made on beta and measured there; they reach main on promotion
+    # (docs/RELEASES.md). Opening bumps against main re-fixes what beta already has.
+    target-branch: beta
     schedule:
       interval: weekly
       day: monday
@@ -60,6 +66,9 @@ updates:
   # quietly, and a compromised action runs with the workflow's permissions.
   - package-ecosystem: github-actions
     directory: "/"
+    # Fixes are made on beta and measured there; they reach main on promotion
+    # (docs/RELEASES.md). Opening bumps against main re-fixes what beta already has.
+    target-branch: beta
     schedule:
       interval: weekly
       day: monday
