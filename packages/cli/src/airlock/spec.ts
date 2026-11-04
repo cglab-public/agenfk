@@ -60,6 +60,24 @@ export interface SandboxSession {
    * auth.json is denied and its extensions are unwritable, as ~/.pi/agent's are.
    */
   piAgentDir?: string;
+  /** Claude Code's config dir (CLAUDE_CONFIG_DIR) when the user set one; else ~/.claude (GH-356). */
+  claudeConfigDir?: string;
+  /** Codex's home (CODEX_HOME) when the user set one; else ~/.codex (GH-356). */
+  codexHome?: string;
+  /**
+   * How a Claude Code or Codex session is logged in (GH-356, decision 2026-11-04). Either way the
+   * login file is the machine's own, never the host's: 'host-held' (default) starts it empty - the
+   * guest gets a stand-in the host swaps for the real token - and 'mount' seeds it from the host's.
+   */
+  loginMode?: 'host-held' | 'mount';
+  /** The client's own hosts beside inference (its login, token refresh): allowed, never given a key. */
+  clientHosts?: string[];
+  /** Env vars the guest gets a stand-in for, the host swapping in a token from its TokenSource; `subject`: whose. */
+  tokenEnv?: Array<{ name: string; provider: 'anthropic' | 'openai'; subject?: string }>;
+  /** Settings the client reads from its env that are no secret (Claude Code's ANTHROPIC_BASE_URL), passed as they are. */
+  clientEnv?: Record<string, string>;
+  /** The session's model as provider/id, for the per-call hook (AGENFK_AIRLOCK_MODEL). */
+  sessionModel?: string;
 }
 
 export interface SandboxSpec {
@@ -80,6 +98,12 @@ export interface SandboxSpec {
     denyRead: string[];
     allowWrite: string[];
     denyWrite: string[];
+    /**
+     * Files the guest keeps its own copy of (GH-356: a Claude Code / Codex login), on the machine's
+     * disk and bound over the path: what the guest writes there never reaches the host's. `seed`:
+     * the machine's copy starts as the host's (once, while it has none).
+     */
+    machineOwn?: Array<{ path: string; seed: boolean }>;
     /** The temp dirs among allowWrite: a runtime with its own file system (a VM) gives the guest its own instead. */
     privateTemp?: string[];
     /**
@@ -90,6 +114,8 @@ export interface SandboxSpec {
   };
   /** The folder the session was launched from: a runtime that keeps a machine keeps one per workspace. */
   workspace?: string;
+  /** The folder the client starts in, when below the workspace (GH-356 review): its project config is held too. */
+  launchDir?: string;
   /** The user's home, at the same path inside a runtime that mounts. */
   home?: string;
   /** The image a runtime that keeps a machine makes it from (CGLAB-696; image.ts): the launcher sets it. */
@@ -102,6 +128,8 @@ export interface SandboxSpec {
    */
   loopbackInference?: Array<{ host: string; port: number }>;
   maskedEnv: Array<{ name: string; injectHosts: string[] }>;
+  /** Stand-ins for a token the host holds (GH-356): the runtime asks its TokenSource for the value. */
+  tokenEnv?: Array<{ name: string; provider: 'anthropic' | 'openai'; subject?: string; injectHosts: string[] }>;
   /**
    * Host env vars the session gets as they are: a key for a plain-http inference endpoint, which no
    * injector can mask (story review 3). Names only; the runtime reads the values from the host.
@@ -267,6 +295,8 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     }
     if (addAllow(raw, 'inference host: ')) inference.push(classify(raw).value as string);
   }
+  // A client's own hosts (its login, a token refresh): reachable when the policy allows them, never given a key.
+  if (session.purpose !== 'command') for (const raw of session.clientHosts ?? []) addAllow(raw, 'client host: ');
   // The machine reaches the host loopback over IPv4 alone (its gateway): `localhost` and 127.x are
   // routed, an IPv6 or unspecified address cannot be.
   const loopbackInference: Array<{ host: string; port: number }> = [];
@@ -320,9 +350,18 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   ];
 
   const command = session.purpose === 'command';
-  const clientState = command ? [] : session.client === 'pi'
-    ? [session.piAgentDir ?? j(home, '.pi', 'agent')]
-    : [j(home, '.local', 'share', 'opencode'), j(home, '.local', 'state', 'opencode'), j(home, '.cache', 'opencode'), j(home, '.config', 'opencode')];
+  const claudeDir = session.claudeConfigDir ?? j(home, '.claude');
+  const codexDir = session.codexHome ?? j(home, '.codex');
+  const STATE: Record<AirlockClient, () => string[]> = {
+    pi: () => [session.piAgentDir ?? j(home, '.pi', 'agent')],
+    opencode: () => [j(home, '.local', 'share', 'opencode'), j(home, '.local', 'state', 'opencode'), j(home, '.cache', 'opencode'), j(home, '.config', 'opencode')],
+    claude: () => [claudeDir],
+    codex: () => [codexDir],
+  };
+  const clientState = command ? [] : STATE[session.client]();
+  // GH-356: the login file is the machine's own in either mode; only 'mount' seeds it from the host's.
+  const loginFile = command ? null : session.client === 'claude' ? j(claudeDir, '.credentials.json') : session.client === 'codex' ? j(codexDir, 'auth.json') : null;
+  const machineOwn = loginFile ? [{ path: loginFile, seed: session.loginMode === 'mount' }] : [];
   const allowWrite = uniq([session.workspace, ...session.tempDirs, ...clientState]);
 
   // What the host runs next from a client's own state (story review 3): pi's launcher, its installed
@@ -330,6 +369,10 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
   // commands, plugins), the LSP binaries and the plugin packages it installs. The rest of that
   // state (sessions, models.json) stays writable.
   const piHostCode = (dir: string) => ['extensions', 'bin', 'install', 'npm', 'git', 'settings.json'].map((p) => j(dir, p));
+  // GH-356: Claude Code's hooks, statusline and apiKeyHelper live in settings.json, and its plugins, skills
+  // and instructions load from here; Codex's MCP commands, notify and hooks from config.toml and hooks.json.
+  const claudeHostCode = (dir: string) => ['settings.json', 'CLAUDE.md', 'hooks', 'plugins', 'commands', 'agents', 'skills'].map((p) => j(dir, p));
+  const codexHostCode = (dir: string) => ['config.toml', 'hooks.json', 'AGENTS.md', 'rules', 'skills', 'plugins'].map((p) => j(dir, p));
   // A home folder the policy opens read-write is the session's, all of it (user decision 2026-11-01,
   // BUG 725b994b): nothing is kept unwritable. Airlock's records stay hidden (denyRead above).
   const denyWrite = homeMount === 'rw' ? [] : uniq([
@@ -344,6 +387,10 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     j(home, '.local', 'share', 'opencode', 'bin'),
     j(home, '.cache', 'opencode', 'node_modules'),
     j(home, '.cache', 'opencode', 'package.json'),
+    ...claudeHostCode(j(home, '.claude')),
+    ...(session.claudeConfigDir ? claudeHostCode(session.claudeConfigDir) : []),
+    ...codexHostCode(j(home, '.codex')),
+    ...(session.codexHome ? codexHostCode(session.codexHome) : []),
     j(session.workspace, '.agenfk'),
     ...(session.projectAgenfkDirs ?? []),
     ...(session.gitDir ? ['commondir', 'config.worktree', 'modules', 'worktrees'].map((n) => j(session.gitDir!, n)) : []),
@@ -358,15 +405,20 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     // with one would never match (the runtime compares names only).
     return { name, injectHosts: uniq(inference.map(hostPart)) };
   });
+  const tokenEnv = (command ? [] : session.tokenEnv ?? []).map(({ name, provider, subject }) => {
+    if (!ENV_NAME.test(name)) throw new Error(`"${name}" is not an env var name`);
+    return { name, provider, ...(subject !== undefined ? { subject } : {}), injectHosts: uniq(inference.map(hostPart)) };
+  });
 
   return {
     network: { allow: uniq(allow), deny: uniq(deny), denyResolved: uniq(denyResolved), mode: policy.mode === 'observe' ? 'observe' : 'enforce' },
-    filesystem: { denyRead, allowWrite, denyWrite, privateTemp: uniq(session.tempDirs), ...(homeMount ? { homeMount } : {}) },
+    filesystem: { denyRead, allowWrite, denyWrite, ...(machineOwn.length ? { machineOwn } : {}), privateTemp: uniq(session.tempDirs), ...(homeMount ? { homeMount } : {}) },
     workspace: session.workspace,
     home,
     ...(command ? {} : { relayPort: session.serverPort }),
     loopbackInference,
     maskedEnv,
+    ...(tokenEnv.length ? { tokenEnv } : {}),
     env: {
       [AIRLOCK_SANDBOX_MARKER]: command ? 'command' : session.client,
       // pi and OpenCode's plugins run on Node, whose fetch() ignores the proxy
@@ -381,6 +433,12 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
       ...(session.serverUrl ? { AGENFK_API_URL: session.serverUrl } : {}),
       // The agent dir the user chose, by its resolved path (the machine does not see the host's env).
       ...(!command && session.client === 'pi' && session.piAgentDir ? { PI_CODING_AGENT_DIR: session.piAgentDir } : {}),
+      // GH-356: Claude keeps .claude.json in its config dir (the home folder's file is not mounted), and the
+      // image's claude must not replace itself; Codex is told a home the user moved.
+      ...(!command && session.client === 'claude' ? { CLAUDE_CONFIG_DIR: claudeDir, DISABLE_AUTOUPDATER: '1' } : {}),
+      ...(!command && session.client === 'codex' && session.codexHome ? { CODEX_HOME: session.codexHome } : {}),
+      ...(!command && session.sessionModel ? { AGENFK_AIRLOCK_MODEL: session.sessionModel } : {}),
+      ...(!command ? session.clientEnv ?? {} : {}),
     },
     // A TUI needs raw mode on its terminal: EPERM without it (measured, macOS).
     allowPty: true,

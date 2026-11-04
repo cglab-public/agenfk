@@ -5,6 +5,7 @@
  * (airlock-sandbox-conformance.test.ts) pins what it must hold.
  */
 import type { SandboxSpec } from './spec';
+import type { CachedToken, TokenProvider } from './tokenSource';
 
 export interface SandboxCommand {
   file: string;
@@ -34,6 +35,8 @@ export interface ProxyDecision {
 export interface LaunchHooks {
   /** Called with each decision the egress decider makes. Must not block; a throw is ignored. */
   onProxyDecision?: (decision: ProxyDecision) => void;
+  /** The token for a spec's tokenEnv stand-in (GH-356, host-held logins): cached, from the launch's TokenSource. */
+  tokenFor?: (provider: TokenProvider) => CachedToken;
 }
 
 export interface AirlockRuntime {

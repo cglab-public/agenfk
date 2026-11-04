@@ -98,6 +98,13 @@ describe('issue #88 — uninstall-helpers', () => {
     expect(isAgenfkHookEntry({ hooks: [{ command: '/x/some-other-tool' }] })).toBe(false);
   });
 
+  // GH-356: Codex's Airlock hook is AgEnFK's too, though Claude's settings never get it (the launcher
+  // hands it to a sandboxed claude), so it is not one of the HOOK_VARIANTS the installer registers there.
+  it('isAgenfkHookEntry recognizes the Airlock hook, which is not a Claude hook variant', () => {
+    expect(isAgenfkHookEntry({ hooks: [{ command: 'node "/h/.agenfk/bin/agenfk-airlock-hook.mjs"' }] })).toBe(true);
+    expect(HOOK_VARIANTS).not.toContain('agenfk-airlock-hook');
+  });
+
   it('stripAgenfkHookEntries removes all variants but preserves unrelated entries', () => {
     const entries = [
       { hooks: [{ command: '/b/agenfk-gatekeeper' }] },
@@ -202,6 +209,7 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     writeFileSync(p('.codex', 'hooks.json'), JSON.stringify({
       hooks: {
         PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '/h/agenfk-pr-hook --client codex' }] }, UNRELATED],
+        PreToolUse: [{ hooks: [{ type: 'command', command: 'node "/h/.agenfk/bin/agenfk-airlock-hook.mjs"' }] }, UNRELATED],
       },
     }, null, 2));
     // gemini settings.json — AfterTool
@@ -304,6 +312,9 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     const codex = readJson('.codex', 'hooks.json');
     expect(JSON.stringify(codex.hooks.PostToolUse)).not.toContain('agenfk-');
     expect(JSON.stringify(codex.hooks.PostToolUse)).toContain('user-hook');
+    // GH-356: the Airlock PreToolUse hook goes too.
+    expect(JSON.stringify(codex.hooks.PreToolUse)).not.toContain('agenfk-');
+    expect(JSON.stringify(codex.hooks.PreToolUse)).toContain('user-hook');
 
     const gemini = readJson('.gemini', 'settings.json');
     expect(JSON.stringify(gemini.hooks.AfterTool)).not.toContain('agenfk-');

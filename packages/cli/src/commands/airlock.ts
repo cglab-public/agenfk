@@ -8,12 +8,13 @@ import { execFileSync, spawnSync } from 'child_process';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { getApiUrl } from '@agenfk/telemetry';
-import { resolveProjectIdentity, linkedWorktreeOf } from '@agenfk/core';
+import { resolveProjectIdentity, linkedWorktreeOf, AIRLOCK_CLIENTS, type AirlockClient } from '@agenfk/core';
 import { resolveDashboardUrl } from '../uiUrl.js';
 import { runAirlockLaunch, AirlockLaunchError, workspaceOf, type LaunchDeps, type LaunchOptions } from '../airlock/launch.js';
 import { runAirlockExec, scopedCommandEnv, EXEC_CANNOT_SANDBOX, type ExecDeps } from '../airlock/exec.js';
 import { SmolvmRuntime, runAirlockReset } from '../airlock/smolvm.js';
-import { readJsonFile } from '../airlock/safeRead.js';
+import { readJsonFile, readRegularFile } from '../airlock/safeRead.js';
+import { localTokenSource } from '../airlock/tokenSource.js';
 import { smolvmBinary, installSmolvm, runAirlockInstall } from '../airlock/smolvmInstall.js';
 import { defaultEgressBroker } from '../airlock/egress.js';
 import { baseImageFor, AIRLOCK_BASE_IMAGE } from '../airlock/image.js';
@@ -201,6 +202,10 @@ export function defaultLaunchDeps(): LaunchDeps {
     apiUrl: getApiUrl(),
     // Bounded and never blocking: the project's config is the workspace's, which a session writes.
     readJson: (file) => readJsonFile(file),
+    // Codex's config.toml (GH-356): bounded and never blocking, like the JSON configs.
+    readText: (file) => readRegularFile(file, 1024 * 1024)?.toString('utf8') ?? null,
+    // GH-356: a host-held Claude Code login is the person's own, read where Claude Code keeps it.
+    tokenSource: localTokenSource({ platform: process.platform, home, ...(process.env.CLAUDE_CONFIG_DIR ? { claudeConfigDir: path.resolve(process.env.CLAUDE_CONFIG_DIR) } : {}) }),
     exists: (file) => fs.existsSync(file),
     // smolvm and what it runs from: never writable from inside.
     runtimePackageDir: path.dirname(smolvmPathFor(__dirname, realpath(home))),
@@ -237,7 +242,7 @@ export function defaultLaunchDeps(): LaunchDeps {
 /** Set by the desktop app's bundler (packages/desktop/scripts/bundle-airlock.mjs); undeclared elsewhere. */
 declare const __AGENFK_VERSION__: string | undefined;
 
-type Launch = (client: 'pi' | 'opencode', args: string[], opts: LaunchOptions) => Promise<number>;
+type Launch = (client: AirlockClient, args: string[], opts: LaunchOptions) => Promise<number>;
 type Exec = (command: string, opts: { cwd: string; processGroup: boolean; projectId?: string }) => Promise<number>;
 
 /**
@@ -265,17 +270,20 @@ export function defaultExecDeps(apiUrl: string, get: (url: string, opts: object)
   };
 }
 
-const AIRLOCK_CLIENTS = ['pi', 'opencode'] as const;
+/** The launcher's own options that take a value: they come before the client's name. */
+const LAUNCHER_OPTIONS = ['--key-env', '--login'];
+const launcherOption = (tok: string) => LAUNCHER_OPTIONS.find((o) => tok === o || tok.startsWith(`${o}=`));
 
 /**
  * Where the client's name is in `argv` (what follows `airlock`), when it is a launch: only the
- * launcher's own options (--key-env NAME, --key-env=NAME) come before it. Else null.
+ * launcher's own options (--key-env NAME, --login MODE, or their =VALUE forms) come before it. Else null.
  */
 function clientIndexOf(argv: readonly string[]): number | null {
   for (let i = 0; i < argv.length; i++) {
     if ((AIRLOCK_CLIENTS as readonly string[]).includes(argv[i])) return i;
-    if (argv[i] === '--key-env' && i + 1 < argv.length) i++;
-    else if (!argv[i].startsWith('--key-env=')) return null;
+    const o = launcherOption(argv[i]);
+    if (!o) return null;
+    if (argv[i] === o && i + 1 < argv.length) i++;
   }
   return null;
 }
@@ -284,14 +292,18 @@ function clientIndexOf(argv: readonly string[]): number | null {
  * `agenfk airlock [--key-env NAME].. <client> <args..>` as typed: the launcher's own options
  * before the client's name, and every argument after it the client's, verbatim (user decision).
  */
-export function clientArgsOf(raw: readonly string[], client: string): { keyEnv: string[]; args: string[] } {
+export function clientArgsOf(raw: readonly string[], client: string): { keyEnv: string[]; login?: 'host-held' | 'mount'; args: string[] } {
   const keyEnv: string[] = [];
+  let login: string | undefined;
   for (let i = raw.indexOf('airlock') + 1; i > 0 && i < raw.length; i++) {
     const tok = raw[i];
-    if (tok === client) return { keyEnv, args: raw.slice(i + 1) };
+    if (tok === client) return { keyEnv, ...(login !== undefined ? { login: login as 'host-held' | 'mount' } : {}), args: raw.slice(i + 1) };
     if (tok === '--key-env' && i + 1 < raw.length) keyEnv.push(raw[++i]);
     else if (tok.startsWith('--key-env=')) keyEnv.push(tok.slice('--key-env='.length));
-    else throw new AirlockLaunchError(`${tok}: not an option of agenfk airlock ${client}. Its own options (--key-env NAME) go before "${client}"; ${client}'s go after it.`);
+    // GH-356: how a claude or codex session logs in; the launcher refuses a value it does not know.
+    else if (tok === '--login' && i + 1 < raw.length) login = raw[++i];
+    else if (tok.startsWith('--login=')) login = tok.slice('--login='.length);
+    else throw new AirlockLaunchError(`${tok}: not an option of agenfk airlock ${client}. Its own options (--key-env NAME, --login host-held|mount) go before "${client}"; ${client}'s go after it.`);
   }
   throw new AirlockLaunchError(`Could not find "${client}" on the command line.`);
 }
@@ -326,7 +338,7 @@ export function registerAirlockCommands(
   });
   const airlock = program
     .command('airlock')
-    .description('Airlock: the per-tool-call policy for pi and OpenCode sessions (read-only here; change it on the board)');
+    .description('Airlock: the per-tool-call policy for pi, OpenCode, Claude Code and Codex sessions (read-only here; change it on the board)');
 
   airlock
     .command('status')
@@ -446,7 +458,7 @@ export function registerAirlockCommands(
         if (!data?.joined) {
           console.log('Airlock dataset: off - this installation is not joined to a hub, so there is no dataset.');
         } else if (data.enabled) {
-          console.log(`Airlock dataset: ${chalk.bold('on')} - your organization's hub keeps this installation's pi and OpenCode tool calls, secrets removed.`);
+          console.log(`Airlock dataset: ${chalk.bold('on')} - your organization's hub keeps this installation's Airlock-judged tool calls (pi, OpenCode, and Claude Code and Codex in Airlock), secrets removed.`);
         } else {
           console.log(`Airlock dataset: ${chalk.bold('off')} - an org admin switches it on (Admin -> Airlock -> Dataset).`);
         }
@@ -541,7 +553,8 @@ export function registerAirlockCommands(
   // The launcher's own options come before the client's name; everything after it is the client's,
   // verbatim (user decision): --help, -- and anything that looks like ours included. Declared for
   // help; clientArgsOf reads them.
-  airlock.option('--key-env <name>', 'For pi/opencode, before the client\'s name: an env var holding the model key, to mask (repeatable; the provider\'s usual one is masked already)');
+  airlock.option('--key-env <name>', 'Before the client\'s name: an env var holding the model key, to mask (repeatable; the provider\'s usual one is masked already)');
+  airlock.option('--login <mode>', 'For claude/codex, before the client\'s name: host-held (default; the guest gets a stand-in for a login the host holds) or mount (the machine gets its own copy of the login file)');
 
   // Commander's ancestors take their options from anywhere on the line (agenfk's -V, --toon, the
   // launcher's --key-env), so a launch is passed through them unparsed; the action reads the line.
@@ -574,8 +587,8 @@ export function registerAirlockCommands(
         // Read off the command line as typed, which nothing above has parsed.
         let root: Command = cmd;
         while (root.parent) root = root.parent;
-        const { keyEnv, args } = clientArgsOf((root as Command & { rawArgs: string[] }).rawArgs, client);
-        exit(await launch(client, args, { keyEnv }));
+        const { keyEnv, login, args } = clientArgsOf((root as Command & { rawArgs: string[] }).rawArgs, client);
+        exit(await launch(client, args, { keyEnv, ...(login !== undefined ? { login } : {}) }));
       } catch (e) {
         const message = e instanceof AirlockLaunchError ? e.message : (e as Error)?.message ?? String(e);
         console.error(chalk.red(`❌ ${message}`));

@@ -27,6 +27,8 @@ import { startServerRelay, type ServerRelay, type ServerRelayOptions } from './s
 import { ProxyDecisionReporter, type ProxyReportBody } from './proxyReport';
 import { machineImageFor, type MachineImageSource } from './image';
 import { followPolicy } from './followPolicy';
+import { readTomlTables, overrideValue, type TomlTables } from './codexConfig';
+import { cachedToken, tokenErrorMessage, type CachedToken, type TokenProvider, type TokenSource } from './tokenSource';
 
 export class AirlockLaunchError extends Error {
   constructor(message: string) {
@@ -71,6 +73,13 @@ export interface LaunchDeps {
   apiUrl: string;
   /** Parsed JSON, or null when missing or unreadable. */
   readJson(file: string): unknown;
+  /** A text file (Codex's config.toml, GH-356), or null when missing or unreadable. */
+  readText?(file: string): string | null;
+  /**
+   * Where a host-held login's token comes from (GH-356): the person's own login here, the factory's
+   * broker there. Absent: a session that needs one is refused.
+   */
+  tokenSource?: TokenSource;
   exists(file: string): boolean;
   /** Absolute path of an executable on PATH, or null. */
   runtimePackageDir: string;
@@ -117,6 +126,11 @@ export interface LaunchDeps {
 export interface LaunchOptions {
   /** Extra env vars holding the model key, to mask. */
   keyEnv: string[];
+  /**
+   * How a Claude Code or Codex session logs in (GH-356): 'host-held' (default) - the guest gets a
+   * stand-in for a token the host holds - or 'mount' - the machine's own copy of the login file.
+   */
+  login?: 'host-held' | 'mount';
 }
 
 /** Built-in providers: where they are served, and the env vars they take a key from. */
@@ -154,10 +168,42 @@ function argValue(args: string[], names: string[]): string | null {
 interface SessionModel { provider: string | null; id: string | null }
 interface Endpoint { url: string; keyEnv: string | null }
 
+/** What a client's own configuration says about its session (and, for Claude Code and Codex, its login). */
+interface ClientSession {
+  model: SessionModel;
+  endpoint: (provider: string) => Endpoint | null;
+  /** The env vars a key may be in, in place of the provider's or the endpoint's (Claude Code, Codex). */
+  keys?: string[];
+  /** The inference host in place of the provider's (a ChatGPT login: chatgpt.com). */
+  host?: string;
+  /** The client's own hosts beside inference: its login, a token refresh. */
+  clientHosts?: string[];
+  /** Arguments put before the user's. */
+  argsBefore?: string[];
+  /** A host-held login is needed: no key was given. */
+  tokenProvider?: TokenProvider;
+  /** The stand-in's env var for that login. */
+  tokenEnv?: string;
+  /** Settings of the client's that are no secret, which the guest needs as the host has them. */
+  clientEnv?: Record<string, string>;
+  claudeConfigDir?: string;
+  codexHome?: string;
+  warnings?: string[];
+}
+
 const split = (joined: string): SessionModel => {
   const slash = joined.indexOf('/');
   return slash > 0 ? { provider: joined.slice(0, slash), id: joined.slice(slash + 1) || null } : { provider: null, id: joined };
 };
+
+/** A directory the user names in an env var (`~`, relative), resolved; null when unset. */
+function dirFromEnv(d: LaunchDeps, name: string): string | null {
+  const set = str(d.env[name]);
+  if (!set) return null;
+  if (set === '~') return d.home;
+  if (set.startsWith('~/')) return path.join(d.home, set.slice(2));
+  return path.resolve(d.cwd, set);
+}
 
 /**
  * pi's agent dir: PI_CODING_AGENT_DIR when the user set one, spelled as pi accepts it (`~`, a
@@ -165,16 +211,13 @@ const split = (joined: string): SessionModel => {
  */
 const piAgentDirOf = (d: LaunchDeps): string => {
   const set = str(d.env.PI_CODING_AGENT_DIR);
-  if (!set) return path.join(d.home, '.pi', 'agent');
-  if (set.startsWith('file://')) {
+  if (set?.startsWith('file://')) {
     try { return fileURLToPath(set); } catch { /* not a file URL: as a path */ }
   }
-  if (set === '~') return d.home;
-  if (set.startsWith('~/')) return path.join(d.home, set.slice(2));
-  return path.resolve(d.cwd, set);
+  return dirFromEnv(d, 'PI_CODING_AGENT_DIR') ?? path.join(d.home, '.pi', 'agent');
 };
 
-function piSession(args: string[], d: LaunchDeps): { model: SessionModel; endpoint: (p: string) => Endpoint | null } {
+function piSession(args: string[], d: LaunchDeps): ClientSession {
   const agentDir = piAgentDirOf(d);
   const settings = obj(d.readJson(path.join(agentDir, 'settings.json')));
   const models = obj(obj(d.readJson(path.join(agentDir, 'models.json'))).providers);
@@ -196,7 +239,7 @@ function piSession(args: string[], d: LaunchDeps): { model: SessionModel; endpoi
   };
 }
 
-function opencodeSession(args: string[], d: LaunchDeps): { model: SessionModel; endpoint: (p: string) => Endpoint | null } {
+function opencodeSession(args: string[], d: LaunchDeps): ClientSession {
   const global = obj(d.readJson(path.join(d.home, '.config', 'opencode', 'opencode.json')));
   const project = obj(d.readJson(path.join(d.cwd, 'opencode.json')));
   const providers = { ...obj(global.provider), ...obj(project.provider) };
@@ -213,6 +256,112 @@ function opencodeSession(args: string[], d: LaunchDeps): { model: SessionModel; 
       return { url, keyEnv: ref ? ref[1] : null };
     },
   };
+}
+
+
+/** The per-call hook a sandboxed Claude Code or Codex runs, at the same path in the machine (GH-356). */
+const airlockHookCommand = (home: string) => `node "${path.join(home, '.agenfk', 'bin', 'agenfk-airlock-hook.mjs')}"`;
+
+/** Claude Code's login hosts: a /login made inside the machine (--login mount). */
+const CLAUDE_LOGIN_HOSTS = ['claude.ai', 'console.anthropic.com', 'platform.claude.com'];
+
+function claudeSession(args: string[], d: LaunchDeps, login: 'host-held' | 'mount'): ClientSession {
+  // Their credentials are a cloud's, which the host cannot hold for the session.
+  for (const v of ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']) {
+    if (str(d.env[v]) && d.env[v] !== '0') {
+      throw new AirlockLaunchError(`${v} is set: Airlock holds Anthropic keys and logins only, not a cloud's credentials, so nothing was launched. Unset it to run claude in Airlock.`);
+    }
+  }
+  const configDir = dirFromEnv(d, 'CLAUDE_CONFIG_DIR') ?? path.join(d.home, '.claude');
+  const settings = obj(d.readJson(path.join(configDir, 'settings.json')));
+  const id = argValue(args, ['--model']) ?? str(d.env.ANTHROPIC_MODEL) ?? str(settings.model);
+  const base = str(d.env.ANTHROPIC_BASE_URL);
+  const keys = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'];
+  const keyed = keys.some((k) => !!d.env[k]);
+  const warnings: string[] = [];
+  if (login === 'mount' && !d.exists(path.join(configDir, '.credentials.json'))) {
+    warnings.push(`Airlock: there is no Claude Code login file in ${configDir} (on a Mac it is in the Keychain), so the machine starts logged out. Log in once inside it with /login; the login stays in the machine.`);
+  }
+  // The hook judges each tool call in the machine; the user's settings are merged with it, not replaced.
+  const settingsArg = JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: airlockHookCommand(d.home) }] }] } });
+  return {
+    model: { provider: 'anthropic', id },
+    endpoint: () => (base ? { url: base, keyEnv: null } : null),
+    keys,
+    clientHosts: login === 'mount' ? CLAUDE_LOGIN_HOSTS : [],
+    argsBefore: ['--settings', settingsArg],
+    ...(!keyed && login === 'host-held' ? { tokenProvider: 'anthropic' as const, tokenEnv: 'CLAUDE_CODE_OAUTH_TOKEN' } : {}),
+    // Review: the guest's claude must reach the endpoint and run the model the policy judged.
+    clientEnv: Object.fromEntries((['ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL'] as const).flatMap((k) => (str(d.env[k]) ? [[k, str(d.env[k]) as string]] : []))),
+    ...(configDir !== path.join(d.home, '.claude') ? { claudeConfigDir: configDir } : {}),
+    warnings,
+  };
+}
+
+/** Every `-c key=value` / `--config key=value` in a codex argv, the last one of a key winning. */
+function codexOverrides(args: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') break;
+    const raw = a === '-c' || a === '--config' ? args[++i] : a.startsWith('--config=') ? a.slice('--config='.length) : null;
+    const eq = raw ? raw.indexOf('=') : -1;
+    if (raw && eq > 0) out.set(raw.slice(0, eq).trim(), overrideValue(raw.slice(eq + 1)));
+  }
+  return out;
+}
+
+function codexSession(args: string[], d: LaunchDeps, login: 'host-held' | 'mount'): ClientSession {
+  const home = dirFromEnv(d, 'CODEX_HOME') ?? path.join(d.home, '.codex');
+  const warnings: string[] = [];
+  const configFile = path.join(home, 'config.toml');
+  let tables: TomlTables = new Map([['', new Map()]]);
+  const text = d.readText?.(configFile) ?? null;
+  if (text !== null) {
+    try {
+      tables = readTomlTables(text);
+    } catch (e) {
+      warnings.push(`Airlock: could not read ${configFile} (${(e as Error).message}), so this session is launched on Codex's defaults (the openai provider). If it names another model or provider, pass -m <model> or -c model_provider=<id>.`);
+    }
+  }
+  const top = tables.get('') ?? new Map<string, string>();
+  const over = codexOverrides(args);
+  const profileName = argValue(args, ['-p', '--profile']) ?? over.get('profile') ?? top.get('profile');
+  const profile = (profileName && tables.get(`profiles.${profileName}`)) || new Map<string, string>();
+  const id = argValue(args, ['-m', '--model']) ?? over.get('model') ?? profile.get('model') ?? top.get('model') ?? null;
+  const provider = over.get('model_provider') ?? profile.get('model_provider') ?? top.get('model_provider') ?? 'openai';
+  const endpoint = (p: string): Endpoint | null => {
+    // A provider's keys as codex reads them: `-c model_providers.<id>.<key>=` over config.toml (review).
+    const t = new Map(tables.get(`model_providers.${p}`) ?? []);
+    for (const [k, v] of over) if (k.startsWith(`model_providers.${p}.`)) t.set(k.slice(`model_providers.${p}.`.length), v);
+    const url = t.get('base_url');
+    if (!url) return null;
+    const key = t.get('env_key');
+    return { url, keyEnv: key && ENV_NAME.test(key) ? key : null };
+  };
+  const hooks = d.readJson(path.join(home, 'hooks.json'));
+  if (!JSON.stringify(hooks ?? '').includes('agenfk-airlock-hook')) {
+    warnings.push(`Airlock: ${path.join(home, 'hooks.json')} has no AgEnFK Airlock hook, so this session's tool calls are not judged one by one (the machine's network and file limits still hold). Run agenfk upgrade to register it.`);
+  }
+  const session: ClientSession = {
+    model: { provider, id },
+    endpoint,
+    // Codex skips a hook nobody trusted, silently (spike 2144721a); in the machine its hooks.json is read-only.
+    argsBefore: ['--dangerously-bypass-hook-trust'],
+    ...(home !== path.join(d.home, '.codex') ? { codexHome: home } : {}),
+    warnings,
+  };
+  if (provider !== 'openai' || endpoint(provider)) return session;
+  const keys = ['OPENAI_API_KEY', 'CODEX_API_KEY'];
+  if (keys.some((k) => !!d.env[k])) return { ...session, keys };
+  const tokens = obj(obj(d.readJson(path.join(home, 'auth.json'))).tokens);
+  const chatgpt = !!(str(tokens.access_token) || str(tokens.refresh_token));
+  if (chatgpt && login === 'mount') return { ...session, keys: [], host: 'chatgpt.com', clientHosts: ['auth.openai.com'] };
+  if (chatgpt) {
+    throw new AirlockLaunchError('This codex session would use your ChatGPT login, which Airlock cannot hold on the host for Codex yet, so nothing was launched. ' +
+      'Launch with --login mount (agenfk airlock --login mount codex ...: the machine gets its own copy of the login), or set OPENAI_API_KEY.');
+  }
+  throw new AirlockLaunchError('This codex session has no OpenAI key and no login, so nothing was launched. Set OPENAI_API_KEY (or CODEX_API_KEY), or log in to codex and launch with --login mount.');
 }
 
 /** `host` or `host:port` (explicit, non-default ports only), and whether the endpoint is TLS. */
@@ -404,10 +553,25 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
     throw new AirlockLaunchError(`${(e as Error).message} Nothing was launched.`);
   }
 
+  if (opts.login !== undefined && opts.login !== 'host-held' && opts.login !== 'mount') {
+    throw new AirlockLaunchError(`--login ${opts.login}: not a login mode (host-held or mount).`);
+  }
+  if (opts.login !== undefined && client !== 'claude' && client !== 'codex') {
+    throw new AirlockLaunchError(`--login is for claude and codex; ${client} keeps its own logins. Nothing was launched.`);
+  }
+  const login = opts.login ?? 'host-held';
+
   // The client the machine's image has, by name (review 01a18d3a): a host path names nothing in the guest.
   const file = client;
 
-  const session = client === 'pi' ? piSession(clientArgs, d) : opencodeSession(clientArgs, d);
+  const SESSIONS: Record<AirlockClient, () => ClientSession> = {
+    pi: () => piSession(clientArgs, d),
+    opencode: () => opencodeSession(clientArgs, d),
+    claude: () => claudeSession(clientArgs, d, login),
+    codex: () => codexSession(clientArgs, d, login),
+  };
+  const session = SESSIONS[client]();
+  session.warnings?.forEach((w) => d.warn(w));
   const provider = session.model.provider;
   if (!provider) {
     throw new AirlockLaunchError(
@@ -417,7 +581,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
   }
   const custom = session.endpoint(provider);
   const builtin = PROVIDERS[provider];
-  const endpoint = custom ? hostOf(custom.url) : builtin ? { host: builtin.host, tls: true } : null;
+  const endpoint = custom ? hostOf(custom.url) : session.host ? { host: session.host, tls: true } : builtin ? { host: builtin.host, tls: true } : null;
   if (!endpoint) {
     throw new AirlockLaunchError(
       `Could not find the inference host for provider "${provider}": it is not a built-in provider and ${client}'s own configuration gives no endpoint for it.`,
@@ -430,9 +594,31 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
   }
   const keyNames = [...new Set([
     ...(custom?.keyEnv ? [custom.keyEnv] : []),
-    ...(!custom && builtin ? builtin.keys : []),
+    ...(session.keys ?? (!custom && builtin ? builtin.keys : [])),
     ...opts.keyEnv,
   ])].filter((n) => !!d.env[n]);
+
+  // GH-356, a host-held login: asked for before anything starts, so a person not connected is told now.
+  let tokenFor: ((p: TokenProvider) => CachedToken) | undefined;
+  const subject = str(d.env.AGENFK_AIRLOCK_SUBJECT) ?? str(d.env.USER) ?? 'local';
+  if (session.tokenProvider && !keyNames.length) {
+    // The injector puts a token in over TLS only (review): never a login in the clear to a plain-http endpoint.
+    if (!endpoint.tls) {
+      throw new AirlockLaunchError(`${endpoint.host} is plain http, and a login the host holds is put in over TLS only, so nothing was launched. Use an https endpoint, or give ${client} a key.`);
+    }
+    if (!d.tokenSource) throw new AirlockLaunchError(tokenErrorMessage({ code: 'not_connected' }, client));
+    const tokens = new Map<TokenProvider, CachedToken>();
+    tokenFor = (p) => {
+      let t = tokens.get(p);
+      if (!t) { t = cachedToken(d.tokenSource!, { provider: p, subject }); tokens.set(p, t); }
+      return t;
+    };
+    try {
+      await tokenFor(session.tokenProvider).get();
+    } catch (e) {
+      throw new AirlockLaunchError(tokenErrorMessage(e, client));
+    }
+  }
   let maskedEnv = keyNames;
   if (keyNames.length && !endpoint.tls) {
     d.warn(`${keyNames.join(', ')}: not masked, because ${endpoint.host} is plain http and the proxy injects a masked key over TLS only. The sandboxed session can read it.`);
@@ -520,7 +706,17 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         maskedEnv,
         runtimePackageDir: d.runtimePackageDir,
         ...(agentDir && agentDir !== path.join(d.home, '.pi', 'agent') ? { piAgentDir: agentDir } : {}),
+        // GH-356: Claude Code / Codex - their dirs, login, own hosts and the model the per-call hook reports.
+        ...(session.claudeConfigDir ? { claudeConfigDir: session.claudeConfigDir } : {}),
+        ...(session.codexHome ? { codexHome: session.codexHome } : {}),
+        ...(client === 'claude' || client === 'codex' ? { loginMode: login } : {}),
+        ...(inferenceHosts.length && session.clientHosts?.length ? { clientHosts: session.clientHosts } : {}),
+        ...(tokenFor && session.tokenProvider && session.tokenEnv ? { tokenEnv: [{ name: session.tokenEnv, provider: session.tokenProvider, subject }] } : {}),
+        ...(session.clientEnv && Object.keys(session.clientEnv).length ? { clientEnv: session.clientEnv } : {}),
+        sessionModel: `${provider}/${session.model.id ?? ''}`,
       });
+      // The folder the client starts in: its project config there is the host's to run next, too (review).
+      built.launchDir = path.resolve(d.cwd);
       built.machineImage = machineImage.image;
       // A key that cannot be masked reaches the session as it is, as the warning above says.
       if (keyNames.length && !endpoint.tls) built.plainEnv = keyNames;
@@ -560,10 +756,14 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         launch: launchNonce,
       })
       : null;
+    const hooks = {
+      ...(reporter ? { onProxyDecision: (decision: Parameters<NonNullable<typeof reporter.report>>[0]) => reporter.report(decision) } : {}),
+      ...(tokenFor ? { tokenFor } : {}),
+    };
     const launched = await d.runtime.launch(
       spec,
-      { file, args: clientArgs, cwd: path.resolve(d.cwd) },
-      reporter ? { onProxyDecision: (decision) => reporter.report(decision) } : undefined,
+      { file, args: [...(session.argsBefore ?? []), ...clientArgs], cwd: path.resolve(d.cwd) },
+      Object.keys(hooks).length ? hooks : undefined,
     );
     const offs = SIGNALS.map((sig) => d.onSignal(sig, () => { launched.kill(sig); }));
     const following = followPolicy(d, {

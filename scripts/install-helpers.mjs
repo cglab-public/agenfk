@@ -191,7 +191,10 @@ export function applyClaudeHooks(settings, localBinDir, { platform = process.pla
 //     upgrade self-heals the crash. Unrelated legacy entries are preserved, not dropped.
 //   - A prior AgEnFK entry is replaced (idempotent — no duplication on re-install).
 //   - Unrelated user entries, other events, and `description` are left intact.
-export function buildCodexHooksConfig(existingConfig, prHookCommand) {
+//
+// GH-356: with `airlockHookCommand`, the Airlock PreToolUse hook too (no matcher: every tool, which
+// Codex reports as Bash, apply_patch or mcp__*). It judges calls only inside the Airlock sandbox.
+export function buildCodexHooksConfig(existingConfig, prHookCommand, airlockHookCommand) {
   const src = (existingConfig && typeof existingConfig === 'object' && !Array.isArray(existingConfig))
     ? existingConfig
     : {};
@@ -211,6 +214,11 @@ export function buildCodexHooksConfig(existingConfig, prHookCommand) {
   preserved.push({ matcher: 'Bash', hooks: [{ type: 'command', command: prHookCommand }] });
 
   hooks.PostToolUse = preserved;
+  if (airlockHookCommand) {
+    const pre = (Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []).filter((e) => !JSON.stringify(e).includes('agenfk-airlock-hook'));
+    pre.push({ hooks: [{ type: 'command', command: airlockHookCommand }] });
+    hooks.PreToolUse = pre;
+  }
   config.hooks = hooks;
   return config;
 }

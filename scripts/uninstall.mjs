@@ -591,7 +591,8 @@ async function run() {
         const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json');
         // Strip both the valid nested location (CGLAB-12) and the legacy top-level
         // key that pre-fix installs wrote, so either schema on disk is cleaned.
-        let changed = await stripHooksFromJsonFile(codexHooksPath, ['hooks.PostToolUse', 'PostToolUse']);
+        // GH-356: and the Airlock PreToolUse hook.
+        let changed = await stripHooksFromJsonFile(codexHooksPath, ['hooks.PostToolUse', 'PostToolUse', 'hooks.PreToolUse']);
         // The legacy top-level `PostToolUse` key is itself invalid Codex schema and
         // crashes Codex on startup. If stripping the AgenFK entry emptied it (the
         // common case — our old installer was the only writer), remove the key

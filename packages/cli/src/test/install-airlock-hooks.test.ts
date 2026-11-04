@@ -41,4 +41,29 @@ describe('GH-294 T4 - the installer ships the Airlock adapters', () => {
     expect(fs.readFileSync(plugin, 'utf8')).toBe(source('agenfk-airlock-opencode.mjs'));
     expect(fs.existsSync(path.join(home, '.agenfk', 'bin', 'agenfk-airlock.mjs'))).toBe(true);
   }, 180_000);
+
+  // GH-356: Codex takes hooks only from hooks.json, so the Airlock hook is registered there, by a path
+  // that is the same inside the machine. It does nothing outside the sandbox.
+  it('codex: the Airlock hook is installed to ~/.agenfk/bin and registered as a PreToolUse hook', () => {
+    const home = makeHome('agenfk-airlock-codex');
+    homes.push(home);
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    const r = runInstall(['--only=codex'], home);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    const script = path.join(home, '.agenfk', 'bin', 'agenfk-airlock-hook.mjs');
+    expect(fs.readFileSync(script, 'utf8')).toBe(source('agenfk-airlock-hook.mjs'));
+    const hooks = JSON.parse(fs.readFileSync(path.join(home, '.codex', 'hooks.json'), 'utf8'));
+    expect(hooks.hooks.PreToolUse.flatMap((e: any) => e.hooks.map((h: any) => h.command))).toContain(`node "${script}"`);
+  }, 180_000);
+
+  it('claude: its settings get no Airlock hook (the launcher gives it to a sandboxed claude)', () => {
+    const home = makeHome('agenfk-airlock-claude');
+    homes.push(home);
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const r = runInstall(['--only=claude'], home);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    const settings = fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8');
+    expect(settings).not.toContain('agenfk-airlock-hook');
+    expect(fs.existsSync(path.join(home, '.agenfk', 'bin', 'agenfk-airlock-hook.mjs'))).toBe(true);
+  }, 180_000);
 });

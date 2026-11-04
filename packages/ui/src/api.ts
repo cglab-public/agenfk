@@ -113,7 +113,9 @@ export interface SettingsRuntimeDto { cpus: number; automaticSuiteRuns: number; 
 /** GH-294: the Airlock policy as the board edits it (mirrors @agenfk/core's AirlockPolicy). */
 export type AirlockModeDto = 'off' | 'observe' | 'enforce';
 export type AirlockRuleActionDto = 'deny' | 'needs-human-approval' | 'off';
-export interface AirlockModelSelectorDto { client?: 'pi' | 'opencode' | '*'; provider?: string; model?: string }
+/** The clients Airlock launches and judges (core's AIRLOCK_CLIENTS). */
+export type AirlockClientDto = 'pi' | 'opencode' | 'claude' | 'codex';
+export interface AirlockModelSelectorDto { client?: AirlockClientDto | '*'; provider?: string; model?: string }
 export interface AirlockPolicyDto {
   schemaVersion: 1;
   mode: AirlockModeDto;
@@ -183,7 +185,7 @@ export interface AirlockDecisionDto {
 }
 export type AirlockAlertDto = 'cloud-storage' | 'metadata-endpoint' | 'ioc-host';
 /** TEL-2: GET /airlock/decisions filters; an omitted one is not sent. */
-export interface AirlockDecisionFilterDto { itemId?: string; client?: 'pi' | 'opencode'; source?: 'tool' | 'proxy'; alert?: AirlockAlertDto | 'any' }
+export interface AirlockDecisionFilterDto { itemId?: string; client?: AirlockClientDto; source?: 'tool' | 'proxy'; alert?: AirlockAlertDto | 'any' }
 
 export const api = {
   listProjects: async () => {

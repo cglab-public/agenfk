@@ -32,7 +32,7 @@ import {
   api,
   type AirlockPolicyDto, type AirlockPolicyViewDto, type AirlockModelSelectorDto,
   type AirlockRuleActionDto, type AirlockModeDto, type AirlockApprovalDto,
-  type AirlockDecisionFilterDto, type AirlockProjectOverrideDto,
+  type AirlockDecisionFilterDto, type AirlockProjectOverrideDto, type AirlockClientDto,
 } from '../api';
 import { useSocketEvent } from '../SocketContext';
 import { AirlockLearning } from './AirlockLearning';
@@ -201,6 +201,8 @@ const CLIENT_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '', label: 'Any client' },
   { value: 'pi', label: 'pi' },
   { value: 'opencode', label: 'opencode' },
+  { value: 'claude', label: 'Claude Code' },
+  { value: 'codex', label: 'Codex' },
   { value: '*', label: '* (any)' },
 ];
 
@@ -674,11 +676,14 @@ const DECISION_TONE: Record<string, string> = {
 };
 
 /** TEL-2: the server filters, so the list is the newest matching decisions. '' is every one. */
-const DECISION_CLIENTS = [{ value: '', label: 'All clients' }, { value: 'pi', label: 'pi' }, { value: 'opencode', label: 'opencode' }] as const;
+const DECISION_CLIENTS = [
+  { value: '', label: 'All clients' }, { value: 'pi', label: 'pi' }, { value: 'opencode', label: 'opencode' },
+  { value: 'claude', label: 'Claude Code' }, { value: 'codex', label: 'Codex' },
+] as const;
 const DECISION_SOURCES = [{ value: '', label: 'All sources' }, { value: 'tool', label: 'Tool calls' }, { value: 'proxy', label: 'Sandbox proxy' }] as const;
 
 function Decisions(): React.ReactElement {
-  const [client, setClient] = React.useState<'' | 'pi' | 'opencode'>('');
+  const [client, setClient] = React.useState<'' | AirlockClientDto>('');
   const [source, setSource] = React.useState<'' | 'tool' | 'proxy'>('');
   const filter: AirlockDecisionFilterDto = { ...(client ? { client } : {}), ...(source ? { source } : {}) };
   const { data, isError } = useQuery({ queryKey: ['airlock-decisions', filter], queryFn: () => api.getAirlockDecisions(20, filter) });

@@ -197,7 +197,7 @@ describe('GET /airlock/decisions filters', () => {
   });
 
   const bad: Array<[string, Record<string, unknown>]> = [
-    ['an unknown client', { client: 'claude' }],
+    ['an unknown client', { client: 'cursor' }],
     ['an unknown source', { source: 'hub' }],
     ['an unknown alert', { alert: 'exfil' }],
     ['a repeated itemId', { itemId: ['a', 'b'] }],

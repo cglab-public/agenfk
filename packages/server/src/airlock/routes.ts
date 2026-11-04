@@ -65,6 +65,7 @@ import {
   type AgentRun,
   type AirlockApprovalCapability,
   type AirlockApprovalRecord,
+  AIRLOCK_CLIENTS,
   type AirlockClient,
   type AirlockAlert,
   type AirlockDecisionQuery,
@@ -89,7 +90,7 @@ export const AIRLOCK_REVISION_CONFLICT = 'AIRLOCK_REVISION_CONFLICT';
 /** 503: a project's repository could not be read, so its overrides cannot be told (the adapter, unanswered, blocks in enforce). */
 export const AIRLOCK_PROJECT_UNKNOWN = 'AIRLOCK_PROJECT_UNKNOWN';
 
-const CLIENTS: readonly AirlockClient[] = ['pi', 'opencode'];
+const CLIENTS: readonly AirlockClient[] = AIRLOCK_CLIENTS;
 /** A logged target is for a person to read, not a copy of the command. */
 const MAX_TARGET_CHARS = 500;
 /** Redaction works on at most this much of a target, so its cost is bounded. */

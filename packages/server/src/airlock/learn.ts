@@ -57,6 +57,7 @@ import {
   type AirlockLearnSource,
   type AirlockPolicy,
   type AirlockProposedHost,
+  AIRLOCK_CLIENTS,
   type Capability,
   type HubEventType,
   type StorageProvider,
@@ -67,7 +68,7 @@ import {
 export const MAX_LEARNING_IMPORT_HOSTS = 1000;
 /** The most one import entry may claim: a count, not a payload. */
 const MAX_IMPORT_HITS = 1_000_000_000;
-const CLIENTS: readonly string[] = ['pi', 'opencode'];
+const CLIENTS: readonly string[] = AIRLOCK_CLIENTS;
 const DIRECTIONS: readonly string[] = ['download', 'upload', 'both'];
 
 /** A host's registrable domain by the public suffix list, private section included (a vercel.app site is its own). */

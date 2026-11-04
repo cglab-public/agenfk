@@ -950,7 +950,8 @@ describePosix('the agenfk adapters in the machine (CGLAB-696 task 9)', () => {
   const agenfkDir = () => path.join(home, '.agenfk');
   // The running CLI's own hook scripts (its install's bin/), not whatever ~/.agenfk/bin holds: review.
   const hooksDir = () => path.join(root, 'install', 'bin');
-  const HOOKS = ['agenfk-airlock.mjs', 'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs'];
+  // GH-356: the Claude Code / Codex per-call hook and the run hook their installed settings name, too.
+  const HOOKS = ['agenfk-airlock-hook.mjs', 'agenfk-airlock.mjs', 'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs', 'agenfk-run-hook.mjs'];
   const withHooks = (over: Record<string, unknown> = {}) => runtime({ hookScriptsDir: hooksDir(), ...over });
   const copies = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.calls.filter((c) => c.args[1] === 'cp').map((c) => c.args);
   const target = (a: string[]) => a[a.length - 1];
@@ -1005,6 +1006,37 @@ describePosix('the agenfk adapters in the machine (CGLAB-696 task 9)', () => {
         expect(flag(a, '--uid'), file).toBeUndefined();
       }
     }
+  });
+
+  // GH-356: the hooks the host's Claude Code and Codex settings name live at ~/.local/bin/agenfk-*,
+  // which the machine does not have; root gives the session its own, running the scripts above.
+  const localBin = () => path.join(home, '.local', 'bin');
+  const claudeSpec = () => specOf({ client: 'claude', piAgentDir: undefined });
+
+  it.each(['claude', 'codex'] as const)('a %s session gets ~/.local/bin/agenfk-* wrappers root owns, each running its script in the session\'s ~/.agenfk/bin', async (client) => {
+    const { rt, smolvm } = withHooks();
+    await rt.launch(specOf({ client, piAgentDir: undefined }), { file: client, args: [], cwd: workspace });
+    const made = rootScripts(smolvm).find((x) => x.includes('mount -t tmpfs') && x.includes(localBin()));
+    expect(made).toBeDefined();
+    for (const hook of ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook']) {
+      expect(made).toContain(path.join(localBin(), hook));
+      expect(made).toContain(`exec node "${path.join(agenfkDir(), 'bin', `${hook}.mjs`)}" "$@"`);
+    }
+    // Root's, and runnable by the session: never writable by it.
+    expect(made).toMatch(/chmod 555/);
+  });
+
+  it('a pi session gets no ~/.local/bin of root\'s: its adapters run in-process', async () => {
+    const { rt, smolvm } = withHooks();
+    await rt.launch(specOf(), cmd());
+    expect(rootScripts(smolvm).some((x) => x.includes(localBin()))).toBe(false);
+  });
+
+  it('a claude session launches with the hook scripts present, and is refused when the per-call hook is missing', async () => {
+    fs.rmSync(path.join(hooksDir(), 'agenfk-airlock-hook.mjs'));
+    const { rt, sp } = withHooks();
+    await expect(rt.launch(claudeSpec(), { file: 'claude', args: [], cwd: workspace })).rejects.toThrow(/agenfk-airlock-hook\.mjs/);
+    expect(sp.spawn).not.toHaveBeenCalled();
   });
 
   it('copies only what the host has: no token or policy state yet still launches', async () => {
@@ -1401,6 +1433,84 @@ describePosix('guestPlanOf: what the session cannot move aside or plant', () => 
     // Never a mount root.
     expect(p.pinned).not.toContain(workspace);
     expect(p.pinned).not.toContain(agentDir);
+  });
+
+  // GH-356: what the host's Claude Code and Codex run or load next from the workspace (project
+  // hooks, settings, skills) is held read-only for every client's session, as .claude/commands is.
+  it.each([
+    ['.claude/settings.json', 'file'], ['.claude/settings.local.json', 'file'], ['.claude/hooks', 'dir'],
+    ['.claude/skills', 'dir'], ['.codex', 'dir'],
+  ] as const)('holds the workspace\'s %s read-only', (rel, kind) => {
+    const p0 = path.join(workspace, rel);
+    if (kind === 'dir') fs.mkdirSync(p0, { recursive: true });
+    else { fs.mkdirSync(path.dirname(p0), { recursive: true }); fs.writeFileSync(p0, '{}\n'); }
+    expect(guestPlanOf(specOf(), workspace).readOnly).toContain(p0);
+  });
+
+  // GH-356: a Claude Code / Codex login file is the machine's own, bound over the host's path from the
+  // machine's disk, so nothing the guest writes there (a refresh, a /login) reaches the host's.
+  it('binds a machine-own login file from a store on the machine\'s disk, held by a placeholder when the host has none', () => {
+    const codexDir = path.join(home, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    const auth = path.join(codexDir, 'auth.json');
+    const p = guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }), workspace);
+    expect(p.own).toEqual([{ path: auth, store: expect.stringMatching(/^\/var\/lib\/agenfk\/own\/[0-9a-f]{16}-mount$/), seed: true }]);
+    expect(p.placeholders).toContainEqual({ path: auth, kind: 'file', content: '{}\n' });
+    const script = guestSetupScript(p, 503, 20);
+    expect(script).toContain(`mount --bind '${p.own[0].store}' '${auth}'`);
+    expect(script).toMatch(/chown 503:20/);
+  });
+
+  // Review (GH-356): host-held and mounted logins never share a store, and host-held starts empty every time.
+  it('keeps a store per login mode: a host-held session never binds what a mounted login left', () => {
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    const held = guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined }), workspace).own[0];
+    const mounted = guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }), workspace).own[0];
+    expect(held.store).not.toBe(mounted.store);
+    const script = guestSetupScript({ ...guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined }), workspace) }, 503, 20);
+    expect(script).toContain(`rm -f '${held.store}'; if [ ! -f '${held.store}' ]`);
+    expect(guestSetupScript(guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }), workspace), 503, 20)).not.toContain(`rm -f '${mounted.store}';`);
+  });
+
+  it('keeps the stores in a directory only root may enter: a store is reached through its bind alone (review)', () => {
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    const script = guestSetupScript(guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }), workspace), 503, 20);
+    expect(script).toContain('chmod 700 /var/lib/agenfk/own');
+    expect(script).not.toMatch(/chmod 7[1-7][1-7] \/var\/lib\/agenfk\/own/);
+  });
+
+  it('holds the project config of the folder the client starts in, below the workspace (review)', () => {
+    const app = path.join(workspace, 'packages', 'app');
+    fs.mkdirSync(path.join(app, '.claude'), { recursive: true });
+    const p = guestPlanOf({ ...specOf(), launchDir: app }, workspace);
+    expect(p.readOnly).toContain(path.join(app, '.claude', 'settings.local.json'));
+    expect(p.readOnly).toContain(path.join(workspace, '.claude'));
+  });
+
+  it('a login file with another name (a hard link) is refused: that name would stay the host\'s', () => {
+    const codexDir = path.join(home, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'auth.json'), '{}');
+    fs.linkSync(path.join(codexDir, 'auth.json'), path.join(codexDir, 'alias.json'));
+    expect(() => guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }), workspace)).toThrow(/hard link/);
+  });
+
+  // Review (GH-356): what the host's Claude Code / Codex would run is held even when missing.
+  it('holds a missing .claude/settings.local.json (a placeholder) and a missing .codex (an empty directory) read-only', () => {
+    fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true });
+    const p = guestPlanOf(specOf(), workspace);
+    const local = path.join(workspace, '.claude', 'settings.local.json');
+    expect(p.placeholders).toContainEqual({ path: local, kind: 'file', content: '{}\n' });
+    expect(p.readOnly).toContain(local);
+    expect(p.placeholders).toContainEqual({ path: path.join(workspace, '.codex'), kind: 'dir' });
+    expect(p.readOnly).toContain(path.join(workspace, '.codex'));
+  });
+
+  it('a login file that is a symbolic link is refused: the bind would land where it points', () => {
+    const codexDir = path.join(home, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.symlinkSync(path.join(home, 'elsewhere.json'), path.join(codexDir, 'auth.json'));
+    expect(() => guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined }), workspace)).toThrow(/auth\.json[\s\S]*symbolic link/);
   });
 
   it('lists pins and read-only binds outer first: a bind over a directory hides the binds inside it', () => {

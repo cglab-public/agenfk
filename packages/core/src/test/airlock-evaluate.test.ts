@@ -169,6 +169,12 @@ describe('evaluateAirlock: model selectors', () => {
     ).toBe('deny');
   });
 
+  it('a claude or codex selector covers that client\'s sessions only (GH-356)', () => {
+    const p = policy({ models: [{ client: 'claude' }] });
+    expect(evaluateAirlock(p, cmd('curl http://169.254.169.254/', { client: 'claude' })).decision).toBe('deny');
+    expect(evaluateAirlock(p, cmd('curl http://169.254.169.254/', { client: 'codex' }))).toEqual({ decision: 'allow', why: 'model-not-selected' });
+  });
+
   it('an empty selector list covers every session', () => {
     expect(evaluateAirlock(policy({ models: [] }), cmd('curl http://169.254.169.254/')).decision).toBe('deny');
   });
