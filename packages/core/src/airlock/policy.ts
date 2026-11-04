@@ -6,6 +6,7 @@
  *    stored. Shared by the server PUT, the hub admin PUT and the server's sync.
  */
 import {
+  AIRLOCK_CLIENTS,
   AIRLOCK_HOME_ACCESS,
   BUILTIN_DENY_HOSTS,
   DEFAULT_AIRLOCK_RULES,
@@ -25,7 +26,7 @@ import { isAirlockImageRef } from './image';
 
 const MODES: readonly AirlockMode[] = ['off', 'observe', 'enforce'];
 const ACTIONS: readonly RuleAction[] = ['deny', 'needs-human-approval', 'off'];
-const CLIENTS: readonly string[] = ['pi', 'opencode', '*'];
+const CLIENTS: readonly string[] = [...AIRLOCK_CLIENTS, '*'];
 const RULE_KEYS = Object.keys(DEFAULT_AIRLOCK_RULES) as (keyof AirlockRules)[];
 const SELECTOR_KEYS = ['client', 'provider', 'model'] as const;
 

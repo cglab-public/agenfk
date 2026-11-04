@@ -64,6 +64,15 @@ describe('Recent decisions: client and source filters', () => {
     expect(axios.get).toHaveBeenLastCalledWith(expect.stringMatching(/\/airlock\/decisions$/), { params: expect.objectContaining({ client: 'opencode' }) });
   });
 
+  it('Claude Code and Codex are clients to filter by (GH-356)', async () => {
+    renderPanel();
+    await screen.findByText('target-4');
+    const select = screen.getByLabelText('Filter by client') as HTMLSelectElement;
+    expect(Array.from(select.options).map(o => [o.value, o.textContent])).toEqual(expect.arrayContaining([['claude', 'Claude Code'], ['codex', 'Codex']]));
+    fireEvent.change(select, { target: { value: 'codex' } });
+    await waitFor(() => expect(axios.get).toHaveBeenLastCalledWith(expect.stringMatching(/\/airlock\/decisions$/), { params: expect.objectContaining({ client: 'codex' }) }));
+  });
+
   it('a source asks for that source only, and combines with the client', async () => {
     renderPanel();
     await screen.findByText('target-4');

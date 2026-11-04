@@ -921,6 +921,7 @@ function DecisionsCard() {
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
         <DecisionFilter label="Client" value={filters.client} onChange={set('client')} options={[
           { value: '', label: 'Any' }, { value: 'pi', label: 'pi' }, { value: 'opencode', label: 'opencode' },
+          { value: 'claude', label: 'Claude Code' }, { value: 'codex', label: 'Codex' },
         ]} />
         <DecisionFilter label="Installation" value={filters.installation} onChange={set('installation')} options={[
           { value: '', label: 'Any' },

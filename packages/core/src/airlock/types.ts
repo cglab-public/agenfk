@@ -7,7 +7,9 @@
  */
 
 export type AirlockMode = 'off' | 'observe' | 'enforce';
-export type AirlockClient = 'pi' | 'opencode';
+/** The clients Airlock launches and judges (GH-356 added Claude Code and Codex, with no launch gate). */
+export const AIRLOCK_CLIENTS = Object.freeze(['pi', 'opencode', 'claude', 'codex'] as const);
+export type AirlockClient = (typeof AIRLOCK_CLIENTS)[number];
 
 /** What makes a decision an alert (TEL-2). Here, not in alerts.ts, so interfaces.ts stays free of node imports. */
 export const AIRLOCK_ALERTS = Object.freeze(['cloud-storage', 'metadata-endpoint', 'ioc-host'] as const);

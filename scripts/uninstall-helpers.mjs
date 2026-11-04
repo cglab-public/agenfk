@@ -98,9 +98,13 @@ export function opencodePluginFilenames() {
 
 // True if a single hook entry (from any client's hook array) references an AgenFK
 // hook script. JSON.stringify mirrors how the installer itself matches entries.
+// GH-356: Codex's Airlock PreToolUse hook is AgEnFK's too. It is not a HOOK_VARIANT: those are the
+// hooks registered in Claude Code's settings, and a sandboxed claude gets this one from the launcher.
+export const AIRLOCK_HOOK_MARKER = 'agenfk-airlock-hook';
+
 export function isAgenfkHookEntry(entry) {
   const json = JSON.stringify(entry);
-  return HOOK_VARIANTS.some((marker) => json.includes(marker));
+  return [...HOOK_VARIANTS, AIRLOCK_HOOK_MARKER].some((marker) => json.includes(marker));
 }
 
 // Remove every AgenFK hook entry from a client hook array, returning a new array.

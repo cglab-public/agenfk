@@ -268,6 +268,58 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
     }
   }, TIMEOUT);
 
+  // GH-356: Claude Code and Codex run from the base image, as pi and OpenCode do.
+  it('the base image runs claude and codex', async () => {
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ client: 'claude', piAgentDir: undefined }));
+    const r = await inMachine(spec, 'echo "claude $(claude --version >/dev/null 2>&1; echo rc=$?)"; echo "codex $(codex --version >/dev/null 2>&1; echo rc=$?)"');
+    expect([line(r.out, 'claude'), line(r.out, 'codex')]).toEqual(['claude rc=0', 'codex rc=0']);
+  }, TIMEOUT);
+
+  // GH-356, host-held (the default): the person's login never reaches the guest.
+  it('a host-held claude or codex session cannot read the login file', async () => {
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', '.credentials.json'), '{"fake":"login"}\n');
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{"fake":"login"}\n');
+    const claude = await inMachine(buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ client: 'claude', piAgentDir: undefined })),
+      `echo "creds $(cat ${path.join(home, '.claude', '.credentials.json')} 2>/dev/null | grep -c fake)"`);
+    expect(line(claude.out, 'creds')).toBe('creds 0');
+    const codex = await inMachine(buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ client: 'codex', piAgentDir: undefined })),
+      `echo "auth $(cat ${path.join(home, '.codex', 'auth.json')} 2>/dev/null | grep -c fake)"`);
+    expect(line(codex.out, 'auth')).toBe('auth 0');
+  }, TIMEOUT);
+
+  // GH-356, --login mount: the machine's own copy; a refresh in the guest never rotates the host's.
+  it('a mounted codex login is the machine\'s own copy: the guest reads it, and what it writes stays in the machine', async () => {
+    const auth = path.join(home, '.codex', 'auth.json');
+    fs.mkdirSync(path.dirname(auth), { recursive: true });
+    fs.writeFileSync(auth, '{"fake":"host-login"}\n');
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }));
+    const r = await inMachine(spec, `echo "seen $(grep -c host-login ${auth})"; printf '{"fake":"rotated"}' > ${auth}; echo "wrote rc=$?"; echo "now $(grep -c rotated ${auth})"`);
+    expect([line(r.out, 'seen'), line(r.out, 'wrote'), line(r.out, 'now')]).toEqual(['seen 1', 'wrote rc=0', 'now 1']);
+    expect(fs.readFileSync(auth, 'utf8')).toBe('{"fake":"host-login"}\n');
+  }, TIMEOUT);
+
+  // GH-356 review: the machine keeps a mounted login; a host-held session after it must not see it.
+  it('a host-held codex session after a mounted one sees no login: the stores are the modes\' own', async () => {
+    const auth = path.join(home, '.codex', 'auth.json');
+    fs.mkdirSync(path.dirname(auth), { recursive: true });
+    fs.writeFileSync(auth, '{"fake":"host-login"}\n');
+    await inMachine(buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' })), 'true');
+    const r = await inMachine(buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ client: 'codex', piAgentDir: undefined })),
+      `echo "seen $(grep -c host-login ${auth})"`);
+    expect(line(r.out, 'seen')).toBe('seen 0');
+  }, TIMEOUT);
+
+  // GH-356: the hooks the host's Claude/Codex settings name, at ~/.local/bin, run in the machine.
+  it('a claude session finds AgEnFK\'s hooks at ~/.local/bin, runnable and not writable', async () => {
+    const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce' }), session({ client: 'claude', piAgentDir: undefined }));
+    const bin = path.join(home, '.local', 'bin');
+    const r = await inMachine(spec, `echo "runs $(echo '{}' | ${bin}/agenfk-mcp-enforcer >/dev/null 2>&1; echo rc=$?)"; echo "write $(echo x > ${bin}/agenfk-gatekeeper 2>/dev/null; echo rc=$?)"`);
+    expect(line(r.out, 'runs')).toBe('runs rc=0');
+    expect(line(r.out, 'write')).not.toBe('write rc=0');
+  }, TIMEOUT);
+
   // Story review 2 (DEL-1): OpenCode's config runs AgEnFK's MCP from the host's install; in the
   // machine the bundled MCP is there, and its tool calls reach the server through the relay.
   it('an OpenCode session runs AgEnFK\'s MCP from where its config says, and a tool call reaches the server', async () => {

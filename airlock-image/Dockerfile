@@ -37,6 +37,10 @@ FROM ${NODE_IMAGE}
 ARG PI_VERSION=1.4.0
 # The other client Airlock launches (agenfk airlock opencode): it runs from the image, as pi does.
 ARG OPENCODE_VERSION=1.19.1
+# Claude Code and Codex (GH-356: agenfk airlock claude|codex), from the image too. Codex is pinned to
+# the release whose hook trust and login file the launcher was checked against (spike 2144721a).
+ARG CLAUDE_CODE_VERSION=2.1.318
+ARG CODEX_VERSION=0.163.0
 ARG MONGOSH_VERSION=2.5.8
 
 RUN apt-get update \
@@ -63,6 +67,7 @@ RUN --mount=type=secret,id=extra-ca \
 RUN --mount=type=secret,id=extra-ca \
     if [ -s /run/secrets/extra-ca ]; then cat /etc/ssl/certs/ca-certificates.crt /run/secrets/extra-ca > /tmp/build-ca.pem; export CURL_CA_BUNDLE=/tmp/build-ca.pem NODE_EXTRA_CA_CERTS=/run/secrets/extra-ca; fi \
  && npm install -g --no-audit --no-fund "@earendil-works/pi-coding-agent@${PI_VERSION}" "opencode-ai@${OPENCODE_VERSION}" \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
  && npm cache clean --force && rm -f /tmp/build-ca.pem
 
 # mongosh from MongoDB's own build: the npm package compiles native modules.

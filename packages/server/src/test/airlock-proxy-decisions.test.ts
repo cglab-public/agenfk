@@ -217,7 +217,7 @@ describe('POST /airlock/proxy-decisions', () => {
 
   // The envelope is refused whole: nothing of the batch is recorded.
   const envelope: Array<[string, Record<string, unknown>]> = [
-    ['an unknown client', { client: 'claude', decisions: [deny] }],
+    ['an unknown client', { client: 'cursor', decisions: [deny] }],
     ['no decisions array', { decisions: undefined }],
     ['a decisions object', { decisions: { 0: deny } }],
     ['too many decisions', { decisions: Array.from({ length: MAX_PROXY_DECISIONS + 1 }, (_, i) => ({ ...deny, host: `h${i}.example` })) }],

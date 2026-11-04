@@ -34,9 +34,11 @@ import { AIRLOCK_SANDBOX_MARKER, type SandboxSpec } from './spec';
 import { allowListArgs, GATEWAY, networkKey, RESOLVER_REPORT_PORT, type Route } from './egress';
 import { processIdentity, sameProcess } from './processIdentity';
 import { breakStaleLock, withOwnerLock, type OwnerLockDeps } from './ownerLock';
-import { machineCa, placeholderFor, startKeyInjector, type KeyInjector, type KeyInjectorOptions, type MachineCa } from './keyInjector';
+import { machineCa, placeholderFor, startKeyInjector, type InjectorRoute, type KeyInjector, type KeyInjectorOptions, type LocalAnswer, type MachineCa } from './keyInjector';
 import { readRegularFile } from './safeRead';
 import type { AirlockRuntime, LaunchHooks, LaunchedSandbox, ProxyDecision, RuntimeCheck, SandboxCommand, SandboxExit } from './runtime';
+import type { CachedToken } from './tokenSource';
+import { CODEX_ACCESS_PLACEHOLDER, CODEX_REFRESH_PLACEHOLDER, codexStandInAuth, codexTokenAnswer } from './codexLogin';
 
 /** Exactly the version AgEnFK installs (no range): a bump is a reviewed change. */
 export const SMOLVM_VERSION = '1.32.4';
@@ -165,6 +167,11 @@ export interface GuestPlan {
    * never touched. One the host lacks is held by an empty directory to bind onto.
    */
   platform: Array<{ path: string; store: string }>;
+  /**
+   * Files the guest keeps its own copy of (GH-356: a Claude Code / Codex login), each bound over the
+   * host's path from a store on the machine's disk; `seed`: the store starts as the host's file.
+   */
+  own: Array<{ path: string; store: string; seed: boolean }>;
 }
 
 /**
@@ -175,6 +182,9 @@ const FILE_PLACEHOLDERS: Record<string, string> = {
   commondir: '.\n', 'config.worktree': '', config: '',
   // A client's settings held while missing: a file its client reads as empty, never a dir it cannot read.
   'settings.json': '{}\n', 'opencode.json': '{}\n', 'opencode.jsonc': '{}\n', 'config.json': '{}\n', 'package.json': '{}\n',
+  // GH-356: Claude Code's and Codex's, read as empty: never a directory where they expect a file.
+  'CLAUDE.md': '', 'AGENTS.md': '', 'config.toml': '', 'hooks.json': '{}\n',
+  'settings.local.json': '{}\n',
 };
 
 /** In the workspace's .git: unwritable, and held when missing. */
@@ -188,11 +198,22 @@ const NESTED_GIT_PROTECTED = ['hooks', 'config', 'commondir', 'config.worktree',
  */
 // The project's pi and OpenCode config and extensions too (fix review 3), which the host's client
 // loads on its next launch here. Not .pi itself: pi takes its settings lock in it before reading.
+// GH-356: Claude Code's project settings (hooks), hooks and skills, and Codex's project config, likewise.
 const WORKSPACE_PROTECTED = ['.gitmodules', '.vscode', '.idea', '.claude/commands', '.claude/agents', '.mcp.json',
+  '.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/skills', '.codex',
   'opencode.json', 'opencode.jsonc', '.opencode', '.pi/settings.json', '.pi/extensions'];
+/**
+ * GH-356 review: held even when missing, or the session could create them for the host's Claude Code
+ * or Codex to run next (a hook in settings.local.json, an MCP command in .codex/config.toml or .mcp.json,
+ * 02334f6f). A missing .claude, .codex or .mcp.json is held as an empty read-only directory, which git
+ * does not show - nothing for the agent to commit - and no client reads a server from.
+ */
+const WORKSPACE_HELD = ['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/skills', '.codex', '.mcp.json'];
 
 /** Where the guest keeps its own platform dirs, on the machine's disk. */
 export const GUEST_PLATFORM_ROOT = '/var/lib/agenfk/platform';
+/** Where the guest keeps its own copy of a login file (GH-356), on the machine's disk. */
+export const GUEST_OWN_ROOT = '/var/lib/agenfk/own';
 /** A directory holding one of the markers gets its own copy of `dir` in the guest. */
 const PLATFORM_DIRS: Array<{ markers: string[]; dir: string }> = [
   { markers: ['package.json'], dir: 'node_modules' },
@@ -894,6 +915,8 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     held.push(...[...git.files, ...git.includes, ...git.hooksPaths, ...git.programs.map((prog) => prog.path)].filter((f) => mounted(f)));
   }
   const existing = keepsNothing ? [] : WORKSPACE_PROTECTED.map((p) => path.join(workspace, p));
+  const launchDir = spec.launchDir && inside(path.resolve(spec.launchDir), workspace) ? path.resolve(spec.launchDir) : null;
+  if (!keepsNothing) held.push(...[workspace, ...(launchDir && launchDir !== workspace ? [launchDir] : [])].flatMap((dir) => WORKSPACE_HELD.map((p) => path.join(dir, p))));
   for (const p of [...new Set([...held, ...existing].flatMap(expand).map((x) => path.resolve(x)))]) {
     if (!mounted(p) || roots.includes(p) || readOnly.includes(p)) continue;
     if (kindOf(p)) {
@@ -998,8 +1021,24 @@ export function guestPlanOf(spec: SandboxSpec, workspace: string, readConfig: Gi
     platform.push({ path: p, store: `${GUEST_PLATFORM_ROOT}/${hash16(p)}` });
   }
 
+  const own: GuestPlan['own'] = [];
+  for (const { path: raw, seed } of spec.filesystem.machineOwn ?? []) {
+    const p = path.resolve(raw);
+    // Only a file in a write root: anywhere else the guest could not write it anyway.
+    if (!writeRoots.some((r) => inside(p, r)) || kindOfPath(path.dirname(p)) !== 'dir') continue;
+    const kind = kindOf(p);
+    if (kind && fs.lstatSync(p).isSymbolicLink()) throw new Error(`Airlock cannot give the guest its own ${p}: it is a symbolic link, and the guest's copy would be bound where it points. Nothing was launched.`);
+    if (kind === 'dir') throw new Error(`Airlock cannot give the guest its own ${p}: it is a directory, not a file. Nothing was launched.`);
+    // Binding over one name leaves another name of the file the host's (review): refused, as hiding one is.
+    const linked = kind ? hardLinkedIn(p) : null;
+    if (linked) throw new Error(`Airlock cannot give the guest its own ${linked}: it has another name (a hard link), which the session could read and write the host's login by. Nothing was launched.`);
+    if (!kind) placeholders.push({ path: p, kind: 'file', content: '{}\n' });
+    // A store per mode (review): a host-held session never sees what a mounted login left in the machine.
+    own.push({ path: p, store: `${GUEST_OWN_ROOT}/${hash16(p)}${seed ? '-mount' : '-held'}`, seed });
+  }
+
   return {
-    mounts: roots.map((r) => ({ host: r, guest: r, readOnly: false as const })), pinned, writable, readOnly, hidden, placeholders, platform,
+    mounts: roots.map((r) => ({ host: r, guest: r, readOnly: false as const })), pinned, writable, readOnly, hidden, placeholders, platform, own,
     ...(homeMount && spec.filesystem.homeMount === 'ro' ? { homeReadOnly: homeMount } : {}),
     ...(fromLockfiles.incomplete ? { platformIncomplete: fromLockfiles.incomplete } : {}),
   };
@@ -1049,6 +1088,22 @@ export function platformBindLines(platform: GuestPlan['platform'], uid: number, 
     + `if [ -d ${quote(d.path)} ] && [ "$(readlink -f ${quote(d.path)})" = ${quote(d.path)} ]; then mounted ${quote(mountinfoPath(d.path))} || mount --bind ${quote(d.store)} ${quote(d.path)}; fi`);
 }
 
+/**
+ * The root lines binding each machine-own file from its store (GH-356). A store is made once: from the
+ * seed the launcher copied in (the host's login), else empty; then the guest's alone, never written back.
+ */
+export function ownBindLines(own: GuestPlan['own'], uid: number, gid: number): string[] {
+  if (!own.length) return [];
+  return [
+    `mkdir -p ${GUEST_OWN_ROOT}; chown 0:0 ${GUEST_OWN_ROOT}; chmod 700 ${GUEST_OWN_ROOT}`,
+    // A host-held store starts empty every time; a mounted one is the machine's login, kept.
+    ...own.map((o) => (o.seed ? '' : `rm -f ${quote(o.store)}; `)
+      + `if [ ! -f ${quote(o.store)} ]; then if [ -f ${quote(`${o.store}.seed`)} ]; then mv ${quote(`${o.store}.seed`)} ${quote(o.store)}; else printf '{}\n' > ${quote(o.store)}; fi; fi; `
+      + `rm -f ${quote(`${o.store}.seed`)}; chown ${uid}:${gid} ${quote(o.store)}; chmod 600 ${quote(o.store)}; `
+      + `if [ -f ${quote(o.path)} ] && [ "$(readlink -f ${quote(o.path)})" = ${quote(o.path)} ]; then mounted ${quote(mountinfoPath(o.path))} || mount --bind ${quote(o.store)} ${quote(o.path)}; fi`),
+  ];
+}
+
 export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPem?: string, home = '/'): string {
   // A home a passwd line cannot hold is left out of it (the session's HOME is set either way).
   const pwHome = /^\/[^:\n]*$/.test(home) ? home : '/';
@@ -1091,6 +1146,7 @@ export function guestSetupScript(plan: GuestPlan, uid: number, gid: number, caPe
     // The guest's own platform dirs, before the pins: a pin over a directory carries the binds inside it.
     ...(plan.platform.length ? [`mkdir -p ${GUEST_PLATFORM_STAMPS} ${GUEST_PLATFORM_CACHE}`, `chown ${uid}:${gid} ${GUEST_PLATFORM_STAMPS} ${GUEST_PLATFORM_CACHE}`] : []),
     ...platformBindLines(plan.platform, uid, gid),
+    ...ownBindLines(plan.own ?? [], uid, gid),
     // A home folder opened read-only first: everything else is bound inside it.
     ...(plan.homeReadOnly ? [`ro ${quote(plan.homeReadOnly)} ${quote(mountinfoPath(plan.homeReadOnly))}`] : []),
     // Hidden first, then pins and read-only binds outer first.
@@ -1289,7 +1345,10 @@ export const WATCHDOG = 'cat >/dev/null; exec "$@"';
  * gets the running CLI's own (review, task 9): ~/.agenfk/bin may hold an older install's, whose
  * gate cannot prove a machine and would refuse every call.
  */
-export const HOOK_SCRIPTS = ['agenfk-airlock.mjs', 'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs'];
+// GH-356: the run hook and the Claude Code / Codex per-call hook too, which their settings name.
+export const HOOK_SCRIPTS = ['agenfk-airlock.mjs', 'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs', 'agenfk-run-hook.mjs', 'agenfk-airlock-hook.mjs'];
+/** The hooks the installer registers for Claude Code and Codex by ~/.local/bin/<name> (GH-356). */
+export const LOCAL_BIN_HOOKS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook'];
 
 /**
  * The compiled resolver beside this file (dist/airlock/guestDns.js; the desktop bundle carries it
@@ -1688,7 +1747,8 @@ export class SmolvmRuntime implements AirlockRuntime {
       // The CA and the placeholders are the machine's, made under its lock: two launchers at once
       // would each make their own.
       const ca = machineCa(path.join(this.machineDir(name), 'ca'));
-      const placeholders = this.placeholdersOf(name, spec.maskedEnv.map((m) => m.name));
+      const placeholders = this.placeholdersOf(name, [...spec.maskedEnv.map((m) => m.name), ...(spec.tokenEnv ?? []).map((t) => t.name),
+        ...(spec.tokenLogin ? [CODEX_ACCESS_PLACEHOLDER, CODEX_REFRESH_PLACEHOLDER] : [])]);
       fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
       fs.writeFileSync(sessionFile, JSON.stringify({ pid: process.pid, identity: this.d.processIdentity(process.pid), workspace, purpose: spec.purpose ?? 'client' }));
       const shared = this.liveSessions(name).length > 1;
@@ -1714,7 +1774,8 @@ export class SmolvmRuntime implements AirlockRuntime {
       const machine = await this.ensureMachine(name, workspace, spec.machineImage ?? this.d.image);
       const network = path.join(this.machineDir(name), 'network.json');
       const protections = path.join(this.machineDir(name), 'protections.json');
-      const applied = JSON.stringify({ pinned: plan.pinned, writable: plan.writable, readOnly: plan.readOnly, hidden: plan.hidden, ...(plan.homeReadOnly ? { homeReadOnly: plan.homeReadOnly } : {}) });
+      // The login binds too (review): a session of another login mode would see the other's file.
+      const applied = JSON.stringify({ pinned: plan.pinned, writable: plan.writable, readOnly: plan.readOnly, hidden: plan.hidden, ...(plan.homeReadOnly ? { homeReadOnly: plan.homeReadOnly } : {}), ...(plan.own?.length ? { own: plan.own } : {}) });
       const recorded = (file: string): string | null => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } };
       // The machine's policy, not the session's relay port (each launch has its own): story review.
       if (shared && !joining && recorded(network) !== networkKey(spec.network)) {
@@ -1728,10 +1789,17 @@ export class SmolvmRuntime implements AirlockRuntime {
       // same name with another value is another account, which the shared placeholders would mix.
       const secret = this.machineSecret(name);
       const keyOf = (n: string) => { const v = this.d.hostEnv[n]; return v ? crypto.createHmac('sha256', secret).update(v).digest('hex') : null; };
-      const injecting = JSON.stringify(spec.maskedEnv.map((m) => [m.name, [...m.injectHosts].sort(), keyOf(m.name)]).sort());
+      // A token the host holds (GH-356) is the session's person's: keyed by its provider, its value changes.
+      const injecting = JSON.stringify([
+        ...spec.maskedEnv.map((m) => [m.name, [...m.injectHosts].sort(), keyOf(m.name)]),
+        ...(spec.tokenEnv ?? []).map((t) => [t.name, [...t.injectHosts].sort(), `token:${t.provider}:${crypto.createHmac('sha256', secret).update(t.subject ?? '').digest('hex')}`]),
+        // b3a0992f: a login held on the host is its person's and account's, and its answered hosts are the injector's.
+        ...(spec.tokenLogin ? [[CODEX_ACCESS_PLACEHOLDER, [...spec.tokenLogin.injectHosts].sort(), [...spec.tokenLogin.answerHosts].sort(),
+          `login:${spec.tokenLogin.provider}:${crypto.createHmac('sha256', secret).update(`${spec.tokenLogin.subject ?? ''}\n${spec.tokenLogin.accountId}`).digest('hex')}`]] : []),
+      ].sort());
       // A command joining the session injects nothing, or exactly what the session does (review): the
       // decider may hand a session's flow to the command's injector, which must swap all its keys.
-      const foreign = joining && spec.maskedEnv.length > 0 && recorded(injection) !== injecting;
+      const foreign = joining && (spec.maskedEnv.length > 0 || !!spec.tokenEnv?.length || !!spec.tokenLogin) && recorded(injection) !== injecting;
       if ((shared && !joining && recorded(injection) !== injecting) || foreign) {
         throw new Error(`Another session is in the Airlock machine for ${workspace} with other model keys or inference hosts, so nothing was launched. Launch it once that session has ended.`);
       }
@@ -1752,7 +1820,30 @@ export class SmolvmRuntime implements AirlockRuntime {
           `start the machine for ${workspace}`, { SMOLVM_INTERCEPTOR_TOKEN: icpt.token });
       }
       const unseen = await this.attachMounts(name, plan, workspace, shared, joining);
+      // GH-356: a login the machine is to start from (--login mount) goes in beside its store, read here
+      // before any placeholder stands where a missing one would be; the setup script takes it once.
+      const seeds = joining ? [] : (plan.own ?? []).filter((o) => o.seed && !plan.placeholders.some((h) => h.path === o.path) && (() => {
+        try { return fs.lstatSync(o.path).isFile(); } catch { return false; }
+      })());
       this.ensurePlaceholders(name, plan.placeholders);
+      // b3a0992f: a login held on the host starts from a stand-in, made here: the machine's placeholders
+      // for its tokens and the account it is for, never a token.
+      const held = joining || !spec.tokenLogin ? null : (plan.own ?? []).find((o) => !o.seed && o.path === path.resolve(spec.tokenLogin!.path)) ?? null;
+      if (seeds.length || held) {
+        await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', `mkdir -p ${GUEST_OWN_ROOT}; chown 0:0 ${GUEST_OWN_ROOT}; chmod 700 ${GUEST_OWN_ROOT}`], 'make the machine\'s store for its own login');
+        for (const o of seeds) {
+          await this.must(['machine', 'cp', '--mode', '600', '--uid', '0', '--gid', '0', o.path, `${name}:${o.store}.seed`], `copy ${o.path} into the machine`);
+        }
+      }
+      if (held) {
+        const standIn = path.join(this.machineDir(name), `login-${crypto.randomBytes(8).toString('hex')}.json`);
+        fs.writeFileSync(standIn, codexStandInAuth({ accessToken: placeholders[CODEX_ACCESS_PLACEHOLDER], refreshToken: placeholders[CODEX_REFRESH_PLACEHOLDER], accountId: spec.tokenLogin!.accountId }), { mode: 0o600 });
+        try {
+          await this.must(['machine', 'cp', '--mode', '600', '--uid', '0', '--gid', '0', standIn, `${name}:${held.store}.seed`], 'give the machine its stand-in login');
+        } finally {
+          fs.rmSync(standIn, { force: true });
+        }
+      }
       if (!joining) {
         await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', guestSetupScript(plan, this.d.uid, this.d.gid, ca.certPem, this.homeOf(spec))], 'protect the session\'s files in the machine');
         await this.startResolver(name, workspace, spec);
@@ -1761,6 +1852,7 @@ export class SmolvmRuntime implements AirlockRuntime {
         }
         if (spec.purpose !== 'command') await this.provisionAgenfk(name, spec);
         if (spec.env[AIRLOCK_SANDBOX_MARKER] === 'opencode') await this.provisionMcp(name, spec);
+        if (spec.env[AIRLOCK_SANDBOX_MARKER] === 'claude' || spec.env[AIRLOCK_SANDBOX_MARKER] === 'codex') await this.provisionLocalBin(name, spec);
       }
       // Not under a session already in the machine: its dependencies would change beneath it.
       if (!shared && plan.platform.length) await this.installPlatform(name, workspace, spec, plan.platformIncomplete);
@@ -1841,6 +1933,33 @@ export class SmolvmRuntime implements AirlockRuntime {
     // The session's group may read it; nobody in the machine may write it.
     const token = path.join(dir, 'verify-token');
     if (regular(token)) await give(token, token, ['--mode', '440', '--uid', '0', '--gid', String(this.d.gid)]);
+  }
+
+  /**
+   * GH-356: the hooks the host's Claude Code and Codex settings name live at ~/.local/bin/agenfk-*, which
+   * the machine does not have (and the host's are built for the host). Root gives the session its own:
+   * a tmpfs it cannot write, each wrapper running its script in the session's ~/.agenfk/bin.
+   */
+  private async provisionLocalBin(name: string, spec: SandboxSpec): Promise<void> {
+    const dir = path.join(this.homeOf(spec), '.local', 'bin');
+    const scripts = path.join(this.homeOf(spec), '.agenfk', 'bin');
+    // Not refused when it cannot be done (a home folder the policy opens, without ~/.local/bin): the
+    // machine still holds; the hooks the client's settings name there then fail, which it reports.
+    const r = await this.cli(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', [
+      'set -e',
+      MOUNTED_FN,
+      ROOTDIR_FN,
+      `D=${quote(dir)}`,
+      // In a home folder the policy opens it is the host's directory (the user's, as its parents are):
+      // covered where it is, never through a link. Elsewhere root makes it.
+      `if ! mounted ${quote(mountinfoPath(dir))}; then`,
+      `  if [ -d "$D" ] && [ ! -L "$D" ] && [ "$(readlink -f "$D")" = "$D" ]; then mount -t tmpfs -o size=1m,mode=0755 tmpfs "$D"; else rootdir "$D"; mount -t tmpfs -o size=1m,mode=0755 tmpfs "$D"; fi`,
+      'fi',
+      'mount -o remount,rw "$D"',
+      ...LOCAL_BIN_HOOKS.map((h) => `printf '%s\n' '#!/bin/sh' ${quote(`exec node "${path.join(scripts, `${h}.mjs`)}" "$@"`)} > ${quote(path.join(dir, h))}; chmod 555 ${quote(path.join(dir, h))}`),
+      'mount -o remount,ro "$D"',
+    ].join('\n')]).catch((e) => ({ code: 1, stdout: '', stderr: String(e?.message ?? e) }));
+    if (r.code !== 0) this.d.warn(`Airlock: could not give the session AgEnFK's hooks at ${dir} (${said(r)}); the hooks Claude Code or Codex runs from there will fail in the machine.`);
   }
 
   /**
@@ -2022,7 +2141,7 @@ export class SmolvmRuntime implements AirlockRuntime {
     let child: ChildProcess;
     try {
       const { ca, placeholders, commandSetup } = await this.prepare(name, workspace, spec, sessionFile);
-      const keyEnv = await this.routeSession(name, spec, ca, placeholders, undo);
+      const keyEnv = await this.routeSession(name, spec, ca, placeholders, undo, hooks.tokenFor);
       if (spec.purpose !== 'command') undo.push(this.followPolicyState(name, spec));
       const tell = hooks.onProxyDecision;
       if (tell) {
@@ -2115,18 +2234,33 @@ export class SmolvmRuntime implements AirlockRuntime {
    * Unix socket. The env the guest gets for the keys: the machine's placeholders, never the keys.
    */
   private async routeSession(name: string, spec: SandboxSpec, ca: MachineCa, placeholders: Record<string, string>,
-    undo: Array<() => void | Promise<void>>): Promise<string[]> {
+    undo: Array<() => void | Promise<void>>, tokenFor?: LaunchHooks['tokenFor']): Promise<string[]> {
     if (spec.relayPort) {
       // The relay itself listens on the loopback (the launcher's, SX-1): carried to it from its socket.
       const socket = await this.forwardSocket(name, spec.relayPort, '127.0.0.1', undo);
       undo.push(this.d.egress.addRoute(name, { kind: 'relay', port: spec.relayPort, socket }));
     }
-    const secrets = spec.maskedEnv.flatMap((m) => {
+    const secrets: Array<{ name: string; placeholder: string; hosts: string[]; file?: boolean } & ({ value: string } | { token: CachedToken })> = spec.maskedEnv.flatMap((m) => {
       const value = this.d.hostEnv[m.name];
       return value ? [{ name: m.name, placeholder: placeholders[m.name], value, hosts: m.injectHosts }] : [];
     });
+    // GH-356: a stand-in for a token the host holds, which the launch's TokenSource gives per request.
+    for (const t of spec.tokenEnv ?? []) {
+      if (!tokenFor) throw new Error(`Airlock has no login to give this session for ${t.name}: the launch passed no token source. Nothing was launched.`);
+      secrets.push({ name: t.name, placeholder: placeholders[t.name], token: tokenFor(t.provider), hosts: t.injectHosts });
+    }
+    // b3a0992f: a login file's stand-in access token, swapped as an env var's is; its refresh answered here.
+    const answered: Array<{ host: string; answer: LocalAnswer }> = [];
+    const login = spec.tokenLogin;
+    if (login) {
+      if (!tokenFor) throw new Error(`Airlock has no login to give this session for ${login.path}: the launch passed no token source. Nothing was launched.`);
+      const token = tokenFor(login.provider);
+      secrets.push({ name: CODEX_ACCESS_PLACEHOLDER, placeholder: placeholders[CODEX_ACCESS_PLACEHOLDER], token, hosts: login.injectHosts, file: true });
+      const answer = codexTokenAnswer({ token, accessToken: placeholders[CODEX_ACCESS_PLACEHOLDER], refreshToken: placeholders[CODEX_REFRESH_PLACEHOLDER] });
+      answered.push(...login.answerHosts.map((host) => ({ host, answer })));
+    }
     // A model server on the host loopback (a9bc650c) the injector does not take: carried as it is.
-    const injected = new Set(secrets.flatMap((s) => s.hosts));
+    const injected = new Set([...secrets.flatMap((s) => s.hosts), ...answered.map((a) => a.host)]);
     for (const e of spec.loopbackInference ?? []) {
       if (injected.has(e.host)) continue;
       const socket = await this.forwardSocket(name, e.port, e.host, undo);
@@ -2138,12 +2272,16 @@ export class SmolvmRuntime implements AirlockRuntime {
       const e = spec.network.allow.find((a) => a.startsWith(`${host}:`));
       return e ? Number(e.slice(host.length + 1)) : 443;
     };
-    const routes = [...new Set(secrets.flatMap((s) => s.hosts))].map((host) => ({ host, port: portOf(host) }));
+    const routes: InjectorRoute[] = [
+      ...[...new Set(secrets.flatMap((s) => s.hosts))].map((host) => ({ host, port: portOf(host) })),
+      ...answered.filter((a) => !secrets.some((s) => s.hosts.includes(a.host))).map((a) => ({ host: a.host, port: 443, answer: a.answer })),
+    ];
     const socket = this.d.egress.routeSocket(name);
-    const injector = await this.d.startInjector({ ca, routes, secrets: secrets.map(({ placeholder, value }) => ({ placeholder, value })), socketPath: socket });
+    const injector = await this.d.startInjector({ ca, routes, secrets: secrets.map((x) => ('token' in x ? { placeholder: x.placeholder, token: x.token } : { placeholder: x.placeholder, value: x.value })), socketPath: socket });
     undo.push(() => injector.close());
     for (const r of routes) undo.push(this.d.egress.addRoute(name, { kind: 'inject', host: r.host, port: r.port, socket }));
-    return secrets.map((s) => `${s.name}=${s.placeholder}`);
+    // A login file's stand-in is in the file, not the environment.
+    return secrets.filter((s) => !s.file).map((s) => `${s.name}=${s.placeholder}`);
   }
 
   /**

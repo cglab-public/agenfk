@@ -472,6 +472,18 @@ describe('Admin → Airlock', () => {
       expect(rows[2].className).not.toMatch(/bg-status-danger-bg/);
     });
 
+    it('filters by every Airlock client, Claude Code and Codex included (GH-356)', async () => {
+      hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
+      renderPage('activity');
+      const s = await section();
+      const client = within(s).getByLabelText(/^client$/i) as HTMLSelectElement;
+      expect(Array.from(client.options).map(o => [o.value, o.textContent])).toEqual(
+        [['', 'Any'], ['pi', 'pi'], ['opencode', 'opencode'], ['claude', 'Claude Code'], ['codex', 'Codex']],
+      );
+      fireEvent.change(client, { target: { value: 'claude' } });
+      await waitFor(() => expect(get).toHaveBeenCalledWith('/v1/admin/airlock/decisions', { params: { client: 'claude' } }));
+    });
+
     it('asks the hub again with each filter chosen', async () => {
       hubAnswers(STORED, FLEET, NO_HISTORY, RECENT);
       renderPage('activity');

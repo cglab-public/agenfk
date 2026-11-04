@@ -219,6 +219,23 @@ describe('POST /airlock/evaluate', () => {
     expect(latest).toMatchObject({ decision: 'deny', rule: 'builtin-metadata-deny', mode: 'observe' });
   });
 
+  it('a Claude Code or Codex session is judged and logged under its own client (GH-356)', async () => {
+    for (const client of ['claude', 'codex']) {
+      const res = await evaluate({ client });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.verdict.observed?.decision ?? res.body.verdict.decision).toBe('deny');
+      const [latest] = await decisions();
+      expect(latest).toMatchObject({ client, decision: 'deny', rule: 'builtin-metadata-deny' });
+    }
+  });
+
+  it('the decision log filters by the claude and codex clients (GH-356)', async () => {
+    const res = await agent().get('/airlock/decisions').query({ client: 'codex' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.decisions.length).toBeGreaterThan(0);
+    expect(res.body.decisions.every((d: any) => d.client === 'codex')).toBe(true);
+  });
+
   it('bad input is 400: unknown client, args not an object', async () => {
     expect((await evaluate({ client: 'vim' })).status).toBe(400);
     expect((await evaluate({ args: 'curl x' })).status).toBe(400);
