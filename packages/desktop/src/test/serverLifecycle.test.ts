@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { resolveServer, ServerUnavailableError } from '../main/serverLifecycle.js';
+import type { AdoptVerdict } from '../main/adoption.js';
 
 /** A probe that answers true only for the ports listed. */
 const probeFor = (...live: number[]) =>
@@ -146,6 +147,128 @@ describe('resolveServer — adopting an already-running server', () => {
     const stopChild = vi.fn();
     result.stop(stopChild);
     expect(stopChild).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * BUG cdae6039: a live AgEnFK server is not automatically ours to adopt.
+ *
+ * On Windows, a WSL server of an older version answered on localhost:3000 and
+ * the app adopted it, so the window rendered that server's stale UI. The judge
+ * says, per port, whether to adopt, adopt and warn, or skip; a skipped server
+ * sits on another database, so starting our own is safe.
+ */
+describe('resolveServer — judging a found server (BUG cdae6039)', () => {
+  type Verdict = AdoptVerdict;
+  const judgeBy = (verdicts: Record<number, Verdict>) =>
+    vi.fn(async (port: number): Promise<Verdict> => verdicts[port] ?? { kind: 'adopt' });
+
+  it('skips a server judged foreign and starts its own instead', async () => {
+    let started = false;
+    const spawn = vi.fn(() => { started = true; });
+    const result = await resolveServer({
+      readPort: () => (started ? 3001 : null),
+      fallbackPorts: [3000],
+      probe: async (p: number) => p === 3000 || (started && p === 3001),
+      judge: judgeBy({ 3000: { kind: 'skip', serverVersion: '2.0.0-beta.35' } }),
+      spawn,
+      waitMs: 0,
+    });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(result.port).toBe(3001);
+    expect(result.adopted).toBe(false);
+  });
+
+  it('never settles on the skipped server while waiting for its own to publish', async () => {
+    // The port file can still name the foreign server for a few polls after
+    // the spawn; answering is not enough, it must also pass the judge.
+    let polls = 0;
+    let started = false;
+    const result = await resolveServer({
+      readPort: () => {
+        if (!started) return 3000;
+        polls += 1;
+        return polls >= 3 ? 3001 : 3000;
+      },
+      probe: async (p: number) => p === 3000 || (started && p === 3001),
+      judge: judgeBy({ 3000: { kind: 'skip', serverVersion: '2.0.0-beta.35' } }),
+      spawn: () => { started = true; },
+      waitMs: 0,
+      attempts: 10,
+    });
+    expect(result.port).toBe(3001);
+    expect(result.adopted).toBe(false);
+  });
+
+  it('adopts another candidate when the first one is skipped', async () => {
+    const spawn = vi.fn();
+    const result = await resolveServer({
+      readPort: () => 3000,
+      fallbackPorts: [3002],
+      probe: probeFor(3000, 3002),
+      judge: judgeBy({ 3000: { kind: 'skip', serverVersion: '2.0.0-beta.35' } }),
+      spawn,
+      waitMs: 0,
+    });
+    expect(result.port).toBe(3002);
+    expect(result.adopted).toBe(true);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('adopts a mismatched server on the same database and reports the mismatch', async () => {
+    const spawn = vi.fn();
+    const result = await resolveServer({
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      judge: judgeBy({ 3000: { kind: 'adopt-mismatch', serverVersion: '2.0.0-beta.35', database: 'same' } }),
+      spawn,
+      waitMs: 0,
+    });
+    expect(result.adopted).toBe(true);
+    expect(result.versionMismatch).toEqual({ serverVersion: '2.0.0-beta.35', database: 'same' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('accepts its own server even when it is judged a version mismatch', async () => {
+    // The bundled server's package version need not equal app.getVersion();
+    // our own server, on our database, must still do.
+    let started = false;
+    const result = await resolveServer({
+      readPort: () => (started ? 3001 : null),
+      probe: async (p: number) => started && p === 3001,
+      judge: judgeBy({ 3001: { kind: 'adopt-mismatch', serverVersion: '2.0.0-beta.46', database: 'same' } }),
+      spawn: () => { started = true; },
+      waitMs: 0,
+      adoptAttempts: 1,
+    });
+    expect(result.port).toBe(3001);
+    expect(result.adopted).toBe(false);
+  });
+
+  it('reports no mismatch for a server judged adoptable', async () => {
+    const result = await resolveServer({
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      judge: judgeBy({}),
+      spawn: vi.fn(),
+      waitMs: 0,
+    });
+    expect(result.adopted).toBe(true);
+    expect(result.versionMismatch).toBeUndefined();
+  });
+
+  it('only judges ports where an AgEnFK server answered', async () => {
+    const judge = judgeBy({});
+    await resolveServer({
+      readPort: () => 3000,
+      fallbackPorts: [3001],
+      probe: probeFor(3001),
+      judge,
+      spawn: vi.fn(),
+      waitMs: 0,
+    });
+    expect(judge).toHaveBeenCalledWith(3001);
+    expect(judge).not.toHaveBeenCalledWith(3000);
   });
 });
 
