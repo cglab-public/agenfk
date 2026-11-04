@@ -166,6 +166,8 @@ export interface AgenfkPrefs {
   readonly autoApprove: boolean;
   readonly defaultAgentId: string;
   readonly askBeforeOpening: boolean;
+  readonly uiScale: number;
+  readonly terminalFontSize: number;
 }
 
 export interface AgenfkPrefsApi {
@@ -181,6 +183,14 @@ export interface AgenfkPrefsApi {
    */
   setDefaultAgent(agentId: string): Promise<AgenfkPrefs>;
   setAskBeforeOpening(value: boolean): Promise<AgenfkPrefs>;
+  /** The window's zoom factor. Main applies it to this window as it stores it. */
+  setUiScale(value: number): Promise<AgenfkPrefs>;
+  setTerminalFontSize(value: number): Promise<AgenfkPrefs>;
+  /**
+   * Preferences changed without this renderer asking — today, a zoom shortcut
+   * handled in main. Returns the unsubscribe.
+   */
+  onChanged(cb: (prefs: AgenfkPrefs) => void): () => void;
 }
 
 /**
@@ -306,6 +316,11 @@ const prefs: AgenfkPrefsApi = {
   // main refuses a non-boolean for THIS key rather than coercing it, because
   // coerced junk would turn the confirmation OFF.
   setAskBeforeOpening: value => ipcRenderer.invoke('prefs:set', { key: 'askBeforeOpening', value: value === true }),
+  // `Number()` for the same reason `String()` is used above: main refuses
+  // anything that is not a number in range, and this guarantees only the type.
+  setUiScale: value => ipcRenderer.invoke('prefs:set', { key: 'uiScale', value: Number(value) }),
+  setTerminalFontSize: value => ipcRenderer.invoke('prefs:set', { key: 'terminalFontSize', value: Number(value) }),
+  onChanged: cb => subscribe('prefs:changed', cb),
 };
 
 const editors: AgenfkEditorsApi = {

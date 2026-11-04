@@ -200,6 +200,67 @@ const openSettings = async (section = 'Agents'): Promise<void> => {
   fireEvent.click(within(rail).getByRole('button', { name: new RegExp(`^${section}$`, 'i') }));
 };
 
+/** Which main view is showing: the others are hidden, not unmounted. */
+const shownView = (): string[] =>
+  ['kanban', 'terminal', 'settings', 'project']
+    .filter(id => document.getElementById(`panel-${id}`)?.hidden === false);
+
+// STORY 5f367fa9: Settings replaced the main area with no way back to what
+// was running, a terminal for one.
+describe('leaving it', () => {
+  it('has a Back button that returns to the board it was opened from', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: /^settings$/i });
+    expect(shownView()).toEqual(['kanban']);
+    await openSettingsRaw();
+    expect(shownView()).toEqual(['settings']);
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    fireEvent.click(within(panel).getByRole('button', { name: /^back to tasks$/i }));
+    expect(shownView()).toEqual(['kanban']);
+  });
+
+  const openProjectPage = async (): Promise<void> => {
+    fireEvent.click(await screen.findByRole('button', { name: /^agenfk$/i }));
+    await waitFor(() => expect(shownView()).toEqual(['project']));
+  };
+  // The project page has a Settings of its own; this is the app's.
+  const appSettings = (): void => {
+    fireEvent.click(within(screen.getByTestId('shell-nav')).getByRole('button', { name: /^settings$/i }));
+  };
+
+  it('returns to the project page when that is where Settings was opened', async () => {
+    renderShell();
+    await openProjectPage();
+    appSettings();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    fireEvent.click(within(panel).getByRole('button', { name: /^back to project$/i }));
+    expect(shownView()).toEqual(['project']);
+  });
+
+  it('keeps where it came from when Settings is opened again from Settings', async () => {
+    renderShell();
+    await openProjectPage();
+    appSettings();
+    await screen.findByRole('region', { name: /settings/i });
+    appSettings();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    fireEvent.click(within(panel).getByRole('button', { name: /^back to project$/i }));
+    expect(shownView()).toEqual(['project']);
+  });
+
+  it('leaves Escape alone', async () => {
+    // Escape closes the menus and dialogs that stay usable over Settings (the
+    // sidebar project menu, What's new); leaving Settings on the same key
+    // would do both at once.
+    renderShell();
+    await openSettingsRaw();
+    await screen.findByRole('region', { name: /settings/i });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(shownView()).toEqual(['settings']);
+  });
+});
+
 describe('getting to it', () => {
   it('pins the entry below the sessions rail, out of the scrolling list', async () => {
     // The projects list has no upper bound. An entry that scrolls with it is
@@ -303,7 +364,7 @@ describe('the shape of it', () => {
     // appearing or vanishing is a decision somebody has to come here and make.
     // General is absent on purpose: it held only the tmux toggle.
     expect(within(rail).getAllByRole('button').map(b => b.textContent))
-      .toEqual(['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents']);
+      .toEqual(['Account', 'App', 'Appearance', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents']);
   });
 
   it('lists only sections that have something in them', async () => {
@@ -324,6 +385,96 @@ describe('the shape of it', () => {
       const rows = panel.querySelectorAll('[data-testid="setting-row"]');
       expect(rows.length, `section "${label}" has no settings in it`).toBeGreaterThan(0);
     }
+  });
+
+  // BUG a2a094e5. jsdom does not lay out, so these pin the CSS that decides
+  // the widths; the widths themselves were measured in Chromium (on the card).
+  it('sizes the stacked sections to the pane, not to the widest hidden one', async () => {
+    // Every section sits in one grid cell. An auto column takes the widest
+    // min-content of all of them, hidden ones included, so one long command
+    // in another section pushed Appearance past the window edge.
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const grid = panel.querySelector('[data-testid="settings-pane"]')?.parentElement;
+    expect(grid?.className).toMatch(/(^|\s)grid(\s|$)/);
+    expect(grid?.className).toMatch(/grid-cols-1|\[grid-template-columns:minmax\(0,1fr\)\]/);
+    // And nothing that brings the auto column back at some width.
+    expect(grid?.className.split(/\s+/).filter(c => /grid-cols-/.test(c))).toEqual(['grid-cols-1']);
+  });
+
+  // At 150-200% scale the window is 480-853 CSS px wide and the app sidebar
+  // keeps its share, so the pane must reflow by its own width (a container
+  // query), not by the viewport's.
+  it('folds the section rail to icons when the pane is narrow, keeping each name', async () => {
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const root = panel.querySelector('[data-testid="settings-root"]');
+    expect(root?.className).toMatch(/(^|\s)@container(\s|$)/);
+    const rail = within(panel).getByRole('navigation', { name: /settings sections/i });
+    const column = rail.closest('[data-testid="settings-rail"]') ?? rail;
+    expect(column.className).toMatch(/(^|\s)w-12(\s|$)/);
+    expect(column.className).toMatch(/@xl:w-48/);
+    expect(column.className).not.toMatch(/(^|\s)w-48(\s|$)/);
+    for (const button of within(rail).getAllByRole('button')) {
+      // The accessible name stays; only the visible label folds away.
+      expect(button.textContent?.trim()).not.toBe('');
+      expect(button.querySelector('span')?.className).toMatch(/sr-only/);
+      expect(button.querySelector('span')?.className).toMatch(/@xl:not-sr-only/);
+      expect(button.getAttribute('title')).toBe(button.textContent?.trim());
+      expect(button.className).toMatch(/(^|\s)justify-center(\s|$)/);
+      expect(button.className).toMatch(/@xl:justify-start/);
+    }
+    // Back (5f367fa9) sits in the same column, outside the nav, and folds with it.
+    const back = within(column as HTMLElement).getByRole('button', { name: /^back to tasks$/i });
+    expect(back.querySelector('span')?.className).toMatch(/sr-only/);
+    expect(back.querySelector('span')?.className).toMatch(/@xl:not-sr-only/);
+    expect(back.className).toMatch(/@xl:justify-start/);
+  });
+
+  it('narrows its padding with the pane', async () => {
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const inner = panel.querySelector('[data-testid="settings-body"] > div');
+    expect(inner?.className).toMatch(/(^|\s)px-4(\s|$)/);
+    expect(inner?.className).toMatch(/@xl:px-8/);
+  });
+
+  it('caps the selects of every pane, including sections that do not use rows', async () => {
+    // Hidden panes still lay out in the shared cell, so one wide select in any
+    // section (Airlock's own layout) made every section scroll sideways.
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const panes = [...panel.querySelectorAll('[data-testid="settings-pane"]')];
+    expect(panes.length).toBeGreaterThan(1);
+    for (const pane of panes) expect(pane.className).toMatch(/\[&_select\]:max-w-full/);
+  });
+
+  it('lets a row put its control under the text when they do not fit side by side', async () => {
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const row = panel.querySelector('[data-testid="setting-row"]') as HTMLElement;
+    expect(row.className).toMatch(/(^|\s)flex-wrap(\s|$)/);
+    const control = row.lastElementChild as HTMLElement;
+    // The control's own cap, not the [&_select] one (which also contains the
+    // string): without it the cockpit checkboxes run past a 480px pane.
+    expect(control.className.split(/\s+/)).toContain('max-w-full');
+    expect(control.className).toMatch(/\[&_select\]:max-w-full/);
+  });
+
+  it('wraps a long unbroken word in a row instead of widening the pane', async () => {
+    // A path or a command has no spaces to break at; the text column must be
+    // allowed to break inside it.
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const text = panel.querySelector('[data-testid="setting-row"] > [data-testid="setting-text"]');
+    expect(text?.className).toMatch(/min-w-0/);
+    expect(text?.className).toMatch(/\[overflow-wrap:anywhere\]/);
   });
 });
 
@@ -918,7 +1069,7 @@ describe('the section menu carries an icon', () => {
     renderShell();
     await openSettingsRaw();
     const rail = await screen.findByRole('navigation', { name: /settings sections/i });
-    const labels = ['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents'];
+    const labels = ['Account', 'App', 'Appearance', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents'];
     expect(within(rail).getAllByRole('button').map(b => b.textContent)).toEqual(labels);
     // The name is what an icon actually breaks, so it is looked up by name
     // rather than read off the svg's aria-hidden.
