@@ -442,6 +442,17 @@ describe('the shape of it', () => {
     expect(inner?.className).toMatch(/@xl:px-8/);
   });
 
+  it('caps the selects of every pane, including sections that do not use rows', async () => {
+    // Hidden panes still lay out in the shared cell, so one wide select in any
+    // section (Airlock's own layout) made every section scroll sideways.
+    renderShell();
+    await openSettingsRaw();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    const panes = [...panel.querySelectorAll('[data-testid="settings-pane"]')];
+    expect(panes.length).toBeGreaterThan(1);
+    for (const pane of panes) expect(pane.className).toMatch(/\[&_select\]:max-w-full/);
+  });
+
   it('lets a row put its control under the text when they do not fit side by side', async () => {
     renderShell();
     await openSettingsRaw();

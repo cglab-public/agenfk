@@ -1171,7 +1171,10 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
               tech and inert: nothing in them can be read, focused or clicked.
               grid-cols-1 is minmax(0,1fr): the implicit auto column took the
               widest min-content of every section, hidden ones included, and
-              pushed the shown one past the window edge (a2a094e5). */}
+              pushed the shown one past the window edge (a2a094e5). Every
+              select in a pane is capped too, not only a row's: a section with
+              its own layout (Airlock) had 281px selects that, even invisible,
+              made a 198px body scroll sideways at 200% scale. */}
           <div className="mt-8 grid grid-cols-1">
             {sections.map(section => {
               const isShown = section.id === shown.id;
@@ -1179,7 +1182,7 @@ export function SettingsPanel({ projectId, initialSection, onBack, backLabel = '
                 <div
                   key={section.id}
                   data-testid="settings-pane"
-                  className={clsx('[grid-area:1/1]', !isShown && 'invisible')}
+                  className={clsx('[grid-area:1/1] [&_select]:max-w-full', !isShown && 'invisible')}
                   aria-hidden={isShown ? undefined : true}
                   inert={!isShown}
                 >
