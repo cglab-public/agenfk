@@ -15,6 +15,10 @@ import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { registerPtyIpc } from '../main/ptyIpc';
 import { answerFullScreenQuery } from '../main/windowFullScreen';
 import { PtyRegistry } from '../main/ptyRegistry';
+import { wireUiScale } from '../main/windowUiScale';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 const h = vi.hoisted(() => ({
   invoked: new Set<string>(),
@@ -80,6 +84,20 @@ beforeAll(async () => {
   await registry.spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
   push('\u001b]0;⣾ Editing a file\u0007hello');
   exit({ exitCode: 0 });
+  // The zoom shortcut pushes the stored scale to an open Settings (INFRA-425):
+  // driven through the window it is wired to, as the registry is above.
+  const listeners: Record<string, (...args: unknown[]) => void> = {};
+  wireUiScale({
+    webContents: {
+      isDestroyed: () => false,
+      setZoomFactor: () => {},
+      getZoomFactor: () => 1,
+      send: (channel: string) => { sent.add(channel); },
+      on: (event: string, cb: (...args: unknown[]) => void) => { listeners[event] = cb; },
+    },
+  } as never, () => fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-surface-')), 'linux');
+  listeners['before-input-event']({ preventDefault: () => {} },
+    { type: 'keyDown', key: '=', control: true, meta: false, alt: false, shift: false });
   emitted = [...sent, 'window:fullScreen'].sort();
 });
 
