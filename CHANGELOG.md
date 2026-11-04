@@ -14,6 +14,36 @@ All notable changes to AgEnFK are documented here.
   `ci-check` GitHub Action does not set Node up, so on an older runner Node it now warns and runs the gated steps
   (or fails under `policy: require`), as for a release it cannot install.
 
+**Verify** (#348)
+
+- **The full suite is about 40% faster on Windows, with the same tests.** On a 14-CPU Windows 11 machine, one full
+  run went from 3458 s to 2050 s (-40.7%), with every spec still run against real git repos and the whole suite
+  still run when a card leaves REVIEW. Test repos are copied from a per-worker template instead of rebuilt, a verify
+  request remembers its read-only git queries (a coding step spawns git at most 12 times, down from 29, and a closing
+  verify at most 37, down from 51-52), and Windows now runs 40% of the CPUs as test workers, at most 8, instead of a
+  quarter. POSIX is unchanged, and `--maxWorkers` still overrides it.
+
+**Development** (#348)
+
+- **Test fixture repos come from `gitTemplate` and `cloneGitTemplate`**, in
+  `packages/server/src/test/helpers/gitFixture.ts`. A spec that needs unique SHAs, real commit dates, or to test init
+  or clone itself still builds its own repo.
+
+**Security** (#351, #352)
+
+- **Vulnerable transitive dependencies are upgraded** (#325): dompurify, follow-redirects, engine.io, vite, hono,
+  ip-address, fast-uri, katex, fflate, postcss-selector-parser, undici, js-yaml, immutable, moment, `@vitest/mocker`
+  and `@humanfs/node`. A new test fails if any resolved copy in the lockfile falls below its patched version.
+- **The desktop app moves from Electron 40 to 42.11.18**, which fixes 26 Dependabot alerts (10 high, 10 medium, 6
+  low). It was run on Windows only: Linux, macOS, the bundled server (`utilityProcess.fork`) and a packaged installer
+  were not exercised. The folder picker (`showOpenDialog`) now opens in Downloads.
+
+**Fixes** (#349)
+
+- **The installers work when the user folder has accented letters on Windows.** On Node 22, `fs.cpSync` stopped the
+  process with no message (exit code 3) for a path such as `C:\Users\Fábio`, leaving `~/.agenfk-system` or
+  `~/.agenfk-hub` half copied. `npx github:cglab-public/agenfk` and `agenfk-hub` now copy the install file by file.
+
 ## [2.1.0-beta.16] — 2026-11-02
 
 **Hub sync** (#346, #347)
