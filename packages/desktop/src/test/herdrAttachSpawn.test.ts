@@ -145,9 +145,16 @@ describe('an attach carries no HERDR variables', () => {
     expect(spawned[0].env.PATH).toBeTruthy();
   });
 
-  it("leaves an ordinary agent's environment alone", async () => {
+  it('strips them from an ordinary terminal too (INFRA-425)', async () => {
+    /*
+     * This used to assert the opposite — an ordinary terminal KEPT the herdr
+     * variables. That is the behaviour that broke `herdr` typed into any of
+     * this app's shells when the app itself was launched from a herdr pane
+     * ("nested herdr is disabled", measured 2026-10-06): these terminals are
+     * never herdr's panes, so nothing they run should believe it is in one.
+     */
     process.env.HERDR_PANE_ID = 'w8:p1';
     await makeRegistry().spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
-    expect(spawned[0].env.HERDR_PANE_ID).toBe('w8:p1');
+    expect(spawned[0].env.HERDR_PANE_ID).toBeUndefined();
   });
 });

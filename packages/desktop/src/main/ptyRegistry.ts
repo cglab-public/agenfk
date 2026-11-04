@@ -461,8 +461,8 @@ export class PtyRegistry {
      *
      * MEASURED: herdr launched from inside a herdr pane answers "nested herdr
      * is disabled by default" and exits. If this app was itself started from
-     * such a terminal it inherits HERDR_PANE_ID, and every attach would die on
-     * startup with a message nobody would trace back to here.
+     * such a terminal it inherits HERDR_PANE_ID — and so did every terminal it
+     * opened, until the strip below was applied to all of them (INFRA-425).
      */
     /*
      * The executable detection found, not its bare name. On Windows the bare
@@ -476,7 +476,14 @@ export class PtyRegistry {
     const launcher = this.deps.launcher ?? platform;
 
     const baseEnv = buildPtyEnv(process.env, (await this.deps.loginPath?.()) ?? null);
-    const env = attaching ? envWithoutHerdr(baseEnv) : baseEnv;
+    /*
+     * Without herdr's variables for EVERY terminal, not only the attach
+     * (INFRA-425). An app started from inside a herdr pane carried them into
+     * each shell it opened, and `herdr` run there refused with "nested herdr
+     * is disabled" although nothing was nested: these terminals are this
+     * app's, never herdr's panes.
+     */
+    const env = envWithoutHerdr(baseEnv);
 
     // Opaque and unguessable, and deliberately not derived from the item id:
     // a session id travels to the renderer, and one built from a card id would
