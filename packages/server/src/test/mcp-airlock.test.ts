@@ -70,4 +70,9 @@ describe('Airlock MCP tools', () => {
     expect(t.inputSchema.required).toContain('client');
     expect(Object.keys(t.inputSchema.properties)).toEqual(expect.arrayContaining(['client', 'model', 'command', 'path', 'url']));
   });
+
+  it('airlock_check takes every Airlock client, Claude Code and Codex included (GH-356)', () => {
+    const t = tools.find(x => x.name === 'airlock_check');
+    expect(t.inputSchema.properties.client.enum).toEqual(['pi', 'opencode', 'claude', 'codex']);
+  });
 });

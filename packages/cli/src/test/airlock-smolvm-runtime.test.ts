@@ -68,6 +68,7 @@ function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string
   const machines = new Map<string, Machine>(Object.entries(init.machines ?? {}));
   const mounts = new Map<string, Array<{ source: string; target: string; readOnly: boolean }>>();
   const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+  const copied: Array<{ args: string[]; src: string; dest: string; content: string | null }> = [];
   const ok = (stdout = ''): SmolvmResult => ({ code: 0, stdout, stderr: '' });
   const fail = (stderr: string): SmolvmResult => ({ code: 1, stdout: '', stderr });
   const run = vi.fn(async (args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): Promise<SmolvmResult> => {
@@ -118,8 +119,14 @@ function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string
           return ok();
         }
         return fail('unknown mount verb');
-      case 'cp':
+      case 'cp': {
+        // What was copied in, read now: the launcher may remove its file once copied.
+        const [src, dest] = args.slice(-2);
+        let content: string | null = null;
+        try { content = fs.readFileSync(src, 'utf8'); } catch { /* not a file */ }
+        copied.push({ args, src, dest, content });
         return ok();
+      }
       case 'exec': {
         const failed = init.execFails?.(args);
         return failed ? fail(failed) : ok(init.execStdout?.(args) ?? '');
@@ -134,7 +141,7 @@ function fakeSmolvm(init: { machines?: Record<string, Machine>; version?: string
   });
   const verbs = () => calls.filter((c) => c.args[0] === 'machine').map((c) => c.args[1]);
   const execs = () => calls.filter((c) => c.args[1] === 'exec').map((c) => c.args);
-  return { run, calls, machines, mounts, verbs, execs };
+  return { run, calls, machines, mounts, verbs, execs, copied };
 }
 
 // The smolvm runtime runs on macOS and Linux only (check() refuses Windows): what it does with Unix
@@ -950,7 +957,8 @@ describePosix('the agenfk adapters in the machine (CGLAB-696 task 9)', () => {
   const agenfkDir = () => path.join(home, '.agenfk');
   // The running CLI's own hook scripts (its install's bin/), not whatever ~/.agenfk/bin holds: review.
   const hooksDir = () => path.join(root, 'install', 'bin');
-  const HOOKS = ['agenfk-airlock.mjs', 'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs'];
+  // GH-356: the Claude Code / Codex per-call hook and the run hook their installed settings name, too.
+  const HOOKS = ['agenfk-airlock-hook.mjs', 'agenfk-airlock.mjs', 'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs', 'agenfk-run-hook.mjs'];
   const withHooks = (over: Record<string, unknown> = {}) => runtime({ hookScriptsDir: hooksDir(), ...over });
   const copies = (smolvm: ReturnType<typeof fakeSmolvm>) => smolvm.calls.filter((c) => c.args[1] === 'cp').map((c) => c.args);
   const target = (a: string[]) => a[a.length - 1];
@@ -1005,6 +1013,37 @@ describePosix('the agenfk adapters in the machine (CGLAB-696 task 9)', () => {
         expect(flag(a, '--uid'), file).toBeUndefined();
       }
     }
+  });
+
+  // GH-356: the hooks the host's Claude Code and Codex settings name live at ~/.local/bin/agenfk-*,
+  // which the machine does not have; root gives the session its own, running the scripts above.
+  const localBin = () => path.join(home, '.local', 'bin');
+  const claudeSpec = () => specOf({ client: 'claude', piAgentDir: undefined });
+
+  it.each(['claude', 'codex'] as const)('a %s session gets ~/.local/bin/agenfk-* wrappers root owns, each running its script in the session\'s ~/.agenfk/bin', async (client) => {
+    const { rt, smolvm } = withHooks();
+    await rt.launch(specOf({ client, piAgentDir: undefined }), { file: client, args: [], cwd: workspace });
+    const made = rootScripts(smolvm).find((x) => x.includes('mount -t tmpfs') && x.includes(localBin()));
+    expect(made).toBeDefined();
+    for (const hook of ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook']) {
+      expect(made).toContain(path.join(localBin(), hook));
+      expect(made).toContain(`exec node "${path.join(agenfkDir(), 'bin', `${hook}.mjs`)}" "$@"`);
+    }
+    // Root's, and runnable by the session: never writable by it.
+    expect(made).toMatch(/chmod 555/);
+  });
+
+  it('a pi session gets no ~/.local/bin of root\'s: its adapters run in-process', async () => {
+    const { rt, smolvm } = withHooks();
+    await rt.launch(specOf(), cmd());
+    expect(rootScripts(smolvm).some((x) => x.includes(localBin()))).toBe(false);
+  });
+
+  it('a claude session launches with the hook scripts present, and is refused when the per-call hook is missing', async () => {
+    fs.rmSync(path.join(hooksDir(), 'agenfk-airlock-hook.mjs'));
+    const { rt, sp } = withHooks();
+    await expect(rt.launch(claudeSpec(), { file: 'claude', args: [], cwd: workspace })).rejects.toThrow(/agenfk-airlock-hook\.mjs/);
+    expect(sp.spawn).not.toHaveBeenCalled();
   });
 
   it('copies only what the host has: no token or policy state yet still launches', async () => {
@@ -1401,6 +1440,84 @@ describePosix('guestPlanOf: what the session cannot move aside or plant', () => 
     // Never a mount root.
     expect(p.pinned).not.toContain(workspace);
     expect(p.pinned).not.toContain(agentDir);
+  });
+
+  // GH-356: what the host's Claude Code and Codex run or load next from the workspace (project
+  // hooks, settings, skills) is held read-only for every client's session, as .claude/commands is.
+  it.each([
+    ['.claude/settings.json', 'file'], ['.claude/settings.local.json', 'file'], ['.claude/hooks', 'dir'],
+    ['.claude/skills', 'dir'], ['.codex', 'dir'],
+  ] as const)('holds the workspace\'s %s read-only', (rel, kind) => {
+    const p0 = path.join(workspace, rel);
+    if (kind === 'dir') fs.mkdirSync(p0, { recursive: true });
+    else { fs.mkdirSync(path.dirname(p0), { recursive: true }); fs.writeFileSync(p0, '{}\n'); }
+    expect(guestPlanOf(specOf(), workspace).readOnly).toContain(p0);
+  });
+
+  // GH-356: a Claude Code / Codex login file is the machine's own, bound over the host's path from the
+  // machine's disk, so nothing the guest writes there (a refresh, a /login) reaches the host's.
+  it('binds a machine-own login file from a store on the machine\'s disk, held by a placeholder when the host has none', () => {
+    const codexDir = path.join(home, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    const auth = path.join(codexDir, 'auth.json');
+    const p = guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }), workspace);
+    expect(p.own).toEqual([{ path: auth, store: expect.stringMatching(/^\/var\/lib\/agenfk\/own\/[0-9a-f]{16}-mount$/), seed: true }]);
+    expect(p.placeholders).toContainEqual({ path: auth, kind: 'file', content: '{}\n' });
+    const script = guestSetupScript(p, 503, 20);
+    expect(script).toContain(`mount --bind '${p.own[0].store}' '${auth}'`);
+    expect(script).toMatch(/chown 503:20/);
+  });
+
+  // Review (GH-356): host-held and mounted logins never share a store, and host-held starts empty every time.
+  it('keeps a store per login mode: a host-held session never binds what a mounted login left', () => {
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    const held = guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined }), workspace).own[0];
+    const mounted = guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }), workspace).own[0];
+    expect(held.store).not.toBe(mounted.store);
+    const script = guestSetupScript({ ...guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined }), workspace) }, 503, 20);
+    expect(script).toContain(`rm -f '${held.store}'; if [ ! -f '${held.store}' ]`);
+    expect(guestSetupScript(guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }), workspace), 503, 20)).not.toContain(`rm -f '${mounted.store}';`);
+  });
+
+  it('keeps the stores in a directory only root may enter: a store is reached through its bind alone (review)', () => {
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    const script = guestSetupScript(guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }), workspace), 503, 20);
+    expect(script).toContain('chmod 700 /var/lib/agenfk/own');
+    expect(script).not.toMatch(/chmod 7[1-7][1-7] \/var\/lib\/agenfk\/own/);
+  });
+
+  it('holds the project config of the folder the client starts in, below the workspace (review)', () => {
+    const app = path.join(workspace, 'packages', 'app');
+    fs.mkdirSync(path.join(app, '.claude'), { recursive: true });
+    const p = guestPlanOf({ ...specOf(), launchDir: app }, workspace);
+    expect(p.readOnly).toContain(path.join(app, '.claude', 'settings.local.json'));
+    expect(p.readOnly).toContain(path.join(workspace, '.claude'));
+  });
+
+  it('a login file with another name (a hard link) is refused: that name would stay the host\'s', () => {
+    const codexDir = path.join(home, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'auth.json'), '{}');
+    fs.linkSync(path.join(codexDir, 'auth.json'), path.join(codexDir, 'alias.json'));
+    expect(() => guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined, loginMode: 'mount' }), workspace)).toThrow(/hard link/);
+  });
+
+  // Review (GH-356): what the host's Claude Code / Codex would run is held even when missing.
+  it('holds a missing .claude/settings.local.json (a placeholder) and a missing .codex (an empty directory) read-only', () => {
+    fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true });
+    const p = guestPlanOf(specOf(), workspace);
+    const local = path.join(workspace, '.claude', 'settings.local.json');
+    expect(p.placeholders).toContainEqual({ path: local, kind: 'file', content: '{}\n' });
+    expect(p.readOnly).toContain(local);
+    expect(p.placeholders).toContainEqual({ path: path.join(workspace, '.codex'), kind: 'dir' });
+    expect(p.readOnly).toContain(path.join(workspace, '.codex'));
+  });
+
+  it('a login file that is a symbolic link is refused: the bind would land where it points', () => {
+    const codexDir = path.join(home, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.symlinkSync(path.join(home, 'elsewhere.json'), path.join(codexDir, 'auth.json'));
+    expect(() => guestPlanOf(specOf({ client: 'codex', piAgentDir: undefined }), workspace)).toThrow(/auth\.json[\s\S]*symbolic link/);
   });
 
   it('lists pins and read-only binds outer first: a bind over a directory hides the binds inside it', () => {
@@ -1899,7 +2016,23 @@ describePosix('guestPlanOf: what the session cannot move aside or plant', () => 
 
   it('does not hold the IDE dirs ASRT protected when they are missing: an empty .idea would be noticed', () => {
     const held = guestPlanOf(specOf(), workspace).placeholders.map((p) => p.path);
-    for (const n of ['.vscode', '.idea', '.mcp.json', '.gitmodules']) expect(held).not.toContain(path.join(workspace, n));
+    for (const n of ['.vscode', '.idea', '.gitmodules']) expect(held).not.toContain(path.join(workspace, n));
+  });
+
+  // 02334f6f: the session could create a .mcp.json whose MCP command the host's Claude Code runs next.
+  // Held as an empty directory: git does not show one (nothing for the agent to commit), and no
+  // client reads servers from it.
+  it('holds a missing workspace .mcp.json read-only, as an empty directory git does not show', () => {
+    const p = guestPlanOf(specOf(), workspace);
+    expect(p.placeholders).toContainEqual({ path: path.join(workspace, '.mcp.json'), kind: 'dir' });
+    expect(p.readOnly).toContain(path.join(workspace, '.mcp.json'));
+  });
+
+  it('holds a missing .mcp.json in the folder the client starts in too', () => {
+    const app = path.join(workspace, 'packages', 'app');
+    fs.mkdirSync(app, { recursive: true });
+    const p = guestPlanOf({ ...specOf(), launchDir: app }, workspace);
+    expect(p.placeholders).toContainEqual({ path: path.join(app, '.mcp.json'), kind: 'dir' });
   });
 
   // Review 01a193dc-38d2: a protected path the session could make behind a link was skipped
@@ -2485,6 +2618,100 @@ describePosix('the AgEnFK server and the model key, from inside the machine', ()
     await rt.launch(keySession({ inferenceHosts: ['llm.example.com:8443'] }), cmd());
     expect(inj.started[0].routes).toEqual([{ host: 'llm.example.com', port: 8443 }]);
   });
+});
+
+describePosix('a ChatGPT login held on the host, in the machine (b3a0992f)', () => {
+  const loginSpec = (over: Partial<SandboxSession> = {}) => specOf({
+    client: 'codex', piAgentDir: undefined, inferenceHosts: ['chatgpt.com'], clientHosts: ['auth.openai.com'],
+    tokenLogin: { provider: 'openai', subject: 'dana', accountId: 'acct-1', answerHosts: ['auth.openai.com'] }, ...over,
+  });
+  const held = () => ({
+    get: vi.fn(async () => 'live-1'),
+    invalidate: vi.fn(async () => undefined),
+    token: vi.fn(async () => ({ accessToken: 'live-1', expiresAt: Date.now() + 3_600_000, accountId: 'acct-1' })),
+  });
+  type Started = { routes: Array<{ host: string; port: number; answer?: (r: { method: string; path: string; body: Buffer }) => Promise<{ status: number; body: string }> }>; secrets: Array<{ placeholder: string; token?: unknown; value?: string }> };
+  function injector() {
+    const started: Started[] = [];
+    const startInjector = vi.fn(async (o: Started & { socketPath?: string }) => { started.push(o); return { port: 0, socket: o.socketPath, close: async () => undefined }; });
+    return { started, startInjector };
+  }
+  beforeEach(() => {
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{"tokens":{"access_token":"host-real-token","refresh_token":"host-real-refresh"}}\n');
+  });
+  const standInOf = (smolvm: ReturnType<typeof fakeSmolvm>) => {
+    const cp = smolvm.copied.find((c) => /\/var\/lib\/agenfk\/own\/[0-9a-f]{16}-held\.seed$/.test(c.dest));
+    expect(cp, 'a stand-in copied into the held store').toBeDefined();
+    return { cp: cp!, auth: JSON.parse(cp!.content ?? 'null') };
+  };
+
+  it('copies a stand-in login into the machine\'s held store, root\'s alone: the account and placeholders, never the token or the host\'s file', async () => {
+    const inj = injector();
+    const { rt, smolvm } = runtime({ ...inj });
+    await rt.launch(loginSpec(), cmd(), { tokenFor: () => held() });
+    const { cp, auth } = standInOf(smolvm);
+    expect(auth).toMatchObject({ auth_mode: 'chatgpt', tokens: { account_id: 'acct-1', access_token: expect.stringMatching(/^airlock_/), refresh_token: expect.stringMatching(/^airlock_/) } });
+    expect(auth.tokens.access_token).not.toBe(auth.tokens.refresh_token);
+    expect(cp.content).not.toMatch(/live-1|host-real/);
+    expect(cp.src).not.toBe(path.join(home, '.codex', 'auth.json'));
+    expect(flag(cp.args, '--mode')).toBe('600');
+    expect(flag(cp.args, '--uid')).toBe('0');
+    // The launcher's copy of the stand-in is gone once copied.
+    expect(fs.existsSync(cp.src)).toBe(false);
+  });
+
+  it('injects the token on chatgpt.com where the stand-in access token is, and answers auth.openai.com on the host, both routed through the injector', async () => {
+    const inj = injector();
+    const egress = fakeEgress();
+    const { rt, smolvm } = runtime({ ...inj, egress });
+    const token = held();
+    await rt.launch(loginSpec(), cmd(), { tokenFor: (p) => { expect(p).toBe('openai'); return token; } });
+    const { auth } = standInOf(smolvm);
+    const [o] = inj.started;
+    expect(o.routes.map((r) => ({ host: r.host, port: r.port, answered: !!r.answer }))).toEqual([
+      { host: 'chatgpt.com', port: 443, answered: false },
+      { host: 'auth.openai.com', port: 443, answered: true },
+    ]);
+    expect(o.secrets).toEqual([{ placeholder: auth.tokens.access_token, token }]);
+    expect(egress.routes.filter((r) => r.kind === 'inject').map((r) => (r as Extract<Route, { kind: 'inject' }>).host).sort()).toEqual(['auth.openai.com', 'chatgpt.com']);
+    // The host's answer to a refresh hands back the same stand-ins, so the injector keeps swapping them.
+    const answer = o.routes[1].answer!;
+    const r = await answer({ method: 'POST', path: '/oauth/token', body: Buffer.from(JSON.stringify({ grant_type: 'refresh_token', refresh_token: auth.tokens.refresh_token })) });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toMatchObject({ access_token: auth.tokens.access_token, refresh_token: auth.tokens.refresh_token });
+    expect(token.invalidate).toHaveBeenCalledWith('live-1');
+  });
+
+  it('gives the guest no env var for the login: codex reads it from its auth.json', async () => {
+    const { rt, sp } = runtime({ ...injector() });
+    await rt.launch(loginSpec(), cmd(), { tokenFor: () => held() });
+    const args = (sp.spawn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(args.join(' ')).not.toMatch(/live-1|AGENFK_CODEX/);
+  });
+
+  it('a launch without a token source is refused before the machine starts its session', async () => {
+    const { rt, sp } = runtime({ ...injector() });
+    await expect(rt.launch(loginSpec(), cmd())).rejects.toThrow(/login[\s\S]*token source/);
+    expect(sp.spawn).not.toHaveBeenCalled();
+  });
+
+  // Review: each half of the fingerprint on its own, and the same login let in.
+  for (const [what, other, refused] of [
+    ['another person, the same account', { subject: 'eve', accountId: 'acct-1' }, true],
+    ['the same person, another account', { subject: 'dana', accountId: 'acct-2' }, true],
+    ['the same person and account', { subject: 'dana', accountId: 'acct-1' }, false],
+  ] as const) {
+    it(`a second session beside it with ${what} is ${refused ? 'refused: the stand-ins are the machine\'s' : 'let in'}`, async () => {
+      const smolvm = fakeSmolvm();
+      const a = runtime({ smolvm, ...injector() });
+      await a.rt.launch(loginSpec(), cmd(), { tokenFor: () => held() });
+      const b = runtime({ smolvm, ...injector() });
+      const second = b.rt.launch(loginSpec({ tokenLogin: { provider: 'openai', ...other, answerHosts: ['auth.openai.com'] } }), cmd(), { tokenFor: () => held() });
+      if (refused) await expect(second).rejects.toThrow(/other model keys/);
+      else await expect(second).resolves.toBeDefined();
+    });
+  }
 });
 
 describePosix('the image of the machine (CGLAB-696 task 4)', () => {

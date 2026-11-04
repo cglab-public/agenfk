@@ -173,7 +173,7 @@ export function airlockCoverageMiddleware(deps: AirlockCoverageDeps) {
     if (project === undefined) {
       return res.status(409).json({
         error: AIRLOCK_LAUNCH_OUTDATED,
-        message: 'This Airlock session was launched by an agenfk older than this server, which does not say which project it is for. Exit it and launch it again (agenfk airlock pi|opencode).',
+        message: 'This Airlock session was launched by an agenfk older than this server, which does not say which project it is for. Exit it and launch it again (agenfk airlock pi|opencode|claude|codex).',
       });
     }
     req.airlockSession = nonce;

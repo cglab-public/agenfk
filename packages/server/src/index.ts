@@ -14,7 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { toToon, nextPollDelay, POLL_CAP_MS, resolveProjectIdentity } from "@agenfk/core";
+import { toToon, nextPollDelay, POLL_CAP_MS, resolveProjectIdentity, AIRLOCK_CLIENTS } from "@agenfk/core";
 import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
@@ -497,7 +497,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            client: { type: "string", enum: ["pi", "opencode"], description: "The agent client whose policy coverage to judge by." },
+            client: { type: "string", enum: [...AIRLOCK_CLIENTS], description: "The agent client whose policy coverage to judge by." },
             model: { type: "string", description: "The session's model as provider/model, e.g. cloudflare-workers-ai/@cf/zai-org/glm-5.2. Omit when unknown." },
             command: { type: "string", description: "A shell command to judge." },
             path: { type: "string", description: "A file path to judge." },
@@ -1149,7 +1149,7 @@ async function callToolHandler(request: any): Promise<any> {
       }
       case "airlock_check": {
         const { client, model, command, path: filePath, url } = z.object({
-          client: z.enum(["pi", "opencode"]), model: z.string().optional(),
+          client: z.enum(AIRLOCK_CLIENTS), model: z.string().optional(),
           command: z.string().optional(), path: z.string().optional(), url: z.string().optional(),
         }).parse(request.params.arguments);
         const args: Record<string, string> = {};

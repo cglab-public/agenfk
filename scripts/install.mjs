@@ -1322,7 +1322,8 @@ async function run() {
     await fs.mkdir(internalBinDir, { recursive: true });
     // agenfk-airlock.mjs (GH-294) is spawned by pi and imported by the OpenCode
     // Airlock plugin; it imports resolveApiUrl from agenfk-gatekeeper.mjs beside it.
-    for (const script of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs', 'agenfk-airlock.mjs']) {
+    // agenfk-airlock-hook.mjs (GH-356) is Claude Code's and Codex's per-call hook in the Airlock sandbox.
+    for (const script of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs', 'agenfk-airlock.mjs', 'agenfk-airlock-hook.mjs']) {
         const src = path.join(rootDir, 'bin', script);
         if (existsSync(src)) {
             await fs.copyFile(src, path.join(internalBinDir, script));
@@ -1649,9 +1650,11 @@ async function run() {
             if (existsSync(codexHooksPath)) {
                 try { config = JSON.parse(await fs.readFile(codexHooksPath, 'utf8')); } catch {}
             }
-            config = buildCodexHooksConfig(config, `${prHookDest} --client codex`);
+            // GH-356: the Airlock hook by its ~/.agenfk/bin path, the same inside the machine.
+            const airlockHook = `node "${path.join(agenfkHome, 'bin', 'agenfk-airlock-hook.mjs')}"`;
+            config = buildCodexHooksConfig(config, `${prHookDest} --client codex`, airlockHook);
             await fs.writeFile(codexHooksPath, JSON.stringify(config, null, 2), 'utf8');
-            detail(`  Registered PostToolUse hook in ${codexHooksPath}`);
+            detail(`  Registered PostToolUse and Airlock PreToolUse hooks in ${codexHooksPath}`);
         }
     }
 

@@ -177,3 +177,20 @@ describe('engine boundaries', () => {
     expect(core.DEFAULT_AIRLOCK_POLICY.mode).toBe('off');
   });
 });
+
+describe('Airlock clients: Claude Code and Codex (GH-356)', () => {
+  it('the client set is pi, opencode, claude and codex, in that order, and frozen', () => {
+    expect(core.AIRLOCK_CLIENTS).toEqual(['pi', 'opencode', 'claude', 'codex']);
+    expect(Object.isFrozen(core.AIRLOCK_CLIENTS)).toBe(true);
+  });
+
+  it('a model selector may name claude or codex; the normaliser keeps it and the validator accepts it', () => {
+    const n = normalizeAirlockPolicy({ mode: 'enforce', models: [{ client: 'claude' }, { client: 'codex', provider: 'openai' }] });
+    expect(n.models).toEqual([{ client: 'claude' }, { client: 'codex', provider: 'openai' }]);
+    expect(airlockPolicyErrors({ ...DEFAULT_AIRLOCK_POLICY, mode: 'enforce', models: [{ client: 'claude' }, { client: 'codex' }] })).toEqual([]);
+  });
+
+  it('a client outside the set is still refused (claude-code is the hub\'s event client name, not an Airlock one)', () => {
+    expect(airlockPolicyErrors({ ...DEFAULT_AIRLOCK_POLICY, models: [{ client: 'claude-code' }] }).join('\n')).toMatch(/client/);
+  });
+});

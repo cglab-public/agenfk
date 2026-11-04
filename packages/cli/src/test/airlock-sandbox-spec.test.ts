@@ -381,3 +381,135 @@ describePosix('buildSandboxSpec: home access (story 525cd331)', () => {
     expect(open.allowWrite).toEqual(closed.allowWrite);
   });
 });
+
+/**
+ * GH-356: Claude Code and Codex in the sandbox. Their state is writable; what the host's client runs
+ * or loads next from it is not. Logins (decision 2026-11-04, RFC-043 PRX-1): host-held by default -
+ * the login file never reaches the guest, which gets a stand-in the host swaps for the real token -
+ * or, opted into, mounted as the machine's OWN copy, seeded from the host's and never written back.
+ */
+describePosix('buildSandboxSpec: Claude Code (GH-356)', () => {
+  const claude = (over: Partial<SandboxSession> = {}) => session({ client: 'claude', inferenceHosts: ['api.anthropic.com'], ...over });
+
+  it('makes ~/.claude its state, tells Claude to keep its config there, and keeps the image\'s claude from updating itself', () => {
+    const spec = buildSandboxSpec(policy(), claude());
+    expect(spec.filesystem.allowWrite).toContain('/home/u/.claude');
+    expect(spec.env).toMatchObject({ [AIRLOCK_SANDBOX_MARKER]: 'claude', CLAUDE_CONFIG_DIR: '/home/u/.claude', DISABLE_AUTOUPDATER: '1' });
+    // pi's and OpenCode's state are not this session's.
+    expect(spec.filesystem.allowWrite).not.toContain('/home/u/.pi/agent');
+    expect(spec.filesystem.allowWrite).not.toContain('/home/u/.config/opencode');
+  });
+
+  it('host-held (the default): the login file is the machine\'s own, never seeded from the host\'s', () => {
+    const spec = buildSandboxSpec(policy(), claude());
+    expect(spec.filesystem.machineOwn).toEqual([{ path: '/home/u/.claude/.credentials.json', seed: false }]);
+  });
+
+  it('mount: the machine gets its own copy of the login file, and the host\'s is never written', () => {
+    const spec = buildSandboxSpec(policy(), claude({ loginMode: 'mount' }));
+    expect(spec.filesystem.machineOwn).toEqual([{ path: '/home/u/.claude/.credentials.json', seed: true }]);
+  });
+
+  it('keeps what the host\'s claude runs or loads next unwritable', () => {
+    const spec = buildSandboxSpec(policy(), claude());
+    expect(spec.filesystem.denyWrite).toEqual(expect.arrayContaining(
+      ['settings.json', 'CLAUDE.md', 'hooks', 'plugins', 'commands', 'agents', 'skills'].map((f) => `/home/u/.claude/${f}`),
+    ));
+    expect(spec.filesystem.denyWrite).not.toContain('/home/u/.claude');
+  });
+
+  it('a CLAUDE_CONFIG_DIR the user set is the state dir instead', () => {
+    const spec = buildSandboxSpec(policy(), claude({ claudeConfigDir: '/home/u/cfg/claude' }));
+    expect(spec.filesystem.allowWrite).toContain('/home/u/cfg/claude');
+    expect(spec.filesystem.allowWrite).not.toContain('/home/u/.claude');
+    expect(spec.env.CLAUDE_CONFIG_DIR).toBe('/home/u/cfg/claude');
+    expect(spec.filesystem.denyWrite).toContain('/home/u/cfg/claude/settings.json');
+  });
+});
+
+describePosix('buildSandboxSpec: Codex (GH-356)', () => {
+  const codex = (over: Partial<SandboxSession> = {}) => session({ client: 'codex', ...over });
+
+  it('makes ~/.codex its state, hides its login (host-held, the default), and keeps what the host\'s codex runs unwritable', () => {
+    const spec = buildSandboxSpec(policy(), codex());
+    expect(spec.filesystem.allowWrite).toContain('/home/u/.codex');
+    expect(spec.filesystem.machineOwn).toEqual([{ path: '/home/u/.codex/auth.json', seed: false }]);
+    expect(spec.filesystem.denyWrite).toEqual(expect.arrayContaining(
+      ['config.toml', 'hooks.json', 'AGENTS.md', 'rules', 'skills', 'plugins'].map((f) => `/home/u/.codex/${f}`),
+    ));
+    expect(spec.env[AIRLOCK_SANDBOX_MARKER]).toBe('codex');
+    expect(spec.env.CODEX_HOME).toBeUndefined();
+  });
+
+  it('mount: the machine gets its own auth.json, so a refresh in the guest never rotates the host\'s login', () => {
+    const spec = buildSandboxSpec(policy(), codex({ loginMode: 'mount' }));
+    expect(spec.filesystem.machineOwn).toEqual([{ path: '/home/u/.codex/auth.json', seed: true }]);
+  });
+
+  it('a pi or opencode session has no login mode: nothing of Claude\'s or Codex\'s is the machine\'s own', () => {
+    expect(buildSandboxSpec(policy(), session({ loginMode: 'mount' })).filesystem.machineOwn ?? []).toEqual([]);
+  });
+
+  it('a ChatGPT login held on the host: its stand-in goes in the machine\'s own auth.json, its Bearer to the inference hosts, its refresh to the hosts the host answers (b3a0992f)', () => {
+    const spec = buildSandboxSpec(policy(), codex({
+      inferenceHosts: ['chatgpt.com'], clientHosts: ['auth.openai.com'],
+      tokenLogin: { provider: 'openai', subject: 'dana', accountId: 'acct-1', answerHosts: ['auth.openai.com'] },
+    }));
+    expect(spec.tokenLogin).toEqual({ path: '/home/u/.codex/auth.json', provider: 'openai', subject: 'dana', accountId: 'acct-1', injectHosts: ['chatgpt.com'], answerHosts: ['auth.openai.com'] });
+    expect(spec.filesystem.machineOwn).toEqual([{ path: '/home/u/.codex/auth.json', seed: false }]);
+  });
+
+  it('a held login\'s answered host the policy denies is left out: nothing the policy refuses is answered', () => {
+    const spec = buildSandboxSpec(policy({ hosts: { allow: [], deny: ['auth.openai.com'] } }), codex({
+      inferenceHosts: ['chatgpt.com'], clientHosts: ['auth.openai.com'],
+      tokenLogin: { provider: 'openai', accountId: 'acct-1', answerHosts: ['auth.openai.com'] },
+    }));
+    expect(spec.tokenLogin?.answerHosts).toEqual([]);
+  });
+
+  it('a held login goes nowhere in mount mode or for a command the server runs', () => {
+    const tokenLogin = { provider: 'openai' as const, accountId: 'acct-1', answerHosts: ['auth.openai.com'] };
+    expect(buildSandboxSpec(policy(), codex({ loginMode: 'mount', inferenceHosts: ['chatgpt.com'], tokenLogin })).tokenLogin).toBeUndefined();
+    expect(buildSandboxSpec(policy(), codex({ purpose: 'command', inferenceHosts: ['chatgpt.com'], tokenLogin })).tokenLogin).toBeUndefined();
+  });
+
+  it('a CODEX_HOME the user set is the state dir, and the guest is told it', () => {
+    const spec = buildSandboxSpec(policy(), codex({ codexHome: '/home/u/cx' }));
+    expect(spec.filesystem.allowWrite).toContain('/home/u/cx');
+    expect(spec.filesystem.denyWrite).toContain('/home/u/cx/config.toml');
+    expect(spec.env.CODEX_HOME).toBe('/home/u/cx');
+  });
+});
+
+describePosix('buildSandboxSpec: client hosts and the session model (GH-356)', () => {
+  it('allows the client\'s own hosts (logins, token refresh) without injecting the model key there', () => {
+    const spec = buildSandboxSpec(policy(), session({
+      client: 'codex', inferenceHosts: ['chatgpt.com'], clientHosts: ['auth.openai.com'], maskedEnv: ['OPENAI_API_KEY'],
+    }));
+    expect(spec.network.allow).toEqual(expect.arrayContaining(['chatgpt.com', 'auth.openai.com']));
+    expect(spec.maskedEnv).toEqual([{ name: 'OPENAI_API_KEY', injectHosts: ['chatgpt.com'] }]);
+  });
+
+  it('a client host the policy denies is left out and reported, not a refused launch (the model is still reachable)', () => {
+    const spec = buildSandboxSpec(policy({ hosts: { allow: [], deny: ['claude.ai'] } }), session({
+      client: 'claude', inferenceHosts: ['api.anthropic.com'], clientHosts: ['claude.ai', 'console.anthropic.com'],
+    }));
+    expect(spec.network.allow).not.toContain('claude.ai');
+    expect(spec.network.allow).toContain('console.anthropic.com');
+    expect(spec.skipped).toEqual(expect.arrayContaining([expect.objectContaining({ entry: 'claude.ai' })]));
+  });
+
+  it('hands the session\'s model to the guest as AGENFK_AIRLOCK_MODEL, for the per-call hook', () => {
+    const spec = buildSandboxSpec(policy(), session({ client: 'claude', sessionModel: 'anthropic/claude-opus-5-5' }));
+    expect(spec.env.AGENFK_AIRLOCK_MODEL).toBe('anthropic/claude-opus-5-5');
+    expect(buildSandboxSpec(policy(), session()).env.AGENFK_AIRLOCK_MODEL).toBeUndefined();
+  });
+
+  it('a command the server runs gets no client state, client hosts or model', () => {
+    const spec = buildSandboxSpec(policy(), session({ client: 'claude', purpose: 'command', clientHosts: ['claude.ai'], sessionModel: 'anthropic/x' }));
+    expect(spec.filesystem.allowWrite).not.toContain('/home/u/.claude');
+    expect(spec.network.allow).not.toContain('claude.ai');
+    expect(spec.env.AGENFK_AIRLOCK_MODEL).toBeUndefined();
+    expect(spec.env.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+});

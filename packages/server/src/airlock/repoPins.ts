@@ -61,7 +61,7 @@ export function airlockRepoPins(deps: RepoPinDeps) {
     if (pin && typeof pin.url === 'string' && (root === null || pin.root === root)) return pin.url || null;
     // No root and no pin: not "no repository" but unknown (`agenfk init` sets no root);
     // Airlock refuses what needs it rather than drop the repository's overrides.
-    if (!root) throw new Error(`its root is not set; set it outside the sandbox: agenfk update-project ${projectId} --project-root <path> (agenfk airlock pi|opencode does it when it launches)`);
+    if (!root) throw new Error(`its root is not set; set it outside the sandbox: agenfk update-project ${projectId} --project-root <path> (agenfk airlock <client> does it when it launches)`);
     const started = generation.get(projectId) ?? 0;
     const answer = await deps.read(root);
     if (!answer.cacheable) throw new Error('the lookup of its git origin timed out or failed');

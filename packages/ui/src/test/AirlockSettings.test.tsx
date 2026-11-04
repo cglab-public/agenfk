@@ -199,6 +199,15 @@ describe('Airlock panel: standalone', () => {
   });
 });
 
+describe('model selectors: Claude Code and Codex (GH-356)', () => {
+  it('a selector can name every Airlock client: pi, opencode, Claude Code and Codex', async () => {
+    renderPanel();
+    const client = await screen.findByLabelText('Client, selector 1') as HTMLSelectElement;
+    const options = Array.from(client.options).map(o => [o.value, o.textContent]);
+    expect(options).toEqual(expect.arrayContaining([['pi', 'pi'], ['opencode', 'opencode'], ['claude', 'Claude Code'], ['codex', 'Codex']]));
+  });
+});
+
 describe('model selectors', () => {
   // Every shape the server accepts (each part optional, any string), including
   // ones a delimited one-line form cannot say: a provider holding a slash, an
