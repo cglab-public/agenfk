@@ -20,7 +20,7 @@ import { SHELL_AGENT_ID } from '../agentIds';
 import { Terminal as XTerm, type ITerminalAddon, type Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { TERMINAL_OPTIONS } from '../terminalOptions';
+import { terminalOptionsFor } from '../terminalOptions';
 import type { ITerminalOptions } from '@xterm/xterm';
 
 /** The slice of the preload surface this component uses. */
@@ -124,6 +124,14 @@ export interface TerminalPaneProps {
    */
   readonly onScreenActivity?: (activity: Exclude<ScreenActivity, 'unknown'>) => void;
   /**
+   * The font size from Settings > Appearance (INFRA-425). Absent until the
+   * preferences load, and in a browser; the pane then uses the default.
+   *
+   * Changing it restyles THIS terminal in place. It is not a reason to build a
+   * new one: that would kill the agent running in it.
+   */
+  readonly fontSize?: number;
+  /**
    * Builds the terminal. Receives the options the real path would use, so a
    * test can assert on them — see TerminalPane.test.ts.
    */
@@ -151,6 +159,7 @@ export function TerminalPane({
   onExited,
   onActivity,
   onScreenActivity,
+  fontSize,
   createTerminal,
   createFitAddon,
   bridge,
@@ -181,6 +190,17 @@ export function TerminalPane({
   const ackQueued = React.useRef(false);
   const sessionRef = React.useRef<string | null>(null);
   const termRef = React.useRef<Terminal | null>(null);
+  /*
+   * Read through a ref at creation for the same reason `agentIdRef` is: the
+   * font size must not be a dependency of the effect that spawns, or changing
+   * it in Settings would restart every agent in every open terminal.
+   */
+  const fontSizeRef = React.useRef(fontSize);
+  // Updated in an effect, declared BEFORE the spawning one so it runs first:
+  // writing a ref while rendering is what React's rules forbid.
+  React.useEffect(() => { fontSizeRef.current = fontSize; }, [fontSize]);
+  /** The pane's own refit-and-tell-the-pty, for the font size effect below. */
+  const resizeRef = React.useRef<(() => void) | null>(null);
 
   React.useEffect(() => {
     const host = hostRef.current;
@@ -219,7 +239,7 @@ export function TerminalPane({
      * object left all 986 UI tests green. A seam that hides the thing it
      * exists to let you observe is not a seam.
      */
-    const term = (createTerminal ?? (opts => new XTerm(opts)))(TERMINAL_OPTIONS);
+    const term = (createTerminal ?? (opts => new XTerm(opts)))(terminalOptionsFor(fontSizeRef.current));
     termRef.current = term;
 
     const fit = (createFitAddon ?? (() => new FitAddon() as FitLike))();
@@ -353,6 +373,7 @@ export function TerminalPane({
       const session = sessionRef.current;
       if (session) void api.resize(session, term.cols, term.rows);
     };
+    resizeRef.current = applyResize;
 
     // Leading edge fires at once; the trailing one catches the end of a drag.
     // Trailing-only would leave the child drawing against stale dimensions for
@@ -385,6 +406,7 @@ export function TerminalPane({
     cleanups.push(() => {
       if (trailing) clearTimeout(trailing);
       observer?.disconnect();
+      resizeRef.current = null;
     });
 
     // The renderer sends an item and an agent, never a path and never a
@@ -480,6 +502,25 @@ export function TerminalPane({
     // second one in the worktree. The pane is keyed by session id in
     // TerminalTab, so a different session still mounts its own pane and spawns.
   }, [agentId, autoApprove, persist, resume, bridge, createTerminal, createFitAddon]);
+
+  /*
+   * A new font size, applied to the terminal that is already open.
+   *
+   * After the spawning effect, so on mount it finds the terminal already built
+   * at this size and does nothing. The refit matters as much as the size: a
+   * bigger font fits fewer columns, and a pty left at the old geometry wraps
+   * every line in the wrong place.
+   */
+  React.useEffect(() => {
+    const term = termRef.current;
+    // Nothing chosen yet means nothing to change: the terminal was built at
+    // the default.
+    if (!term || fontSize === undefined) return;
+    const size = terminalOptionsFor(fontSize).fontSize;
+    if (term.options.fontSize === size) return;
+    term.options.fontSize = size;
+    resizeRef.current?.();
+  }, [fontSize]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-black/95">
