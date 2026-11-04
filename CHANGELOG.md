@@ -4,6 +4,29 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.17] — 2026-11-04
+
+**Airlock: Claude Code and Codex in the sandbox** (#356, #357)
+
+- **`agenfk airlock claude` and `agenfk airlock codex`** launch Claude Code and Codex in the Airlock machine. There
+  is no launch gate: a session outside Airlock is untouched. Inside, each tool call is judged by the per-call hook,
+  and the guest image now ships both clients.
+- **Logins are held on the host by default.** The machine's login file is a stand-in, and the host puts the real
+  token in on the way to the model: Claude Code's own login on this machine (its Keychain entry on a Mac), or
+  Codex's ChatGPT login in `~/.codex/auth.json` (or `$CODEX_HOME`'s). For Codex the host also answers its token
+  refresh itself, and puts the token into its WebSocket to chatgpt.com as well. Airlock never refreshes a login on
+  the host: if one has expired, run the client here once. `--login mount`, before the client's name, gives the
+  machine its own copy of the login file instead, and nothing written to it reaches yours. An API key in the
+  environment is masked, in either mode.
+- **A missing `.mcp.json` in the workspace is held** as an empty read-only directory for the session. The session
+  could otherwise create one whose MCP command the host's Claude Code would run next. Claude Code in the machine
+  reports it as a config it could not parse and carries on; git does not show it.
+
+**Windows verify speed** (#310, #348)
+
+- The verify suite runs faster on Windows: fixture git repos come from a template, git calls are memoised per
+  verify, and the suite's worker count is tuned for win32. It runs the same specs, with nothing skipped.
+
 **CLI** (#316)
 
 - **A command refuses positional arguments it does not take**, now that the CLI is on commander 15. A stray word
@@ -13,6 +36,13 @@ All notable changes to AgEnFK are documented here.
 - **The CLI needs Node `^22.13.0` or `>=23.5.0`**, as its engines already said: commander 15 loads only there. The
   `ci-check` GitHub Action does not set Node up, so on an older runner Node it now warns and runs the gated steps
   (or fails under `policy: require`), as for a release it cannot install.
+
+**Dependencies** (#320)
+
+- **Electron 40 to 42** (#321, #352) for the desktop app: fixes 26 Dependabot alerts.
+- **Vulnerable transitive dependencies upgraded** (#325, #351) within their existing ranges.
+- **CI fails on a new high or critical advisory in a runtime dependency** (`npm audit --omit=dev --audit-level=high`,
+  #340, #353), and Dependabot now targets `beta`.
 
 ## [2.1.0-beta.16] — 2026-11-02
 
