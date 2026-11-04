@@ -12,13 +12,16 @@ import { app, BrowserWindow, dialog, ipcMain, Notification, shell, utilityProces
 import * as path from 'path';
 import * as os from 'os';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
+import * as fsp from 'fs/promises';
 import { execFile, execFileSync } from 'node:child_process';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
+import { adoptPortRange, portFileWithin } from './adoptPorts.js';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
 import { resolveDbPath, buildServerEnv } from './serverEnv.js';
-import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
+import { isAgenfkServer, readServerIdentity, servesUiBundle, httpGet } from './probes.js';
+import { makeJudge, versionMismatchNotice } from './adoption.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
 import { proposeDecomposition } from './propose.js';
@@ -37,10 +40,14 @@ import { detectTmux, type TmuxStatus } from './tmux.js';
 import { whichOnPath, setAgentDetectionDeps, locateExecutable } from './detectAgents.js';
 import { makeEmit } from './windowEmit.js';
 import { wireFullScreen, answerFullScreenQuery } from './windowFullScreen.js';
+import { wireUiScale } from './windowUiScale.js';
 import { makeLoginPathCache } from './loginPathCache.js';
 import { SOUND_EXTENSIONS } from './customSound.js';
 import { showAttentionNotice } from './attentionNotice.js';
 import { platform, runningOn } from './platform.js';
+import { chooseWslTarget, parseDistroList, parseProbe, wslExecutable, wslLaunch, WSL_PROBE_SCRIPT } from './wsl.js';
+import { CockpitService, type CockpitContext } from './cockpit/service.js';
+import { COCKPIT_PROBE_SCRIPT } from './cockpit/probe.js';
 
 /**
  * What the sound picker offers.
@@ -128,9 +135,12 @@ const SHUTDOWN_GRACE_MS = 5000;
  * MAX_PORT_PROBE_ATTEMPTS of them, so "is AgEnFK already running?" is a range
  * question, not a single-port one. We scan the low end where it realistically
  * lands: far enough to cover a few stale listeners, short enough that the scan
- * does not visibly delay startup.
+ * does not visibly delay startup. It starts at AGENFK_PORT (or PORT) when set,
+ * read as the server reads it, so a build told to use another port never
+ * adopts the server on 3000; an unreadable value adopts nothing (BUG db4e8cc2).
+ * Ports only: the database is kept apart by AGENFK_DB_PATH or another home.
  */
-const ADOPT_PORT_RANGE = Array.from({ length: 16 }, (_, i) => DEFAULT_API_PORT + i);
+const ADOPT_PORT_RANGE = adoptPortRange(process.env, DEFAULT_API_PORT);
 
 /** Show a real dialog: a GUI app's console output goes nowhere the user looks. */
 function fail(title: string, detail: string): void {
@@ -175,6 +185,145 @@ async function startServer(): Promise<void> {
   });
 }
 
+/*
+ * The WSL distros on this machine, asked of wsl.exe and kept for a minute.
+ *
+ * Kept because every terminal asks (ptyRegistry's wslTarget) and the settings
+ * screen asks again, and wsl.exe can take a second when the VM is cold. A
+ * minute is short enough that a distro installed with the app open shows up
+ * without a restart. Any failure — no WSL, a timeout — reads as none
+ * installed, which is the truth for every purpose here.
+ */
+let wslDistrosCache: { at: number; value: string[] } | null = null;
+const WSL_DISTROS_MEMO_MS = 60_000;
+/*
+ * WSL_UTF8 so a current wsl.exe prints UTF-8 whatever the caller set;
+ * parseDistroList still reads UTF-16 from one that ignores it.
+ */
+const wslEnv = (): NodeJS.ProcessEnv => ({ ...process.env, WSL_UTF8: '1' });
+
+/*
+ * Only a SUCCESS is remembered. A failure — the VM still cold after boot, a
+ * timeout — is asked again next time instead of hiding the person's distro
+ * choice for a minute.
+ */
+async function listWslDistros(): Promise<string[]> {
+  if (wslDistrosCache && Date.now() - wslDistrosCache.at < WSL_DISTROS_MEMO_MS) return wslDistrosCache.value;
+  const value = await new Promise<string[] | null>(resolve => {
+    execFile(wslExecutable(process.env), ['--list', '--quiet'],
+      { encoding: 'buffer', timeout: 5000, windowsHide: true, env: wslEnv() },
+      (err, stdout) => resolve(err ? null : parseDistroList(stdout)));
+  });
+  if (value === null) return [];
+  wslDistrosCache = { at: Date.now(), value };
+  return value;
+}
+
+/**
+ * Which agent executables the distro terminals open in can find on its login
+ * PATH, through the same login-shell wrapper the terminals use, so detection
+ * and launch cannot disagree. One wsl.exe call for all of them.
+ */
+async function agentsInWsl(files: readonly string[]): Promise<{ found: Set<string>; exclusive: boolean } | null> {
+  const preference = readPrefs(app.getPath('userData')).wslDistro;
+  const distros = await listWslDistros();
+  if (distros.length === 0) return null;
+  const chosen = preference && distros.includes(preference) ? preference : null;
+  /*
+   * Without a choice, only ask a distro that is ALREADY running. The probe
+   * runs a shell inside it, which boots the WSL VM — memory a person who has
+   * WSL installed but works in Windows should not pay every time detection
+   * refreshes. `--list --running` does not boot it. When the AgEnFK server
+   * lives in WSL, as it does for the people this is for, the VM is up.
+   */
+  if (!chosen && !(await defaultDistroRunning())) return null;
+  const probe = wslLaunch({
+    distro: chosen,
+    cwd: null,
+    exe: wslExecutable(process.env),
+    command: { file: '/bin/sh', args: ['-c', WSL_PROBE_SCRIPT, 'probe', ...files] },
+  });
+  const out = await new Promise<string | null>(resolve => {
+    execFile(probe.file, probe.args, { encoding: 'utf8', timeout: 15000, windowsHide: true, env: wslEnv() },
+      (err, stdout) => resolve(err ? null : stdout));
+  });
+  return out === null ? null : { found: parseProbe(out, files), exclusive: Boolean(chosen) };
+}
+
+/** Whether wsl.exe's default distro is running, asked without starting it. */
+async function defaultDistroRunning(): Promise<boolean> {
+  const [byDefault] = await listWslDistros();
+  if (!byDefault) return false;
+  return new Promise<boolean>(resolve => {
+    execFile(wslExecutable(process.env), ['--list', '--running', '--quiet'],
+      { encoding: 'buffer', timeout: 5000, windowsHide: true, env: wslEnv() },
+      (err, stdout) => resolve(!err && parseDistroList(stdout).includes(byDefault)));
+  });
+}
+
+/*
+ * The cockpit (INFRA-425). The probe runs where the terminal runs: /bin/sh
+ * locally, or /bin/sh inside the distro through `wsl.exe --exec` - NOT the
+ * login wrapper the terminals use, which would run the person's interactive
+ * .bashrc every refresh; git is in /usr/bin and wsl.exe sets HOME. A Windows
+ * directory has no POSIX shell to ask, so its cockpit shows only what the
+ * agent's transcript says.
+ */
+const wslHomes = new Map<string, Promise<string | null>>();
+const distroOf = async (ctx: CockpitContext): Promise<string | null> =>
+  ctx.wsl ? (ctx.wsl.distro ?? (await listWslDistros())[0] ?? null) : null;
+const cockpitService = new CockpitService({
+  probe: (ctx, args) => new Promise(resolve => {
+    const done = (err: Error | null, stdout: string | Buffer): void => resolve(err ? '' : String(stdout));
+    if (ctx.wsl) {
+      const where = [...(ctx.wsl.distro ? ['--distribution', ctx.wsl.distro] : []), '--cd', ctx.cwd ?? '~'];
+      execFile(wslExecutable(process.env), [...where, '--exec', '/bin/sh', '-c', COCKPIT_PROBE_SCRIPT, 'cockpit', ...args],
+        { encoding: 'utf8', timeout: 8000, windowsHide: true, env: wslEnv() }, done);
+      return;
+    }
+    if (runningOn === 'win32') { resolve(''); return; }
+    execFile('/bin/sh', ['-c', COCKPIT_PROBE_SCRIPT, 'cockpit', ...args],
+      { encoding: 'utf8', timeout: 5000, cwd: ctx.cwd ?? os.homedir() }, done);
+  }),
+  home: async ctx => {
+    if (!ctx.wsl) return os.homedir();
+    const distro = await distroOf(ctx);
+    if (!distro) return null;
+    let home = wslHomes.get(distro);
+    if (!home) {
+      home = new Promise(resolve => {
+        execFile(wslExecutable(process.env), ['--distribution', distro, '--exec', '/bin/sh', '-c', 'printf %s "$HOME"'],
+          { encoding: 'utf8', timeout: 8000, windowsHide: true, env: wslEnv() },
+          (err, stdout) => resolve(err || !stdout.startsWith('/') ? null : stdout.trim()));
+      });
+      wslHomes.set(distro, home);
+      // A failure is not remembered: the VM may only have been cold.
+      void home.then(h => { if (h === null) wslHomes.delete(distro); });
+    }
+    return home;
+  },
+  hostPath: async (ctx, p) => {
+    const distro = await distroOf(ctx);
+    if (!distro) return p;
+    return `\\\\wsl.localhost\\${distro}${p.replace(/\//g, '\\')}`;
+  },
+  fs: {
+    readdir: dir => fsp.readdir(dir),
+    stat: async file => { const st = await fsp.stat(file); return { size: st.size, mtimeMs: st.mtimeMs }; },
+    read: async (file, offset, length) => {
+      const handle = await fsp.open(file, 'r');
+      try {
+        const buf = Buffer.alloc(length);
+        const { bytesRead } = await handle.read(buf, 0, length, offset);
+        return buf.subarray(0, bytesRead);
+      } finally {
+        await handle.close();
+      }
+    },
+    readText: file => fsp.readFile(file, 'utf8').catch(() => null),
+  },
+});
+
 export function createWindow(url: string): BrowserWindow {
   const win = new BrowserWindow({
     width: 1440,
@@ -192,6 +341,9 @@ export function createWindow(url: string): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // The stored size from the FIRST paint (INFRA-425). Re-applied on every
+      // load by wireUiScale, which this alone does not cover after a reload.
+      zoomFactor: readPrefs(app.getPath('userData')).uiScale,
     },
   });
 
@@ -199,6 +351,8 @@ export function createWindow(url: string): BrowserWindow {
   win.once('ready-to-show', () => win.show());
   // The shell's own title bar is dead space in full screen; see windowFullScreen.ts.
   wireFullScreen(win);
+  // The size the person chose, on every load, and Ctrl+= / Ctrl+- remembered.
+  wireUiScale(win, () => app.getPath('userData'), runningOn);
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null;
   });
@@ -302,15 +456,24 @@ async function boot(): Promise<void> {
   void currentLoginPath();
   try {
     server = await resolveServer({
-      readPort: readServerPort,
+      readPort: portFileWithin(readServerPort, process.env, DEFAULT_API_PORT),
       fallbackPorts: ADOPT_PORT_RANGE,
       // Identity, not just liveness: anything could be listening on 3000, and
       // adopting it would open a window on somebody else's application.
       probe: isAgenfkServer,
+      // Identity is not enough either (BUG cdae6039): a WSL server of another
+      // version, forwarded to localhost, is AgEnFK on a database we do not use.
+      judge: makeJudge({
+        appVersion: () => app.getVersion(),
+        appDbPath: resolveDbPath,
+        platform: runningOn,
+        readIdentity: readServerIdentity,
+      }),
       spawn: startServer,
     });
     console.log(
-      `[DESKTOP] ${server.adopted ? 'Adopted running' : 'Started'} AgEnFK server at ${server.url}`,
+      `[DESKTOP] ${server.adopted ? 'Adopted running' : 'Started'} AgEnFK server at ${server.url}` +
+      (server.versionMismatch ? ` (server ${server.versionMismatch.serverVersion}, app ${app.getVersion()})` : ''),
     );
 
     if (!await servesUiBundle(server.port)) {
@@ -358,6 +521,20 @@ async function boot(): Promise<void> {
       return;
     }
 
+    if (server.versionMismatch) {
+      // Not awaited: the board still opens. The user decides whether to switch.
+      const notice = versionMismatchNotice({
+        ...server.versionMismatch,
+        appVersion: app.getVersion(),
+      });
+      void dialog.showMessageBox({
+        type: 'info',
+        title: notice.title,
+        message: notice.title,
+        detail: notice.detail,
+      });
+    }
+
     // Terminals need the resolved port: a card's directory comes from the
     // server, never from a guess. node-pty is required lazily so a failure to
     // load the native module degrades to "no terminals" rather than "the app
@@ -384,7 +561,11 @@ async function boot(): Promise<void> {
       // Started at the top of boot; this joins it, or reuses its value.
       void currentLoginPath();
 
-      setAgentDetectionDeps({ which: whichOnPath, loginPath: currentLoginPath, forgetLoginPath: currentLoginPath.forget });
+      setAgentDetectionDeps({
+        which: whichOnPath, loginPath: currentLoginPath, forgetLoginPath: currentLoginPath.forget,
+        // Agents installed inside WSL count too (INFRA-425); see detectAgents.ts.
+        ...(runningOn === 'win32' ? { inWsl: agentsInWsl } : {}),
+      });
       /*
        * Probed against the LOGIN PATH, like agent detection one line above.
        *
@@ -491,6 +672,18 @@ async function boot(): Promise<void> {
       const port = new URL(server.url).port ? Number(new URL(server.url).port) : DEFAULT_API_PORT;
       ptyRegistry = new PtyRegistry({
         spawn: spawnPty as never,
+        onSessionEnd: sessionId => cockpitService.forget(sessionId),
+        /*
+         * WSL, on Windows (INFRA-425): where the person chose a distro, and
+         * wherever a Linux path leaves no other way in. Read per spawn, so a
+         * change in Settings applies to the next terminal without a restart.
+         */
+        wslTarget: async ({ cwd }) => chooseWslTarget({
+          onWindows: runningOn === 'win32',
+          distros: runningOn === 'win32' ? await listWslDistros() : [],
+          preference: readPrefs(app.getPath('userData')).wslDistro,
+          cwd,
+        }),
         // The lookup that marks an agent Installed, so the picker and the
         // terminal cannot disagree about where it is (story 1b9d622e).
         locate: file => locateExecutable(file),
@@ -1012,6 +1205,8 @@ async function boot(): Promise<void> {
             cloneDirOrDefault(readPrefs(app.getPath('userData')), os.homedir()), onLine),
           addProject: addProjectAt,
         }, line => console.log(`[CREATE] ${line}`)),
+      }, runningOn === 'win32' ? { distros: listWslDistros } : undefined, {
+        snapshot: async (sessionId, windowId) => cockpitService.snapshot(sessionId, ptyRegistry!.describe(sessionId, windowId)),
       });
     } catch (e) {
       console.warn('[DESKTOP] Terminals unavailable:', (e as Error).message);
