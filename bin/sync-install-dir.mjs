@@ -3,7 +3,7 @@
  * (~/.agenfk-system), pruning files the new version no longer ships.
  *
  * Why this exists: the update used to be a bare
- * `fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true })` — a MERGE. Anything
+ * bare recursive copy of REPO_ROOT over INSTALL_DIR — a MERGE. Anything
  * deleted upstream survived in the install dir forever, and scripts/install.mjs
  * copies every markdown out of `<rootDir>/commands` and `<rootDir>/skills` into
  * each client's global config, so a deleted file was faithfully re-installed on
@@ -48,7 +48,7 @@ export const PRUNED_DIRS = [
 /**
  * Is `dir` on a case-insensitive volume? macOS and NTFS are, by default.
  *
- * It matters because fs.cpSync writing `agenfk.md` over an existing `AgenFK.md`
+ * It matters because a recursive copy writing `agenfk.md` over an existing `AgenFK.md`
  * updates that entry IN PLACE and keeps the old spelling. Comparing exact-case
  * paths then reads the surviving file as "not shipped" and deletes it outright —
  * strictly worse than the unpruned copy this module replaces.
@@ -98,9 +98,9 @@ function listFiles(root, base = '', strict = false) {
  * Delete anything under PRUNED_DIRS that `sourceRoot` no longer provides.
  *
  * Pruning is kept strictly separate from copying: the callers copy by their own
- * means (fs.cpSync, `cp -r`, or `tar -xzf`) and prune afterwards. A prune that
- * reached for fs.cpSync would throw on the very runtimes the `cp -r` fallback
- * exists for.
+ * means (copyTree from copy-tree.mjs, or `tar -xzf`) and prune afterwards. This
+ * module must stay free of any copy primitive: fs.cpSync aborts natively on
+ * Windows with non-ASCII paths (#349).
  *
  * @param {string} sourceRoot
  * @param {string} installDir
@@ -119,7 +119,7 @@ export function pruneInstallDir(sourceRoot, installDir, opts = {}) {
       unreadable.add(d);
     }
   }
-  // A dir that exists but is EMPTY is a broken source (interrupted cp -r, a
+  // A dir that exists but is EMPTY is a broken source (interrupted copy, a
   // filtered copy, an aborted fetch), never a statement that everything in the
   // install dir is stale. existsSync alone was not enough.
   return pruneAgainst(

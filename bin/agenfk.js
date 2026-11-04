@@ -7,6 +7,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { compareSemver, newestChannelTag } from './version-utils.mjs';
 import { pruneInstallDir, pruneInstallDirAgainstManifest } from './sync-install-dir.mjs';
+import { copyTree } from './copy-tree.mjs';
 import { forceLocalFlag, tarPath } from './tar-flags.mjs';
 import { requestedGitRef, releaseTagForRef, releaseTagForVersion } from './requested-ref.mjs';
 
@@ -56,7 +57,7 @@ if (hasGit && !forceInstall) {
 // Refuse macOS metadata on the way IN. This is the path that actually polluted
 // users: every published release up to v1.1.16-beta.4 was ~half AppleDouble
 // (`._*`) entries, and this extraction lands the tarball straight into the
-// install dir — after the filtered cpSync above, so that filter never sees it.
+// install dir — after the filtered copyTree above, so that filter never sees it.
 // Excluding here makes the outcome independent of any later sweep.
 // (CGLAB-94 / issue #163)
 // Double quotes, not single: cmd.exe keeps single quotes as part of the word, so
@@ -190,21 +191,6 @@ function reportPrune({ removed, failed }) {
   for (const f of failed) console.log(`${YELLOW}  Could not prune ${f.path}: ${f.reason}${RESET}`);
 }
 
-// Fallback path for Node builds without fs.cpSync: `cp -r` can't filter, so
-// remove the artifacts after the fact.
-function sweepMacMetadata(dir) {
-  if (!fs.existsSync(dir)) return;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'node_modules' || entry.name === '.git') continue;
-    const full = path.join(dir, entry.name);
-    if (isMacMetadata(entry.name)) {
-      try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* ignore */ }
-    } else if (entry.isDirectory()) {
-      sweepMacMetadata(full);
-    }
-  }
-}
-
 if (isNpxCache) {
   const isUpdate = fs.existsSync(INSTALL_DIR);
   // Read the INSTALLED version BEFORE the overlay below replaces package.json
@@ -254,20 +240,10 @@ if (isNpxCache) {
     // no longer ships. A bare overlay left deleted files behind forever, and
     // install.mjs re-installed them into every client's global config — that is
     // how the repo-private /agenfk-release command kept coming back.
-    if (fs.cpSync) {
-      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true, filter: copyFilter });
-    } else {
-      execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(INSTALL_DIR)}/`, { stdio: 'inherit', shell: true, windowsHide: true });
-      sweepMacMetadata(INSTALL_DIR);
-    }
+    copyTree(REPO_ROOT, INSTALL_DIR, { filter: copyFilter });
   } else {
     console.log(`${GREEN}Installing AgEnFK to ${INSTALL_DIR}...${RESET}`);
-    if (fs.cpSync) {
-      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true, filter: copyFilter });
-    } else {
-      execSync(`cp -r ${JSON.stringify(REPO_ROOT)} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true, windowsHide: true });
-      sweepMacMetadata(INSTALL_DIR);
-    }
+    copyTree(REPO_ROOT, INSTALL_DIR, { filter: copyFilter });
   }
 
   const distMissing = !fs.existsSync(path.join(INSTALL_DIR, 'packages/cli/dist')) || !fs.existsSync(path.join(INSTALL_DIR, 'packages/server/dist'));

@@ -4,6 +4,12 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+**Fixes** (#349)
+
+- **The installers work when the user folder has accented letters on Windows.** On Node 22, `fs.cpSync` stopped the
+  process with no message (exit code 3) for a path such as `C:\Users\Fábio`, leaving `~/.agenfk-system` or
+  `~/.agenfk-hub` half copied. `npx github:cglab-public/agenfk` and `agenfk-hub` now copy the install file by file.
+
 ## [2.1.0-beta.17] — 2026-11-04
 
 **Airlock: Claude Code and Codex in the sandbox** (#356, #357)
