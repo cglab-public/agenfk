@@ -74,6 +74,12 @@ export interface SandboxSession {
   clientHosts?: string[];
   /** Env vars the guest gets a stand-in for, the host swapping in a token from its TokenSource; `subject`: whose. */
   tokenEnv?: Array<{ name: string; provider: 'anthropic' | 'openai'; subject?: string }>;
+  /**
+   * A Codex ChatGPT login held on the host (b3a0992f): the machine's own auth.json is a stand-in for
+   * `accountId`'s login, the host swaps the token in toward the inference hosts and answers codex's
+   * refresh on `answerHosts` itself. Host-held mode only.
+   */
+  tokenLogin?: { provider: 'openai'; subject?: string; accountId: string; answerHosts: string[] };
   /** Settings the client reads from its env that are no secret (Claude Code's ANTHROPIC_BASE_URL), passed as they are. */
   clientEnv?: Record<string, string>;
   /** The session's model as provider/id, for the per-call hook (AGENFK_AIRLOCK_MODEL). */
@@ -130,6 +136,12 @@ export interface SandboxSpec {
   maskedEnv: Array<{ name: string; injectHosts: string[] }>;
   /** Stand-ins for a token the host holds (GH-356): the runtime asks its TokenSource for the value. */
   tokenEnv?: Array<{ name: string; provider: 'anthropic' | 'openai'; subject?: string; injectHosts: string[] }>;
+  /**
+   * A login file held on the host (b3a0992f: Codex's ChatGPT login): the runtime writes a stand-in for
+   * `accountId` in the machine's own `path` (one of machineOwn), swaps its access token for the
+   * TokenSource's toward `injectHosts`, and answers the client's refresh on `answerHosts` itself.
+   */
+  tokenLogin?: { path: string; provider: 'openai'; subject?: string; accountId: string; injectHosts: string[]; answerHosts: string[] };
   /**
    * Host env vars the session gets as they are: a key for a plain-http inference endpoint, which no
    * injector can mask (story review 3). Names only; the runtime reads the values from the host.
@@ -409,6 +421,12 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     if (!ENV_NAME.test(name)) throw new Error(`"${name}" is not an env var name`);
     return { name, provider, ...(subject !== undefined ? { subject } : {}), injectHosts: uniq(inference.map(hostPart)) };
   });
+  // Host-held only, in the machine's own login file; an answered host the policy denies is answered nowhere.
+  const held = session.client === 'codex' && session.tokenLogin && loginFile && session.loginMode !== 'mount' ? session.tokenLogin : null;
+  const tokenLogin = held ? {
+    path: loginFile!, provider: held.provider, ...(held.subject !== undefined ? { subject: held.subject } : {}), accountId: held.accountId,
+    injectHosts: uniq(inference.map(hostPart)), answerHosts: uniq(held.answerHosts.filter((h) => allow.includes(h))),
+  } : null;
 
   return {
     network: { allow: uniq(allow), deny: uniq(deny), denyResolved: uniq(denyResolved), mode: policy.mode === 'observe' ? 'observe' : 'enforce' },
@@ -419,6 +437,7 @@ export function buildSandboxSpec(policy: AirlockPolicy, session: SandboxSession)
     loopbackInference,
     maskedEnv,
     ...(tokenEnv.length ? { tokenEnv } : {}),
+    ...(tokenLogin ? { tokenLogin } : {}),
     env: {
       [AIRLOCK_SANDBOX_MARKER]: command ? 'command' : session.client,
       // pi and OpenCode's plugins run on Node, whose fetch() ignores the proxy

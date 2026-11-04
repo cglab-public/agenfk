@@ -184,6 +184,8 @@ interface ClientSession {
   tokenProvider?: TokenProvider;
   /** The stand-in's env var for that login. */
   tokenEnv?: string;
+  /** Or a stand-in login file (Codex's ChatGPT login, b3a0992f), its refresh answered on the client hosts. */
+  tokenLogin?: boolean;
   /** Settings of the client's that are no secret, which the guest needs as the host has them. */
   clientEnv?: Record<string, string>;
   claudeConfigDir?: string;
@@ -358,10 +360,13 @@ function codexSession(args: string[], d: LaunchDeps, login: 'host-held' | 'mount
   const chatgpt = !!(str(tokens.access_token) || str(tokens.refresh_token));
   if (chatgpt && login === 'mount') return { ...session, keys: [], host: 'chatgpt.com', clientHosts: ['auth.openai.com'] };
   if (chatgpt) {
-    throw new AirlockLaunchError('This codex session would use your ChatGPT login, which Airlock cannot hold on the host for Codex yet, so nothing was launched. ' +
-      'Launch with --login mount (agenfk airlock --login mount codex ...: the machine gets its own copy of the login), or set OPENAI_API_KEY.');
+    // b3a0992f: the machine's auth.json is a stand-in, read from the file whatever the host's codex keeps it in.
+    return {
+      ...session, argsBefore: [...session.argsBefore!, '-c', 'cli_auth_credentials_store="file"'],
+      keys: [], host: 'chatgpt.com', clientHosts: ['auth.openai.com'], tokenProvider: 'openai', tokenLogin: true,
+    };
   }
-  throw new AirlockLaunchError('This codex session has no OpenAI key and no login, so nothing was launched. Set OPENAI_API_KEY (or CODEX_API_KEY), or log in to codex and launch with --login mount.');
+  throw new AirlockLaunchError('This codex session has no OpenAI key and no login, so nothing was launched. Set OPENAI_API_KEY (or CODEX_API_KEY), or log in to codex on this machine (codex login).');
 }
 
 /** `host` or `host:port` (explicit, non-default ports only), and whether the endpoint is TLS. */
@@ -600,6 +605,7 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
 
   // GH-356, a host-held login: asked for before anything starts, so a person not connected is told now.
   let tokenFor: ((p: TokenProvider) => CachedToken) | undefined;
+  let accountId: string | undefined;
   const subject = str(d.env.AGENFK_AIRLOCK_SUBJECT) ?? str(d.env.USER) ?? 'local';
   if (session.tokenProvider && !keyNames.length) {
     // The injector puts a token in over TLS only (review): never a login in the clear to a plain-http endpoint.
@@ -614,9 +620,12 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
       return t;
     };
     try {
-      await tokenFor(session.tokenProvider).get();
+      accountId = (await tokenFor(session.tokenProvider).token()).accountId;
     } catch (e) {
       throw new AirlockLaunchError(tokenErrorMessage(e, client));
+    }
+    if (session.tokenLogin && !accountId) {
+      throw new AirlockLaunchError(`The ${client} login on this machine names no account, and chatgpt.com routes a session's workspace by it, so nothing was launched. Log in again (codex login), then relaunch.`);
     }
   }
   let maskedEnv = keyNames;
@@ -712,6 +721,8 @@ export async function runAirlockLaunch(client: AirlockClient, clientArgs: string
         ...(client === 'claude' || client === 'codex' ? { loginMode: login } : {}),
         ...(inferenceHosts.length && session.clientHosts?.length ? { clientHosts: session.clientHosts } : {}),
         ...(tokenFor && session.tokenProvider && session.tokenEnv ? { tokenEnv: [{ name: session.tokenEnv, provider: session.tokenProvider, subject }] } : {}),
+        ...(tokenFor && session.tokenProvider === 'openai' && session.tokenLogin && accountId
+          ? { tokenLogin: { provider: session.tokenProvider, subject, accountId, answerHosts: session.clientHosts ?? [] } } : {}),
         ...(session.clientEnv && Object.keys(session.clientEnv).length ? { clientEnv: session.clientEnv } : {}),
         sessionModel: `${provider}/${session.model.id ?? ''}`,
       });

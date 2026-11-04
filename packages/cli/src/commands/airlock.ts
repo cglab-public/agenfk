@@ -204,8 +204,13 @@ export function defaultLaunchDeps(): LaunchDeps {
     readJson: (file) => readJsonFile(file),
     // Codex's config.toml (GH-356): bounded and never blocking, like the JSON configs.
     readText: (file) => readRegularFile(file, 1024 * 1024)?.toString('utf8') ?? null,
-    // GH-356: a host-held Claude Code login is the person's own, read where Claude Code keeps it.
-    tokenSource: localTokenSource({ platform: process.platform, home, ...(process.env.CLAUDE_CONFIG_DIR ? { claudeConfigDir: path.resolve(process.env.CLAUDE_CONFIG_DIR) } : {}) }),
+    // GH-356: a host-held Claude Code or Codex login is the person's own, read where that client keeps it.
+    tokenSource: localTokenSource({
+      platform: process.platform,
+      home,
+      ...(process.env.CLAUDE_CONFIG_DIR ? { claudeConfigDir: path.resolve(process.env.CLAUDE_CONFIG_DIR) } : {}),
+      ...(process.env.CODEX_HOME ? { codexHome: path.resolve(process.env.CODEX_HOME) } : {}),
+    }),
     exists: (file) => fs.existsSync(file),
     // smolvm and what it runs from: never writable from inside.
     runtimePackageDir: path.dirname(smolvmPathFor(__dirname, realpath(home))),

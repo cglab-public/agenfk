@@ -450,6 +450,29 @@ describePosix('buildSandboxSpec: Codex (GH-356)', () => {
     expect(buildSandboxSpec(policy(), session({ loginMode: 'mount' })).filesystem.machineOwn ?? []).toEqual([]);
   });
 
+  it('a ChatGPT login held on the host: its stand-in goes in the machine\'s own auth.json, its Bearer to the inference hosts, its refresh to the hosts the host answers (b3a0992f)', () => {
+    const spec = buildSandboxSpec(policy(), codex({
+      inferenceHosts: ['chatgpt.com'], clientHosts: ['auth.openai.com'],
+      tokenLogin: { provider: 'openai', subject: 'dana', accountId: 'acct-1', answerHosts: ['auth.openai.com'] },
+    }));
+    expect(spec.tokenLogin).toEqual({ path: '/home/u/.codex/auth.json', provider: 'openai', subject: 'dana', accountId: 'acct-1', injectHosts: ['chatgpt.com'], answerHosts: ['auth.openai.com'] });
+    expect(spec.filesystem.machineOwn).toEqual([{ path: '/home/u/.codex/auth.json', seed: false }]);
+  });
+
+  it('a held login\'s answered host the policy denies is left out: nothing the policy refuses is answered', () => {
+    const spec = buildSandboxSpec(policy({ hosts: { allow: [], deny: ['auth.openai.com'] } }), codex({
+      inferenceHosts: ['chatgpt.com'], clientHosts: ['auth.openai.com'],
+      tokenLogin: { provider: 'openai', accountId: 'acct-1', answerHosts: ['auth.openai.com'] },
+    }));
+    expect(spec.tokenLogin?.answerHosts).toEqual([]);
+  });
+
+  it('a held login goes nowhere in mount mode or for a command the server runs', () => {
+    const tokenLogin = { provider: 'openai' as const, accountId: 'acct-1', answerHosts: ['auth.openai.com'] };
+    expect(buildSandboxSpec(policy(), codex({ loginMode: 'mount', inferenceHosts: ['chatgpt.com'], tokenLogin })).tokenLogin).toBeUndefined();
+    expect(buildSandboxSpec(policy(), codex({ purpose: 'command', inferenceHosts: ['chatgpt.com'], tokenLogin })).tokenLogin).toBeUndefined();
+  });
+
   it('a CODEX_HOME the user set is the state dir, and the guest is told it', () => {
     const spec = buildSandboxSpec(policy(), codex({ codexHome: '/home/u/cx' }));
     expect(spec.filesystem.allowWrite).toContain('/home/u/cx');

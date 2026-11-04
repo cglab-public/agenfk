@@ -34,10 +34,11 @@ import { AIRLOCK_SANDBOX_MARKER, type SandboxSpec } from './spec';
 import { allowListArgs, GATEWAY, networkKey, RESOLVER_REPORT_PORT, type Route } from './egress';
 import { processIdentity, sameProcess } from './processIdentity';
 import { breakStaleLock, withOwnerLock, type OwnerLockDeps } from './ownerLock';
-import { machineCa, placeholderFor, startKeyInjector, type KeyInjector, type KeyInjectorOptions, type MachineCa } from './keyInjector';
+import { machineCa, placeholderFor, startKeyInjector, type InjectorRoute, type KeyInjector, type KeyInjectorOptions, type LocalAnswer, type MachineCa } from './keyInjector';
 import { readRegularFile } from './safeRead';
 import type { AirlockRuntime, LaunchHooks, LaunchedSandbox, ProxyDecision, RuntimeCheck, SandboxCommand, SandboxExit } from './runtime';
 import type { CachedToken } from './tokenSource';
+import { CODEX_ACCESS_PLACEHOLDER, CODEX_REFRESH_PLACEHOLDER, codexStandInAuth, codexTokenAnswer } from './codexLogin';
 
 /** Exactly the version AgEnFK installs (no range): a bump is a reviewed change. */
 export const SMOLVM_VERSION = '1.32.4';
@@ -203,10 +204,11 @@ const WORKSPACE_PROTECTED = ['.gitmodules', '.vscode', '.idea', '.claude/command
   'opencode.json', 'opencode.jsonc', '.opencode', '.pi/settings.json', '.pi/extensions'];
 /**
  * GH-356 review: held even when missing, or the session could create them for the host's Claude Code
- * or Codex to run next (a hook in settings.local.json, an MCP command in .codex/config.toml). A missing
- * .claude or .codex is held as an empty read-only directory, which git does not show.
+ * or Codex to run next (a hook in settings.local.json, an MCP command in .codex/config.toml or .mcp.json,
+ * 02334f6f). A missing .claude, .codex or .mcp.json is held as an empty read-only directory, which git
+ * does not show - nothing for the agent to commit - and no client reads a server from.
  */
-const WORKSPACE_HELD = ['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/skills', '.codex'];
+const WORKSPACE_HELD = ['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/skills', '.codex', '.mcp.json'];
 
 /** Where the guest keeps its own platform dirs, on the machine's disk. */
 export const GUEST_PLATFORM_ROOT = '/var/lib/agenfk/platform';
@@ -1745,7 +1747,8 @@ export class SmolvmRuntime implements AirlockRuntime {
       // The CA and the placeholders are the machine's, made under its lock: two launchers at once
       // would each make their own.
       const ca = machineCa(path.join(this.machineDir(name), 'ca'));
-      const placeholders = this.placeholdersOf(name, [...spec.maskedEnv.map((m) => m.name), ...(spec.tokenEnv ?? []).map((t) => t.name)]);
+      const placeholders = this.placeholdersOf(name, [...spec.maskedEnv.map((m) => m.name), ...(spec.tokenEnv ?? []).map((t) => t.name),
+        ...(spec.tokenLogin ? [CODEX_ACCESS_PLACEHOLDER, CODEX_REFRESH_PLACEHOLDER] : [])]);
       fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
       fs.writeFileSync(sessionFile, JSON.stringify({ pid: process.pid, identity: this.d.processIdentity(process.pid), workspace, purpose: spec.purpose ?? 'client' }));
       const shared = this.liveSessions(name).length > 1;
@@ -1790,10 +1793,13 @@ export class SmolvmRuntime implements AirlockRuntime {
       const injecting = JSON.stringify([
         ...spec.maskedEnv.map((m) => [m.name, [...m.injectHosts].sort(), keyOf(m.name)]),
         ...(spec.tokenEnv ?? []).map((t) => [t.name, [...t.injectHosts].sort(), `token:${t.provider}:${crypto.createHmac('sha256', secret).update(t.subject ?? '').digest('hex')}`]),
+        // b3a0992f: a login held on the host is its person's and account's, and its answered hosts are the injector's.
+        ...(spec.tokenLogin ? [[CODEX_ACCESS_PLACEHOLDER, [...spec.tokenLogin.injectHosts].sort(), [...spec.tokenLogin.answerHosts].sort(),
+          `login:${spec.tokenLogin.provider}:${crypto.createHmac('sha256', secret).update(`${spec.tokenLogin.subject ?? ''}\n${spec.tokenLogin.accountId}`).digest('hex')}`]] : []),
       ].sort());
       // A command joining the session injects nothing, or exactly what the session does (review): the
       // decider may hand a session's flow to the command's injector, which must swap all its keys.
-      const foreign = joining && (spec.maskedEnv.length > 0 || !!spec.tokenEnv?.length) && recorded(injection) !== injecting;
+      const foreign = joining && (spec.maskedEnv.length > 0 || !!spec.tokenEnv?.length || !!spec.tokenLogin) && recorded(injection) !== injecting;
       if ((shared && !joining && recorded(injection) !== injecting) || foreign) {
         throw new Error(`Another session is in the Airlock machine for ${workspace} with other model keys or inference hosts, so nothing was launched. Launch it once that session has ended.`);
       }
@@ -1820,10 +1826,22 @@ export class SmolvmRuntime implements AirlockRuntime {
         try { return fs.lstatSync(o.path).isFile(); } catch { return false; }
       })());
       this.ensurePlaceholders(name, plan.placeholders);
-      if (seeds.length) {
+      // b3a0992f: a login held on the host starts from a stand-in, made here: the machine's placeholders
+      // for its tokens and the account it is for, never a token.
+      const held = joining || !spec.tokenLogin ? null : (plan.own ?? []).find((o) => !o.seed && o.path === path.resolve(spec.tokenLogin!.path)) ?? null;
+      if (seeds.length || held) {
         await this.must(['machine', 'exec', '--name', name, '-u', 'root', '--', 'sh', '-c', `mkdir -p ${GUEST_OWN_ROOT}; chown 0:0 ${GUEST_OWN_ROOT}; chmod 700 ${GUEST_OWN_ROOT}`], 'make the machine\'s store for its own login');
         for (const o of seeds) {
           await this.must(['machine', 'cp', '--mode', '600', '--uid', '0', '--gid', '0', o.path, `${name}:${o.store}.seed`], `copy ${o.path} into the machine`);
+        }
+      }
+      if (held) {
+        const standIn = path.join(this.machineDir(name), `login-${crypto.randomBytes(8).toString('hex')}.json`);
+        fs.writeFileSync(standIn, codexStandInAuth({ accessToken: placeholders[CODEX_ACCESS_PLACEHOLDER], refreshToken: placeholders[CODEX_REFRESH_PLACEHOLDER], accountId: spec.tokenLogin!.accountId }), { mode: 0o600 });
+        try {
+          await this.must(['machine', 'cp', '--mode', '600', '--uid', '0', '--gid', '0', standIn, `${name}:${held.store}.seed`], 'give the machine its stand-in login');
+        } finally {
+          fs.rmSync(standIn, { force: true });
         }
       }
       if (!joining) {
@@ -2222,7 +2240,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       const socket = await this.forwardSocket(name, spec.relayPort, '127.0.0.1', undo);
       undo.push(this.d.egress.addRoute(name, { kind: 'relay', port: spec.relayPort, socket }));
     }
-    const secrets: Array<{ name: string; placeholder: string; hosts: string[] } & ({ value: string } | { token: CachedToken })> = spec.maskedEnv.flatMap((m) => {
+    const secrets: Array<{ name: string; placeholder: string; hosts: string[]; file?: boolean } & ({ value: string } | { token: CachedToken })> = spec.maskedEnv.flatMap((m) => {
       const value = this.d.hostEnv[m.name];
       return value ? [{ name: m.name, placeholder: placeholders[m.name], value, hosts: m.injectHosts }] : [];
     });
@@ -2231,8 +2249,18 @@ export class SmolvmRuntime implements AirlockRuntime {
       if (!tokenFor) throw new Error(`Airlock has no login to give this session for ${t.name}: the launch passed no token source. Nothing was launched.`);
       secrets.push({ name: t.name, placeholder: placeholders[t.name], token: tokenFor(t.provider), hosts: t.injectHosts });
     }
+    // b3a0992f: a login file's stand-in access token, swapped as an env var's is; its refresh answered here.
+    const answered: Array<{ host: string; answer: LocalAnswer }> = [];
+    const login = spec.tokenLogin;
+    if (login) {
+      if (!tokenFor) throw new Error(`Airlock has no login to give this session for ${login.path}: the launch passed no token source. Nothing was launched.`);
+      const token = tokenFor(login.provider);
+      secrets.push({ name: CODEX_ACCESS_PLACEHOLDER, placeholder: placeholders[CODEX_ACCESS_PLACEHOLDER], token, hosts: login.injectHosts, file: true });
+      const answer = codexTokenAnswer({ token, accessToken: placeholders[CODEX_ACCESS_PLACEHOLDER], refreshToken: placeholders[CODEX_REFRESH_PLACEHOLDER] });
+      answered.push(...login.answerHosts.map((host) => ({ host, answer })));
+    }
     // A model server on the host loopback (a9bc650c) the injector does not take: carried as it is.
-    const injected = new Set(secrets.flatMap((s) => s.hosts));
+    const injected = new Set([...secrets.flatMap((s) => s.hosts), ...answered.map((a) => a.host)]);
     for (const e of spec.loopbackInference ?? []) {
       if (injected.has(e.host)) continue;
       const socket = await this.forwardSocket(name, e.port, e.host, undo);
@@ -2244,12 +2272,16 @@ export class SmolvmRuntime implements AirlockRuntime {
       const e = spec.network.allow.find((a) => a.startsWith(`${host}:`));
       return e ? Number(e.slice(host.length + 1)) : 443;
     };
-    const routes = [...new Set(secrets.flatMap((s) => s.hosts))].map((host) => ({ host, port: portOf(host) }));
+    const routes: InjectorRoute[] = [
+      ...[...new Set(secrets.flatMap((s) => s.hosts))].map((host) => ({ host, port: portOf(host) })),
+      ...answered.filter((a) => !secrets.some((s) => s.hosts.includes(a.host))).map((a) => ({ host: a.host, port: 443, answer: a.answer })),
+    ];
     const socket = this.d.egress.routeSocket(name);
     const injector = await this.d.startInjector({ ca, routes, secrets: secrets.map((x) => ('token' in x ? { placeholder: x.placeholder, token: x.token } : { placeholder: x.placeholder, value: x.value })), socketPath: socket });
     undo.push(() => injector.close());
     for (const r of routes) undo.push(this.d.egress.addRoute(name, { kind: 'inject', host: r.host, port: r.port, socket }));
-    return secrets.map((s) => `${s.name}=${s.placeholder}`);
+    // A login file's stand-in is in the file, not the environment.
+    return secrets.filter((s) => !s.file).map((s) => `${s.name}=${s.placeholder}`);
   }
 
   /**

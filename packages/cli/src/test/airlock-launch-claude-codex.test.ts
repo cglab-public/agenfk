@@ -321,16 +321,60 @@ describePosix('agenfk airlock codex (GH-356)', () => {
     expect(d.tokenSource!.get).not.toHaveBeenCalled();
   });
 
-  it('a ChatGPT login without --login mount is refused, saying how to launch (host-held Codex is a later story)', async () => {
-    const d = deps({}, { [AUTH]: { tokens: { access_token: 'x', refresh_token: 'y', id_token: 'z' } } });
-    await expect(runAirlockLaunch('codex', [], { keyEnv: [] }, d)).rejects.toThrow(/ChatGPT login[\s\S]*--login mount[\s\S]*OPENAI_API_KEY/);
-    expect(d.runtime.launch).not.toHaveBeenCalled();
-    expect(d.tokenSource!.get).not.toHaveBeenCalled();
+  describe('a ChatGPT login held on the host (the default, b3a0992f)', () => {
+    const chatgpt = { [AUTH]: { tokens: { access_token: 'x', refresh_token: 'y', id_token: 'z', account_id: 'acct-1' } } };
+    const openaiSource = () => ({
+      get: vi.fn(async () => ({ accessToken: 'real-token-not-in-guest', expiresAt: Date.now() + 3_600_000, accountId: 'acct-1' })),
+      invalidate: vi.fn(async () => undefined),
+    });
+
+    it('asks the token source for the openai login; the machine gets a stand-in login, chatgpt.com the real Bearer, auth.openai.com the host\'s answer', async () => {
+      const d = deps({ tokenSource: openaiSource() }, chatgpt);
+      expect(await runAirlockLaunch('codex', [], { keyEnv: [] }, d)).toBe(0);
+      expect(d.tokenSource!.get).toHaveBeenCalledWith(expect.objectContaining({ provider: 'openai', subject: 'local' }));
+      const spec = specOf(d);
+      expect(spec.tokenLogin).toEqual({
+        path: '/home/u/.codex/auth.json', provider: 'openai', subject: 'local', accountId: 'acct-1',
+        injectHosts: ['chatgpt.com'], answerHosts: ['auth.openai.com'],
+      });
+      expect(spec.filesystem.machineOwn).toEqual([{ path: '/home/u/.codex/auth.json', seed: false }]);
+      expect(spec.network.allow).toEqual(expect.arrayContaining(['chatgpt.com', 'auth.openai.com']));
+      expect(spec.maskedEnv).toEqual([]);
+      expect(spec.tokenEnv ?? []).toEqual([]);
+      expect(JSON.stringify(spec)).not.toContain('real-token-not-in-guest');
+    });
+
+    it('tells codex to keep its login in the file (the stand-in), whatever the host\'s config says', async () => {
+      const d = deps({ tokenSource: openaiSource() }, chatgpt);
+      await runAirlockLaunch('codex', ['-m', 'gpt-6'], { keyEnv: [] }, d);
+      const args = cmdOf(d).args;
+      expect(args.slice(0, args.indexOf('-m'))).toEqual(['--dangerously-bypass-hook-trust', '-c', 'cli_auth_credentials_store="file"']);
+      expect(JSON.stringify(cmdOf(d))).not.toContain('real-token-not-in-guest');
+    });
+
+    it('a person not connected is refused before anything runs, saying how codex logs in', async () => {
+      const d = deps({ tokenSource: tokenSource({ code: 'not_connected' }) }, chatgpt);
+      await expect(runAirlockLaunch('codex', [], { keyEnv: [] }, d)).rejects.toThrow(/not connected[\s\S]*codex login/i);
+      expect(d.runtime.launch).not.toHaveBeenCalled();
+    });
+
+    it('a login with no account is refused: chatgpt.com routes the workspace by it', async () => {
+      const d = deps({}, chatgpt);
+      await expect(runAirlockLaunch('codex', [], { keyEnv: [] }, d)).rejects.toThrow(/account/i);
+      expect(d.runtime.launch).not.toHaveBeenCalled();
+    });
+
+    it('an OpenAI key in the environment wins: masked as a key, no login asked for', async () => {
+      const d = deps({ env: { OPENAI_API_KEY: 'sk-real' }, tokenSource: openaiSource() }, chatgpt);
+      await runAirlockLaunch('codex', [], { keyEnv: [] }, d);
+      expect(specOf(d).tokenLogin).toBeUndefined();
+      expect(d.tokenSource!.get).not.toHaveBeenCalled();
+    });
   });
 
   it('no key and no login at all is refused, naming both ways in', async () => {
     const d = deps();
-    await expect(runAirlockLaunch('codex', [], { keyEnv: [] }, d)).rejects.toThrow(/OPENAI_API_KEY[\s\S]*--login mount/);
+    await expect(runAirlockLaunch('codex', [], { keyEnv: [] }, d)).rejects.toThrow(/OPENAI_API_KEY[\s\S]*codex login/);
   });
 
   it('warns when ~/.codex/hooks.json has no Airlock hook: the sandbox still holds, but calls are not judged one by one', async () => {

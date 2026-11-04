@@ -107,9 +107,76 @@ describe('localTokenSource (anthropic): the person\'s own Claude Code login', ()
     await expect(s.get(REQ)).rejects.toMatchObject({ code: 'not_connected', message: expect.stringMatching(/expired/) });
   });
 
-  it('openai is not a provider it holds yet (host-held Codex is a later story)', async () => {
-    const s = localTokenSource({ platform: 'darwin', home: dir, readKeychain: () => login(Date.now() + 3_600_000) });
-    await expect(s.get({ provider: 'openai', subject: 'dana' })).rejects.toMatchObject({ code: 'not_connected' });
+});
+
+/** A JWT as ChatGPT's access tokens are: the claims carry exp (seconds). */
+const jwt = (claims: Record<string, unknown>) =>
+  [{ alg: 'RS256', typ: 'JWT' }, claims].map((p) => Buffer.from(JSON.stringify(p)).toString('base64url')).join('.') + '.c2ln';
+
+describe('localTokenSource (openai): the person\'s own Codex ChatGPT login (b3a0992f)', () => {
+  const OPENAI = { provider: 'openai' as const, subject: 'dana' };
+  const write = (dirPath: string, tokens: Record<string, unknown> | null, extra: Record<string, unknown> = {}) => {
+    fs.mkdirSync(dirPath, { recursive: true });
+    fs.writeFileSync(path.join(dirPath, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: null, ...(tokens ? { tokens } : {}), ...extra }));
+  };
+
+  it('reads ~/.codex/auth.json: the access token, when it expires (its JWT exp) and the account it is for', async () => {
+    const exp = Math.floor(Date.now() / 1000) + 7200;
+    write(path.join(dir, '.codex'), { access_token: jwt({ exp }), refresh_token: 'host-refresh', id_token: jwt({}), account_id: 'acct-1' });
+    const t = await localTokenSource({ platform: 'darwin', home: dir, readKeychain: () => null }).get(OPENAI);
+    expect(t).toMatchObject({ accessToken: jwt({ exp }), accountId: 'acct-1', expiresAt: exp * 1000 });
+  });
+
+  it('reads CODEX_HOME\'s auth.json when the user set one', async () => {
+    const exp = Math.floor(Date.now() / 1000) + 7200;
+    write(path.join(dir, 'cx'), { access_token: jwt({ exp }), account_id: 'acct-2' });
+    write(path.join(dir, '.codex'), { access_token: jwt({ exp }), account_id: 'acct-wrong' });
+    const t = await localTokenSource({ platform: 'linux', home: dir, codexHome: path.join(dir, 'cx') }).get(OPENAI);
+    expect(t.accountId).toBe('acct-2');
+  });
+
+  it('an access token that is no JWT is held a short while, as a Claude login without expiresAt is', async () => {
+    write(path.join(dir, '.codex'), { access_token: 'opaque', account_id: 'acct-1' });
+    const t = await localTokenSource({ platform: 'linux', home: dir }).get(OPENAI);
+    expect(t.accessToken).toBe('opaque');
+    expect(t.expiresAt).toBeGreaterThan(Date.now());
+  });
+
+  it('no login file, or one with an API key only, is not_connected, saying a keyring login is not read', async () => {
+    const s = localTokenSource({ platform: 'linux', home: dir });
+    await expect(s.get(OPENAI)).rejects.toMatchObject({ code: 'not_connected', message: expect.stringMatching(/keyring/) });
+    write(path.join(dir, '.codex'), null, { auth_mode: 'apikey', OPENAI_API_KEY: 'sk-x' });
+    await expect(s.get(OPENAI)).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('an expired login is not_connected: Airlock never refreshes it, codex on the host does', async () => {
+    write(path.join(dir, '.codex'), { access_token: jwt({ exp: Math.floor(Date.now() / 1000) - 10 }), refresh_token: 'r', account_id: 'acct-1' });
+    await expect(localTokenSource({ platform: 'linux', home: dir }).get(OPENAI))
+      .rejects.toMatchObject({ code: 'not_connected', message: expect.stringMatching(/expired[\s\S]*codex/) });
+  });
+
+  it('reads the file again on every get: what codex on the host refreshed is what the next ask gets', async () => {
+    const exp = Math.floor(Date.now() / 1000) + 7200;
+    write(path.join(dir, '.codex'), { access_token: jwt({ exp, n: 1 }), account_id: 'acct-1' });
+    const s = localTokenSource({ platform: 'linux', home: dir });
+    expect((await s.get(OPENAI)).accessToken).toBe(jwt({ exp, n: 1 }));
+    write(path.join(dir, '.codex'), { access_token: jwt({ exp, n: 2 }), account_id: 'acct-1' });
+    expect((await s.get(OPENAI)).accessToken).toBe(jwt({ exp, n: 2 }));
+  });
+
+  it('a codex login error says how codex logs in', () => {
+    expect(tokenErrorMessage(new TokenSourceError('not_connected'), 'codex')).toMatch(/codex login/);
+    expect(tokenErrorMessage(new TokenSourceError('not_connected'), 'codex')).not.toMatch(/\/login/);
+  });
+});
+
+describe('cachedToken.token(): the whole token, for what a stand-in login needs beside it (the account)', () => {
+  it('gives the cached token with its accountId, asking the source once', async () => {
+    const s: TokenSource = { get: vi.fn(async () => ({ accessToken: 't1', expiresAt: Date.now() + 3_600_000, accountId: 'acct-1' })), invalidate: vi.fn(async () => undefined) };
+    const t = cachedToken(s, REQ);
+    expect(await t.token()).toMatchObject({ accessToken: 't1', accountId: 'acct-1' });
+    expect(await t.get()).toBe('t1');
+    expect(s.get).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -272,6 +339,21 @@ describe('startKeyInjector: a token the host holds', () => {
     unblock();
     await new Promise((r) => setTimeout(r, 200));
     expect(seen).toEqual([]);
+  });
+
+  it('a token Node refuses in a header (CR/LF) is answered 502, not a launcher crash (b3a0992f review)', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (e: unknown) => { rejections.push(e); };
+    process.on('unhandledRejection', onRejection);
+    try {
+      await start({ get: async () => 'live\r\nx-evil: 1', invalidate: async () => undefined });
+      expect((await post('{}')).status).toBe(502);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(rejections).toEqual([]);
+      expect(seen).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
   });
 
   it('a source that cannot give a token is answered 502, and nothing goes upstream', async () => {
