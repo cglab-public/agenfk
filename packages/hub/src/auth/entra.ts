@@ -8,7 +8,7 @@ import { decryptSecret } from '../crypto.js';
 import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, verifyOAuthState } from './oauth.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
-import { CLIENT_ASSERTION_TYPE, describeEntraFailure, entraAssertionEnabled, getStsClientAssertion, EntraFailure } from './entraAssertion.js';
+import { CLIENT_ASSERTION_TYPE, StsAssertionError, describeEntraFailure, entraAssertionEnabled, getStsClientAssertion, EntraFailure } from './entraAssertion.js';
 
 interface EntraCfg {
   entra_enabled: number;
@@ -155,12 +155,15 @@ export function entraRouter(ctx: HubServerContext): Router {
       if (!idToken) return res.status(502).json({ error: 'Entra response missing id_token' });
       claims = await verifyIdToken(idToken, disc.jwks, cfg.entra_client_id, disc.doc.issuer);
     } catch (e: any) {
+      // Full text stays in the log; the caller is unauthenticated and gets
+      // codes only (Entra's description has Trace/Correlation IDs, STS's has the role ARN).
       const failure = describeEntraFailure(e);
-      console.error(`[HUB] Entra OAuth exchange failed: ${failure.detail}`
+      const fromSts = e instanceof StsAssertionError;
+      console.error(`[HUB] Entra OAuth exchange failed${fromSts ? ' (STS)' : ''}: ${failure.detail}`
         + (failure.errorCodes?.length ? ` (error_codes: ${failure.errorCodes.join(',')})` : ''));
       return res.status(502).json({
         error: 'Entra OAuth exchange failed',
-        detail: failure.detail,
+        detail: fromSts ? 'STS unavailable' : failure.entraError ? 'Entra rejected the token request' : 'Entra sign-in failed',
         ...(failure.entraError ? { entra_error: failure.entraError } : {}),
         ...(failure.errorCodes?.length ? { error_codes: failure.errorCodes } : {}),
       });

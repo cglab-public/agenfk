@@ -103,7 +103,7 @@ describe('Entra callback: client assertion from AWS STS', () => {
     expect(body.has('client_secret')).toBe(false);
     expect(stsInputs[0].Audience).toEqual(['api://AzureADTokenExchange']);
     expect(stsInputs[0].SigningAlgorithm).toBe('RS256');
-    expect(stsInputs[0].DurationSeconds).toBeLessThanOrEqual(300);
+    expect(stsInputs[0].DurationSeconds).toBe(60);
     expect(postSpy).toHaveBeenCalledTimes(1);
     expect(logged.join('\n')).toMatch(/assertion/i);
   });
@@ -178,7 +178,7 @@ describe('Entra callback: client assertion from AWS STS', () => {
     expect(r.body.error).toBe('Entra OAuth exchange failed');
     expect(r.body.entra_error).toBe('invalid_client');
     expect(r.body.error_codes).toEqual([7000222]);
-    expect(r.body.detail).toMatch(/AADSTS7000222/);
+    expect(r.body.detail).not.toMatch(/AADSTS/);
     const everything = JSON.stringify(r.body) + logged.join('\n');
     expect(everything).toMatch(/7000222/);
     expect(everything).not.toContain(CLIENT_SECRET);
@@ -191,8 +191,41 @@ describe('Entra callback: client assertion from AWS STS', () => {
     stsSend.mockRejectedValue(new Error('CredentialsProviderError: no credentials'));
     const r = await callback();
     expect(r.status).toBe(502);
-    expect(r.body.detail).toMatch(/CredentialsProviderError/);
+    expect(r.body.detail).toBe('STS unavailable');
+    expect(logged.join('\n')).toMatch(/CredentialsProviderError/);
     expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  it('assertion mode, no secret, Entra answers invalid_client: 502 with Entra code, no retry', async () => {
+    process.env.AGENFK_HUB_ENTRA_ASSERTION = 'aws-sts';
+    await configure(false);
+    stsSend.mockResolvedValue({ WebIdentityToken: ASSERTION });
+    postSpy.mockRejectedValueOnce(entraError(401, INVALID_CLIENT));
+    const r = await callback();
+    expect(r.status).toBe(502);
+    expect(r.body.entra_error).toBe('invalid_client');
+    expect(r.body.error_codes).toEqual([7000222]);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('the response never carries Entra trace ids or an STS role ARN, only the log does', async () => {
+    process.env.AGENFK_HUB_ENTRA_ASSERTION = 'aws-sts';
+    await configure(false);
+    stsSend.mockRejectedValueOnce(new Error('AccessDenied: arn:aws:sts::123456789012:assumed-role/hub-task/abc not authorized'));
+    const sts = await callback();
+    expect(JSON.stringify(sts.body)).not.toMatch(/123456789012|assumed-role/);
+    expect(sts.body.detail).toBe('STS unavailable');
+    expect(logged.join('\n')).toContain('123456789012');
+
+    stsSend.mockResolvedValue({ WebIdentityToken: ASSERTION });
+    postSpy.mockRejectedValueOnce(entraError(401, {
+      error: 'invalid_client', error_codes: [7000222],
+      error_description: 'AADSTS7000222: expired. Trace ID: x Correlation ID: y Timestamp: 2026-11-04',
+    }));
+    const entra = await callback();
+    expect(JSON.stringify(entra.body)).not.toMatch(/Trace ID|Correlation ID|Timestamp/);
+    expect(entra.body.error_codes).toEqual([7000222]);
+    expect(logged.join('\n')).toContain('Trace ID: x');
   });
 
   it('secret mode: an expired-secret 401 surfaces AADSTS code instead of the bare status', async () => {
