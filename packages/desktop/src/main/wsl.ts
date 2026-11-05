@@ -104,20 +104,26 @@ export interface WslTarget {
  * that is not in the list is ignored rather than passed to wsl.exe.
  *
  * A Linux path ALWAYS goes to WSL, and without needing the list: when nobody
- * chose, wsl.exe's own default is named by leaving `--distribution` off. So a
+ * chose, the only running distro is named, and with none or several running
+ * wsl.exe's own default is named by leaving `--distribution` off. So a
  * cold VM that made the listing time out costs the person their preference for
  * a moment, never their terminal.
  */
 export function chooseWslTarget(opts: {
   onWindows: boolean;
   distros: readonly string[];
+  /** The distros running now (`wsl.exe --list --running`). */
+  running: readonly string[];
   preference: string;
   cwd: string;
 }): WslTarget | null {
   if (!opts.onWindows) return null;
   const chosen = opts.preference && opts.distros.includes(opts.preference) ? opts.preference : null;
   if (chosen) return { distro: chosen };
-  return isLinuxPath(opts.cwd) ? { distro: null } : null;
+  if (!isLinuxPath(opts.cwd)) return null;
+  // The server the Linux path came from runs in a distro; when exactly one is
+  // up, that is it, and wsl.exe's default may be a different one.
+  return { distro: opts.running.length === 1 ? opts.running[0] : null };
 }
 
 /**

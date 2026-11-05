@@ -124,7 +124,7 @@ describe('which directories only WSL can open', () => {
 });
 
 describe('deciding where a terminal runs', () => {
-  const base = { onWindows: true, distros: ['Ubuntu', 'Debian'], preference: '' };
+  const base = { onWindows: true, distros: ['Ubuntu', 'Debian'], running: [] as string[], preference: '' };
 
   it('never uses WSL off Windows', () => {
     expect(chooseWslTarget({ ...base, onWindows: false, cwd: '/home/e/repo' })).toBeNull();
@@ -137,6 +137,23 @@ describe('deciding where a terminal runs', () => {
   it('sends a Linux directory to WSL even when no distro was chosen, to wsl.exe\'s own default', () => {
     // No name: wsl.exe knows its default, and the list is not needed for it.
     expect(chooseWslTarget({ ...base, cwd: '/home/e/repo' })).toEqual({ distro: null });
+  });
+
+  it('names the only running distro, so a Linux path lands where the server is', () => {
+    expect(chooseWslTarget({ ...base, running: ['Debian'], cwd: '/home/e/repo' })).toEqual({ distro: 'Debian' });
+  });
+
+  it('falls back to wsl.exe\'s default when none, or several, are running', () => {
+    expect(chooseWslTarget({ ...base, running: [], cwd: '/home/e/repo' })).toEqual({ distro: null });
+    expect(chooseWslTarget({ ...base, running: ['Ubuntu', 'Debian'], cwd: '/home/e/repo' })).toEqual({ distro: null });
+  });
+
+  it('keeps a Windows directory on Windows even with one distro running and no choice', () => {
+    expect(chooseWslTarget({ ...base, running: ['Debian'], cwd: 'C:\\Users\\e' })).toBeNull();
+  });
+
+  it('prefers the chosen distro over the running one', () => {
+    expect(chooseWslTarget({ ...base, running: ['Debian'], preference: 'Ubuntu', cwd: '/home/e/repo' })).toEqual({ distro: 'Ubuntu' });
   });
 
   it('uses the chosen distro for everything once one is chosen', () => {
