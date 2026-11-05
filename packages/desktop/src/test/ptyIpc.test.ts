@@ -203,6 +203,10 @@ describe('the channels that exist', () => {
       'github:createRepository',
       'github:owners',
       'notifications:attention',
+      // Read-only, takes no renderer input: the WSL distros wsl.exe listed, so
+      // Settings can offer them. The CHOICE goes through prefs:set, which
+      // checks the name against this same list (INFRA-425).
+      'wsl:distros',
     ].sort());
   });
 });
@@ -315,7 +319,7 @@ describe('prefs over IPC', () => {
       customSoundPath: '/Users/x/Library/sounds/custom.wav',
     }));
     const got = await handlers['prefs:get']({} as never, undefined);
-    expect(Object.keys(got).sort()).toEqual(['askBeforeOpening', 'autoApprove', 'defaultAgentId']);
+    expect(Object.keys(got).sort()).toEqual(['askBeforeOpening', 'autoApprove', 'defaultAgentId', 'terminalFontSize', 'uiScale', 'wslDistro']);
     expect(JSON.stringify(got), 'the path crossed to the renderer')
       .not.toMatch(/customSound|\/Users\/x/);
   });
@@ -332,7 +336,7 @@ describe('prefs over IPC', () => {
       customSoundPath: '/Users/x/Library/sounds/custom.wav',
     }));
     const wrote = await handlers['prefs:set']({} as never, { key: 'autoApprove', value: true });
-    expect(Object.keys(wrote).sort()).toEqual(['askBeforeOpening', 'autoApprove', 'defaultAgentId']);
+    expect(Object.keys(wrote).sort()).toEqual(['askBeforeOpening', 'autoApprove', 'defaultAgentId', 'terminalFontSize', 'uiScale', 'wslDistro']);
     expect(JSON.stringify(wrote), 'the path came back on the write').not.toMatch(/customSound|\/Users\/x/);
   });
 });

@@ -35,15 +35,18 @@
  * the type and the copy are this app's own.
  */
 import React from 'react';
+import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN } from '../terminalOptions';
+import { desktopInfo } from '../desktop';
 import { clsx } from 'clsx';
-import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, FolderCog, ShieldCheck, type LucideIcon } from 'lucide-react';
+import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, FolderCog, ShieldCheck, ArrowLeft, ALargeSmall, type LucideIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
 import {
   listAgentsFromBridge, refreshAgentsFromBridge,
   readPrefsFromBridge, setAutoApproveOnBridge,
-  setDefaultAgentOnBridge, setAskBeforeOpeningOnBridge,
-  canChooseSound, canNotifyAttention,
+  setDefaultAgentOnBridge, setAskBeforeOpeningOnBridge, setUiScaleOnBridge, setTerminalFontSizeOnBridge,
+  setWslDistroOnBridge, listWslDistrosFromBridge,
+  canChooseSound, canNotifyAttention, canSetAppearance,
   currentSoundFromBridge, chooseSoundOnBridge, clearSoundOnBridge,
 } from './agentBridge';
 import { AgentPicker } from './AgentPicker';
@@ -119,12 +122,16 @@ function SettingRow({
       data-testid="setting-row"
       data-row={testId}
       className={clsx(
-        'flex items-start gap-4 border-b border-border-soft py-4 last:border-b-0',
+        'flex flex-wrap items-start gap-x-4 gap-y-2 border-b border-border-soft py-4 last:border-b-0',
         indent && 'pl-4',
       )}
     >
       {lead && <div className="mt-0.5 shrink-0">{lead}</div>}
-      <div className="min-w-0 flex-1">
+      {/* a2a094e5. overflow-wrap is inherited, so a path or a command in the
+          text breaks inside it instead of pushing the pane wider; a <pre>
+          does not wrap and scrolls itself. The 14rem basis is where the
+          control stops fitting beside the text and wraps under it. */}
+      <div data-testid="setting-text" className="min-w-0 flex-[1_1_14rem] [overflow-wrap:anywhere]">
         <p className="text-[13px] font-semibold text-ink">{title}</p>
         <p className="mt-0.5 text-[12px] leading-snug text-ink-tertiary">
           {description}
@@ -145,7 +152,8 @@ function SettingRow({
           </p>
         )}
       </div>
-      <div className="mt-0.5 flex shrink-0 items-center gap-2">{control}</div>
+      {/* Never wider than the row, a select included, once it has wrapped. */}
+      <div className="mt-0.5 flex min-w-0 max-w-full shrink-0 flex-wrap items-center gap-2 [&_select]:max-w-full">{control}</div>
     </div>
   );
 }
@@ -231,6 +239,17 @@ function Command({ children }: { children: React.ReactNode }): React.ReactElemen
  * the pane does not render. When a section arrives, both sides learn about it
  * at once.
  */
+/*
+ * The choices Appearance offers, inside the ranges main enforces
+ * (main/appearance.ts). Tenths for the scale, because that is what one press of
+ * Ctrl+= moves, so a value set by the keyboard is always one of the options.
+ */
+const UI_SCALE_OPTIONS: readonly number[] = Array.from({ length: 13 }, (_, i) => Math.round((0.8 + i * 0.1) * 10) / 10);
+const TERMINAL_FONT_SIZE_OPTIONS: readonly number[] = Array.from(
+  { length: TERMINAL_FONT_SIZE_MAX - TERMINAL_FONT_SIZE_MIN + 1 },
+  (_, i) => TERMINAL_FONT_SIZE_MIN + i,
+);
+
 interface SettingsSection {
   readonly id: string;
   readonly label: string;
@@ -379,7 +398,14 @@ function initials(name: string | null, login: string): string {
  * `initialSection`: the section to open on (GH-294: `agenfk airlock edit` links
  * `?settings=airlock`). An id no section has opens the first one.
  */
-export function SettingsPanel({ projectId, initialSection }: { projectId?: string | null; initialSection?: string | null } = {}): React.ReactElement {
+export function SettingsPanel({ projectId, initialSection, onBack, backLabel = 'Back' }: {
+  projectId?: string | null;
+  initialSection?: string | null;
+  /** Return to the view Settings was opened from. Absent, no Back is drawn. */
+  onBack?: () => void;
+  /** Its accessible name, saying where it goes ("Back to Tasks"). */
+  backLabel?: string;
+} = {}): React.ReactElement {
   const queryClient = useQueryClient();
   const { data: settings, isError: readFailed } = useQuery<AppSettingsDto>({
     queryKey: ['settings'],
@@ -490,6 +516,35 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
     onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
   });
   const defaultAgentId = prefs?.defaultAgentId ?? '';
+
+  /*
+   * Appearance (INFRA-425). Same shape as the switches above: the setter
+   * answers with the settled slice, and a refusal re-reads rather than leaving
+   * the screen on a value main did not store.
+   */
+  const appearanceAvailable = canSetAppearance();
+  // Cmd on macOS, where Ctrl+= is left to the terminal (main/appearance.ts).
+  const zoomKey = desktopInfo()?.platform === 'darwin' ? '⌘' : 'Ctrl+';
+  const saveUiScale = useMutation({
+    mutationFn: (value: number) => setUiScaleOnBridge(value),
+    onSuccess: settled => { queryClient.setQueryData(['desktop-prefs'], settled); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
+  });
+  const saveTerminalFontSize = useMutation({
+    mutationFn: (value: number) => setTerminalFontSizeOnBridge(value),
+    onSuccess: settled => { queryClient.setQueryData(['desktop-prefs'], settled); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
+  });
+  /*
+   * Where terminals open, on Windows with WSL (INFRA-425). The list comes from
+   * main, which read it from wsl.exe; empty means the row is not offered.
+   */
+  const { data: wslDistros = [] } = useQuery({ queryKey: ['wsl-distros'], queryFn: listWslDistrosFromBridge });
+  const saveWslDistro = useMutation({
+    mutationFn: (distro: string) => setWslDistroOnBridge(distro),
+    onSuccess: settled => { queryClient.setQueryData(['desktop-prefs'], settled); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
+  });
 
   /*
    * What the ROW shows: the stored choice, or the agent that would run instead —
@@ -782,6 +837,62 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
       </>,
     },
     {
+      id: 'appearance',
+      label: 'Appearance',
+      icon: ALargeSmall,
+      rows: appearanceAvailable ? (
+        <>
+        <SettingRow
+          testId="ui-scale-row"
+          title="Interface scale"
+          /* The WSLg case is named because it is the one that sends people
+             here: a Linux window drawn at 1x on a monitor Windows scales up. */
+          description={`How large the whole window draws. Raise it when the text is too small to read, for example a WSLg window on a monitor Windows scales to 150%. ${zoomKey}= and ${zoomKey}- change it too, and both are remembered.`}
+          control={
+            <select
+              aria-label="Interface scale"
+              value={String(prefs?.uiScale ?? 1)}
+              disabled={saveUiScale.isPending}
+              onChange={e => saveUiScale.mutate(Number(e.target.value))}
+              className="rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {UI_SCALE_OPTIONS.map(scale => (
+                <option key={scale} value={String(scale)}>{`${Math.round(scale * 100)}%`}</option>
+              ))}
+            </select>
+          }
+        />
+        <SettingRow
+          testId="terminal-font-size-row"
+          title="Terminal font size"
+          description="The size of the text in every terminal, including the ones already open."
+          control={
+            <select
+              aria-label="Terminal font size"
+              value={String(prefs?.terminalFontSize ?? 12)}
+              disabled={saveTerminalFontSize.isPending}
+              onChange={e => saveTerminalFontSize.mutate(Number(e.target.value))}
+              className="rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {TERMINAL_FONT_SIZE_OPTIONS.map(size => (
+                <option key={size} value={String(size)}>{`${size} px`}</option>
+              ))}
+            </select>
+          }
+        />
+        </>
+      ) : (
+        <SettingRow
+          testId="appearance-unavailable-row"
+          title="Interface scale and terminal font size"
+          /* A note rather than controls that would refuse silently: these are
+             stored by the desktop app, and this build cannot reach them. */
+          description="Set in the AgEnFK desktop app. In a browser, use the browser's own zoom."
+          control={null}
+        />
+      ),
+    },
+    {
       id: 'notifications',
       label: 'Notifications',
       icon: Bell,
@@ -941,6 +1052,35 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
               />
             }
           />
+          {wslDistros.length > 0 && (
+            <SettingRow
+              testId="wsl-distro-row"
+              title="Open terminals in"
+              /* Says what happens to a Linux path, because that is the case
+                 people hit first: a project that lives in WSL opens there
+                 whatever this says. */
+              description="Where a terminal starts. A WSL distro runs every terminal and agent inside Linux, with your Linux PATH. Projects that live in WSL open there either way."
+              /* Said, not just undone: a refused save otherwise snaps the select
+                 back with nothing to explain it. */
+              note={saveWslDistro.isError
+                ? 'That choice could not be saved. The distro list may have changed; open this screen again to refresh it.'
+                : undefined}
+              control={
+                <select
+                  aria-label="Open terminals in"
+                  value={prefs?.wslDistro ?? ''}
+                  disabled={saveWslDistro.isPending}
+                  onChange={e => saveWslDistro.mutate(e.target.value)}
+                  className="rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value="">Windows (PowerShell)</option>
+                  {wslDistros.map(distro => (
+                    <option key={distro} value={distro}>{`WSL: ${distro}`}</option>
+                  ))}
+                </select>
+              }
+            />
+          )}
           <HerdrRows />
         </>
       ),
@@ -1036,6 +1176,9 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
                disagree about what is installed, what a mark looks like or what
                an agent is called. Not-installed agents are refused by it. */
             <AgentPicker
+              /* Re-listed when the WSL choice changes: what is installed
+                 depends on where terminals run (INFRA-425). */
+              key={prefs?.wslDistro ?? ''}
               value={shownAgentId}
               onChange={next => saveDefaultAgent.mutate(next)}
               /* A LOADER, not the list: the picker owns its own loading state
@@ -1055,12 +1198,32 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
   const shown = sections.find(s => s.id === current) ?? sections[0];
 
   return (
-    <div className="flex h-full min-h-0">
+    // A container, so the pane reflows by its own width: at 150-200% scale
+    // the window is 480-853 CSS px and the app sidebar keeps its share.
+    <div data-testid="settings-root" className="@container flex h-full min-h-0">
+      <div data-testid="settings-rail" className="flex w-12 shrink-0 flex-col border-r border-border-soft @xl:w-48">
+      {/* Outside the nav: the nav is the list of sections, and tests and screen
+          readers walk it as exactly that (5f367fa9). It folds with the rail. */}
+      {onBack && (
+        <div className="px-1 pt-4 @xl:px-2">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label={backLabel}
+            title={backLabel}
+            className="flex w-full items-center justify-center rounded-md py-1.5 text-left text-[13px] text-ink-secondary transition-colors hover:bg-nav-surface hover:text-ink @xl:justify-start @xl:px-3"
+          >
+            <ArrowLeft size={15} aria-hidden="true" className="shrink-0 opacity-80 @xl:mr-2.5" />
+            <span className="sr-only @xl:not-sr-only">Back</span>
+          </button>
+        </div>
+      )}
       {/* The rail. Its entries come from `sections`, so it can never offer one
-          the pane cannot show. */}
+          the pane cannot show. Narrow, it folds to icons; each name stays as
+          the accessible name and the tooltip. */}
       <nav
         aria-label="Settings sections"
-        className="w-48 shrink-0 border-r border-border-soft px-2 py-6"
+        className={clsx('px-1 pb-6 @xl:px-2', onBack ? 'pt-2' : 'pt-6')}
       >
         {sections.map(section => (
           <button
@@ -1071,8 +1234,9 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
             // looking at is information, not decoration, and a screen reader
             // needs it as much as the eye does.
             aria-current={section.id === shown.id ? 'page' : undefined}
+            title={section.label}
             className={clsx(
-              'mb-0.5 flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] transition-colors',
+              'mb-0.5 flex w-full items-center justify-center rounded-md py-1.5 text-left text-[13px] transition-colors @xl:justify-start @xl:px-3',
               section.id === shown.id
                 ? 'bg-accent-fill font-medium text-accent-ink'
                 : 'text-ink-secondary hover:bg-nav-surface hover:text-ink',
@@ -1080,17 +1244,18 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
           >
             {/* Decorative: the button's text already names the section, and a
                 second label here would make a screen reader say it twice. */}
-            <section.icon size={15} aria-hidden="true" className="mr-2.5 shrink-0 opacity-80" />
-            {section.label}
+            <section.icon size={15} aria-hidden="true" className="shrink-0 opacity-80 @xl:mr-2.5" />
+            <span className="sr-only @xl:not-sr-only">{section.label}</span>
           </button>
         ))}
       </nav>
+      </div>
 
       {/* min-w-0 is load-bearing: without it a long description refuses to wrap
           and pushes the whole window into horizontal scroll, which is the
           classic way a two-column settings pane breaks. */}
       <div data-testid="settings-body" className="min-w-0 flex-1 overflow-y-auto scrollbar-slim">
-        <div className="mx-auto w-full max-w-2xl px-8 py-6">
+        <div className="mx-auto w-full max-w-2xl px-4 py-6 @xl:px-8">
           <header>
             <h1 className="text-xl font-semibold text-ink">{shown.label}</h1>
             <p className="mt-1 text-[13px] text-ink-tertiary">
@@ -1134,15 +1299,21 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
               tallest one's height and the dialog no longer jumps between tabs
               (capped at the viewport, it scrolls here instead). The ones not
               shown keep their space but are invisible, hidden from assistive
-              tech and inert: nothing in them can be read, focused or clicked. */}
-          <div className="mt-8 grid">
+              tech and inert: nothing in them can be read, focused or clicked.
+              grid-cols-1 is minmax(0,1fr): the implicit auto column took the
+              widest min-content of every section, hidden ones included, and
+              pushed the shown one past the window edge (a2a094e5). Every
+              select in a pane is capped too, not only a row's: a section with
+              its own layout (Airlock) had 281px selects that, even invisible,
+              made a 198px body scroll sideways at 200% scale. */}
+          <div className="mt-8 grid grid-cols-1">
             {sections.map(section => {
               const isShown = section.id === shown.id;
               return (
                 <div
                   key={section.id}
                   data-testid="settings-pane"
-                  className={clsx('[grid-area:1/1]', !isShown && 'invisible')}
+                  className={clsx('[grid-area:1/1] [&_select]:max-w-full', !isShown && 'invisible')}
                   aria-hidden={isShown ? undefined : true}
                   inert={!isShown}
                 >
