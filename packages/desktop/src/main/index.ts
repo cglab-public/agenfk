@@ -192,7 +192,9 @@ const wslProbe = createWslProbe({
   exe: wslExecutable(process.env),
   env: process.env,
   run: (file, args, opts) => new Promise((resolve, reject) => {
-    execFile(file, [...args], opts as never, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    // windowsHide inline, not only in opts: the GitHub #200 guard reads each
+    // call's own options object, and a console flash on Windows is the bug it stops.
+    execFile(file, [...args], { ...(opts as object), windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
   }),
 });
 const listWslDistros = (): Promise<string[]> => wslProbe.listDistros();
