@@ -51,6 +51,7 @@ import {
 } from '../services/flowRegistry.js';
 import { listRegistryPulls } from '../services/registryPulls.js';
 import { purgeRevokedJiraConnections } from '../services/jira.js';
+import { entraAssertionEnabled } from '../auth/entraAssertion.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -124,7 +125,8 @@ export function adminCanStillSignIn(cfg: AuthConfigRow, admins: SignInAdmin[]): 
   const byPassword = !!cfg.password_enabled && admins.some(a => a.provider === 'password' && !!a.password_hash);
   if (byPassword) return true;
   const google = !!cfg.google_enabled && !!cfg.google_client_id?.trim() && !!cfg.google_client_secret_enc;
-  const entra = !!cfg.entra_enabled && !!cfg.entra_tenant_id?.trim() && !!cfg.entra_client_id?.trim() && !!cfg.entra_client_secret_enc;
+  const entra = !!cfg.entra_enabled && !!cfg.entra_tenant_id?.trim() && !!cfg.entra_client_id?.trim()
+    && (!!cfg.entra_client_secret_enc || entraAssertionEnabled());
   return (google || entra) && admins.some(a => checkEmailAllowlist(a.email, cfg.email_allowlist).allowed);
 }
 
