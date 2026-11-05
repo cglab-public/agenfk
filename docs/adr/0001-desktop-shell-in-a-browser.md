@@ -14,8 +14,10 @@ UI checks it by shape in `packages/ui/src/desktop.ts`.
 
 Everything else about that UI is an ordinary web page. The API server serves
 the built bundle on its own origin (`AGENFK_SERVE_UI`, CGLAB-165), and the
-packaged app adopts a server already listening on ports 3000–3015 and loads
-the UI from it (it starts its own only when it finds none).
+packaged app adopts a server already listening on ports 3000–3015, or on the
+16 ports from `AGENFK_PORT` (then `PORT`) when one is set
+(`packages/desktop/src/main/adoptPorts.ts`), and loads the UI from it (it
+starts its own only when it finds none).
 
 So the long way to check a UI change is: build, package
 (`npm run pack -w packages/desktop`), quit the app — which kills the terminals

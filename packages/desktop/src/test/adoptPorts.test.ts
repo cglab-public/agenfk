@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { adoptPortRange, portFileWithin, portSetting } from '../main/adoptPorts.js';
+import { adoptPortRange, invalidPortMessage, portFileWithin, portSetting } from '../main/adoptPorts.js';
 import { buildServerEnv } from '../main/serverEnv.js';
 
 describe('portSetting', () => {
@@ -112,6 +112,33 @@ describe('portFileWithin', () => {
   });
 });
 
+describe('invalidPortMessage', () => {
+  // An unreadable value used to end inside resolveServer 15 s later, with a
+  // dialog blaming `agenfk up` and never naming the variable (PR #359 review).
+  it('names the variable, the raw value and the valid range', () => {
+    const message = invalidPortMessage({ AGENFK_PORT: 'abc' });
+    expect(message).toContain('AGENFK_PORT');
+    expect(message).toContain('"abc"');
+    expect(message).toContain('1 to 65535');
+  });
+
+  it('names PORT when PORT is the value that was read', () => {
+    const message = invalidPortMessage({ PORT: '-1' });
+    expect(message).toContain('PORT');
+    expect(message).not.toContain('AGENFK_PORT');
+    expect(message).toContain('"-1"');
+  });
+
+  it('refuses 0, which would start the server on a random port', () => {
+    expect(invalidPortMessage({ AGENFK_PORT: '0' })).toContain('"0"');
+  });
+
+  it('is null when the setting is unset or names a port', () => {
+    expect(invalidPortMessage({})).toBeNull();
+    expect(invalidPortMessage({ AGENFK_PORT: '3100' })).toBeNull();
+  });
+});
+
 describe('the server the desktop starts', () => {
   it('requests the configured port, because it inherits AGENFK_PORT', () => {
     const env = buildServerEnv(
@@ -124,8 +151,8 @@ describe('the server the desktop starts', () => {
 });
 
 describe('the desktop main process', () => {
-  // index.ts boots Electron and cannot be imported here; its wiring is pinned
-  // by reading it, as platform.test.ts does.
+  // boot() never runs behind mainWiring.test.ts's stand-in Electron (its
+  // whenReady never settles), so these lines inside boot are pinned as text.
   const source = fs.readFileSync(
     path.join(path.dirname(fileURLToPath(import.meta.url)), '../main/index.ts'), 'utf8');
 
@@ -137,5 +164,17 @@ describe('the desktop main process', () => {
     const call = source.slice(source.indexOf('resolveServer({'), source.indexOf('spawn: startServer'));
     expect(call).toMatch(/readPort:\s*portFileWithin\(readServerPort, process\.env, DEFAULT_API_PORT\)/);
     expect(call).toMatch(/fallbackPorts:\s*ADOPT_PORT_RANGE/);
+  });
+
+  it('polls the port file unfiltered after it starts its own server', () => {
+    const call = source.slice(source.indexOf('resolveServer({'), source.indexOf('spawn: startServer'));
+    expect(call).toMatch(/readSpawnedPort:\s*readServerPort\b/);
+  });
+
+  it('stops on an unreadable port setting before looking for a server', () => {
+    const body = source.slice(source.indexOf('async function boot()'));
+    const check = body.indexOf('invalidPortMessage(process.env)');
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(body.indexOf('resolveServer({'));
   });
 });

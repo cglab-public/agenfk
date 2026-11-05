@@ -188,6 +188,37 @@ describe('resolveServer — spawning our own', () => {
     expect(result.port).toBe(3000);
   });
 
+  it('finds its own server through the unfiltered reader, wherever it bound (PR #359 review)', async () => {
+    // AGENFK_PORT=3100 with 3100-3186 busy: the server binds 3187, outside the
+    // 16 ports the adopt filter keeps. The post-spawn poll must still find it.
+    let started = false;
+    const spawn = vi.fn(() => { started = true; });
+    const result = await resolveServer({
+      readPort: () => null,
+      readSpawnedPort: () => (started ? 3187 : null),
+      probe: async (p: number) => started && p === 3187,
+      spawn,
+      waitMs: 0,
+      attempts: 3,
+    });
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(result.adopted).toBe(false);
+    expect(result.port).toBe(3187);
+  });
+
+  it('polls readPort after spawning when no separate reader is given', async () => {
+    let started = false;
+    const result = await resolveServer({
+      readPort: () => (started ? 3005 : null),
+      probe: async (p: number) => started && p === 3005,
+      spawn: () => { started = true; },
+      waitMs: 0,
+    });
+
+    expect(result.port).toBe(3005);
+  });
+
   it('spawns when the port file is stale and nothing answers there', async () => {
     // Classic leftover: the file survived a crash, the process did not.
     let started = false;
