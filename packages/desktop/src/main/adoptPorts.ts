@@ -20,8 +20,11 @@ type Env = Record<string, string | undefined>;
 export type PortSetting =
   | { kind: 'unset' }
   | { kind: 'port'; port: number }
-  /** Set, but names no port: the server it starts would not start either. */
-  | { kind: 'invalid'; raw: string };
+  /**
+   * Set, but names no port from 1 to 65535. The server would refuse some of
+   * these and take a random port for 0 or a negative value.
+   */
+  | { kind: 'invalid'; name: 'AGENFK_PORT' | 'PORT'; raw: string };
 
 /**
  * AGENFK_PORT, else PORT, read exactly as the server reads it
@@ -29,12 +32,25 @@ export type PortSetting =
  * while the server it starts requests another.
  */
 export function portSetting(env: Env): PortSetting {
-  const raw = env.AGENFK_PORT || env.PORT;
+  const name = env.AGENFK_PORT ? 'AGENFK_PORT' : 'PORT';
+  const raw = env[name];
   if (!raw) return { kind: 'unset' };
   const port = Number.parseInt(raw, 10);
   return Number.isInteger(port) && port >= 1 && port <= MAX_PORT
     ? { kind: 'port', port }
-    : { kind: 'invalid', raw };
+    : { kind: 'invalid', name, raw };
+}
+
+/**
+ * The startup error for an unreadable port setting, or null when it is fine.
+ * Checked before any server is looked for, so the dialog names the variable
+ * instead of failing 15 s later on a server that never answered.
+ */
+export function invalidPortMessage(env: Env): string | null {
+  const setting = portSetting(env);
+  if (setting.kind !== 'invalid') return null;
+  return `${setting.name} is set to "${setting.raw}", which is not a port. `
+    + `Set it to a number from 1 to ${MAX_PORT}, or unset it to use the default.`;
 }
 
 /**
@@ -51,7 +67,10 @@ export function adoptPortRange(env: Env, defaultPort: number): number[] {
 }
 
 /**
- * The port file, kept only when it names a port the desktop may adopt.
+ * The port file, kept only when it names a port the desktop may adopt. For the
+ * adopt step only: after the desktop starts its own server, the file is the
+ * one way to learn where it bound, up to 100 ports above the requested one, so
+ * that poll reads it unfiltered (resolveServer's readSpawnedPort).
  *
  * Unconfigured, it passes through: a server that bumped past the scanned range
  * is still found by its file. Configured, a file naming another port was

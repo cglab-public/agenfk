@@ -14,7 +14,7 @@ import * as os from 'os';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
-import { adoptPortRange, portFileWithin } from './adoptPorts.js';
+import { adoptPortRange, invalidPortMessage, portFileWithin } from './adoptPorts.js';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
@@ -305,8 +305,14 @@ async function boot(): Promise<void> {
    */
   void currentLoginPath();
   try {
+    // Before any lookup: an unreadable value would otherwise surface 15 s later
+    // as a server that did not answer, never naming the variable.
+    const badPort = invalidPortMessage(process.env);
+    if (badPort) throw new Error(badPort);
     server = await resolveServer({
       readPort: portFileWithin(readServerPort, process.env, DEFAULT_API_PORT),
+      // Our own server may bind past the adopt range; its file is the answer.
+      readSpawnedPort: readServerPort,
       fallbackPorts: ADOPT_PORT_RANGE,
       // Identity, not just liveness: anything could be listening on 3000, and
       // adopting it would open a window on somebody else's application.
