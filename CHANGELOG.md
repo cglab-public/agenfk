@@ -10,6 +10,16 @@ All notable changes to AgEnFK are documented here.
   process with no message (exit code 3) for a path such as `C:\Users\Fábio`, leaving `~/.agenfk-system` or
   `~/.agenfk-hub` half copied. `npx github:cglab-public/agenfk` and `agenfk-hub` now copy the install file by file.
 
+**Build** (#244)
+
+- **The repo builds with TypeScript 6.0.3.** `typescript` is declared once, in the root `package.json`, instead of
+  in every package. Every package that builds with `tsc` now sets `rootDir: "./src"` and `types: ["node"]`, which
+  TypeScript 6 no longer infers (`flow-editor` and `hub-ui` got `types` too), and `dist/` keeps its flat layout (a new `dist-layout` test guards this). The build
+  output is the same as before. Dependabot now skips new major versions of `typescript`.
+- **After pulling this, delete the old build cache and rebuild `core` first.** Remove `node_modules/.tmp/*.tsbuildinfo`
+  files written by TypeScript 5, and run `npm run build` before trusting a type error: a stale `packages/core/dist`
+  makes `cli` and `server` report errors about `AIRLOCK_CLIENTS` that have nothing to do with TypeScript.
+
 ## [2.1.0-beta.17] — 2026-11-04
 
 **Airlock: Claude Code and Codex in the sandbox** (#356, #357)
