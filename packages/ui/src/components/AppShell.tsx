@@ -53,6 +53,7 @@ import {
   listEditorsFromBridge, openInEditorFromBridge,
 } from './agentBridge';
 import { SettingsPanel } from './SettingsPanel';
+import { withProjectNames } from '../sessionProject';
 /*
  * Types only. The rail component itself is no longer rendered anywhere - the
  * SESSIONS section it lived in was removed (1a1b8df6) - and importing it kept
@@ -106,6 +107,11 @@ import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, 
  * is a panel that stays mounted and is hidden rather than unmounted.
  */
 type ViewId = 'kanban' | 'terminal' | 'settings' | 'project';
+
+/** What Back in Settings names as its destination (5f367fa9). */
+const VIEW_NAMES: Record<ViewId, string> = {
+  kanban: 'Tasks', terminal: 'Terminal', settings: 'Settings', project: 'Project',
+};
 
 /**
  * The WORK group at the top of the sidebar (CGLAB-164).
@@ -241,6 +247,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
+  // Where Back in Settings goes (5f367fa9): the view it was opened from, which
+  // is still mounted underneath with its state.
+  const [settingsReturnTo, setSettingsReturnTo] = React.useState<ViewId>('kanban');
+  const openSettingsView = React.useCallback(() => {
+    if (active !== 'settings') setSettingsReturnTo(active);
+    setSettingsOpened(true);
+    setActive('settings');
+  }, [active]);
+  const leaveSettings = React.useCallback(() => setActive(settingsReturnTo), [settingsReturnTo]);
+  // No Escape shortcut: the sidebar menus and What's new stay usable over
+  // Settings and close on Escape, and one key must not do both.
+  const settingsBackLabel = `Back to ${VIEW_NAMES[settingsReturnTo]}`;
   const { activeProjectId, focusedItemId, setActiveProjectId, markProjectWorked, focusItem, terminalRequest } = useActiveProject();
   /**
    * The installation's settings, for the tmux default the dialog starts from.
@@ -423,6 +441,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
+  /*
+   * Each terminal's project, by name, for the tab header (INFRA-425). Cards
+   * from both lists: the active ones are what most terminals are opened on, and
+   * the full list covers a card that has since left the active steps.
+   */
+  const itemProject = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of [...allItemsForFleet, ...activeWork]) {
+      if (item.id && item.projectId) map.set(item.id, item.projectId);
+    }
+    return map;
+  }, [allItemsForFleet, activeWork]);
+  const namedSessions = React.useMemo(
+    () => withProjectNames(sessions, itemProject, projectNames),
+    [sessions, itemProject, projectNames],
+  );
   const fleetParent = React.useMemo(
     () => allItemsForFleet.find(i => i.id === fleetParentId) ?? null,
     [allItemsForFleet, fleetParentId],
@@ -1719,7 +1753,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onOpenPane={attachHerdr}
           liveItems={liveItems}
           openSession={openSession}
-          openSettings={() => { setSettingsOpened(true); setActive('settings'); }}
+          openSettings={openSettingsView}
           revealOnBoard={revealOnBoard}
           activeView={active}
           onSelectView={setActive}
@@ -1916,7 +1950,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                user two scrollbars and move the rail out of reach. */
             className="min-h-0 flex-1 overflow-hidden"
           >
-            {settingsOpened && <SettingsPanel projectId={activeProjectId} />}
+            {settingsOpened && <SettingsPanel projectId={activeProjectId} onBack={leaveSettings} backLabel={settingsBackLabel} />}
           </div>
 
           {/* Rendered, not conditionally mounted — and more load-bearing here
@@ -1969,7 +2003,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {terminalOpened && (
               <div className="flex min-h-0 flex-1 flex-col">
               <TerminalTab
-                sessions={sessions}
+                sessions={namedSessions}
                 sessionStates={sessionStates}
                 /*
                  * The layout is a TREE, owned here (7a717cb8, 3b). The pair
