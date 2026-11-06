@@ -20,7 +20,7 @@ import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
 import { resolveDbPath, buildServerEnv } from './serverEnv.js';
 import { isAgenfkServer, readServerIdentity, servesUiBundle, httpGet } from './probes.js';
-import { makeJudge, versionMismatchNotice } from './adoption.js';
+import { CLI_INSTALL_URL, makeJudge, versionMismatchNotice } from './adoption.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
 import { proposeDecomposition } from './propose.js';
@@ -383,6 +383,11 @@ async function boot(): Promise<void> {
         title: notice.title,
         message: notice.title,
         detail: notice.detail,
+        buttons: notice.buttons,
+        defaultId: notice.defaultId,
+        cancelId: 0,
+      }).then(({ response }) => {
+        if (notice.actions[response] === 'open-cli-install') openExternally(CLI_INSTALL_URL);
       });
     }
 
