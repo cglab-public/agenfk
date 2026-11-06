@@ -46,6 +46,12 @@ export interface ResolveServerOptions {
    * state.
    */
   adoptAttempts?: number;
+  /**
+   * The port file as read after spawn; defaults to readPort. Separate because
+   * readPort may filter the file for adoption, while the server we started can
+   * bind anywhere its port probe reaches, and this file is how we find it.
+   */
+  readSpawnedPort?: () => number | null;
   /** True when a server answers on this port (a real health request). */
   probe: (port: number) => Promise<boolean>;
   /** Start our own server. Throwing here is surfaced, not swallowed. */
@@ -96,6 +102,7 @@ function resolved(port: number, host: string, adopted: boolean): ResolvedServer 
 export async function resolveServer(opts: ResolveServerOptions): Promise<ResolvedServer> {
   const {
     readPort,
+    readSpawnedPort = readPort,
     probe,
     spawn,
     fallbackPorts = [],
@@ -123,7 +130,7 @@ export async function resolveServer(opts: ResolveServerOptions): Promise<Resolve
   await spawn();
 
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const port = readPort();
+    const port = readSpawnedPort();
     if (port !== null && await probe(port)) {
       return resolved(port, host, false);
     }
