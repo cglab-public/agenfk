@@ -26,8 +26,7 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "electron": "42.11.18",
-    "electron-builder": "^26.18.0",
-    "typescript": "~5.9.3"
+    "electron-builder": "^26.18.0"
   },
   "author": "CG/lab",
   "homepage": "https://github.com/cglab-public/agenfk"

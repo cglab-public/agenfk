@@ -29,6 +29,10 @@ updates:
       # lockstep by scripts/bump-version.mjs. They are not published to npm.
       # Dependabot must never touch them.
       - dependency-name: "@agenfk/*"
+      # The repo is pinned to the TypeScript 6.0 line (migration plan in PR #244).
+      # Minor/patch bumps still flow; a new major is a deliberate migration.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       # Runtime dependencies move on their own so a risky bump is never bundled
       # with tooling churn and can be reverted alone.
