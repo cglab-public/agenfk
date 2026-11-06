@@ -12,7 +12,10 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { adoptVerdict, judgeServer, makeJudge, sameDatabase, versionMismatchNotice } from '../main/adoption.js';
+import {
+  adoptVerdict, judgeServer, makeJudge, sameDatabase, statWithin, versionMismatchNotice,
+  CLI_INSTALL_URL, STAT_DEADLINE_MS,
+} from '../main/adoption.js';
 
 const WIN_DB = 'C:\\Users\\EduardoJosePin\\.agenfk-system\\.agenfk\\db.sqlite';
 const WSL_DB = '/home/eduardopin/.agenfk-system/.agenfk/db.sqlite';
@@ -29,41 +32,47 @@ const files = (ids: Record<string, string>) => (p: string) =>
 const nothing = files({});
 
 describe('adoptVerdict', () => {
-  it('adopts a server of the same version', () => {
-    expect(adoptVerdict({ version: '2.0.0-beta.46', dbPath: WIN_DB }, windowsApp, nothing))
+  it('adopts a server of the same version', async () => {
+    expect(await adoptVerdict({ version: '2.0.0-beta.46', dbPath: WIN_DB }, windowsApp, nothing))
       .toEqual({ kind: 'adopt' });
   });
 
-  it('adopts a server of the same version even on another database', () => {
+  it('adopts a server of the same version even on another database', async () => {
     // Same build, same UI: nothing stale to show. Not this bug's business.
-    expect(adoptVerdict({ version: '2.0.0-beta.46', dbPath: WSL_DB }, windowsApp, nothing))
+    expect(await adoptVerdict({ version: '2.0.0-beta.46', dbPath: WSL_DB }, windowsApp, nothing))
       .toEqual({ kind: 'adopt' });
   });
 
-  it('skips a server of another version on another database (the WSL case)', () => {
-    expect(adoptVerdict({ version: '2.0.0-beta.35', dbPath: WSL_DB }, windowsApp, nothing))
+  it('skips a server of another version on another database (the WSL case)', async () => {
+    expect(await adoptVerdict({ version: '2.0.0-beta.35', dbPath: WSL_DB }, windowsApp, nothing))
       .toEqual({ kind: 'skip', serverVersion: '2.0.0-beta.35' });
   });
 
-  it('adopts and flags a server of another version on the app database', () => {
+  it('adopts and flags a server of another version on the app database', async () => {
     // A second server here would race the first for the same SQLite file.
-    expect(adoptVerdict({ version: '2.0.0-beta.35', dbPath: MAC_DB }, macApp, nothing))
+    expect(await adoptVerdict({ version: '2.0.0-beta.35', dbPath: MAC_DB }, macApp, nothing))
       .toEqual({ kind: 'adopt-mismatch', serverVersion: '2.0.0-beta.35', database: 'same' });
   });
 
-  it('adopts and flags when the server database is unknown', () => {
+  it('adopts and flags when the server database is unknown', async () => {
     // Not knowing is not proof of a different file. The safe side is the one
     // that cannot put two servers on one database.
-    expect(adoptVerdict({ version: '2.0.0-beta.35', dbPath: null }, windowsApp, nothing))
+    expect(await adoptVerdict({ version: '2.0.0-beta.35', dbPath: null }, windowsApp, nothing))
       .toEqual({ kind: 'adopt-mismatch', serverVersion: '2.0.0-beta.35', database: 'unknown' });
   });
 
-  it('reads a legacy .json path as the .sqlite file the server really opens', () => {
+  it('reads a legacy .json path as the .sqlite file the server really opens', async () => {
     // The server remaps .json to .sqlite and reports the remapped path; the
     // app still holds the configured .json. Same file, one server.
     const legacy = { ...macApp, dbPath: MAC_DB.replace(/\.sqlite$/, '.json') };
-    expect(adoptVerdict({ version: '2.0.0-beta.35', dbPath: MAC_DB }, legacy, nothing))
+    expect(await adoptVerdict({ version: '2.0.0-beta.35', dbPath: MAC_DB }, legacy, nothing))
       .toEqual({ kind: 'adopt-mismatch', serverVersion: '2.0.0-beta.35', database: 'same' });
+  });
+
+  it('adopts with the notice when stat on the server path does not answer', async () => {
+    const hung = () => 'no-answer' as const;
+    expect(await adoptVerdict({ version: '2.0.0-beta.35', dbPath: 'D:\\agenfk\\db.sqlite' }, windowsApp, hung))
+      .toEqual({ kind: 'adopt-mismatch', serverVersion: '2.0.0-beta.35', database: 'unknown' });
   });
 });
 
@@ -147,70 +156,76 @@ describe('the desktop main process', () => {
     expect(call).toMatch(/appDbPath:\s*resolveDbPath/);
     expect(call).toMatch(/platform:\s*runningOn/);
   });
+
+  it('opens the CLI install guide when the notice asks for it', () => {
+    const shown = source.slice(source.indexOf('versionMismatchNotice({'));
+    expect(shown).toMatch(/buttons:\s*notice\.buttons/);
+    expect(shown).toMatch(/notice\.actions\[response\]\s*===\s*'open-cli-install'\)\s*openExternally\(CLI_INSTALL_URL\)/);
+  });
 });
 
 describe('sameDatabase', () => {
-  it('ignores case and separators on Windows', () => {
-    expect(sameDatabase(WIN_DB, 'c:/users/eduardojosepin/.agenfk-system/.agenfk/db.sqlite', 'win32', nothing))
-      .toBe(true);
+  it('ignores case and separators on Windows', async () => {
+    expect(await sameDatabase(WIN_DB, 'c:/users/eduardojosepin/.agenfk-system/.agenfk/db.sqlite', 'win32', nothing))
+      .toBe('same');
   });
 
-  it('ignores case on macOS, whose default volume is case-insensitive', () => {
-    expect(sameDatabase(MAC_DB, MAC_DB.toLowerCase(), 'darwin', nothing)).toBe(true);
+  it('ignores case on macOS, whose default volume is case-insensitive', async () => {
+    expect(await sameDatabase(MAC_DB, MAC_DB.toLowerCase(), 'darwin', nothing)).toBe('same');
   });
 
-  it('resolves dot segments before comparing', () => {
-    expect(sameDatabase(MAC_DB, '/Users/eduardo/.agenfk-system/x/../.agenfk/db.sqlite', 'darwin', nothing))
-      .toBe(true);
+  it('resolves dot segments before comparing', async () => {
+    expect(await sameDatabase(MAC_DB, '/Users/eduardo/.agenfk-system/x/../.agenfk/db.sqlite', 'darwin', nothing))
+      .toBe('same');
   });
 
-  it('tells a Linux path from a Windows path on Windows', () => {
-    expect(sameDatabase(WSL_DB, WIN_DB, 'win32', files({ [WIN_DB]: 'win' }))).toBe(false);
+  it('tells a Linux path from a Windows path on Windows', async () => {
+    expect(await sameDatabase(WSL_DB, WIN_DB, 'win32', files({ [WIN_DB]: 'win' }))).toBe('different');
   });
 
-  it('is case-sensitive on Linux', () => {
+  it('is case-sensitive on Linux', async () => {
     const other = WSL_DB.replace('eduardopin', 'EduardoPin');
-    expect(sameDatabase(other, WSL_DB, 'linux', files({ [WSL_DB]: 'a', [other]: 'b' }))).toBe(false);
+    expect(await sameDatabase(other, WSL_DB, 'linux', files({ [WSL_DB]: 'a', [other]: 'b' }))).toBe('different');
   });
 
-  it('matches identical paths', () => {
-    expect(sameDatabase(WSL_DB, WSL_DB, 'linux', nothing)).toBe(true);
+  it('matches identical paths', async () => {
+    expect(await sameDatabase(WSL_DB, WSL_DB, 'linux', nothing)).toBe('same');
   });
 
-  it('matches two paths that reach the same file, such as through a symlink', () => {
+  it('matches two paths that reach the same file, such as through a symlink', async () => {
     // Saying "another database" here would start a second server on one file.
     const viaLink = '/data/agenfk/db.sqlite';
-    expect(sameDatabase(viaLink, WSL_DB, 'linux', files({ [WSL_DB]: 'f1', [viaLink]: 'f1' }))).toBe(true);
+    expect(await sameDatabase(viaLink, WSL_DB, 'linux', files({ [WSL_DB]: 'f1', [viaLink]: 'f1' }))).toBe('same');
   });
 
-  it('is false for a server path this machine cannot reach', () => {
-    expect(sameDatabase('/srv/other/db.sqlite', WSL_DB, 'linux', files({ [WSL_DB]: 'f1' }))).toBe(false);
+  it('is different for a server path this machine cannot reach', async () => {
+    expect(await sameDatabase('/srv/other/db.sqlite', WSL_DB, 'linux', files({ [WSL_DB]: 'f1' }))).toBe('different');
   });
 
-  it('reads a WSL /mnt/<drive> path as the Windows drive it mounts', () => {
+  it('reads a WSL /mnt/<drive> path as the Windows drive it mounts', async () => {
     // A WSL server on a database under /mnt/c holds the Windows app's file.
     const viaDrvfs = '/mnt/c/Users/EduardoJosePin/.agenfk-system/.agenfk/db.sqlite';
-    expect(sameDatabase(viaDrvfs, WIN_DB, 'win32', nothing)).toBe(true);
+    expect(await sameDatabase(viaDrvfs, WIN_DB, 'win32', nothing)).toBe('same');
   });
 
-  it('reads a \\\\wsl.localhost share as the Linux path behind it', () => {
+  it('reads a \\\\wsl.localhost share as the Linux path behind it', async () => {
     const share = '\\\\wsl.localhost\\Ubuntu\\home\\eduardopin\\.agenfk-system\\.agenfk\\db.sqlite';
-    expect(sameDatabase(WSL_DB, share, 'win32', nothing)).toBe(true);
+    expect(await sameDatabase(WSL_DB, share, 'win32', nothing)).toBe('same');
   });
 
-  it('reads a \\\\wsl$ share as the Linux path behind it', () => {
+  it('reads a \\\\wsl$ share as the Linux path behind it', async () => {
     const share = '\\\\wsl$\\Ubuntu\\home\\eduardopin\\.agenfk-system\\.agenfk\\db.sqlite';
-    expect(sameDatabase(WSL_DB, share, 'win32', nothing)).toBe(true);
+    expect(await sameDatabase(WSL_DB, share, 'win32', nothing)).toBe('same');
   });
 
-  it('reads a Windows drive path as its /mnt mount when the app is Linux in WSL', () => {
+  it('reads a Windows drive path as its /mnt mount when the app is Linux in WSL', async () => {
     // The mirror of the /mnt case: a Linux build inside WSL, next to a Windows
     // server reporting the same file by its drive letter.
     const viaDrvfs = '/mnt/c/Users/EduardoJosePin/.agenfk-system/.agenfk/db.sqlite';
-    expect(sameDatabase(WIN_DB, viaDrvfs, 'linux', nothing)).toBe(true);
+    expect(await sameDatabase(WIN_DB, viaDrvfs, 'linux', nothing)).toBe('same');
   });
 
-  it('never touches a network or device path the server reported', () => {
+  it('never touches a network or device path the server reported', async () => {
     // The path comes from whatever answers on loopback. On Windows, stat on
     // \\host\share opens an SMB session and can hand the user's NTLM hash to
     // that host.
@@ -223,20 +238,34 @@ describe('sameDatabase', () => {
     ]) {
       const touched: string[] = [];
       const spy = (p: string) => { touched.push(p); return null; };
-      expect(sameDatabase(reported, WIN_DB, 'win32', spy)).toBe(false);
+      expect(await sameDatabase(reported, WIN_DB, 'win32', spy)).toBe('different');
       expect(touched).not.toContain(reported);
       expect(touched.filter(p => /^[\\/]{2}/.test(p))).toEqual([]);
     }
   });
 
-  it('still compares the files behind a local drive path on Windows', () => {
+  it('still compares the files behind a local drive path on Windows', async () => {
     const viaJunction = 'D:\\agenfk\\db.sqlite';
-    expect(sameDatabase(viaJunction, WIN_DB, 'win32', files({ [viaJunction]: 'f1', [WIN_DB]: 'f1' })))
-      .toBe(true);
+    expect(await sameDatabase(viaJunction, WIN_DB, 'win32', files({ [viaJunction]: 'f1', [WIN_DB]: 'f1' })))
+      .toBe('same');
   });
 
-  it('still tells a WSL home from a Windows drive', () => {
-    expect(sameDatabase(WSL_DB, WIN_DB, 'win32', nothing)).toBe(false);
+  it('still tells a WSL home from a Windows drive', async () => {
+    expect(await sameDatabase(WSL_DB, WIN_DB, 'win32', nothing)).toBe('different');
+  });
+
+  it('tells one Linux path in two WSL distros apart', async () => {
+    const ubuntu = '\\\\wsl.localhost\\Ubuntu\\home\\x\\db.sqlite';
+    const debian = '\\\\wsl.localhost\\Debian\\home\\x\\db.sqlite';
+    expect(await sameDatabase(ubuntu, debian, 'win32', nothing)).toBe('different');
+    expect(await sameDatabase('\\\\wsl$\\Ubuntu\\home\\x\\db.sqlite', ubuntu, 'win32', nothing)).toBe('same');
+  });
+
+  it('is unknown, not different, when stat does not answer in time', async () => {
+    // Reading a timeout as "another file" would start a second server on one
+    // SQLite file.
+    const hung = () => 'no-answer' as const;
+    expect(await sameDatabase('D:\\agenfk\\db.sqlite', WIN_DB, 'win32', hung)).toBe('unknown');
   });
 });
 
@@ -265,5 +294,41 @@ describe('versionMismatchNotice', () => {
 
   it('has a title', () => {
     expect(notice.title.length).toBeGreaterThan(0);
+  });
+
+  it('offers the CLI install guide, for a user who has no agenfk command', () => {
+    // A desktop-only install may have no CLI on PATH, so `agenfk down` alone
+    // leaves the user without a way out.
+    const open = notice.actions.indexOf('open-cli-install');
+    expect(open).toBeGreaterThanOrEqual(0);
+    expect(notice.buttons[open]).toMatch(/install/i);
+    expect(notice.buttons).toHaveLength(notice.actions.length);
+    expect(notice.actions[notice.defaultId]).toBe('dismiss');
+    expect(CLI_INSTALL_URL).toMatch(/^https:\/\/github\.com\/cglab-public\/agenfk#installation/);
+  });
+});
+
+describe('statWithin', () => {
+  it('names the file stat found', async () => {
+    const fileId = statWithin(async () => ({ dev: 7, ino: 42 }), 50);
+    expect(await fileId('/x')).toEqual({ id: '7:42' });
+  });
+
+  it('is null when stat fails, as for a path that reaches no file', async () => {
+    const fileId = statWithin(async () => { throw new Error('ENOENT'); }, 50);
+    expect(await fileId('/x')).toBeNull();
+  });
+
+  it('gives up on a stat that does not return in time', async () => {
+    // A mapped drive or an offline OneDrive folder can hold stat for tens of
+    // seconds, and boot() waits on this before it opens a window.
+    const fileId = statWithin(() => new Promise(() => {}), 20);
+    const started = Date.now();
+    expect(await fileId('/x')).toBe('no-answer');
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('waits no longer than an unanswered HTTP probe', () => {
+    expect(STAT_DEADLINE_MS).toBeLessThanOrEqual(2000);
   });
 });
