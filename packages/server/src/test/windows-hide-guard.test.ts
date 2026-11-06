@@ -311,6 +311,11 @@ spawn('npm ci', { 'shell': true, detached: true, windowsHide: true });`;
 describe('GitHub #200 — every runtime child process is spawned hidden', () => {
   const files = runtimeSourceFiles();
 
+  it('the TypeScript compiler API the guard relies on is present', () => {
+    expect(typeof ts.createSourceFile).toBe('function');
+    expect(typeof ts.forEachChild).toBe('function');
+  });
+
   it('scans the files that launch processes at runtime (the guard is not vacuous)', () => {
     for (const f of [
       'packages/server/src/server.ts',

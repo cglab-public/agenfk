@@ -80,6 +80,11 @@ function specFiles(dir: string, out: string[] = []): string[] {
 }
 
 describe('test databases', () => {
+  it('the TypeScript compiler API the scanner relies on is present', () => {
+    expect(typeof ts.createSourceFile).toBe('function');
+    expect(typeof ts.forEachChild).toBe('function');
+  });
+
   it('the scanner flags a deletion in a hook or a test, and leaves module scope alone', () => {
     expect(openDbDeletions(`
       if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
