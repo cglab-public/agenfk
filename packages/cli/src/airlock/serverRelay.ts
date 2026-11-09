@@ -23,6 +23,13 @@ const MARKER_STATUS_HEADER = 'x-agenfk-airlock-marker';
 /** The most a request body may be: it is held so it can be sent again (the server's own limit is 50 MB). */
 export const RELAY_MAX_BODY_BYTES = 50 * 1024 * 1024;
 
+/**
+ * How long the relay waits for its connection to the server to be made. The connect only: a request
+ * that takes long once connected is never cut. A loopback port nobody listens on can answer no SYN
+ * (WSL2's mirrored networking), and the agent would wait on it for good.
+ */
+export const RELAY_CONNECT_TIMEOUT_MS = 5000;
+
 export interface ServerRelayOptions {
   /** The AgEnFK server, e.g. http://127.0.0.1:3000 */
   target: string;
@@ -30,6 +37,8 @@ export interface ServerRelayOptions {
   marker: () => string | null;
   /** Enforce mode: a request that cannot be marked is refused. */
   requireMarker: boolean;
+  /** RELAY_CONNECT_TIMEOUT_MS unless given. */
+  connectTimeoutMs?: number;
 }
 
 export interface ServerRelay {
@@ -152,6 +161,15 @@ export function startServerRelay(opts: ServerRelayOptions): Promise<ServerRelay>
     }
     outstanding.add(upstream);
     upstream.on('close', () => outstanding.delete(upstream));
+    // A socket still connecting gets so long to connect; one the agent kept alive is connected already.
+    const connectMs = opts.connectTimeoutMs ?? RELAY_CONNECT_TIMEOUT_MS;
+    upstream.on('socket', (socket) => {
+      if (!socket.connecting) return;
+      const timer = setTimeout(() => upstream.destroy(new Error(`it did not connect within ${connectMs} ms`)), connectMs);
+      const done = () => clearTimeout(timer);
+      socket.once('connect', done);
+      upstream.once('close', done);
+    });
     upstream.on('response', (answer) => {
       // A token the server just replaced: mint with the new one and send once more.
       // The answer set aside is drained, and an error on it ends nothing.

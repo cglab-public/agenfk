@@ -1458,6 +1458,10 @@ type HeldPlaceholder = Placeholder & { dev: number; ino: number; ctime?: string;
 export const LOCK_TIMEOUT_MS = 900_000;
 const LOCK_POLL_MS = 25;
 
+/** How long a forward whose client is gone stays open once what the client sent is written to it. */
+const FORWARD_CLOSE_GRACE_MS = 500;
+/** The longest a forward whose client is gone stays open, whether or not what it sent could be written. */
+const FORWARD_CLOSE_LIMIT_MS = 10_000;
 /** Bounds the host's signalling exec: the pid file is the session's, and could be a FIFO. */
 const SIGNAL_TIMEOUT = '10s';
 /** Reads the session leader's pid from the file in $0, waiting briefly for it; anything but a pid stops here. */
@@ -2296,7 +2300,16 @@ export class SmolvmRuntime implements AirlockRuntime {
       for (const x of [c, t]) { open.add(x); x.on('close', () => open.delete(x)); }
       c.on('error', () => t.destroy());
       t.on('error', () => c.destroy());
-      c.on('close', () => t.destroy());
+      // The client gone, t goes too: nobody reads its answer, and a paused t with an unread answer would
+      // never end (review). What the client sent is delivered first, though t was still connecting:
+      // its answer drained meanwhile, so the close is not a reset that drops it.
+      c.on('close', (hadError) => {
+        if (hadError || t.writableFinished) { t.destroy(); return; }
+        t.resume();
+        t.once('finish', () => setTimeout(() => t.destroy(), FORWARD_CLOSE_GRACE_MS).unref());
+        // A connect that hangs (WSL2's mirrored loopback) or a target that stops reading: not for longer than this.
+        setTimeout(() => t.destroy(), FORWARD_CLOSE_LIMIT_MS).unref();
+      });
       t.on('close', () => c.destroy());
       c.pipe(t);
       t.pipe(c);

@@ -2436,6 +2436,81 @@ describePosix('the AgEnFK server and the model key, from inside the machine', ()
     }
   });
 
+  // A client that sends and closes at once, before the forward reached the endpoint (a slow connect,
+  // as under WSL2's mirrored networking): what it sent is still delivered, not dropped with the socket.
+  it('a client that sends and closes before the forward connects: what it sent still reaches the endpoint', async () => {
+    let got = '';
+    const model = net.createServer((c) => c.on('data', (d) => { got += d; }));
+    await new Promise<void>((r) => model.listen(0, '127.0.0.1', () => r()));
+    const port = (model.address() as net.AddressInfo).port;
+    const connect = net.connect;
+    // The forward's connect to the endpoint takes 200 ms (a lookup held back): the client is gone by then.
+    const slow = vi.spyOn(net, 'connect').mockImplementation(((o: any, ...rest: any[]) => (o && typeof o === 'object' && o.port === port
+      ? connect({ ...o, host: 'localhost', lookup: (_h: string, lo: any, cb: any) => setTimeout(() => (lo?.all ? cb(null, [{ address: '127.0.0.1', family: 4 }]) : cb(null, '127.0.0.1', 4)), 200) }, ...rest)
+      : (connect as any)(o, ...rest))) as any);
+    try {
+      const egress = fakeEgress();
+      const { rt, sp } = runtime({ egress, ...injectorDeps() });
+      const launched = await rt.launch(specOf({ inferenceHosts: [`127.0.0.1:${port}`] }), cmd());
+      const route = egress.routes.find((r) => r.kind === 'forward') as Extract<Route, { kind: 'forward' }>;
+      const client = net.connect(route.socket, () => { client.end('GET /v1/models'); });
+      await new Promise((r) => client.once('close', r));
+      await vi.waitFor(() => expect(got).toBe('GET /v1/models'), { timeout: 3000 });
+      sp.children[0].finish(0);
+      await launched.exited;
+    } finally {
+      slow.mockRestore();
+      await new Promise<void>((r) => model.close(() => r()));
+    }
+  });
+
+  // Review: the client gone, an answer it can no longer read must not hold the forward open for the
+  // rest of the session (a paused socket with unread data never ends), whether its request was still
+  // on its way (a slow connect) or long delivered (a client that cancels mid-answer).
+  it('a client gone before the answer: the forward to the endpoint is closed, not kept for the session', async () => {
+    for (const slowConnect of [true, false]) {
+      let asked = false;
+      // Answers once asked, though the client closed its side (as a streaming server does), then closes
+      // its own: an answer nobody reads stays in the forward's buffer.
+      const model = net.createServer({ allowHalfOpen: true }, (c) => {
+        c.on('error', () => undefined);
+        c.once('data', () => { asked = true; setTimeout(() => c.end('HTTP/1.1 200 OK\r\n\r\nan answer nobody reads'), 50); });
+      });
+      await new Promise<void>((r) => model.listen(0, '127.0.0.1', () => r()));
+      const port = (model.address() as net.AddressInfo).port;
+      const connect = net.connect;
+      const forwards: net.Socket[] = [];
+      const spy = vi.spyOn(net, 'connect').mockImplementation(((o: any, ...rest: any[]) => {
+        if (!(o && typeof o === 'object' && o.port === port)) return (connect as any)(o, ...rest);
+        const t = slowConnect
+          ? connect({ ...o, host: 'localhost', lookup: (_h: string, lo: any, cb: any) => setTimeout(() => (lo?.all ? cb(null, [{ address: '127.0.0.1', family: 4 }]) : cb(null, '127.0.0.1', 4)), 200) }, ...rest)
+          : (connect as any)(o, ...rest);
+        forwards.push(t);
+        return t;
+      }) as any);
+      try {
+        const egress = fakeEgress();
+        const { rt, sp } = runtime({ egress, ...injectorDeps() });
+        const launched = await rt.launch(specOf({ inferenceHosts: [`127.0.0.1:${port}`] }), cmd());
+        const route = egress.routes.find((r) => r.kind === 'forward') as Extract<Route, { kind: 'forward' }>;
+        // Slow: it closes at once, its request still on its way. Otherwise: it goes once the request arrived.
+        const client = net.connect(route.socket, () => { if (slowConnect) client.end('GET /v1/models'); else client.write('GET /v1/models'); });
+        client.on('error', () => undefined);
+        if (!slowConnect) { await vi.waitFor(() => expect(asked).toBe(true)); client.end(); }
+        await vi.waitFor(() => expect(forwards).toHaveLength(1));
+        const t = forwards[0];
+        // Ended while the session runs on: not left to the session's own end.
+        await vi.waitFor(() => expect(t.destroyed, `slow connect: ${slowConnect}`).toBe(true), { timeout: 4000 });
+        expect(asked).toBe(true);
+        sp.children[0].finish(0);
+        await launched.exited;
+      } finally {
+        spy.mockRestore();
+        await new Promise<void>((r) => model.close(() => r()));
+      }
+    }
+  }, 20_000);
+
   // a9bc650c: a model server on the host's own loopback (an ssh tunnel, ollama) is reached through the gateway.
   it('routes a loopback inference endpoint to the host loopback: a forward route whose socket reaches it, gone with the session', async () => {
     let got = '';

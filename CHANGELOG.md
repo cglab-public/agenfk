@@ -9,6 +9,10 @@ All notable changes to AgEnFK are documented here.
 - **The installers work when the user folder has accented letters on Windows.** On Node 22, `fs.cpSync` stopped the
   process with no message (exit code 3) for a path such as `C:\Users\Fábio`, leaving `~/.agenfk-system` or
   `~/.agenfk-hub` half copied. `npx github:cglab-public/agenfk` and `agenfk-hub` now copy the install file by file.
+- **An Airlock session no longer hangs when the AgEnFK server is down on WSL2 with mirrored networking.** There a
+  connection to a closed loopback port never fails, and the session's relay waited on it for good; it now gives up
+  after 5 seconds and the agent gets a 502. A loopback model endpoint's forward also delivers a request whose
+  client closed before the connection was made, and closes once that client is gone instead of staying open.
 
 **Build** (#244)
 
