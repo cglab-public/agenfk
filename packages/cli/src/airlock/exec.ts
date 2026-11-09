@@ -133,7 +133,10 @@ const SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
  * `processGroup` (default true): the command gets a process group of its own, and
  * signals reach all of it. False (`--no-process-group`, what the AgEnFK server
  * passes): it stays in exec's own group, because the caller already gave exec one
- * and kills that whole group - SIGKILL, which exec could not pass on (SX-3).
+ * and kills that whole group - SIGKILL, which exec could not pass on (SX-3). A machine this exec
+ * starts (`smolvm machine start` and its supervisor) is in that group too (GH-371): the caller
+ * kills it only to end the command. Killed after the command returned, to reap leftovers, it
+ * stops the machine, and the next command boots it cold.
  */
 export async function runAirlockExec(command: string, opts: { cwd: string; processGroup?: boolean; projectId?: string }, d: ExecDeps): Promise<number> {
   const cannot = (why: string): number => {

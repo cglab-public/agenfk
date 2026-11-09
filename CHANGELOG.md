@@ -4,6 +4,16 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+**Fixes** (#371)
+
+- **`agenfk airlock claude` (and every other agent) starts in the sandbox again.** The session's `setsid` returned
+  at once in the machine, so the launcher took the session for ended, stopped the machine, and failed with
+  "could not put the session in a cgroup of its own (… connection closed)". The session now starts with
+  `setsid --wait`, and, under a terminal, keeps the one the machine gave it instead of failing with
+  "setsid: failed to set the controlling terminal". A session that ends before it is contained now says so.
+- **`agenfk airlock exec --no-process-group` documents which processes its caller may kill:** the machine it starts
+  is in the same process group, so killing that group after the command returned stops the machine.
+
 **Fixes** (#349)
 
 - **The installers work when the user folder has accented letters on Windows.** On Node 22, `fs.cpSync` stopped the
