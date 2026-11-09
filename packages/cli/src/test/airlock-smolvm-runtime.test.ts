@@ -40,6 +40,7 @@ import {
   COMMAND_IN_NAMESPACE,
   WATCHDOG,
   SESSION_LEADER,
+  sessionStart,
   KILL_CGROUP,
   ROOTDIR_FN,
   DNS_RESOLVER_ADDRESS,
@@ -604,7 +605,8 @@ describePosix('a session in the machine', () => {
     expect(env.some((e) => e.startsWith('OPENAI_API_KEY='))).toBe(false);
     expect(env.some((e) => e.startsWith('PATH='))).toBe(false);
     const tail = args.slice(args.indexOf('--') + 1);
-    expect(tail[0]).toBe('setsid');
+    // GH-371: the leader starts in a session of its own, which the host exec waits for.
+    expect(tail.slice(0, 3)).toEqual(['sh', '-c', sessionStart(false)]);
     expect(tail.slice(-2)).toEqual(['pi', '--approve']);
   });
 
@@ -618,8 +620,8 @@ describePosix('a session in the machine', () => {
     await tty.rt.launch(specOf(), cmd());
     const args = (tty.sp.spawn.mock.calls[0] as unknown as [string, string[]])[1];
     expect(args).toContain('-t');
-    // The session leader takes the terminal, so Ctrl-C reaches the agent.
-    expect(args.slice(args.indexOf('--') + 1).slice(0, 2)).toEqual(['setsid', '-c']);
+    // The session leader keeps (or takes) the terminal, so Ctrl-C reaches the agent (GH-371).
+    expect(args.slice(args.indexOf('--') + 1).slice(0, 3)).toEqual(['sh', '-c', sessionStart(true)]);
   });
 
   it('exits with the command\'s exit code', async () => {
@@ -676,6 +678,24 @@ describePosix('a session in the machine', () => {
     // What started is ended: it never got past waiting.
     expect(smolvm.execs().some((a) => a.join(' ').includes('kill -KILL'))).toBe(true);
     expect(sp.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  // GH-371: a session exec that ended before root moved its leader made that move die with smolvm's
+  // "connection closed" (the release had stopped the machine): what happened is said instead.
+  it('says the session ended before it was contained when its exec is gone before the move (GH-371)', async () => {
+    let children: ReturnType<typeof fakeSpawn>['children'] = [];
+    const smolvm = fakeSmolvm({ execFails: (a) => {
+      if (!a.join(' ').includes('cgroup.procs')) return null;
+      children[0]?.finish(1);
+      return 'Error: io operation failed: connection closed';
+    } });
+    const { rt, sp, watchdog } = runtime({ smolvm });
+    children = sp.children;
+    await expect(rt.launch(specOf(), cmd())).rejects.toThrow(/session ended in the machine before it was put in a cgroup of its own \(exit 1\), so it may not have been contained; smolvm said: Error: io operation failed: connection closed/);
+    // Released all the same: its cgroup ended, the machine stopped, the watchdog no longer needed.
+    expect(smolvm.execs().some((a) => a.join(' ').includes('cgroup.kill'))).toBe(true);
+    expect(smolvm.verbs()).toContain('stop');
+    expect(watchdog.stopped).toBe(1);
   });
 
   it('a command the server runs is contained the same way', async () => {
@@ -2436,6 +2456,81 @@ describePosix('the AgEnFK server and the model key, from inside the machine', ()
     }
   });
 
+  // A client that sends and closes at once, before the forward reached the endpoint (a slow connect,
+  // as under WSL2's mirrored networking): what it sent is still delivered, not dropped with the socket.
+  it('a client that sends and closes before the forward connects: what it sent still reaches the endpoint', async () => {
+    let got = '';
+    const model = net.createServer((c) => c.on('data', (d) => { got += d; }));
+    await new Promise<void>((r) => model.listen(0, '127.0.0.1', () => r()));
+    const port = (model.address() as net.AddressInfo).port;
+    const connect = net.connect;
+    // The forward's connect to the endpoint takes 200 ms (a lookup held back): the client is gone by then.
+    const slow = vi.spyOn(net, 'connect').mockImplementation(((o: any, ...rest: any[]) => (o && typeof o === 'object' && o.port === port
+      ? connect({ ...o, host: 'localhost', lookup: (_h: string, lo: any, cb: any) => setTimeout(() => (lo?.all ? cb(null, [{ address: '127.0.0.1', family: 4 }]) : cb(null, '127.0.0.1', 4)), 200) }, ...rest)
+      : (connect as any)(o, ...rest))) as any);
+    try {
+      const egress = fakeEgress();
+      const { rt, sp } = runtime({ egress, ...injectorDeps() });
+      const launched = await rt.launch(specOf({ inferenceHosts: [`127.0.0.1:${port}`] }), cmd());
+      const route = egress.routes.find((r) => r.kind === 'forward') as Extract<Route, { kind: 'forward' }>;
+      const client = net.connect(route.socket, () => { client.end('GET /v1/models'); });
+      await new Promise((r) => client.once('close', r));
+      await vi.waitFor(() => expect(got).toBe('GET /v1/models'), { timeout: 3000 });
+      sp.children[0].finish(0);
+      await launched.exited;
+    } finally {
+      slow.mockRestore();
+      await new Promise<void>((r) => model.close(() => r()));
+    }
+  });
+
+  // Review: the client gone, an answer it can no longer read must not hold the forward open for the
+  // rest of the session (a paused socket with unread data never ends), whether its request was still
+  // on its way (a slow connect) or long delivered (a client that cancels mid-answer).
+  it('a client gone before the answer: the forward to the endpoint is closed, not kept for the session', async () => {
+    for (const slowConnect of [true, false]) {
+      let asked = false;
+      // Answers once asked, though the client closed its side (as a streaming server does), then closes
+      // its own: an answer nobody reads stays in the forward's buffer.
+      const model = net.createServer({ allowHalfOpen: true }, (c) => {
+        c.on('error', () => undefined);
+        c.once('data', () => { asked = true; setTimeout(() => c.end('HTTP/1.1 200 OK\r\n\r\nan answer nobody reads'), 50); });
+      });
+      await new Promise<void>((r) => model.listen(0, '127.0.0.1', () => r()));
+      const port = (model.address() as net.AddressInfo).port;
+      const connect = net.connect;
+      const forwards: net.Socket[] = [];
+      const spy = vi.spyOn(net, 'connect').mockImplementation(((o: any, ...rest: any[]) => {
+        if (!(o && typeof o === 'object' && o.port === port)) return (connect as any)(o, ...rest);
+        const t = slowConnect
+          ? connect({ ...o, host: 'localhost', lookup: (_h: string, lo: any, cb: any) => setTimeout(() => (lo?.all ? cb(null, [{ address: '127.0.0.1', family: 4 }]) : cb(null, '127.0.0.1', 4)), 200) }, ...rest)
+          : (connect as any)(o, ...rest);
+        forwards.push(t);
+        return t;
+      }) as any);
+      try {
+        const egress = fakeEgress();
+        const { rt, sp } = runtime({ egress, ...injectorDeps() });
+        const launched = await rt.launch(specOf({ inferenceHosts: [`127.0.0.1:${port}`] }), cmd());
+        const route = egress.routes.find((r) => r.kind === 'forward') as Extract<Route, { kind: 'forward' }>;
+        // Slow: it closes at once, its request still on its way. Otherwise: it goes once the request arrived.
+        const client = net.connect(route.socket, () => { if (slowConnect) client.end('GET /v1/models'); else client.write('GET /v1/models'); });
+        client.on('error', () => undefined);
+        if (!slowConnect) { await vi.waitFor(() => expect(asked).toBe(true)); client.end(); }
+        await vi.waitFor(() => expect(forwards).toHaveLength(1));
+        const t = forwards[0];
+        // Ended while the session runs on: not left to the session's own end.
+        await vi.waitFor(() => expect(t.destroyed, `slow connect: ${slowConnect}`).toBe(true), { timeout: 4000 });
+        expect(asked).toBe(true);
+        sp.children[0].finish(0);
+        await launched.exited;
+      } finally {
+        spy.mockRestore();
+        await new Promise<void>((r) => model.close(() => r()));
+      }
+    }
+  }, 20_000);
+
   // a9bc650c: a model server on the host's own loopback (an ssh tunnel, ollama) is reached through the gateway.
   it('routes a loopback inference endpoint to the host loopback: a forward route whose socket reaches it, gone with the session', async () => {
     let got = '';
@@ -3438,7 +3533,8 @@ describe.skipIf(process.platform === 'win32')('COMMAND_IN_NAMESPACE, run by sh',
     for (const tool of ['unshare', 'setpriv']) {
       fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\necho "${tool} $*" >> ${JSON.stringify(log)}\nwhile [ "$1" != "--" ]; do shift; done; shift; exec "$@"\n`, { mode: 0o755 });
     }
-    fs.writeFileSync(path.join(bin, 'setsid'), `#!/bin/sh\necho "setsid $*" >> ${JSON.stringify(log)}\nexec "$@"\n`, { mode: 0o755 });
+    // GH-371: as util-linux's does for a process-group leader, it forks, and returns at once unless -w.
+    fs.writeFileSync(path.join(bin, 'setsid'), FORKING_SETSID(log), { mode: 0o755 });
     // The leader waits to be in its cgroup, which only the machine's kernel says (story review 2).
     fs.writeFileSync(path.join(bin, 'grep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   });
@@ -3454,7 +3550,7 @@ describe.skipIf(process.platform === 'win32')('COMMAND_IN_NAMESPACE, run by sh',
     const calls = fs.readFileSync(log, 'utf8');
     expect(calls).toMatch(/^unshare .*--mount.*--propagation private/m);
     expect(calls).toMatch(/^setpriv .*--reuid=503 --regid=20 --clear-groups/m);
-    expect(calls).toMatch(/^setsid /m);
+    expect(calls).toMatch(/^setsid -w /m);
     // The pid file holds the command's pid, for a signal to find.
     expect(fs.readFileSync(path.join(root, 'cmd.pid'), 'utf8')).toMatch(/^\d+\n$/);
   });
@@ -3676,6 +3772,91 @@ describe.skipIf(process.platform === 'win32')('loopbackRouteScript, run by sh', 
       expect(fs.readFileSync(log, 'utf8')).toContain('sysctl -w net.ipv4.conf.all.route_localnet=1');
     } finally {
       fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * A stand-in for util-linux's setsid, which forks when its caller leads its process group (as the
+ * machine's exec does) and, without -w, returns 0 at once while the command runs on (GH-371).
+ */
+const FORKING_SETSID = (log: string) => `#!/bin/sh
+echo "setsid $*" >> ${JSON.stringify(log)}
+w=
+while case "$1" in -*) true;; *) false;; esac; do [ "$1" = -w ] && w=1; shift; done
+if [ -n "$w" ]; then "$@"; exit $?; fi
+"$@" &
+exit 0
+`;
+
+describe.skipIf(process.platform === 'win32')('sessionStart, run by sh (GH-371)', () => {
+  let bin: string;
+  let log: string;
+  beforeEach(() => {
+    bin = path.join(root, 'start-bin');
+    log = path.join(root, 'start-calls.log');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'setsid'), FORKING_SETSID(log), { mode: 0o755 });
+    // The leader waits to be in its cgroup, which only the machine's kernel says.
+    fs.writeFileSync(path.join(bin, 'grep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.mkdirSync(path.join(root, 'sessions'), { recursive: true });
+  });
+  const command = ['sh', '-c', 'sleep 0.3; echo ran > ran.out; exit 4'];
+  // `leading`: sh starts as the leader of a session of its own, as the machine's exec under a pty does.
+  const run = (script: string, leading?: string) => {
+    const sh = ['/bin/sh', '-c', script, path.join(root, 'sessions', 's.pid'), ...command];
+    const [file, ...args] = leading ? [leading, '-w', ...sh] : sh;
+    return spawnSync(file, args, { encoding: 'utf8', cwd: root, env: { PATH: `${bin}:/usr/bin:/bin` } });
+  };
+
+  it('waits for the session it starts, and exits with its code: the host exec lives as long as the session', () => {
+    const r = run(sessionStart(false));
+    expect(r.status).toBe(4);
+    expect(fs.existsSync(path.join(root, 'ran.out'))).toBe(true);
+    expect(fs.readFileSync(log, 'utf8')).toMatch(/^setsid -w sh /m);
+  });
+
+  it('with a terminal, a leader that is not one of its own session takes it (setsid -w -c)', () => {
+    const r = run(sessionStart(true));
+    expect(r.status).toBe(4);
+    expect(fs.readFileSync(log, 'utf8')).toMatch(/^setsid -w -c sh /m);
+  });
+
+  it('an image whose setsid has no --wait: runs nothing, 125 with the reason', () => {
+    fs.writeFileSync(path.join(bin, 'setsid'), `#!/bin/sh\n[ "$1" = --help ] && { echo "Usage: setsid [-c] PROG ARGS"; exit 0; }\necho "setsid $*" >> ${JSON.stringify(log)}\nexec "$@"\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'grep'), '#!/bin/sh\nexec /bin/grep "$@"\n', { mode: 0o755 });
+    const r = run(sessionStart(false));
+    expect(r.status).toBe(125);
+    expect(r.stderr).toMatch(/setsid has no --wait/);
+    expect(fs.existsSync(path.join(root, 'ran.out'))).toBe(false);
+  });
+
+  // util-linux's own setsid, called by a process-group leader (as the machine's exec is): it forks, and
+  // only -w keeps it until the session ends. The stand-in above plays this; here the real one does.
+  const realSetsidForFork = ['/usr/bin/setsid', '/bin/setsid'].find((f) => fs.existsSync(f));
+  const perl = ['/usr/bin/perl', '/bin/perl'].find((f) => fs.existsSync(f));
+  it.skipIf(process.platform !== 'linux' || !realSetsidForFork || !perl)('with util-linux\'s setsid, from a process-group leader: still waits for the session and keeps its code', () => {
+    fs.rmSync(path.join(bin, 'setsid'));
+    fs.symlinkSync(realSetsidForFork!, path.join(bin, 'setsid'));
+    // The --wait probe runs against the real setsid's help with the real grep; only the cgroup wait is played.
+    fs.writeFileSync(path.join(bin, 'grep'), '#!/bin/sh\ncase " $* " in *" --wait "*) exec /bin/grep "$@";; esac\nexit 0\n', { mode: 0o755 });
+    const r = spawnSync(perl!, ['-e', 'setpgrp(0,0); exec @ARGV', '/bin/sh', '-c', sessionStart(false), path.join(root, 'sessions', 's.pid'), ...command],
+      { encoding: 'utf8', cwd: root, env: { PATH: `${bin}:/usr/bin:/bin` } });
+    expect(r.status).toBe(4);
+    expect(fs.existsSync(path.join(root, 'ran.out'))).toBe(true);
+  });
+
+  // The machine's exec under a pty already leads a session whose terminal it is: setsid -c there fails
+  // with EPERM ("failed to set the controlling terminal"), so the leader stays in that session.
+  const realSetsid = ['/usr/bin/setsid', '/bin/setsid'].find((f) => fs.existsSync(f));
+  it.skipIf(process.platform !== 'linux' || !realSetsid)('already a session leader: runs the leader in place, keeping its terminal, without setsid', () => {
+    for (const tty of [true, false]) {
+      fs.rmSync(log, { force: true });
+      fs.rmSync(path.join(root, 'ran.out'), { force: true });
+      const r = run(sessionStart(tty), realSetsid);
+      expect(r.status, `tty ${tty}`).toBe(4);
+      expect(fs.existsSync(path.join(root, 'ran.out')), `tty ${tty}`).toBe(true);
+      expect(fs.existsSync(log), `tty ${tty}`).toBe(false);
     }
   });
 });

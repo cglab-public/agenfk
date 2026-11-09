@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'http';
+import net from 'net';
 import { AIRLOCK_SESSION_HEADER } from '@agenfk/core';
 import { startServerRelay, type ServerRelay } from '../airlock/serverRelay';
 
@@ -96,11 +97,35 @@ describe('startServerRelay', () => {
   });
 
   it('the server unreachable: the agent gets a 502 saying so', async () => {
-    relay = await startServerRelay({ target: 'http://127.0.0.1:9', marker: () => MARK, requireMarker: true });
+    relay = await startServerRelay({ target: 'http://127.0.0.1:9', marker: () => MARK, requireMarker: true, connectTimeoutMs: 1000 });
     const res = await send(relay.port);
     expect(res.status).toBe(502);
     expect(res.body).toMatch(/AgEnFK server/);
   });
+
+  // A connect that never completes (a loopback port under WSL2's mirrored networking answers no
+  // SYN for a closed port): the agent gets its 502 once the connect times out, never waits on.
+  it('a server whose connection never completes: the agent gets a 502 once the connect times out', async () => {
+    const targetPort = Number(new URL(targetUrl).port);
+    const create = http.Agent.prototype.createConnection;
+    const spy = vi.spyOn(http.Agent.prototype, 'createConnection').mockImplementation(function (this: http.Agent, o: any, cb: any) {
+      if (Number(o?.port) !== targetPort) return create.call(this, o, cb);
+      const hung = new net.Socket();
+      (hung as any).connecting = true;
+      return hung;
+    } as any);
+    try {
+      relay = await startServerRelay({ target: targetUrl, marker: () => MARK, requireMarker: true, connectTimeoutMs: 200 });
+      const started = Date.now();
+      const res = await send(relay.port);
+      expect(res.status).toBe(502);
+      expect(res.body).toMatch(/AgEnFK server.*did not connect within 200 ms/s);
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(seen).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  }, 10_000);
 
   it('listens on loopback only, on a port of its own, and stops on close', async () => {
     relay = await startServerRelay({ target: targetUrl, marker: () => MARK, requireMarker: true });
@@ -178,7 +203,7 @@ describe('startServerRelay: review (Codex gpt-6.1-sol 01a18235)', () => {
 
   it('only http and https servers can be relayed to', async () => {
     await expect(startServerRelay({ target: 'ftp://127.0.0.1:21', marker: () => MARK, requireMarker: true })).rejects.toThrow(/http/);
-    relay = await startServerRelay({ target: 'https://127.0.0.1:9', marker: () => MARK, requireMarker: true });
+    relay = await startServerRelay({ target: 'https://127.0.0.1:9', marker: () => MARK, requireMarker: true, connectTimeoutMs: 1000 });
     expect((await send(relay.port)).status).toBe(502);
   });
 });

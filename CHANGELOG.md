@@ -4,11 +4,25 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+**Fixes** (#371)
+
+- **`agenfk airlock claude` (and every other agent) starts in the sandbox again.** The session's `setsid` returned
+  at once in the machine, so the launcher took the session for ended, stopped the machine, and failed with
+  "could not put the session in a cgroup of its own (… connection closed)". The session now starts with
+  `setsid --wait`, and, under a terminal, keeps the one the machine gave it instead of failing with
+  "setsid: failed to set the controlling terminal". A session that ends before it is contained now says so.
+- **`agenfk airlock exec --no-process-group` documents which processes its caller may kill:** the machine it starts
+  is in the same process group, so killing that group after the command returned stops the machine.
+
 **Fixes** (#349)
 
 - **The installers work when the user folder has accented letters on Windows.** On Node 22, `fs.cpSync` stopped the
   process with no message (exit code 3) for a path such as `C:\Users\Fábio`, leaving `~/.agenfk-system` or
   `~/.agenfk-hub` half copied. `npx github:cglab-public/agenfk` and `agenfk-hub` now copy the install file by file.
+- **An Airlock session no longer hangs when the AgEnFK server is down on WSL2 with mirrored networking.** There a
+  connection to a closed loopback port never fails, and the session's relay waited on it for good; it now gives up
+  after 5 seconds and the agent gets a 502. A loopback model endpoint's forward also delivers a request whose
+  client closed before the connection was made, and closes once that client is gone instead of staying open.
 
 **Build** (#244)
 

@@ -503,7 +503,7 @@ export function registerAirlockCommands(
     .description('Run one command inside the Airlock sandbox built from the effective policy (the AgEnFK server uses it for verify and suite runs of cards a sandboxed session touched). Exits 125, without running it, when it cannot be sandboxed.')
     .requiredOption('--cwd <dir>', 'the directory to run it in (writable inside the sandbox)')
     .option('--project-id <id>', 'the AgEnFK project the command is for: its per-project Airlock overrides apply (the AgEnFK server passes the card\'s)')
-    .option('--no-process-group', 'keep the command in exec\'s own process group (for a caller that kills that group whole, as the AgEnFK server does)')
+    .option('--no-process-group', 'keep the command in exec\'s own process group (for a caller that kills that group whole, as the AgEnFK server does). A machine this exec starts runs in that group too: kill the group only to end the command, never to reap after it returned, or the machine stops and the next command boots it again')
     .argument('[command...]', 'the command, after --, as ONE argument, run with /bin/sh -c')
     .allowExcessArguments()
     .action(async (words: string[], options: { cwd: string; processGroup: boolean; projectId?: string }) => {
