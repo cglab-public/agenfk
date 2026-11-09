@@ -64,8 +64,8 @@
   },
   "type": "module",
   "devDependencies": {
-    "@stryker-mutator/core": "^10.0.0",
-    "@stryker-mutator/vitest-runner": "^10.0.0",
+    "@stryker-mutator/core": "^10.1.1",
+    "@stryker-mutator/vitest-runner": "^10.1.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/react": "^19.3.0",
@@ -75,7 +75,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "js-yaml": "^4.1.1",
     "jsdom": "^28.1.0",
-    "semver": "^7.8.5",
+    "semver": "^7.8.6",
     "supertest": "^7.3.1",
     "vitest": "^4.0.18"
   }

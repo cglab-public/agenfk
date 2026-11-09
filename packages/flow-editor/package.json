@@ -19,6 +19,6 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@tailwindcss/node": "^4.3.3"
+    "@tailwindcss/node": "^4.3.4"
   }
 }
