@@ -76,10 +76,16 @@ const bridge = (): TerminalBridgeApi | null =>
  * what keeps an upgrade from showing an empty settings screen.
  */
 interface PrefsBridgeApi {
-  get(): Promise<{ autoApprove: boolean; defaultAgentId?: string; askBeforeOpening?: boolean }>;
+  get(): Promise<{
+    autoApprove: boolean; defaultAgentId?: string; askBeforeOpening?: boolean;
+    uiScale?: number; terminalFontSize?: number;
+  }>;
   setAutoApprove(value: boolean): Promise<{ autoApprove: boolean }>;
   setDefaultAgent?(agentId: string): Promise<{ defaultAgentId: string }>;
   setAskBeforeOpening?(value: boolean): Promise<{ askBeforeOpening: boolean }>;
+  setUiScale?(value: number): Promise<unknown>;
+  setTerminalFontSize?(value: number): Promise<unknown>;
+  onChanged?(cb: (prefs: unknown) => void): () => void;
 }
 
 /**
@@ -95,7 +101,36 @@ export interface DesktopPrefs {
   readonly autoApprove: boolean;
   readonly defaultAgentId: string;
   readonly askBeforeOpening: boolean;
+  /** The window's zoom factor. 1 in a browser, which zooms on its own. */
+  readonly uiScale: number;
+  /** The terminal font size; 12, the size terminals have always had, by default. */
+  readonly terminalFontSize: number;
 }
+
+/** What a page, or a preload older than a key, reads as. */
+const BROWSER_PREFS: DesktopPrefs = {
+  autoApprove: false, defaultAgentId: '', askBeforeOpening: true, uiScale: 1, terminalFontSize: 12,
+};
+
+/**
+ * One stored object read into the renderer's shape. Shared by the read and by
+ * the push in `onPrefsChangedFromBridge`, so the two cannot disagree about
+ * what a missing key means.
+ */
+const toDesktopPrefs = (stored: Record<string, unknown> | null | undefined): DesktopPrefs => ({
+  autoApprove: stored?.autoApprove === true,
+  // A preload older than this key answers undefined, which reads as "nobody
+  // chose" — the same thing the store says, so the screen is not blank and
+  // the dialog keeps the default it has always had.
+  defaultAgentId: typeof stored?.defaultAgentId === 'string' ? stored.defaultAgentId : '',
+  // Defaults to TRUE, so a mismatched preload cannot silently start skipping
+  // the confirmation screen for somebody who never turned it off.
+  askBeforeOpening: stored?.askBeforeOpening !== false,
+  uiScale: typeof stored?.uiScale === 'number' && Number.isFinite(stored.uiScale) ? stored.uiScale : BROWSER_PREFS.uiScale,
+  terminalFontSize: typeof stored?.terminalFontSize === 'number' && Number.isFinite(stored.terminalFontSize)
+    ? stored.terminalFontSize
+    : BROWSER_PREFS.terminalFontSize,
+});
 
 const prefsBridge = (): PrefsBridgeApi | null =>
   (window as unknown as { agenfkDesktop?: { prefs?: PrefsBridgeApi } }).agenfkDesktop?.prefs ?? null;
@@ -109,18 +144,8 @@ const prefsBridge = (): PrefsBridgeApi | null =>
  */
 export const readPrefsFromBridge = async (): Promise<DesktopPrefs> => {
   const prefs = prefsBridge();
-  if (typeof prefs?.get !== 'function') return { autoApprove: false, defaultAgentId: '', askBeforeOpening: true };
-  const stored = await prefs.get();
-  return {
-    autoApprove: stored?.autoApprove === true,
-    // A preload older than this key answers undefined, which reads as "nobody
-    // chose" — the same thing the store says, so the screen is not blank and
-    // the dialog keeps the default it has always had.
-    defaultAgentId: typeof stored?.defaultAgentId === 'string' ? stored.defaultAgentId : '',
-    // Defaults to TRUE, so a mismatched preload cannot silently start skipping
-    // the confirmation screen for somebody who never turned it off.
-    askBeforeOpening: stored?.askBeforeOpening !== false,
-  };
+  if (typeof prefs?.get !== 'function') return { ...BROWSER_PREFS };
+  return toDesktopPrefs(await prefs.get());
 };
 
 export const setAutoApproveOnBridge = (value: boolean): Promise<{ autoApprove: boolean }> => {
@@ -147,6 +172,42 @@ export const setDefaultAgentOnBridge = (agentId: string): Promise<unknown> => {
     return Promise.reject(new Error('This build cannot store that preference.'));
   }
   return prefs.setDefaultAgent(agentId);
+};
+
+/**
+ * Whether this build can store the appearance preferences. A browser cannot,
+ * and neither can a desktop whose preload predates them — a newer UI bundle
+ * served by an adopted server meets exactly that. Settings shows a note
+ * instead of controls that would snap back with no message.
+ */
+export const canSetAppearance = (): boolean => typeof prefsBridge()?.setUiScale === 'function';
+
+/** The window's zoom factor. Main applies it to this window as it stores it. */
+export const setUiScaleOnBridge = (value: number): Promise<unknown> => {
+  const prefs = prefsBridge();
+  if (typeof prefs?.setUiScale !== 'function') {
+    return Promise.reject(new Error('This build cannot store that preference.'));
+  }
+  return prefs.setUiScale(value);
+};
+
+/** The font size every terminal is drawn at, open ones included. */
+export const setTerminalFontSizeOnBridge = (value: number): Promise<unknown> => {
+  const prefs = prefsBridge();
+  if (typeof prefs?.setTerminalFontSize !== 'function') {
+    return Promise.reject(new Error('This build cannot store that preference.'));
+  }
+  return prefs.setTerminalFontSize(value);
+};
+
+/**
+ * Preferences changed in main without this page asking (a zoom shortcut).
+ * A no-op unsubscribe where there is no desktop, or an older preload.
+ */
+export const onPrefsChangedFromBridge = (cb: (prefs: DesktopPrefs) => void): (() => void) => {
+  const prefs = prefsBridge();
+  if (typeof prefs?.onChanged !== 'function') return () => {};
+  return prefs.onChanged(stored => cb(toDesktopPrefs(stored as Record<string, unknown>)));
 };
 
 /** Whether opening a terminal asks which agent runs. */
