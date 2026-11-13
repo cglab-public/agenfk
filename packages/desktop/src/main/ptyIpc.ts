@@ -42,6 +42,9 @@ import { detectEditors, editorUrlFor } from './editors';
 import { detectAgents, refreshAgentDetection } from './detectAgents.js';
 import { SHELL_AGENT_ID, AGENT_IDS } from './agents.js';
 import { HIGH_WATERMARK } from './flowControl.js';
+import {
+  clampUiScale, isTerminalFontSize, isUiScale, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, UI_SCALE_MAX, UI_SCALE_MIN,
+} from './appearance';
 
 /** Minimal shape of `ipcMain` so tests need no Electron. */
 export interface IpcLike {
@@ -166,6 +169,14 @@ export function registerPtyIpc(
     owners: () => Promise<{ login: string; avatarUrl: string | null; self: boolean }[]>;
     create: (req: { owner: string; repo: string; visibility: 'private' | 'public'; name: string })
       => Promise<{ id: string; name: string }>;
+  },
+  /** The WSL distros installed on this machine; absent off Windows (INFRA-425). */
+  wsl?: {
+    distros: () => Promise<string[]>;
+  },
+  /** The cockpit under a terminal's tabs (INFRA-425). */
+  cockpit?: {
+    snapshot: (sessionId: string, windowId: number) => Promise<unknown>;
   },
 ): void {
   ipc.handle('pty:spawn', async (event, raw) => {
@@ -363,6 +374,23 @@ export function registerPtyIpc(
   ipc.handle('prefs:get', async () => readablePrefs(readPrefs(prefsDir())));
 
   /*
+   * Which distros a terminal may open in. Empty where there is no WSL, which is
+   * how the settings screen knows not to offer the choice at all.
+   */
+  ipc.handle('wsl:distros', async () => (wsl ? wsl.distros() : []));
+
+  /*
+   * One terminal's cockpit. The renderer names a SESSION and nothing else;
+   * where it runs comes from the registry, for the window that sent this —
+   * the same ownership rule as write and resize.
+   */
+  ipc.handle('cockpit:get', async (event, raw) => {
+    if (!cockpit) return null;
+    const req = (raw ?? {}) as Record<string, unknown>;
+    return cockpit.snapshot(asString(req.sessionId, 'sessionId'), senderWindowId(event));
+  });
+
+  /*
    * Editors. The renderer names a CARD and an editor ID — never a path and
    * never a URL — so the set of programs the OS can be asked to launch stays
    * fixed at compile time and the directory comes from the server's record of
@@ -384,7 +412,7 @@ export function registerPtyIpc(
     return { opened: true, path: cwd };
   });
 
-  ipc.handle('prefs:set', async (_event, raw) => {
+  ipc.handle('prefs:set', async (event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;
     const key = asString(req.key, 'key');
     if (!(PREF_KEYS as readonly string[]).includes(key)) {
@@ -421,6 +449,53 @@ export function registerPtyIpc(
         throw new Error(`Preference "defaultAgentId" must be one of: ${AGENT_IDS.join(', ')}`);
       }
       return readablePrefs(writePref(prefsDir(), 'defaultAgentId', value));
+    }
+
+    /*
+     * THE TWO NUMBERS, and why they do not reopen the rule below either.
+     *
+     * A number cannot name a file or a program, which is the thing the
+     * boolean-only rule protects. It is still renderer input, so each is held
+     * to its range and REFUSED outside it rather than clamped: our own <select>
+     * never sends one, so a value out of range means something is wrong.
+     */
+    if (key === 'uiScale') {
+      if (!isUiScale(req.value)) {
+        throw new Error(`Preference "uiScale" must be a number from ${UI_SCALE_MIN} to ${UI_SCALE_MAX}.`);
+      }
+      // Snapped to the grid Settings offers, so the screen can always show it.
+      const stored = writePref(prefsDir(), 'uiScale', clampUiScale(req.value) ?? req.value);
+      // Applied to the window that asked, so the change is visible before the
+      // settings screen has even re-rendered. The SENDER, never a window id
+      // from the payload, for the reason senderWindowId gives.
+      event.sender?.setZoomFactor?.(stored.uiScale);
+      return readablePrefs(stored);
+    }
+    if (key === 'terminalFontSize') {
+      if (!isTerminalFontSize(req.value)) {
+        throw new Error(
+          `Preference "terminalFontSize" must be a whole number from ${TERMINAL_FONT_SIZE_MIN} to ${TERMINAL_FONT_SIZE_MAX}.`,
+        );
+      }
+      return readablePrefs(writePref(prefsDir(), 'terminalFontSize', req.value));
+    }
+
+    /*
+     * A distro NAME is the second string allowed across, on the same terms as
+     * the agent id above: it is checked against a list this process produced
+     * (`wsl.exe --list`), never trusted as text, because it becomes an argument
+     * to `wsl.exe --distribution`. '' clears the choice.
+     */
+    if (key === 'wslDistro') {
+      const value = req.value;
+      const installed = wsl ? await wsl.distros() : [];
+      if (typeof value !== 'string' || (value !== '' && !installed.includes(value))) {
+        throw new Error(`Preference "wslDistro" must be '' or one of: ${installed.join(', ') || '(no WSL distro installed)'}`);
+      }
+      const stored = readablePrefs(writePref(prefsDir(), 'wslDistro', value));
+      // Which agents are installed depends on where terminals run now.
+      refreshAgentDetection();
+      return stored;
     }
 
     if (typeof DEFAULT_PREFS[key as keyof typeof DEFAULT_PREFS] !== 'boolean') {
