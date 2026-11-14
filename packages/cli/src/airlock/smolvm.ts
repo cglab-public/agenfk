@@ -1302,6 +1302,22 @@ export const SESSION_LEADER = 'R="${0%/sessions/*}/reaped/$(basename "$0" .pid)"
   + '[ ! -e "$R" ] && [ "$(cat "$0" 2>/dev/null)" = "$$" ] || exit 125; '
   + 'exec "$@"';
 
+/**
+ * Starts SESSION_LEADER (`sh -c <this> <pid file> <command...>`) leading a session of its own, and
+ * waits for it (GH-371): util-linux's setsid forks when its caller leads its process group, as the
+ * machine's exec does, and without -w returns at once - ending the host's exec, whose end releases
+ * the session (and stops the machine) before root could contain it. Already a session's leader, it
+ * runs in place and keeps its terminal: `setsid -c` cannot take a terminal that already controls
+ * another session (EPERM, what GH-371 shows under -t), which assumes smolvm's exec under a pty leads
+ * that pty's session. With a terminal otherwise, it takes it. An image whose setsid has no --wait
+ * (busybox, util-linux before 2.31) runs nothing (125), saying why. Through setsid -w, a leader
+ * killed by a signal exits with the signal's bare number (9, not 137): util-linux reports it so.
+ */
+export const sessionStart = (tty: boolean): string =>
+  `[ "$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f4)" = "$$" ] && exec sh -c ${quote(SESSION_LEADER)} "$0" "$@"; `
+  + 'setsid --help 2>&1 | grep -q -- --wait || { echo "[agenfk airlock] The machine image\'s setsid has no --wait (util-linux 2.31 or later), so the session cannot be started under its own protections." >&2; exit 125; }; '
+  + `exec setsid -w${tty ? ' -c' : ''} sh -c ${quote(SESSION_LEADER)} "$0" "$@"`;
+
 /** A session's cgroup, made by root, which its processes cannot leave (a process group they can). */
 const cgroupOf = (id: string): string => `/sys/fs/cgroup/agenfk/${id}`;
 /**
@@ -1327,7 +1343,7 @@ export const COMMAND_IN_NAMESPACE = [
   `exec unshare --mount --propagation private -- sh -c ${quote([
     'sh -c "$0" || { echo "[agenfk airlock] Airlock could not apply the command\'s protections in the machine." >&2; exit 125; }',
     'u="$1"; g="$2"; shift 2',
-    `exec setpriv --reuid="$u" --regid="$g" --clear-groups -- setsid sh -c ${quote(SESSION_LEADER)} "$@"`,
+    `exec setpriv --reuid="$u" --regid="$g" --clear-groups -- sh -c ${quote(sessionStart(false))} "$@"`,
   ].join('; '))} "$0" "$@"`,
 ].join('; ');
 
@@ -1458,6 +1474,10 @@ type HeldPlaceholder = Placeholder & { dev: number; ino: number; ctime?: string;
 export const LOCK_TIMEOUT_MS = 900_000;
 const LOCK_POLL_MS = 25;
 
+/** How long a forward whose client is gone stays open once what the client sent is written to it. */
+const FORWARD_CLOSE_GRACE_MS = 500;
+/** The longest a forward whose client is gone stays open, whether or not what it sent could be written. */
+const FORWARD_CLOSE_LIMIT_MS = 10_000;
 /** Bounds the host's signalling exec: the pid file is the session's, and could be a FIFO. */
 const SIGNAL_TIMEOUT = '10s';
 /** Reads the session leader's pid from the file in $0, waiting briefly for it; anything but a pid stops here. */
@@ -2165,7 +2185,7 @@ export class SmolvmRuntime implements AirlockRuntime {
       const args = commandSetup !== undefined
         // A command: root first, for its namespace, then the user (no terminal: the server runs it).
         ? [...exec('root'), 'sh', '-c', COMMAND_IN_NAMESPACE, commandSetup, String(this.d.uid), String(this.d.gid), pidFile, command.file, ...command.args]
-        : [...exec(user, ...(tty ? ['-t'] : [])), 'setsid', ...(tty ? ['-c'] : []), 'sh', '-c', SESSION_LEADER, pidFile, command.file, ...command.args];
+        : [...exec(user, ...(tty ? ['-t'] : [])), 'sh', '-c', sessionStart(tty), pidFile, command.file, ...command.args];
       child = this.d.spawn(this.d.smolvmPath, args, {
         cwd: command.cwd, stdio: 'inherit',
         ...(plain.length ? { env: { ...process.env, ...Object.fromEntries(plain.map((n) => [n, this.d.hostEnv[n] as string])) } } : {}),
@@ -2212,14 +2232,22 @@ export class SmolvmRuntime implements AirlockRuntime {
         unwatch?.();
       }
     })();
+    // The session's exec, once it ended: one gone before its leader was contained says why (GH-371).
+    let ended: SandboxExit | null = null;
     const exited = new Promise<SandboxExit>((resolve, reject) => {
-      child.once('exit', (code, signal) => { finish().then(() => resolve({ code, signal }), reject); });
+      child.once('exit', (code, signal) => { ended = { code, signal }; finish().then(() => resolve({ code, signal }), reject); });
       child.once('error', (e) => { finish().then(() => reject(e), reject); });
     });
     // Into its cgroup, which its leader waits for (story review 2): one that cannot be contained never runs.
     const moved = await this.cli(['machine', 'exec', '--name', name, '--timeout', SIGNAL_TIMEOUT, '-u', 'root', '--', 'sh', '-c', READ_PID + INTO_CGROUP, pidFile, cgroupOf(id), reapedMark(id)])
       .catch((e) => ({ code: 1, stdout: '', stderr: String(e?.message ?? e) }));
     if (moved.code !== 0) {
+      const early = ended as SandboxExit | null;
+      if (early) {
+        // A release smolvm did not confirm is said too: the machine may still be running.
+        const released = await exited.then(() => '', (e) => ` ${String((e as Error)?.message ?? e)}`);
+        throw new Error(`Airlock's session ended in the machine before it was put in a cgroup of its own (${early.signal ? `signal ${early.signal}` : `exit ${early.code}`}), so it may not have been contained; smolvm said: ${said(moved) || `exit ${moved.code}`}.${released}`);
+      }
       await inGuest('kill -KILL -$pid');
       try { child.kill('SIGKILL'); } catch { /* gone */ }
       await Promise.race([exited.catch(() => undefined), new Promise((r) => setTimeout(r, 10_000))]);
@@ -2296,7 +2324,16 @@ export class SmolvmRuntime implements AirlockRuntime {
       for (const x of [c, t]) { open.add(x); x.on('close', () => open.delete(x)); }
       c.on('error', () => t.destroy());
       t.on('error', () => c.destroy());
-      c.on('close', () => t.destroy());
+      // The client gone, t goes too: nobody reads its answer, and a paused t with an unread answer would
+      // never end (review). What the client sent is delivered first, though t was still connecting:
+      // its answer drained meanwhile, so the close is not a reset that drops it.
+      c.on('close', (hadError) => {
+        if (hadError || t.writableFinished) { t.destroy(); return; }
+        t.resume();
+        t.once('finish', () => setTimeout(() => t.destroy(), FORWARD_CLOSE_GRACE_MS).unref());
+        // A connect that hangs (WSL2's mirrored loopback) or a target that stops reading: not for longer than this.
+        setTimeout(() => t.destroy(), FORWARD_CLOSE_LIMIT_MS).unref();
+      });
       t.on('close', () => c.destroy());
       c.pipe(t);
       t.pipe(c);

@@ -75,7 +75,7 @@ describe('a tag-push run builds no image already published', () => {
     const out = path.join(dir, 'out');
     fs.writeFileSync(out, '');
     const values: Record<string, string> = { EVENT: event, IMAGE: 'ghcr.io/acme/agenfk-airlock-base:2.1.0', SHA };
-    const env: Record<string, string> = { PATH: `${dir}:/usr/bin:/bin:/opt/homebrew/bin`, GITHUB_OUTPUT: out };
+    const env: Record<string, string> = { PATH: `${dir}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`, GITHUB_OUTPUT: out };
     for (const k of Object.keys(check?.env ?? {})) env[k] = values[k] ?? '';
     const r = spawnSync('bash', ['-c', check?.run ?? 'exit 9'], { env, encoding: 'utf8' });
     const outputs = fs.readFileSync(out, 'utf8');
