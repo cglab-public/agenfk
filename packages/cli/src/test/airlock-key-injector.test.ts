@@ -418,8 +418,11 @@ describe('startKeyInjector', () => {
 
 // The real smolvm, the real decider process and the real injector, where they can run.
 const smolvmHere = smolvmTestsEnabled();
+// The AgEnFK base image, as the egress and conformance tests use: a session needs util-linux's
+// setsid --wait (GH-371), which an alpine image's busybox does not have - it would refuse with 125.
+const baseImage = process.env.AGENFK_AIRLOCK_TEST_IMAGE;
 
-describe.skipIf(!smolvmHere)('relay and key injection against the real smolvm (AGENFK_SMOLVM_TESTS=1, after npm run build)', () => {
+describe.skipIf(!smolvmHere || !baseImage)('relay and key injection against the real smolvm (AGENFK_SMOLVM_TESTS=1, AGENFK_AIRLOCK_TEST_IMAGE, after npm run build)', () => {
   it('the guest reaches its relay through the gateway, nothing else there, and the inference host with the key it never sees', async () => {
     const { SmolvmRuntime } = await import('../airlock/smolvm');
     const { buildSandboxSpec } = await import('../airlock/spec');
@@ -441,7 +444,7 @@ describe.skipIf(!smolvmHere)('relay and key injection against the real smolvm (A
     const stateDir = path.join(root, 'state');
     const broker = realBroker(stateDir);
     const rt = new SmolvmRuntime({
-      image: 'node:22-alpine', egress: broker, stateDir, isTTY: false, hostEnv: { TEST_API_KEY: REAL },
+      image: baseImage!, egress: broker, stateDir, isTTY: false, hostEnv: { TEST_API_KEY: REAL },
       startInjector: (o) => startKeyInjector({ ...o, connectUpstream: () => ({ protocol: 'http:', hostname: '127.0.0.1', port: inferencePort }) }),
     });
     const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'observe', hosts: { allow: [] } }), {

@@ -11,6 +11,8 @@ All notable changes to AgEnFK are documented here.
   "could not put the session in a cgroup of its own (… connection closed)". The session now starts with
   `setsid --wait`, and, under a terminal, keeps the one the machine gave it instead of failing with
   "setsid: failed to set the controlling terminal". A session that ends before it is contained now says so.
+  A machine image named by an org or repository policy now needs util-linux's `setsid` 2.31 or later (the base
+  image has it): with busybox's (alpine), every session refuses with 125 and says why.
 - **`agenfk airlock exec --no-process-group` documents which processes its caller may kill:** the machine it starts
   is in the same process group, so killing that group after the command returned stops the machine.
 
