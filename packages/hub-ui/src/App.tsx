@@ -4,8 +4,11 @@ import { useQuery } from '@tanstack/react-query';
 import { api, MeResponse, ProvidersResponse } from './api';
 import { LoginPage } from './pages/Login';
 import { SetupPage } from './pages/Setup';
+import { AdminAudit } from './pages/AdminAudit';
+import { RecoverPage } from './pages/Recover';
 import { OrgPage } from './pages/Org';
 import { PrOverviewPage } from './pages/PrOverview';
+import { AdherencePage } from './pages/Adherence';
 import { UserDetailPage } from './pages/UserDetail';
 import { ConnectPage } from './pages/Connect';
 import { AdminLayout, AdminAuth, AdminKeys, AdminUsers, AdminInstallations } from './pages/Admin';
@@ -15,6 +18,10 @@ import { AdminRepoint } from './pages/AdminRepoint';
 import { AdminIdentities } from './pages/AdminIdentities';
 import { AdminModels } from './pages/AdminModels';
 import { AdminOrg } from './pages/AdminOrg';
+import { AdminJira } from './pages/AdminJira';
+import { AdminRepos } from './pages/AdminRepos';
+import { AdminAirlock } from './pages/AdminAirlock';
+import { AdminOverview } from './pages/AdminOverview';
 import { Layout } from './components/Layout';
 
 function useMe() {
@@ -53,9 +60,11 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/setup" element={<SetupPage />} />
+      <Route path="/recover" element={<RecoverPage />} />
       <Route path="/connect" element={<RequireAuth><ConnectPage /></RequireAuth>} />
       <Route path="/" element={<RequireAuth><Layout><OrgPage /></Layout></RequireAuth>} />
       <Route path="/prs" element={<RequireAuth><Layout><PrOverviewPage /></Layout></RequireAuth>} />
+      <Route path="/adherence" element={<RequireAuth><Layout><AdherencePage /></Layout></RequireAuth>} />
       <Route path="/users/:userKey" element={<RequireAuth><Layout><UserDetailPage /></Layout></RequireAuth>} />
       <Route path="/admin" element={<RequireAuth><Layout><AdminLayout /></Layout></RequireAuth>}>
         <Route path="auth" element={<AdminAuth />} />
@@ -71,8 +80,12 @@ export function App() {
         <Route path="repoint" element={<AdminRepoint />} />
         <Route path="identities" element={<AdminIdentities />} />
         <Route path="models" element={<AdminModels />} />
+        <Route path="jira" element={<AdminJira />} />
+        <Route path="repos" element={<AdminRepos />} />
+        <Route path="airlock" element={<AdminAirlock />} />
+        <Route path="audit" element={<AdminAudit />} />
         <Route path="org" element={<AdminOrg />} />
-        <Route index element={<Navigate to="auth" replace />} />
+        <Route index element={<AdminOverview />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

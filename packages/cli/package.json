@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/cli",
-  "version": "1.1.20",
+  "version": "2.1.0-beta.17",
   "description": "CLI for AgenFK Engineering Framework",
   "main": "dist/index.js",
   "bin": {
@@ -8,30 +8,29 @@
   },
   "types": "dist/index.d.ts",
   "scripts": {
+    "prebuild": "node ../../scripts/clean-dist.mjs",
     "build": "tsc",
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@agenfk/core": "1.1.20",
-    "@agenfk/telemetry": "1.1.20",
-    "axios": "^1.20.0",
+    "@agenfk/core": "2.1.0-beta.17",
+    "@agenfk/telemetry": "2.1.0-beta.17",
+    "axios": "^1.21.0",
     "chalk": "^4.1.2",
-    "commander": "^12.0.0",
-    "figlet": "^1.12.0",
-    "inquirer": "^9.2.14",
+    "commander": "^15.0.0",
+    "inquirer": "^14.2.4",
+    "node-forge": "^1.4.1",
     "uuid": "^14.0.3"
   },
   "devDependencies": {
-    "@types/figlet": "^1.5.8",
     "@types/inquirer": "^9.0.7",
-    "@types/node": "^20.11.16",
-    "typescript": "^5.3.3"
+    "@types/node": "^20.11.16"
   },
   "keywords": [
     "agenfk",
     "cli"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "Apache-2.0",
   "agenfkUpgradeTier": "recommended"
 }

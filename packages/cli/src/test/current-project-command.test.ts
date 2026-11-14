@@ -8,9 +8,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as path from 'path';
 
-const { mockExistsSync, mockReadFileSync } = vi.hoisted(() => ({
+const { mockExistsSync, mockReadFileSync, mockStatSync } = vi.hoisted(() => ({
   mockExistsSync: vi.fn(),
   mockReadFileSync: vi.fn(),
+  // The core resolver (CGLAB-625) stats before it reads: a regular file only.
+  mockStatSync: vi.fn(),
 }));
 
 vi.mock('@agenfk/telemetry', () => ({
@@ -30,16 +32,16 @@ vi.mock('@agenfk/telemetry', () => ({
 vi.mock('fs', () => ({
   existsSync: mockExistsSync,
   readFileSync: mockReadFileSync,
+  statSync: mockStatSync,
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
-  default: { existsSync: mockExistsSync, readFileSync: mockReadFileSync, writeFileSync: vi.fn(), mkdirSync: vi.fn() },
+  default: { existsSync: mockExistsSync, readFileSync: mockReadFileSync, statSync: mockStatSync, writeFileSync: vi.fn(), mkdirSync: vi.fn() },
 }));
 vi.mock('axios');
 vi.mock('child_process', () => ({
   execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn(),
   default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
 }));
-vi.mock('figlet', () => ({ default: { textSync: vi.fn().mockReturnValue('AgEnFK') } }));
 
 import { program } from '../index';
 import axios from 'axios';
@@ -70,6 +72,11 @@ let exitSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   vi.clearAllMocks();
   mockExistsSync.mockReturnValue(false);
+  // A file "exists" for the resolver exactly when existsSync says so.
+  mockStatSync.mockImplementation((p: any) => {
+    if (!mockExistsSync(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    return { isFile: () => true, size: 64 };
+  });
   mockReadFileSync.mockReturnValue('{}');
   resetCommanderOptions(program);
   program.setOptionValue('toon', undefined);
@@ -122,26 +129,29 @@ describe('current-project command', () => {
     expect(logSpy).not.toHaveBeenCalled();
   });
 
-  it('errors and exits 1 with a distinct message when project.json is malformed', async () => {
+  it('errors and exits 1, pointing at agenfk init --project, when project.json names no id it can read (CGLAB-625)', async () => {
+    // The id now lives in the git-ignored local.json, so a project whose files
+    // name none is a clone not linked on this machine - and init is the fix.
     mockProjectJson('not-json{');
 
     await program.parseAsync(['node', 'agenfk', 'current-project']);
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     const err = errorSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n');
-    // Must not misreport the file as missing nor steer toward re-init.
-    expect(err).toContain('malformed');
+    expect(err).toContain('not linked');
+    expect(err).toContain('agenfk init --project <id>');
     expect(logSpy).not.toHaveBeenCalled();
   });
 
-  it('errors with the malformed message when project.json lacks a projectId key', async () => {
+  it('errors the same way for a settings-only project.json and no local.json (CGLAB-625)', async () => {
     mockProjectJson(JSON.stringify({ name: 'no-id-here' }));
 
     await program.parseAsync(['node', 'agenfk', 'current-project']);
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     const err = errorSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n');
-    expect(err).toContain('projectId');
+    expect(err).toContain('local.json');
+    expect(err).toContain('agenfk init --project <id>');
   });
 
   it('--json includes server-side project details when reachable', async () => {

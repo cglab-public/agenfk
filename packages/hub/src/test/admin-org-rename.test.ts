@@ -11,10 +11,22 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-rename-test-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -26,10 +38,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 describe('admin POST /v1/admin/orgs/rename', () => {
   let app: any;
@@ -44,6 +52,8 @@ describe('admin POST /v1/admin/orgs/rename', () => {
       defaultOrgId: 'staging',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     // Seed second org for collision tests.
     await ctx.db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', ['other', 'other']);
@@ -67,21 +77,21 @@ describe('admin POST /v1/admin/orgs/rename', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('rejects non-admin sessions', async () => {
     const cookie = await loginAs(app, 'viewer@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/orgs/rename')
+    const r = await supertest(__server).post('/v1/admin/orgs/rename')
       .set('Cookie', cookie).send({ from: 'staging', to: 'cglab' });
     expect(r.status).toBe(403);
   });
 
   it('rejects when from !== session.orgId', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/orgs/rename')
+    const r = await supertest(__server).post('/v1/admin/orgs/rename')
       .set('Cookie', cookie).send({ from: 'someone-else', to: 'cglab' });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/from.*current org|session/i);
@@ -90,7 +100,7 @@ describe('admin POST /v1/admin/orgs/rename', () => {
   it('rejects an invalid `to` (regex)', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
     for (const bad of ['', 'UPPER', 'has space', '-leading', 'has_underscore', 'a'.repeat(80)]) {
-      const r = await supertest(app).post('/v1/admin/orgs/rename')
+      const r = await supertest(__server).post('/v1/admin/orgs/rename')
         .set('Cookie', cookie).send({ from: 'staging', to: bad });
       expect(r.status, `should reject "${bad}"`).toBe(400);
     }
@@ -98,14 +108,14 @@ describe('admin POST /v1/admin/orgs/rename', () => {
 
   it('rejects when `to` collides with an existing org id', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/orgs/rename')
+    const r = await supertest(__server).post('/v1/admin/orgs/rename')
       .set('Cookie', cookie).send({ from: 'staging', to: 'other' });
     expect(r.status).toBe(409);
   });
 
   it('rejects when from === to', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/orgs/rename')
+    const r = await supertest(__server).post('/v1/admin/orgs/rename')
       .set('Cookie', cookie).send({ from: 'staging', to: 'staging' });
     expect(r.status).toBe(400);
   });
@@ -113,7 +123,7 @@ describe('admin POST /v1/admin/orgs/rename', () => {
   it('happy path: repoints all org_id-bearing rows, mutates ctx.config, re-issues session, raises pending banner', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
 
-    const r = await supertest(app).post('/v1/admin/orgs/rename')
+    const r = await supertest(__server).post('/v1/admin/orgs/rename')
       .set('Cookie', cookie).send({ from: 'staging', to: 'cglab' });
 
     expect(r.status).toBe(200);
@@ -162,7 +172,7 @@ describe('admin POST /v1/admin/orgs/rename', () => {
 
     // The new cookie carries orgId=cglab — re-fetch /v1/admin/auth-config and confirm we're scoped to the new org.
     const newCookie = Array.isArray(setCookie) ? setCookie[0] : setCookie;
-    const followup = await supertest(app).get('/v1/admin/auth-config').set('Cookie', String(newCookie));
+    const followup = await supertest(__server).get('/v1/admin/auth-config').set('Cookie', String(newCookie));
     expect(followup.status).toBe(200);
   });
 });
@@ -180,20 +190,22 @@ describe('admin GET /v1/admin/system/pending + POST /v1/admin/system/pending/ack
       defaultOrgId: 'cglab',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'cglab', 'admin@x', 'longenough1', 'admin');
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('returns null when nothing is pending', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).get('/v1/admin/system/pending').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/admin/system/pending').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body).toEqual({ pendingEnvOrgId: null });
   });
@@ -204,7 +216,7 @@ describe('admin GET /v1/admin/system/pending + POST /v1/admin/system/pending/ack
       ['pending_env_orgid', 'cglab'],
     );
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).get('/v1/admin/system/pending').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/admin/system/pending').set('Cookie', cookie);
     expect(r.body).toEqual({ pendingEnvOrgId: 'cglab' });
   });
 
@@ -214,7 +226,7 @@ describe('admin GET /v1/admin/system/pending + POST /v1/admin/system/pending/ack
       ['pending_env_orgid', 'cglab'],
     );
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/system/pending/ack').set('Cookie', cookie).send({});
+    const r = await supertest(__server).post('/v1/admin/system/pending/ack').set('Cookie', cookie).send({});
     expect(r.status).toBe(200);
     const row = await ctx.db.get('SELECT value FROM system_state WHERE key = ?', ['pending_env_orgid']);
     expect(row).toBeFalsy();

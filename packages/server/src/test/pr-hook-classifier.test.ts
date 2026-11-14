@@ -1,9 +1,29 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 // Importing the .mjs hook script directly. Pure helpers are exported by name.
 // @ts-ignore — .mjs has no .d.ts; the helpers are JS functions.
 import { classifyTrigger, buildDirective } from '../../../../bin/agenfk-pr-hook.mjs';
+import { copyTree, gitTemplate, gitSync } from './helpers/gitFixture';
+
+/**
+ * A repo on `main` with one commit of `file.txt`, at `dir` (created if absent).
+ * Copied from a per-worker template (#311): no git spawn once it is built.
+ */
+function initRepoFromTemplate(dir: string): void {
+  const template = gitTemplate('pr-hook-classifier:main-one-commit', (d) => {
+    gitSync(d, 'init', '-q', '-b', 'main');
+    gitSync(d, 'config', 'user.email', 'test@example.com');
+    gitSync(d, 'config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(d, 'file.txt'), 'base\n');
+    gitSync(d, 'add', 'file.txt');
+    gitSync(d, 'commit', '-qm', 'init');
+  });
+  fs.mkdirSync(dir, { recursive: true });
+  copyTree(template, dir);
+}
 
 describe('classifyTrigger', () => {
   it('detects gh pr create', () => {
@@ -220,6 +240,82 @@ describe('classifyTrigger — compound and env-prefixed commands', () => {
   });
 });
 
+// ── The branch belongs to the repo the push ran in (BUG 40ff964b) ─────────────
+// `getCurrentBranch()` used to run in the HOOK's cwd while the intercepted
+// command could `cd` into another repo first, so a push from a worktree/clone
+// was reported as the session repo's branch - typically 'main'. The classifier
+// now carries the target directory, and the runtime resolves HEAD there.
+describe('classifyTrigger — the push target directory (BUG 40ff964b)', () => {
+  it('carries the cd target as cwd', () => {
+    expect(classifyTrigger('cd /repo && git push -u origin HEAD')).toEqual({ kind: 'push', branch: 'HEAD', cwd: '/repo' });
+    expect(classifyTrigger('cd /repo && git push -u origin feat/x')).toEqual({ kind: 'push', branch: 'feat/x', cwd: '/repo' });
+    expect(classifyTrigger('cd ~/modelwarden && git push -q')).toEqual({ kind: 'push', branch: undefined, cwd: '~/modelwarden' });
+  });
+
+  it('carries a quoted cd target without the quotes', () => {
+    expect(classifyTrigger('cd "/repo with spaces" && git push')).toEqual({ kind: 'push', branch: undefined, cwd: '/repo with spaces' });
+    expect(classifyTrigger("cd '/repo with spaces' && git push")).toEqual({ kind: 'push', branch: undefined, cwd: '/repo with spaces' });
+  });
+
+  it('the last cd wins', () => {
+    expect(classifyTrigger('cd /one && cd /two && git push origin HEAD')).toEqual({ kind: 'push', branch: 'HEAD', cwd: '/two' });
+  });
+
+  it('joins a relative cd onto the previous cd target', () => {
+    // The second cd is relative to the FIRST target, not to the hook's cwd.
+    // Resolving it later against process.cwd() named a decoy repo's branch
+    // (review finding on this fix).
+    expect(classifyTrigger('cd /one && cd two && git push origin HEAD')).toEqual({ kind: 'push', branch: 'HEAD', cwd: '/one/two' });
+    expect(classifyTrigger('cd a && cd b && git push')).toEqual({ kind: 'push', branch: undefined, cwd: 'a/b' });
+    expect(classifyTrigger('cd /one/ && cd two && git push')).toEqual({ kind: 'push', branch: undefined, cwd: '/one/two' });
+  });
+
+  it('an absolute or ~/\$ cd replaces the previous target', () => {
+    expect(classifyTrigger('cd /one && cd /two && git push')).toEqual({ kind: 'push', branch: undefined, cwd: '/two' });
+    expect(classifyTrigger('cd /one && cd ~/two && git push')).toEqual({ kind: 'push', branch: undefined, cwd: '~/two' });
+    expect(classifyTrigger('cd /one && cd $WT && git push')).toEqual({ kind: 'push', branch: undefined, cwd: '$WT' });
+  });
+
+  it('carries the -C target of the push itself', () => {
+    expect(classifyTrigger('git -C /repo push -u origin HEAD')).toEqual({ kind: 'push', branch: 'HEAD', cwd: '/repo' });
+    expect(classifyTrigger('git -C /repo push origin feat/x')).toEqual({ kind: 'push', branch: 'feat/x', cwd: '/repo' });
+    expect(classifyTrigger('git -C/repo push origin feat/x')).toEqual({ kind: 'push', branch: 'feat/x', cwd: '/repo' });
+  });
+
+  it('-C on the push overrides an earlier cd', () => {
+    expect(classifyTrigger('cd /one && git -C /two push origin HEAD')).toEqual({ kind: 'push', branch: 'HEAD', cwd: '/two' });
+  });
+
+  it('has no cwd when nothing changes directory', () => {
+    expect(classifyTrigger('git push -u origin feat/x')).toEqual({ kind: 'push', branch: 'feat/x' });
+  });
+
+  it('other git commands carrying -C are not pushes', () => {
+    expect(classifyTrigger('git -C /repo status')).toBeNull();
+    expect(classifyTrigger('git -C /repo add -A && git -C /repo commit -m x')).toBeNull();
+  });
+});
+
+describe('classifyTrigger — refspec destination is the branch (BUG 40ff964b)', () => {
+  const branchOf = (cmd: string) => (classifyTrigger(cmd) as any)?.branch;
+
+  it('takes the destination of a src:dst refspec', () => {
+    expect(branchOf('git push origin HEAD:feat/x')).toBe('feat/x');
+    expect(branchOf('git push -u origin HEAD:feat/x')).toBe('feat/x');
+    expect(branchOf('git push origin feat/x:main')).toBe('main');
+  });
+
+  it('strips a fully-qualified refs/heads/ destination', () => {
+    expect(branchOf('git push origin HEAD:refs/heads/feat/x')).toBe('feat/x');
+    expect(branchOf('git push origin refs/heads/feat/x')).toBe('feat/x');
+  });
+
+  it('leaves a plain branch name alone', () => {
+    expect(branchOf('git push origin feat/x')).toBe('feat/x');
+    expect(branchOf('git push -u origin feat/x')).toBe('feat/x');
+  });
+});
+
 describe('classifyTrigger — shell-semantics edge cases (adversarial review)', () => {
   it("handles the '\\'' apostrophe idiom in commit messages", () => {
     expect(classifyTrigger("git commit -m 'it'\\''s done' && git push origin main"))
@@ -237,5 +333,167 @@ describe('classifyTrigger — shell-semantics edge cases (adversarial review)', 
 
   it('escaped backslash before a closing double quote does not desync quoting', () => {
     expect(classifyTrigger('echo "a\\\\" && gh pr create')).toEqual({ kind: 'open' });
+  });
+});
+
+// ── End-to-end: the reported branch is the repo the push ran in ──────────────
+// The pure-classifier tests above pin the parsing; these run the real hook
+// binary with a real cwd and a real second repository, which is the shape the
+// production false positives had (`cd <other-repo> && git push` from a session
+// whose own repo sat on main).
+describe('runtime branch resolution — the push target directory (BUG 40ff964b)', () => {
+  const hookPath = path.resolve(__dirname, '../../../../bin/agenfk-pr-hook.mjs');
+
+  function git(cwd: string, ...args: string[]): string {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+    return r.stdout.trim();
+  }
+
+  const initRepo = initRepoFromTemplate;
+
+  function pushBranch(dir: string, branch: string): void {
+    git(dir, 'checkout', '-q', '-b', branch);
+    fs.appendFileSync(path.join(dir, 'file.txt'), 'work\n');
+    git(dir, 'commit', '-qam', 'work');
+  }
+
+  function runHook(sessionCwd: string, command: string): string {
+    const res = spawnSync(process.execPath, [hookPath, '--client', 'claude-code'], {
+      cwd: sessionCwd,
+      input: JSON.stringify({ tool_input: { command } }),
+      encoding: 'utf8',
+    });
+    expect(res.status).toBe(0);
+    return JSON.parse(res.stdout).hookSpecificOutput.additionalContext as string;
+  }
+
+  it("reports the branch of the repo the command cd'd into, not the session repo's", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pr-hook-'));
+    try {
+      const session = path.join(root, 'session-repo');
+      const target = path.join(root, 'target-repo');
+      initRepo(session);          // session repo stays on main
+      initRepo(target);
+      pushBranch(target, 'feat/CGLAB-425_provenance');
+
+      const ctx = runHook(session, `cd ${target} && git push -u origin HEAD`);
+      expect(ctx).toContain("pushed to 'feat/CGLAB-425_provenance'");
+      expect(ctx).not.toContain("pushed to 'main'");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the target branch for `git -C <repo> push`', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pr-hook-'));
+    try {
+      const session = path.join(root, 'session-repo');
+      const target = path.join(root, 'target-repo');
+      initRepo(session);
+      initRepo(target);
+      pushBranch(target, 'feat/CGLAB-427_within-dir');
+
+      const ctx = runHook(session, `git -C ${target} push -u origin HEAD`);
+      expect(ctx).toContain("pushed to 'feat/CGLAB-427_within-dir'");
+      expect(ctx).not.toContain("pushed to 'main'");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still resolves a bare push in the hook cwd when no cd is present', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pr-hook-'));
+    try {
+      const session = path.join(root, 'session-repo');
+      initRepo(session);
+      pushBranch(session, 'feat/CGLAB-428_no-cd');
+
+      const ctx = runHook(session, 'git push -u origin HEAD');
+      expect(ctx).toContain("pushed to 'feat/CGLAB-428_no-cd'");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── Unresolvable / relative targets (review findings on BUG 40ff964b) ────────
+describe('runtime branch resolution — relative and unresolved targets', () => {
+  const hookPath = path.resolve(__dirname, '../../../../bin/agenfk-pr-hook.mjs');
+
+  function git(cwd: string, ...args: string[]): string {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+    return r.stdout.trim();
+  }
+  const initRepo = initRepoFromTemplate;
+  function pushBranch(dir: string, branch: string): void {
+    git(dir, 'checkout', '-q', '-b', branch);
+    fs.appendFileSync(path.join(dir, 'file.txt'), 'work\n');
+    git(dir, 'commit', '-qam', 'work');
+  }
+  function rawHook(sessionCwd: string, command: string) {
+    return spawnSync(process.execPath, [hookPath, '--client', 'claude-code'], {
+      cwd: sessionCwd,
+      input: JSON.stringify({ tool_input: { command } }),
+      encoding: 'utf8',
+    });
+  }
+  function contextOf(sessionCwd: string, command: string): string {
+    const res = rawHook(sessionCwd, command);
+    expect(res.status).toBe(0);
+    return JSON.parse(res.stdout).hookSpecificOutput.additionalContext as string;
+  }
+
+  it('resolves a relative cd target against the hook cwd', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pr-hook-'));
+    try {
+      const session = path.join(root, 'session-repo');
+      initRepo(session);                              // session repo on main
+      const nested = path.join(session, 'sub');
+      initRepo(nested);                               // nested repo, relative target
+      pushBranch(nested, 'feat/CGLAB-429_relative');
+
+      const ctx = contextOf(session, 'cd sub && git push -u origin HEAD');
+      expect(ctx).toContain("pushed to 'feat/CGLAB-429_relative'");
+      expect(ctx).not.toContain("pushed to 'main'");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a ~-spelled cd target', () => {
+    const session = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pr-hook-'));
+    const home = fs.mkdtempSync(path.join(os.homedir(), '.agenfk-hook-test-'));
+    try {
+      initRepo(session);
+      initRepo(home);
+      pushBranch(home, 'feat/CGLAB-430_tilde');
+
+      const ctx = contextOf(session, `cd ~/${path.basename(home)} && git push -u origin HEAD`);
+      expect(ctx).toContain("pushed to 'feat/CGLAB-430_tilde'");
+      expect(ctx).not.toContain("pushed to 'main'");
+    } finally {
+      fs.rmSync(session, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('stays silent when the cd target is an unresolved shell variable', () => {
+    // The hook KNOWS the directory changed but cannot know to what. Falling
+    // back to its own cwd would report the session repo's branch - the very
+    // bug this fix removes. No nudge is the honest answer.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pr-hook-'));
+    try {
+      const session = path.join(root, 'session-repo');
+      initRepo(session);
+      pushBranch(session, 'feat/CGLAB-431_session-branch');
+
+      const res = rawHook(session, 'cd $SOME_UNRESOLVED_VAR && git push -u origin HEAD');
+      expect(res.status).toBe(0);
+      expect(res.stdout).toBe('');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

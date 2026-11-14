@@ -92,7 +92,7 @@ describe('installer — never propagates ._* artifacts from the source tree', ()
   });
 
   afterAll(() => {
-    for (const s of seeded) rmSync(s, { recursive: true, force: true });
+    for (const s of seeded) rmSync(s, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     cleanupHome(r.home);
   });
 

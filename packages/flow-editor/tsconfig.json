@@ -10,6 +10,7 @@
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
+    "types": ["node"],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,

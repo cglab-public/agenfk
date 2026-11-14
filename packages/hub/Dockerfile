@@ -24,7 +24,7 @@ FROM node:26-alpine AS builder
 WORKDIR /repo
 
 # Manifests first so dependency-install layer caches across source changes.
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json LICENSE ./
 COPY packages/core/package.json packages/core/
 COPY packages/storage-sqlite/package.json packages/storage-sqlite/
 COPY packages/telemetry/package.json packages/telemetry/
@@ -45,6 +45,8 @@ COPY packages/flow-editor packages/flow-editor
 COPY packages/brand packages/brand
 COPY packages/hub packages/hub
 COPY packages/hub-ui packages/hub-ui
+# Each tsc package's prebuild cleans its dist/ with this script (d781db05).
+COPY scripts/clean-dist.mjs scripts/
 
 RUN npm run build -w packages/core \
  && npm run build -w packages/hub \
@@ -73,6 +75,8 @@ ENV NODE_ENV=production \
     AGENFK_HUB_PORT=4000
 
 # Carry only what's needed at runtime: built packages + production node_modules.
+# The license text travels with the image (Apache-2.0 section 4(a)).
+COPY --from=builder --chown=agenfk:agenfk /repo/LICENSE                     /app/LICENSE
 COPY --from=builder --chown=agenfk:agenfk /repo/node_modules                /app/node_modules
 COPY --from=builder --chown=agenfk:agenfk /repo/packages/core/dist          /app/packages/core/dist
 COPY --from=builder --chown=agenfk:agenfk /repo/packages/core/package.json  /app/packages/core/package.json

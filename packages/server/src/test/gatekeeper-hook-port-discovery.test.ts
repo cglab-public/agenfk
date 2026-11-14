@@ -77,7 +77,7 @@ describe('gatekeeper hook resolveApiUrl precedence', () => {
   let home: string;
 
   beforeAll(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-gk-resolve-')); });
-  afterAll(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* ignore */ } });
+  afterAll(() => { try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ } });
 
   const writeFile = (contents: string) => {
     fs.mkdirSync(path.join(home, '.agenfk'), { recursive: true });
@@ -123,7 +123,7 @@ describe('gatekeeper hook port discovery', () => {
   });
 
   afterAll(() => {
-    try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
   });
 
   it('BLOCKS an edit when the discovered server reports no active task', async () => {

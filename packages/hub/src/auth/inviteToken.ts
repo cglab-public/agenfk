@@ -18,6 +18,9 @@ import { normalizeHttpUrl } from '../util/httpUrl.js';
  */
 /** Both invite kinds expire 14 days after issue. */
 export const INVITE_TTL_MS = 14 * 86400_000;
+/** An invite is ~200 chars. Every route that verifies one caps the input first,
+ *  so an unauthenticated caller cannot make the hub HMAC megabytes per request. */
+export const MAX_INVITE_TOKEN_LEN = 4096;
 
 export type InviteKind = 'installation' | 'child-hub';
 

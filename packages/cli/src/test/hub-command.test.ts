@@ -61,7 +61,7 @@ describe('agenfk hub commands', () => {
 
   afterAll(() => {
     vi.mocked(os.homedir).mockRestore();
-    try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* */ }
+    try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* */ }
   });
 
   describe('login', () => {
@@ -76,7 +76,8 @@ describe('agenfk hub commands', () => {
       const cfg = JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'));
       expect(cfg).toEqual({ url: 'http://hub.test', token: 'tok123', orgId: 'acme' });
       const stat = fs.statSync(HUB_CONFIG);
-      expect(stat.mode & 0o777).toBe(0o600);
+      // Windows has no POSIX mode bits (#208): the owner-only check is a POSIX one.
+      if (process.platform !== 'win32') expect(stat.mode & 0o777).toBe(0o600);
       expect(mockGet).toHaveBeenCalledWith(
         'http://hub.test/v1/ping',
         expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer tok123' }) }),

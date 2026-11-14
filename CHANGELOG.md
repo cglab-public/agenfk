@@ -2,6 +2,2547 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [Unreleased]
+
+**Fixes** (#371)
+
+- **`agenfk airlock claude` (and every other agent) starts in the sandbox again.** The session's `setsid` returned
+  at once in the machine, so the launcher took the session for ended, stopped the machine, and failed with
+  "could not put the session in a cgroup of its own (… connection closed)". The session now starts with
+  `setsid --wait`, and, under a terminal, keeps the one the machine gave it instead of failing with
+  "setsid: failed to set the controlling terminal". A session that ends before it is contained now says so.
+  A machine image named by an org or repository policy now needs util-linux's `setsid` 2.31 or later (the base
+  image has it): with busybox's (alpine), every session refuses with 125 and says why.
+- **`agenfk airlock exec --no-process-group` documents which processes its caller may kill:** the machine it starts
+  is in the same process group, so killing that group after the command returned stops the machine.
+
+**Fixes** (#349)
+
+- **The installers work when the user folder has accented letters on Windows.** On Node 22, `fs.cpSync` stopped the
+  process with no message (exit code 3) for a path such as `C:\Users\Fábio`, leaving `~/.agenfk-system` or
+  `~/.agenfk-hub` half copied. `npx github:cglab-public/agenfk` and `agenfk-hub` now copy the install file by file.
+- **An Airlock session no longer hangs when the AgEnFK server is down on WSL2 with mirrored networking.** There a
+  connection to a closed loopback port never fails, and the session's relay waited on it for good; it now gives up
+  after 5 seconds and the agent gets a 502. A loopback model endpoint's forward also delivers a request whose
+  client closed before the connection was made, and closes once that client is gone instead of staying open.
+
+**Build** (#244)
+
+- **The repo builds with TypeScript 6.0.3.** `typescript` is declared once, in the root `package.json`, instead of
+  in every package. Every package that builds with `tsc` now sets `rootDir: "./src"` and `types: ["node"]`, which
+  TypeScript 6 no longer infers (`flow-editor` and `hub-ui` got `types` too), and `dist/` keeps its flat layout (a new `dist-layout` test guards this). The build
+  output is the same as before. Dependabot now skips new major versions of `typescript`.
+- **After pulling this, delete the old build cache and rebuild `core` first.** Remove `node_modules/.tmp/*.tsbuildinfo`
+  files written by TypeScript 5, and run `npm run build` before trusting a type error: a stale `packages/core/dist`
+  makes `cli` and `server` report errors about `AIRLOCK_CLIENTS` that have nothing to do with TypeScript.
+
+## [2.1.0-beta.17] — 2026-11-04
+
+**Airlock: Claude Code and Codex in the sandbox** (#356, #357)
+
+- **`agenfk airlock claude` and `agenfk airlock codex`** launch Claude Code and Codex in the Airlock machine. There
+  is no launch gate: a session outside Airlock is untouched. Inside, each tool call is judged by the per-call hook,
+  and the guest image now ships both clients.
+- **Logins are held on the host by default.** The machine's login file is a stand-in, and the host puts the real
+  token in on the way to the model: Claude Code's own login on this machine (its Keychain entry on a Mac), or
+  Codex's ChatGPT login in `~/.codex/auth.json` (or `$CODEX_HOME`'s). For Codex the host also answers its token
+  refresh itself, and puts the token into its WebSocket to chatgpt.com as well. Airlock never refreshes a login on
+  the host: if one has expired, run the client here once. `--login mount`, before the client's name, gives the
+  machine its own copy of the login file instead, and nothing written to it reaches yours. An API key in the
+  environment is masked, in either mode.
+- **A missing `.mcp.json` in the workspace is held** as an empty read-only directory for the session. The session
+  could otherwise create one whose MCP command the host's Claude Code would run next. Claude Code in the machine
+  reports it as a config it could not parse and carries on; git does not show it.
+
+**Windows verify speed** (#310, #348)
+
+- The verify suite runs faster on Windows: fixture git repos come from a template, git calls are memoised per
+  verify, and the suite's worker count is tuned for win32. It runs the same specs, with nothing skipped.
+
+**CLI** (#316)
+
+- **A command refuses positional arguments it does not take**, now that the CLI is on commander 15. A stray word
+  used to be dropped silently: an unquoted `agenfk create TASK Fix the thing` made a card titled "Fix", and
+  `agenfk verify <id> --evidence ... -- npm test` ran `npm`. It now exits 1 with "too many arguments", so quote a
+  value of several words. A mistyped command still says "unknown command" and suggests the right one.
+- **The CLI needs Node `^22.13.0` or `>=23.5.0`**, as its engines already said: commander 15 loads only there. The
+  `ci-check` GitHub Action does not set Node up, so on an older runner Node it now warns and runs the gated steps
+  (or fails under `policy: require`), as for a release it cannot install.
+
+**Dependencies** (#320)
+
+- **Electron 40 to 42** (#321, #352) for the desktop app: fixes 26 Dependabot alerts.
+- **Vulnerable transitive dependencies upgraded** (#325, #351) within their existing ranges.
+- **CI fails on a new high or critical advisory in a runtime dependency** (`npm audit --omit=dev --audit-level=high`,
+  #340, #353), and Dependabot now targets `beta`.
+
+## [2.1.0-beta.16] — 2026-11-02
+
+**Hub sync** (#346, #347)
+
+- **One loop, and no hub request that can hang it.** An installation could stop applying new Airlock policy
+  revisions, with nothing logged, until the server restarted: the flow reconciler pulled flows, repo settings,
+  Airlock and receipts one after another, with no request timeout, and started its next tick only once the last one
+  had finished. The four timers the server ran against the hub (events, flows, repoint, upgrade) are now one loop,
+  every 30 s. Each tick starts every channel at once, a channel still running is skipped rather than run twice, and a
+  failing channel logs one `[HUB_SYNC]` line and holds up no other. Every hub request gives up after 15 s
+  (`AGENFK_HUB_REQUEST_TIMEOUT_MS`).
+- Flows, repo settings, Airlock and repoint directives are now checked every 30 s, not every 5 minutes, and upgrade
+  directives every 30 s, not every 60 s. `AGENFK_HUB_SYNC_INTERVAL_MS` and `AGENFK_HUB_SYNC_FIRST_DELAY_MS` replace
+  `AGENFK_HUB_FLOW_SYNC_INTERVAL_MS`, `AGENFK_HUB_REPOINT_SYNC_INTERVAL_MS`, `AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS`
+  and `AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS`.
+- **A hub repoint moves every channel, not just events.** After a repoint campaign moved an installation to a new
+  hub name, only its events followed: flows, repo settings, Airlock, receipts and upgrade checks kept the old name
+  until the server restarted, so once the old name was retired the installation silently stopped taking policy,
+  flows and upgrades. The move now restarts the hub loop on the verified target, exactly as
+  `POST /internal/hub/reload` does. A repoint overtaken by a newer login or token no longer puts the older token
+  back, and restarting the hub loop no longer reports an upgrade still in progress as failed.
+
+## [2.1.0-beta.15] — 2026-11-02
+
+**Airlock** (#345)
+
+- **`*` in a host list: every host but the always-denied ones.** `* download` allows every download while uploads
+  stay limited to the hosts allowed for them; `*` both ways allows every host. The cloud metadata endpoints, the IOC
+  hosts and the deny list still refuse, since they are judged before any allow; a range that names a metadata address
+  (`0.0.0.0/0`) is still refused. In the sandbox, `*` opens the network the way observe mode does - every host not
+  denied is reachable and every name not denied resolves - and which way data goes stays judged on tool calls: the
+  network cannot see direction, so under a one-way `*` a script that names no host can still upload, and a host
+  denied by name is not recognised when reached by its address with no lookup. Adding `*` to a running session
+  applies from its next start, and says so. Learning keeps proposing a host only a one-way `*` covers.
+- **The host lists are lists.** On the board and the hub, for the policy and project overrides: one row per host with
+  Download and Upload boxes (on the deny side, which way it is blocked), a remove button, and a field that adds a
+  host on Enter or several pasted at once, one per line. The saved policy is unchanged.
+
+The hub needs this version for its editor.
+
+## [2.1.0-beta.14] — 2026-11-02
+
+**Airlock** (#344)
+
+- **Each learned host says what it is, so a person can decide on it.** Every import
+  (`agenfk airlock learn --import-pi-sessions`) now brings the projects whose sessions reached a host (the working
+  folder's name, never its path) and an address's reverse DNS name, and the board and the hub label what can be said
+  for certain: a public DNS resolver, a cloud machine (the address is someone else's once it is gone), a network
+  address (`x.x.x.0`), an address with no name. The hub lists every installation's projects (25, then a count) and
+  the newest name and hint; `agenfk hub admin airlock learning list` prints them too. Display only: nothing here
+  allows, excludes or accepts a host.
+- **`--hints <provider>` writes one sentence per host.** Opt-in: `--hints claude`, `codex` or `pi` runs your own CLI
+  with your own login, or `--hints <http(s) URL>` asks an OpenAI-compatible server (a local llama-server or Ollama,
+  a self-hosted model; key in `AGENFK_HINTS_API_KEY`), with `--hints-model <id>` to pick the model. It is given up to
+  three example commands per host with secrets removed (the log redaction, plus the credentials a command spells out:
+  `curl -u`, authorization and cookie headers, a URL's user:password, `sshpass -p`, password options and
+  `*_PASSWORD=` style assignments), 30 hosts per call; the commands go to that provider only, never to the server or
+  the hub. A provider that fails or takes too long is stopped with everything it started, and the import goes on
+  without hints for those hosts. A later import replaces a host's projects and reverse DNS name, and keeps its hint
+  unless it brings a new one.
+- **Fixed:** the dropdowns in the board's Airlock settings took the whole row, squeezing each rule's name and
+  description to one word per line; the hub's learning direction picker had the same fault.
+- **Fixed:** the guest resolver could fail to start on Windows when the TCP side of the port it picked was reserved;
+  it now tries another port.
+
+The hub needs this version to show context and hints; an older hub ignores them in a forward.
+
+**Fixes**
+
+- A stopped `git am` declines the close commit as "a git am session is in progress", not as a rebase (#309).
+
+## [2.1.0-beta.13] — 2026-11-02
+
+**Airlock** (#319)
+
+- **Every allowed and blocked host can be one way: download, upload or both.** On the board and on the hub, write
+  `download` or `upload` after a host (a name, `*.domain` or a CIDR) in the policy or a project override; a host
+  with neither is both ways, so existing policies keep their meaning. Direction is judged on tool calls: an upload
+  to a host allowed for downloads only is refused, and a host blocked for uploads can still be fetched from. A call
+  whose direction cannot be read (an interpreter, `ssh`, `awk`, a command piped to a shell - even `echo <url>`,
+  since `echo ... | sh` is one) is treated as an upload to a host allowed for downloads only, and any block stops
+  it; set "Upload to an unlisted host" to "Needs a person's approval" to approve such calls instead. While any host
+  is allowed for downloads only, a `git push` to a remote alias (`origin`) is refused the same way, since its
+  destination is not in the call: push to the remote's URL. The sandbox network cannot see direction: it reaches a host allowed either way and
+  refuses only one blocked both ways, so a host allowed for downloads is not a barrier against a deliberate leak
+  (a request still carries its URL and headers). An installation older than this release is never looser: it
+  ignores one-way allows and treats one-way blocks as both ways. `git clone`/`fetch`/`pull` are read as downloads
+  and `git push` to a URL as an upload.
+- **Learning shows which hosts were sent data, and proposes wildcards.** Each proposed host says whether a tool call
+  ever sent it data, and starts at Download or Both accordingly; hosts sharing a domain are offered as one
+  `*.domain` entry (never over shared hosting, tunnels, wildcard DNS or object storage). Accepting picks a direction
+  per entry, on the board, on the hub, and with `agenfk hub admin airlock learning accept --direction`.
+- **Learning no longer learns names that are not hosts**: query words such as `@session.id:abc`, `file://` paths, and
+  reserved names (`*.test`, `*.example`, `example.com`). `agenfk airlock learn --import-pi-sessions` now says, on a
+  hub-joined installation, that the hosts are sent to the hub from the board and accepted there by an org admin.
+
+## [2.1.0-beta.12] — 2026-11-01
+
+**Airlock**
+
+- **Tool calls that write JavaScript or TypeScript classes are judged again** (#306). A command word such as
+  `constructor`, `toString` or `__proto__` (any heredoc writing a class has one) made Airlock's command analyser
+  fail. The server answered 500, which pi reads as "server unreachable": under `enforce` the call was refused with
+  the wrong reason, and under `observe` it went through unrecorded.
+- **A very long command no longer fails the analyser** (#306). A command with about 130,000 words did, the same way.
+- **`agenfk airlock learn --import-pi-sessions` reads every log** (#306). It stopped at the first line the analyser
+  failed on. A line it cannot read is now skipped and counted.
+
+**CLI**
+
+- Help text no longer carries internal ticket ids (`TEL-3`, `DS-3` and the like).
+
+## [2.1.0-beta.11] — 2026-11-01
+
+**Hub**
+
+- **Hub admin from the command line** (#303, CGLAB-702). `agenfk hub admin <area> <verb>` covers every hub admin
+  page: people and access, fleet (flows, upgrades, repoint), policies (Airlock, repos, models), hub settings and
+  data (events, audit, every board chart as JSON/CSV) - about 110 commands. `agenfk hub admin login` signs in with a
+  device flow an admin approves in the browser (12-hour token, stored on the hub only as a hash); `logout` and
+  `sessions list|revoke` end sessions. Configuration changes made from the CLI are audited with source `cli`. `--json` on commands
+  that returns data, `--yes` on destructive or fleet-wide changes, secrets only from stdin.
+- **Admin → Airlock is organised in tabs** (#304): Policy, Network, Sandbox, Projects, Activity and Learning. Policy,
+  Network and Sandbox edit one policy with one Save; unsaved edits survive switching tabs, and `?tab=` links to one.
+  Long lists (installations, recent denials, revision history, proposed hosts) scroll within the page.
+- **Airlock events name the policy revision and who** in a person's Recent events, instead of a dash.
+- **`agenfk hub skill install` teaches every coding agent to administer the hub** (#305). It installs an
+  `agenfk-hub-admin` skill for pi, Codex, OpenCode, Cursor and Gemini (`~/.agents/skills`) and Claude Code
+  (`~/.claude/skills`), or into the repository with `--project`: how to sign in (a person approves the code), when
+  to confirm with the user, and every `agenfk hub admin` command with its arguments and options, made from the
+  installed CLI. Install it again after an upgrade. `agenfk skills install` leaves it in place.
+
+**Worktrees**
+
+- **Windows: cards get their worktree again on long paths** (#298, #269). Worktree commands run with
+  `core.longpaths` (and the new worktree keeps it), so `Filename too long` no longer leaves a card on "no branch
+  yet"; a creation that still fails says what to do and cleans up after itself.
+
+## [2.1.0-beta.10] — 2026-11-01
+
+**Airlock**
+
+- **Home folder read-write now means read-write** (#302). Under that policy the session may write anywhere in the
+  home folder and the workspace: git, ssh and shell config, login agents, every coding agent's config, AgEnFK's own
+  install and `.agenfk` folders and the workspace's git hooks and config are no longer held. Only Airlock's records
+  (`~/.agenfk/airlock`, the report token) stay hidden. *Protect credentials* and *home folder read-only* are
+  unchanged. A workspace inside `~/.agenfk` is refused in that mode, since the session's own `~/.agenfk` covers it.
+- **`jq` is in the Airlock base image**, so a pi provider whose key command pipes `auth.json` through it works.
+
+## [2.1.0-beta.9] — 2026-10-31
+
+**Airlock**
+
+- **Home access is a policy setting** (#301). The org's Airlock policy chooses what of the home folder a sandboxed
+  session's machine sees: *protect credentials* (the default, as before), *home folder read-only*, or *home folder
+  read-write*. It is set on the hub admin page or the standalone board; a hub-joined installation follows the hub and
+  cannot open more locally. AgEnFK's own files stay unwritable and Airlock's records unreadable in every mode. The
+  open modes let a pi provider whose key is read from `auth.json` work inside the sandbox. Read-write is labelled as
+  able to run code on the machine: git, ssh and shell config, login agents and both agents' configs stay protected,
+  other projects' hooks and unlisted tool configs do not. A policy that narrows home access ends running sessions.
+- **`agenfk airlock pi|opencode` passes every argument after the client's name to it as typed**, `--help` and `--`
+  included. AgEnFK's own `--key-env NAME` now goes before the client's name: `agenfk airlock --key-env NAME pi ...`.
+- A session that ignores SIGTERM is ended through its cgroup, which it cannot redirect.
+
+## [2.1.0-beta.8] — 2026-10-31
+
+**Airlock**
+
+- **Launches work again in a repository that holds a linked worktree** (#300). A worktree checked out inside the
+  workspace (Claude Code's `.claude/worktrees/...`, say) made `agenfk airlock pi` and `opencode` refuse to start
+  in beta.7, because that worktree's `.git` pointer leads into `.git/worktrees`. That folder is protected the
+  same way submodules' is, so it is now accepted.
+
+## [2.1.0-beta.7] — 2026-10-31
+
+Airlock runs sandboxed agents in smolvm microVMs (#299, CGLAB-696).
+
+**Airlock**
+
+- **Sandboxed sessions run in a smolvm microVM, one per workspace, in place of ASRT.** AgEnFK installs the pinned
+  smolvm itself (`agenfk airlock install`; install and upgrade do it where Airlock is on) and builds the machine
+  from the AgEnFK base image. Linked git worktrees, crash recovery, `agenfk airlock reset`, and server-run commands
+  (`airlock exec`) all work in the machine.
+- **Every outbound connection is decided on the host**, by the policy: by address, port, TLS server name or HTTP
+  Host. Denied and IOC names do not resolve inside the machine. Every decision reaches the session's report,
+  including the lookups the machine's resolver refuses. A policy changed while a session runs reaches it.
+- **Model keys never enter the machine.** The guest gets a placeholder, and the host puts the key in on the way out
+  to the approved inference host. A key for a plain-http endpoint cannot be masked: it reaches the session as
+  launch warns, never on a command line.
+- **A model server on your machine's loopback** (an ssh tunnel, ollama: `http://127.0.0.1:<port>`, `localhost`)
+  is reached from inside the machine. An IPv6 loopback endpoint is not: use 127.0.0.1 or localhost.
+- **What the host runs next is read-only to the agent**: pi's launcher, installs and settings, OpenCode's
+  config, plugins and LSP binaries, git hooks and config (nested repositories too), and `~/.agenfk`. `npm ci`
+  lifecycle scripts cannot leave processes running after the install.
+- **Project isolation is gone**: a sandboxed agent can read and change cards in any project. Airlock blocks
+  harmful behaviour, such as uploads to outside sites; it does not separate AgEnFK projects. Airlock's own
+  records (approvals, decisions, learning) stay out of a sandbox's reach, and a grant is spent only by the launch
+  it was given to.
+- Launch refuses (it says why):
+  - a protected client config that is a symbolic link (a dotfiles-managed `~/.pi/agent/settings.json`,
+    `opencode.json`);
+  - a nested `.git` pointer that leads anywhere but a protected submodule folder.
+- Sessions and locks know a reused process id from the process that held it, and the smolvm install takes the
+  same lock as the machine.
+
+## [2.1.0-beta.6] — 2026-10-29
+
+Fixes from the beta.5 post-release tests (#297, CGLAB-694).
+
+**Airlock**
+
+- **`agenfk airlock pi` works on a machine that has `~/.pi/agent/auth.json`.** pi reads an auth.json it cannot open
+  as "no key", even for a key in `models.json`, and the sandbox denies it: every launch failed with "No API key
+  found". pi now runs on a staged agent dir (every entry but `auth.json`, which is an empty one of its own). A
+  `PI_CODING_AGENT_DIR` you set is honoured (`~` and `file://` too), its `auth.json` denied and `extensions`
+  unwritable. pi's `/login` logins are not available inside; give a provider's key as an env var.
+- **The shared `/tmp` is writable inside the sandbox**, for tools that hardcode it (e.g. `pi-patty-bg-tasks`).
+  Accepted risk: a sandboxed agent can change anything of yours under `/tmp`, such as a git checkout's hooks there.
+- **Dataset: no secret in a one-line shell command or an XML file.** `printf 'user: x\npassword: y'` (escaped
+  newlines), `<password>`, `<db:password>` and multiline elements are now recognised, and the content left out.
+- **Dataset: live rows carry their card and session.** The pi extension names its own session (exported to its
+  shells as `AGENFK_PI_SESSION_ID`, ranked after Claude Code's), and a sandboxed gatekeeper records its card
+  through the server, under its launch. Proxy rows take the session the launch's calls last named.
+- **Dataset: a write's content is in its row** (it was a placeholder), redacted before it leaves; bodies are
+  dropped from a call that would be too large rather than blocking it.
+- `agenfk airlock dataset status` says whether the org's dataset switch is on, asking the hub now.
+- `agenfk airlock status` against a server older than Airlock says so, instead of a bare 404.
+
+**CLI and installer**
+
+- An install into another HOME no longer restarts (kills) the AgEnFK server of a different install on the same
+  machine.
+- No more Node 22 `ExperimentalWarning: SQLite` on every command.
+
+## [2.1.0-beta.5] — 2026-10-28
+
+**Airlock**
+
+- **Commands the server runs for a sandboxed agent are sandboxed too, while the policy enforces** (#294).
+  Verify, the suite, the baseline capture and worktree setup of a card an Airlock session touched run through
+  `agenfk airlock exec`, in a sandbox built from the same policy, with git hooks off. In `observe` mode they
+  run as before. The desktop app bundles what that needs. This
+  closes the beta.4 limit "commands the server runs for an agent are not sandboxed".
+- **Board-only writes are refused at the launcher's relay** (#294). A sandboxed agent can no longer forge
+  approvals, policy writes or learning accepts on a standalone installation (the beta.4 limit).
+- **Publishing through an allowed host is its own rule** (`publishThroughAllowedHost`): gists, issue bodies
+  read from files, package and model uploads, image pushes need a person's approval by default, even to a host
+  the allow list names.
+- **Per-project overrides** (#294). An override is keyed by repository (`host/owner/repo`, any git remote
+  form, or `owner/repo` on GitHub) or, on a standalone installation, `project:<id>`. Its allowed and denied
+  hosts are added to the policy's, and a host the policy denies stays denied. Each rule it sets replaces the
+  policy's, so it can loosen or tighten. Mode, model selectors, the IOC list and the cloud metadata denies stay
+  the policy's. Edit them on Hub Admin → Airlock (they are part of the policy and its revisions) or on a
+  standalone board's Settings → Airlock; a hub-joined board shows the hub's read-only.
+- A sandboxed session is held to the project it was launched for: the server refuses its requests that reach
+  another project's cards or projects, or change a project's root or delete a project.
+- **Airlock dataset** (#294), for training the semantic scorer. A hub admin switches it on in Hub Admin →
+  Airlock → Dataset; it is **off by default**, and a standalone installation captures nothing. While it is on,
+  each judged tool call goes to the hub as a full row: the call (commands, paths, written content, URLs), the
+  verdict, the card's title, description and step, and the session's last few calls. Secrets are removed on
+  the installation before the row leaves it. A person's approve or deny, and a learning accept, is kept as a
+  label on its row. Past pi and OpenCode sessions go up only when someone runs
+  `agenfk airlock dataset import`, never because the switch was turned on. The hub keeps at most 100,000 rows
+  per org for 90 days (64 KB a row, 20 labels of 4 KB each), and only an admin can download it, as JSONL, from
+  the hub. There is no local export.
+- **What a sandboxed session can reach on the server is narrower** (#294). Refused from the Airlock sandbox, at the
+  launcher's relay and at the server: herdr panes and terminal sessions (they type into, or start, host terminals);
+  setting a project's verify, setup or test-report command, creating, changing, selecting or installing a flow, and
+  `/internal` (all of them would run later, on the host, for cards no sandbox touched). Listings (cards, runs, token
+  events, projects) answer with the launch's own project only; Airlock approvals, decisions, learning, verify runs, hub
+  refusals and the database status are refused; a verify run or a PR of another project is not found.
+- **A launch refuses a server older than this agenfk** while the policy enforces: that server would run the session's
+  cards' commands outside the sandbox. Restart it on this version (`agenfk restart`). In observe mode it only warns.
+- **Airlock dataset, more secrets kept out.** Text or a command that holds any credential-named key (`password:`,
+  `API_TOKEN=`, `"credentials":`, `[secrets]`, quoted or escaped) is sent as omitted, with its size only. Credential
+  values in content, YAML block scalars and quoted values over several lines, and `passphrase`, `cookie`, `session_id`
+  and `auth` keys are redacted in what is sent. A person's approve or deny still labels its rows after the server
+  restarts.
+
+*Known limits:*
+
+- A repository is matched without case, port or `.git` ending, so ssh and https remotes of one repository
+  share a key. Two different repositories that differ only in port or a `.git` suffix share one too.
+- Each installation reads a project's repository from its checkout once and keeps it
+  (`~/.agenfk/airlock/repo-pins.json`), because a sandboxed agent can replace the checkout's `.git`. The
+  first read is trusted. After a project's origin changes, run `agenfk update-project <id> --project-root
+  <path>` to read it again. `agenfk airlock pi|opencode` records a project's root when the server has none
+  (`agenfk init` sets none). Where a repository override applies and the repository cannot be told, the
+  policy is refused (`AIRLOCK_PROJECT_UNKNOWN`) rather than applied without it.
+- A session launched by an older `agenfk` is refused (`AIRLOCK_LAUNCH_OUTDATED`): exit it and launch it again.
+- On macOS a sandboxed command can reach local services (macOS has no network namespace).
+- An installation learns that the dataset switch went off at its next policy sync (every few minutes). Until
+  then it may still send rows, which the hub drops. Rows it had queued are not sent after that sync.
+- The server still runs git on the host in the tree of a card a sandboxed session touched (git status, the close
+  commit, worktrees). The sandbox cannot write that repository's config, hooks, `commondir`, worktree config, or its
+  submodules' and other worktrees' git directories. It can still make git read config it wrote through a config
+  `include` target inside the workspace, a nested repository or submodule `.git` file, or (on Linux) a repository
+  created after launch. Running the server's git inside the sandbox for those cards is planned.
+- The dataset recognises a credential-named key in the usual syntaxes. Unusual ones (a YAML explicit key `? password`, a
+  shell backslash-escaped key, a line break between a key and its colon) are not recognised, and their values can reach
+  the hub's dataset while an admin has it on.
+
+## [2.1.0-beta.4] — 2026-10-28
+
+**Airlock (new, beta)**
+
+- **Airlock: an optional egress and action shield for pi and OpenCode** (#294, #295, RFC-027). It is meant
+  for sessions on open-weight models. A policy decides which hosts, commands and paths a session may reach.
+  It runs in `observe` (log what enforce would have denied) or `enforce`, and sensitive actions go to a
+  person for approval. Read it with `agenfk airlock status` / `agenfk airlock check`, or the MCP tools
+  `airlock_status` / `airlock_check`. Edit it on the board: Settings → Airlock. On a hub-joined installation
+  the hub's policy (Admin → Airlock) is the source of truth and cannot be overruled locally. A standalone
+  installation keeps its own.
+- **`agenfk airlock pi` / `agenfk airlock opencode`** launch the client inside a whole-process sandbox
+  (`@anthropic-ai/sandbox-runtime`, pinned to 0.0.81). Network goes through an allowlisting proxy, and
+  credential stores and the AgEnFK state directory can't be read or written. A launch gate refuses to start
+  when the sandbox can't be confirmed. Windows is refused.
+- **Telemetry and alerts.** Proxy denials are reported to the server with their own token. Alerts are raised
+  for cloud-storage upload hosts, cloud metadata endpoints and IOC hosts. Each card gets an Airlock section,
+  and the decision list filters by client, source and alert.
+- **Learning mode.** It proposes an allowlist from observed traffic and from existing pi session logs
+  (`agenfk airlock learn --import-pi-sessions`). Nothing is applied automatically: a person accepts it on the
+  board, or a hub admin does when the installation is hub-joined.
+- **Hub admin.** Recent denials and alerts across the organization; which policy revision each installation
+  runs (installations that are behind or refused a policy are flagged); revision history.
+- **Hooks:** pi and OpenCode hooks no longer skip plugin tools, and OpenCode's gatekeeper now covers
+  `apply_patch`.
+- *Known limits in this beta:* commands the server runs for an agent (verify, the suite) are not sandboxed.
+  On a standalone installation, board-only Airlock writes can still be forged by a sandboxed agent; the fix
+  (refusing them at the sandbox proxy) is planned. On Linux (measured on Debian 12 in Docker) the sandbox
+  needs unprivileged user namespaces and its own `/proc` mount: inside a container, run with
+  `--security-opt seccomp=unconfined --security-opt systempaths=unconfined` (or `--privileged`). Under Docker's
+  default profile the launch fails closed, and the agent does not start. OpenCode's sandboxed launch is untested.
+
+**Breaking**
+
+- **Node 22.13 or newer is required** (was 22.12). inquirer 14, which the CLI's interactive `flow create` and
+  `flow edit` use, declares `^22.13.0` (#286).
+  *Migrate:* upgrade Node to 22.13 or later before upgrading AgEnFK.
+
+**Dependencies**
+
+- **inquirer 9 → 14** (#286, supersedes #284). `agenfk flow edit`'s step pickers move from the `list` prompt,
+  which inquirer 10 removed, to `select`.
+
+## [2.1.0-beta.3] — 2026-10-26
+
+**Hub**
+
+- **"All joined installations" as a repository's receipt producers** (#289, RFC-002 Amendment 1). Admin →
+  Repositories now has a producer mode per repository: *Only these installations* (the default, today's
+  allowlist) or *All joined installations*, where any installation of the organization that is not retired
+  produces receipts CI may reuse, including ones that join later. Retiring an installation stops its receipts
+  counting, both when it publishes and when CI asks. The explicit list is kept while All is on and applies again
+  when the repository is switched back. The switch is audited (`repo.producer-mode`) and shows in the settings
+  installations sync (`producerMode`). Trade-off: under All, any machine that joins the organization can produce
+  a receipt that skips a job in Enforce, so use it where joining the hub already requires a managed machine.
+  Existing hubs gain the setting at boot, with every repository on *Only these installations*.
+
+**Database**
+
+- **Backups are SQLite snapshots of the whole database** (#288). They were one JSON string of projects and
+  items, which failed above ~512 MB (`Invalid string length`) and never held flows, settings or receipts.
+  `agenfk-backup-<time>.sqlite` is written every 30 minutes and on shutdown, with node:sqlite's online backup
+  (`VACUUM INTO` on a Node older than 22.16). The 5 newest are kept, older `.json` ones included. A new install
+  restores the newest; a `.json` one is still imported as before. A failed backup is shown by `agenfk db
+  status`, not only logged.
+- **`agenfk db vacuum`** (#288) folds the WAL into the database, gives back the space deleted rows left, and
+  checks the result, through the server. It is refused while a verify suite run is queued or running, and names
+  the cards. `agenfk db status` shows the database and WAL sizes, what a vacuum would reclaim, and the largest
+  tables.
+
+**CI receipts**
+
+- **A root card in Shadow or Enforce no longer closes on a sibling's green** (#291). It ran nothing, so it made
+  no receipt, and a PR of two root cards was certified by neither. It now runs the command itself, as the
+  root card's final gate does whenever a green is on record; `agenfk verify --plan` says so.
+- **A root parent in Shadow or Enforce is no longer closed by its last child** (#291). The roll-up walked it
+  onto the exit step having run nothing, and its children (which defer receipts to it) made none either. It now
+  stops one step short, as on a `verifyAt: parent` flow: the parent's own verify runs fresh and makes the receipt.
+- **`agenfk verify --plan` no longer promises one run** where a final step's capture would close a root card in
+  Shadow or Enforce (#291): the close runs the command again after it, and the plan now says so.
+- **CI finds the receipt for its tree when the PR's card has only older ones** (#291). The lookup stopped at the
+  card the PR is registered on; it now falls back to the receipts for the tree CI checked out.
+
+## [2.1.0-beta.2] — 2026-10-25
+
+**Fixes**
+
+- **`actions/ci-check` works again** (#278). It ran `npx agenfk@<version>`, but agenfk is not on npm, so the action
+  failed for every user. It now installs the pinned GitHub release's `agenfk-dist.tar.gz` (optionally checked
+  against `agenfk-sha256`) and runs the built CLI. A download, install or CLI failure runs the gated steps under
+  `policy: run` and fails the job under `require`; a failed CLI never leaves `run=false` behind, and the CLI's
+  output is never read as workflow commands. This repository's CI gates its Linux test step on the check.
+- **Hub: Admin → Repositories scrolls within the window and is searchable** by part of a repository's name (#273).
+- **Hub: Recent receipts name the producer** by its git email (else OS user), not its installation id (#276).
+
+**Test suite**
+
+- **The full suite runs in about half the time** (#274, #281). Server, hub and CLI test files now run in parallel,
+  each worker with its own sandboxed home. About 400 repeated, nitpicking, over-the-top and text-rubric tests were
+  removed or merged, each with named coverage; tests that never asserted were rewritten.
+
+## [2.1.0-beta.1] — 2026-10-24
+
+**CI receipts (RFC-002): verify once, reuse in CI.** Opt-in per repository on the hub. See `HUB_ARCHITECTURE.md` §13.
+
+- **The hub holds each repository's verify command.** The first authorized installation that syncs a repository
+  claims it from its declared command (first writer wins); after that the hub is authoritative and admins revise it,
+  with every revision kept. Commands run from the repository root: absolute paths inside the checkout become
+  repo-relative, and a command naming a path outside it is refused.
+- **Receipts mode per repository: `off` (default), `shadow`, `enforce`.** Off changes nothing. In Shadow and Enforce
+  the root card's final gate runs the command fresh, even when a green of the same tree is on record, and publishes
+  a **verification receipt**. `agenfk review record --lens <name>` publishes a **review receipt** carrying the
+  server's independence verdict, the lenses and the findings. Enforce needs an admin-set Shadow threshold.
+- **Receipts are write-once on the hub**, with the run's log gzipped beside them (32 MiB cap). Only installations on
+  the repository's producer allowlist publish reusable receipts; the client records a receipt as delivered only when
+  the hub acknowledged it. The log is redacted before upload: known secret formats, secret-named assignments and
+  environment values, and the home directory; the local log and its path stay on the machine.
+- **`agenfk ci check` and the `actions/ci-check` GitHub Action.** CI compares the tree of its own checkout (the PR's
+  merge result) with the receipts, found by PR number or by tree, using a read-only `ci_` token an admin mints on the
+  hub (one repository by default). Exit 0 skips the gated steps and downloads the original log or findings; 10 runs
+  them; 1 fails the job under `--policy require`. A hub error or timeout never skips anything.
+- **Not yet:** recording Shadow agreement, gating Enforce on the threshold actually being met, returning a repository
+  to Shadow after a wrong reuse, and sampled re-runs in Enforce. **Use Shadow on this beta.** Shadow never skips a
+  job; leave Enforce off until sampled re-runs land, since nothing yet catches a wrong skip.
+
+**Fixes**
+
+- **A top-level card reuses another top-level card's green of the same tree on close** (#271). Sibling-green reuse
+  only looked under a shared parent, so top-level cards closed one after another each re-ran the full suite. The
+  same conditions still apply: same command, same root, same content; another project's green is never reused.
+- **Settings > Project names the project its settings apply to** (CGLAB-670), instead of claiming every section
+  applies to the whole installation.
+
+## [2.0.0-rc.4] — 2026-10-22
+
+Fourth release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-rc.3` (#262, PR #263; #264, PR #265):
+
+- **The board fits the window.** Step columns share the width down to a 120px floor (was 180px), so an 8-step flow
+  fits a 1,280px window instead of scrolling sideways below ~1,800px.
+- **Compact board mode.** A toggle next to Settings, in the browser and the desktop app, narrows columns to a 96px
+  floor and tightens the cards. An 8-step flow then fits 1,024px. Desktop layout only; the stacked mobile layout
+  keeps its cards.
+- **The board remembers its layout** per viewer: which side columns (Ideas, Paused, Blocked, Archived) are expanded,
+  and whether compact mode is on. They still start collapsed.
+- **Narrow columns stay readable.** Below 170px a column header hides its step icon so the title keeps its room, and
+  card rows wrap instead of running past the card's edge.
+- **Fixed: `exclusiveSuite` could let two suites run at once** when the setting was turned on while a run was
+  starting. A project read that was in flight across the change wrote the old value over it. A change to the
+  setting now wins.
+
+## [2.0.0-rc.3] — 2026-10-21
+
+Third release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-rc.2` (#260, PR #261):
+
+- **A repository-declared `verifyCommand` runs as committed.** The per-machine approval of a command from
+  `.agenfk/project.json` is gone: the approve route, the desktop Approve button and the approval refusals.
+  `agenfk approve-file-command` stays, so scripts don't break, and now says there is nothing to approve. A command
+  holding hidden characters (bidi, zero-width, other invisible ones) is still refused before it runs
+  (`COMMAND_UNREADABLE`), and a change to the declared command is noted on the open cards.
+- **`verifyAt: parent` can reach across worktrees.** A new flow setting, `verifyAtScope`, which a project can
+  override with `agenfk update-project <id> --verify-at-scope project|worktree|none`, MCP `update_project` or the
+  board. The default `worktree` keeps today's behaviour. With `project`, a child in another worktree of the
+  repository closes without running the suite.
+  - The parent's verify is refused (`DEFERRED_CHILD_UNMERGED`) until every such child's close commit is merged
+    into the parent's branch. A squash or rebase merge does not count.
+  - Such a child is refused (`DEFERRED_CLOSE_UNCOMMITTED`) while it has unstaged or untracked work.
+  - Moving a card to another project is refused (`DEFERRED_OBLIGATION_OPEN`) if the move would drop a pending
+    merge.
+- **One suite at a time per project.** `agenfk update-project <id> --exclusive-suite on` runs at most one of that
+  project's suites at once, for suites sharing a database or fixed ports. Other projects are not held back.
+- **The board has a Project section in Settings** for the open project's two suite settings. It is reachable
+  from the browser board, which has no project page, as well as the desktop app. The flow editor has the scope
+  selector.
+- **The PR's "Warnings the checks raised" table lists only warnings that held the card**: ones that had to be
+  answered, answered test removals, and ones a person passed. Advisory warnings no longer flood it, and the
+  section is left out when there are none.
+
+## [2.0.0-rc.2] — 2026-10-21
+
+Second release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-rc.1` (#257, PR #258):
+
+- `main`'s commits reach the beta line: the Apache-2.0 license (#248) and the dependency majors `zod` 4
+  (server), `vite` 8 (board and hub UI), `jwks-rsa` 4 and `bcryptjs` 3 (hub), with the npm production and
+  development group bumps. No source change was needed for them.
+- **Node 22.12 or newer is required** (was 22.5). `jwks-rsa` 4 loads the ESM-only `jose` 6 with `require()`,
+  so a hub on 22.5–22.11 failed at startup. A test now checks that the advertised floor runs every installed
+  runtime dependency.
+- The license text ships in `agenfk-dist.tar.gz`, `agenfk-hub-dist.tar.gz`, the hub image and the desktop app.
+- The README and CONTRIBUTING state the Node 22.12 floor.
+
+## [2.0.0-rc.1] — 2026-10-20
+
+First release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-beta.46` (tracking issue #250):
+
+- `uninstall` keeps the board database, backups, hub enrolment, `installation-id` and `config.json`;
+  `--purge-data` deletes them too (#214).
+- A failed `npm ci` fails the install and `agenfk upgrade` instead of reporting success, and the dist ships
+  every workspace manifest so a stale one cannot send `npm ci` to the registry (#232).
+- `npx github:cglab-public/agenfk#<tag>` installs that tag's release (#216).
+- Windows `uninstall` removes the extensionless `agenfk` wrapper (#215).
+- A stale `.git/REBASE_HEAD` no longer blocks the close commit (#251).
+- Releases are gated on the suite, and CI runs on pushes to `beta` (#249).
+- `agenfk flow install` accepts community-registry flows again (#252).
+- `agenfk hub deadletter requeue` and surfaced refusals (#223).
+
+## [2.0.0] — 2026-10-22
+
+Stable, cumulative over `1.1.20`: everything in `1.1.21-beta.1` through `1.1.21-beta.12`, `2.0.0-beta.1`
+through `2.0.0-beta.46`, and `2.0.0-rc.1` through `2.0.0-rc.4`. 2.0 moves workflow enforcement into the server. A card moves forward only through
+`agenfk verify`, each step carries a role and checks the server runs from recorded evidence, and the final step
+runs the project's own verify command. The line also brings the desktop app, a board served from the API's own
+port, project ids kept out of version control, and hub-side flow adherence.
+
+### Breaking changes
+
+- **Forward moves go through `agenfk verify` only.** `agenfk update <id> --status <later step>` (and MCP
+  `update_item`, `PUT /items/:id`, `POST /items/bulk`) is refused with HTTP 409 and a message naming
+  `agenfk verify <id>`. A move onto the step that completes the card is refused with 403 by every route,
+  whatever the exit step is called, and the internal verify token no longer exempts anything. A jump past the
+  allowed targets is a 400. `update --status` still moves a card back, or to PAUSED/BLOCKED. The one forward
+  move left outside verify is a person dragging a card on the board; it is recorded on the card and on the PR
+  as made without evidence or checks.
+  *Affects:* scripts and agent rules that advance cards with `update --status`.
+  *Migrate:* replace them with `agenfk verify <id> --evidence "<text>"`. The shipped rules already say so and
+  are reinstalled by the upgrade.
+  <!-- verified: packages/server/src/server.ts:7629 (token no longer exempts), :7655 (403 completion), :7666 (409 forward), :2139 classifyStatusMove (board-only forward), :2110 refusal text -->
+
+- **The final step runs the project's own verify command.** A command passed to `agenfk verify` on the final
+  step is ignored, with a warning on the reply naming the project's command (never a 400, so older skills keep
+  working), and it cannot stand in for a missing project command. Intermediate steps still take an optional
+  command, which can only add a check.
+  *Affects:* anyone who relied on `agenfk verify <id> --evidence x "<cmd>"` to choose what runs at the close.
+  *Migrate:* set the command once: `agenfk update-project <id> --verify-command "<cmd>"`, or `verifyCommand`
+  in `.agenfk/project.json` (see the note below).
+  <!-- verified: packages/server/src/server.ts:9716-9719, :8135 ignoredCommandNote -->
+
+- **A repository can declare its own verify command.** `.agenfk/project.json` can now carry shared settings, and
+  a `verifyCommand` from that file wins over the stored one. It runs as committed, like the rest of the
+  repository's code: there is no per-machine approval (#260). A command holding characters a screen cannot show
+  faithfully (bidi overrides, zero-width or other invisible characters) is refused with `COMMAND_UNREADABLE` and
+  never runs. A change to the declared command is written on the open cards, as a change of the stored one is.
+  *Migrate:* to share one command across the team, commit it in `.agenfk/project.json`; review changes to it in
+  pull requests like any other code.
+  <!-- verified: packages/core/src/fileCommand.ts unreadableFileCommand; packages/server/src/server.ts unreadableFileVerify, observeDeclaredVerifyCommand -->
+
+- **One origin: the API and the board share one port (CGLAB-165).** The server serves the built board itself;
+  `agenfk up` no longer starts `vite preview`. The board is at the API's port (`http://localhost:3000` by
+  default) and nothing listens on 5173. Neither `agenfk down` nor `agenfk kill` kills by port 5173 any more:
+  `down` stops processes by pattern (the server, and a UI process an older version left running), and `kill`
+  additionally frees the discovered and default API ports, never a dev server that merely holds 5173.
+  *Affects:* bookmarks and scripts that open `localhost:5173`; reverse proxies, CSPs or CORS allowlists
+  written for two origins.
+  *Migrate:* use `agenfk ui`, which reads `~/.agenfk/server-port` (and opens the desktop app when one is
+  installed; `--web` forces the browser). If you set `AGENFK_SERVE_UI` yourself, point it at a build output:
+  a directory holding `src/` or `node_modules/` is refused. With the variable unset the server serves the API
+  only; `agenfk up` sets it whenever `packages/ui/dist` exists. Rebuilding the UI with the server up needs
+  `agenfk restart`.
+  <!-- verified: scripts/start-services.mjs:43-59; packages/server/src/server.ts:12354 resolveUiDir, :12440; packages/cli/src/index.ts:1025 (no kill by port 5173) -->
+
+- **`projectId` moved out of version control (CGLAB-625).** The id is a row in one machine's database, so it
+  lives in the git-ignored `.agenfk/local.json`; `.agenfk/project.json` keeps only shared settings
+  (`verifyCommand`, `flow`, `setupCommand`, `name`, `description`). `agenfk init` writes `local.json` and adds
+  it to `.gitignore` unless git already ignores it. A legacy id still in `project.json` keeps working, with a
+  warning on stderr; re-running `agenfk init` moves it into `local.json` when this machine's server has that
+  project (an emptied `project.json` stays as `{}`). A fresh clone is linked with `agenfk init --project <id>`.
+  A git worktree takes its project id from its main checkout; `agenfk init` and `agenfk configure-ide` refuse
+  to run inside one.
+  *Migrate:* run `agenfk init` once in each main checkout, then commit `.gitignore` and the stripped
+  `project.json`. Teammates link their clones with `agenfk init --project <id>` (ids from
+  `agenfk list-projects` on their own server) or `agenfk init <name>`.
+  <!-- verified: packages/core/src/projectIdentity.ts:17, :103 resolveProjectIdentity; packages/cli/src/index.ts:1418 (--project), :1439 (worktree refusal), :1830 (legacy warning); packages/cli/src/localProject.ts:76; packages/cli/src/index.ts:1615 (configure-ide) -->
+
+- **Leaving TODO fetches and checks the card's tree.** The shipped default and TDD flows give TODO the new
+  `backlog` role, whose `tree-in-sync` check runs a `git fetch` and refuses a tree that is behind or has
+  diverged from its upstream (ahead is fine; no remote passes; an unreachable remote warns). Projects with no
+  flow of their own get it through the built-in default.
+  *Migrate:* `git pull --ff-only` before starting a card, or remove the role from your flow's TODO step.
+  Upgrade every member before a hub dispatches flows that carry roles or checks: a 1.1.20 client silently
+  strips those fields (the flow arrives without their enforcement), and a 2.0 beta older than the `backlog`
+  role rejects it as `unknown role`.
+  <!-- verified: packages/core/src/defaultFlow.ts:16 -->
+
+- **The built-in default flow requires an independent review at REVIEW.** Its REVIEW step now carries the
+  `review` role, whose `review-record` check refuses to leave REVIEW without a recorded review by someone other
+  than the card's authors (a self-review in the evidence does not count, on harnesses whose session logs the
+  server can read). Children are normally reviewed with their parent.
+  *Migrate:* `agenfk review brief <id>` gives a separate reviewer its prompt; record its result with
+  `agenfk review record <id> --transcript <reviewer session log> --findings '<json>'`. Or use a flow whose
+  review step has no `review` role.
+  <!-- verified: packages/core/src/defaultFlow.ts:29; packages/server/src/checkEngine.ts:332 -->
+
+- **Hub-joined installations take JIRA from the hub only.** A local JIRA setup and token are no longer used
+  once the installation has joined a hub, and `agenfk jira setup` refuses there.
+  *Migrate:* a hub admin configures the org's Atlassian app once (hub Admin → JIRA); each user then connects
+  their own JIRA with "Connect JIRA" on the board.
+  <!-- verified: packages/server/src/server.ts:11139; packages/cli/src/index.ts:2738 -->
+
+- **`agenfk get` / `GET /items` leave step records out.** `GET /items` and `agenfk list --json` no longer
+  carry `stepRecords` or `supersededRecords`; a single card includes them only when asked
+  (`GET /items/:id?records=1`, `agenfk get <id> --records`, MCP `get_item` with `includeRecords: true`).
+  <!-- verified: packages/server/src/server.ts:6973 -->
+
+- **Database migrations at first start.** Per-test results move to a `blobs` table and existing cards are
+  pruned to their latest capture per step and latest green. 1.1.20 keeps reading and writing a migrated
+  database (it ignores 2.0-only data such as step records), so going back is `agenfk upgrade --version
+  1.1.20`, no restore needed. A 2.0 beta older than the `blobs` move misreads the moved results.
+  *Migrate:* nothing for 1.1.20. For a byte-identical way back, copy the database file aside before
+  upgrading (below). `agenfk backup` is not that: it writes a JSON export that no version can restore.
+
+- **`agenfk verify --no-wait` and `AGENFK_NO_BROWSER` are removed.** When only a person's approval holds a
+  card, verify opens it on the board and waits (up to 9 minutes; `--wait-minutes` changes it; never in `CI`).
+  `--no-wait` is accepted and ignored with a warning.
+  <!-- verified: packages/cli/src/index.ts:4427, :4559 -->
+
+- **A card cannot close while anything under it is open.** The closing move is refused with `CHILDREN_OPEN`,
+  naming the open descendants.
+  <!-- verified: packages/server/src/server.ts:877 -->
+
+- **`agenfk upgrade` never downgrades unless asked.** It refuses a version that is not newer; `--force` only
+  reinstalls the same version; `--version <x>` is the only way back. `--beta` includes stable releases. It
+  also refuses to extract over a development (git) checkout.
+  <!-- verified: packages/cli/src/index.ts:766, :793 -->
+
+- **`agenfk init` respects the CLI-only default.** It registers the agenfk MCP server only on a `--with-mcp`
+  install; `agenfk configure-ide` still adds it on demand. The enforcer hook's `mcp-fallback-approved` bypass
+  is gone.
+  <!-- verified: packages/cli/src/index.ts:1567 -->
+
+- **Claims are removed.** Only relevant if you ran a `1.1.21` or `2.0` beta before `2.0.0-beta.24`: claims
+  never shipped in a stable release. `agenfk update` has no `--claims` option, `PUT /items/:id` ignores the
+  field, and the stored field is dropped once at server start.
+  <!-- verified: packages/storage-sqlite/src/index.ts:155-167; absent from v1.1.20:packages/cli/src/index.ts -->
+
+- **Hub: the PR-overview metric is `adherence`.** `/v1/prs/overview` returns `adherence` (aggregate and per
+  developer) where betas returned `compliance`, and the UI says Adherence. The stored payload field
+  `compliant` and the rollup column `transitions_compliant` keep their names. After deploying, a signed-in
+  admin should run one full rollup recompute, `POST /v1/admin/rollups/recompute` with `{"full": true}`
+  (there is no button for it), so days rolled up before the adherence columns existed are filled in.
+  <!-- verified: packages/hub/src/routes/queries.ts:855-859; packages/hub/src/routes/admin.ts:662; packages/hub/src/rollup.ts:102 -->
+
+- **Hub: proxy and network defaults.** `AGENFK_HUB_TRUST_PROXY` defaults to `1` (one proxy appends to
+  `X-Forwarded-For`); a hub exposed directly must set `0`. `X-Forwarded-Host` is no longer read: if your proxy
+  rewrites `Host`, set `AGENFK_HUB_PUBLIC_URL`, which now sets the origin of every URL the hub hands out.
+  Federation calls no longer go through `HTTP_PROXY`/`HTTPS_PROXY`, and a parent on a link-local or
+  cloud-metadata address is refused even with `AGENFK_HUB_ALLOW_PRIVATE_PARENT`. The hub moves to Express 5:
+  bracket query syntax (`?from[a]=b`) is no longer parsed into objects.
+  <!-- verified: packages/hub/src/server.ts:411, :455, :486; packages/hub/package.json:28 -->
+
+- **Node 22.12 or newer.** The floor rises from `>=22.5.0` to `>=22.12.0` (root, `create` and, newly, the hub
+  package). The hub's `jwks-rsa` 4 loads the ESM-only `jose` 6 with `require()`, which Node enables by default
+  from 22.12; on 22.5–22.11 the hub fails at startup with `ERR_REQUIRE_ESM`, even with Entra sign-in off.
+  *Migrate:* upgrade Node to 22.12 or later before upgrading AgEnFK. The published hub image already runs Node 26.
+  <!-- verified: node_modules/jwks-rsa/package.json engines; packages/cli/src/test/node-floor-covers-dependencies.test.ts -->
+
+Not changed: storage is still the built-in `node:sqlite`.
+<!-- verified: packages/storage-sqlite/src/index.ts:31 (same in v1.1.20) -->
+
+### Upgrading from 1.1.x
+
+1. Optional, for a byte-identical way back: while the server runs, note the database path `agenfk db status`
+   reports (`AGENFK_DB_PATH` can override `config.json`), then `agenfk down` and copy that file and any `-wal`
+   and `-shm` files beside it somewhere safe. 2.0 migrates the database at first start; 1.1.20 still reads
+   and writes it afterwards, so this copy is a safety net, not a requirement.
+2. Check `node -v` reports 22.12 or later, then upgrade: `agenfk upgrade --version 2.0.0`. Naming the version is safest: 1.1.x picks "latest" by publish
+   date, not by version.
+3. The first upgrade is run by your old CLI. It downloads and extracts 2.0, then runs 2.0's `install.mjs`.
+   In practice:
+   - Fixes in 2.0's installer apply now: the install-dir prune (when coming from 1.1.20, which hands the
+     archive to the installer), surfacing a failing `npm ci`, the rules and hooks reinstall.
+   - Fixes in 2.0's `agenfk upgrade` command do not apply until your next upgrade: picking the newest release
+     by version, the no-downgrade guard, the refusal to extract over a git checkout, and the two-line output.
+     Expect the old, longer output this once.
+   - From a pre-1.1.20 install the old CLI does not hand the archive to the installer, so files 2.0 dropped
+     stay in `~/.agenfk-system` until the next upgrade. Run `agenfk upgrade --force` once on 2.0 to prune them.
+4. `agenfk restart`, then open the board with `agenfk ui` (it is on the API's port now).
+5. In each repository: `agenfk init` to move `projectId` into `.agenfk/local.json`, then commit `.gitignore`
+   and `.agenfk/project.json`.
+6. Make sure each project has a verify command: `agenfk update-project <id> --verify-command "<cmd>"`, or one
+   committed in `.agenfk/project.json` for the whole team.
+7. If you copied rules into a project with `agenfk skills install --project`, run it again there.
+8. Hub-joined users: reconnect JIRA through the hub ("Connect JIRA" on the board) after an admin configures it
+   under hub Admin → JIRA.
+9. To go back: `agenfk upgrade --version 1.1.20`. Board data (projects, cards, statuses, comments) carries
+   over in both directions, including cards created or edited on the other version. 1.1.20 ignores 2.0-only
+   data such as step records and reviews; keeping it across a round trip is not promised. Do not edit
+   existing flows while downgraded: 2.0 reads its saved flow revisions, so those edits are ignored after
+   upgrading again. To return to the exact pre-upgrade state instead: `agenfk down`, move the current
+   database and its `-wal`/`-shm` files aside (a leftover WAL would replay newer pages over the restored
+   file), then put back the saved database and whichever sidecars were saved with it.
+10. Hub operators: deploy, set `AGENFK_HUB_TRUST_PROXY` / `AGENFK_HUB_PUBLIC_URL` for your topology, run the
+   full rollup recompute once, and upgrade every member before dispatching a flow that uses the `backlog`
+   role. Expect the hub's closed-card counts to rise: cards closed by roll-up, sibling propagation or a flow
+   whose last step is not named DONE now emit `item.closed`.
+
+### Highlights
+
+**Workflow and checks**
+- Step roles (backlog, planning, test-authoring, coding, refactoring, review, testing, closing) and a
+  record-based check engine:
+  tree-clean, on-card-branch, tree-in-sync, jira-key-valid, the TDD red/green and test-surface checks,
+  suite-green, `tests-added-late`, `fixes-reviewed`, `tree-warnings`.
+- Custom checks per step: command checks (argv in the card's tree, optional passkey approval) and agent checks
+  (`agenfk verify --check <name>=pass|fail`).
+- Human gates on the board: approvals and overrides with a reason, optional passkey (WebAuthn) signing, all
+  listed on the PR. Verify opens the card and waits, and prints an `APPROVAL NEEDED` block.
+- Warnings are answered with `--check-note <check>="..."`; answers go to the reviewer and the PR.
+- Independent reviews: `agenfk review brief <id>` writes the reviewer's prompt, `agenfk review record` checks
+  the reviewer's transcript, findings carry a severity, and a Reviews tab shows them.
+- Fewer suite runs: reuse of a green of the same tree content, related-tests-only runs on intermediate steps
+  (`--test-report-related-command`), Markdown edits no test names skip the suite, the close stands on a green
+  already on record, siblings share runs, and suite runs are queued server-wide (`maxConcurrentSuiteRuns`).
+- `agenfk verify --plan` and the gatekeeper say what leaving a step will run before it runs.
+- `verifyAt: parent` runs the suite once at the top-level card. With `verifyAtScope: project` (on the flow, or
+  `agenfk update-project <id> --verify-at-scope project`) a card in another worktree defers too; the parent's
+  verify then waits until its close commit is merged into the parent's branch (`DEFERRED_CHILD_UNMERGED`).
+- `agenfk update-project <id> --exclusive-suite on` runs one of a project's suites at a time, for suites that
+  share a database or fixed ports, without holding other projects back.
+- A PR's "Warnings the checks raised" lists only the warnings that held a card.
+- A failed verify command leaves the card where it is instead of rolling it back.
+- `agenfk update <id> --worktree <path>|none|inherit` chooses where a card runs; verify and the close commit
+  run in the card's worktree.
+- Per-step auto commit; JUnit reports from `node:test`, pytest and xUnit; several report paths per project.
+- `agenfk create` prints the created card as JSON and exits non-zero on failure.
+- Immutable flow revisions; transitions are stamped with their flow revision, and a flow adherence score is
+  shown per card and per project.
+- `agenfk config get|set` reaches every server setting.
+
+**Hub and federation**
+- JIRA configured once by a hub admin; each user connects their own JIRA through the hub.
+- A hub admin can switch individual checks off on a step (`disabledChecks`); every verify and PR names them.
+- Flow adherence for the org: `GET /v1/adherence`, an `/adherence` page, and adherence on the PR overview.
+- Flow dispatch and group upgrades to child hubs from Admin; publish to the org's own registry as a pull
+  request; the registry's open pull requests listed in Admin.
+- Config audit log with CSV export; admin recovery for an SSO-only hub (`AGENFK_HUB_RESET_ADMIN_EMAIL`).
+- Rate limits per signed-in user, `express-rate-limit`, hardened invite redemption and first-run setup, and a
+  parent hub judged by the address it resolves to.
+- Dashboards: filters in the link, people shown by name, local-time dates, sortable tables, phone layout and
+  keyboard-usable charts; the last admin cannot be removed.
+
+**Desktop app**
+- Electron app (macOS, Windows, Linux) on the same origin as the server: terminals in a pane tree, an agent
+  picker that finds CLIs on a fresh-terminal PATH, Start on a card hands the agent the card as its prompt.
+- Add Project by picking a folder, cloning, or creating a GitHub repository; a project page with its cards.
+- A file's diff from the worktree panel; a running-verifies chip in the status bar.
+
+**Board**
+- Checks, Reviews and Adherence tabs on a card; a running verify shown on the card; a verifies-running chip.
+- One visual system with the hub and flow editor, neutral dark mode, visible focus, AA contrast.
+- Created and updated dates on cards, a date filter, Settings in the browser board, drill-down into any card
+  with children.
+- The board fits the window: columns share the width down to a 120px floor, so an 8-step flow fits 1,280px; a
+  compact mode fits it in 1,024px. The board remembers compact mode and which side columns are expanded.
+- A Project section in Settings, in the browser and the desktop app, for the open project's suite settings.
+
+**Installer and CLI**
+- Two-line upgrades, one-line `up`/`down`/`restart`/`kill`; step-by-step logs behind `--debuglog`.
+- Upgrades and the installer never overwrite a development checkout; JIRA secrets written 0600.
+- `agenfk pr create --base <branch>`; PR model detection reads the harness's own session id.
+- Windows: hooks run under Git Bash, client CLIs launch from `.cmd` shims, every child process is hidden, and
+  the full suite runs on Windows in CI. The pi.dev extension gates every mutating tool.
+
+### Fixed since the last beta
+
+- `uninstall` keeps your data: the board database (wherever `dbPath` points, SQLite sidecars included),
+  backups, `hub.json`, `installation-id` and `config.json`. Only runtime files and the framework go;
+  `--purge-data` deletes the data too. A symlinked `~/.agenfk-system` is never deleted through (#214).
+- `agenfk upgrade` no longer reports success over a failed `npm ci`: the install ends with a ✗ verdict and a
+  repair command, and exits non-zero. The dist now ships every workspace's `package.json`, so a stale copy
+  left by a source install no longer sends `npm ci` to the registry (E404) (#232).
+- `npx github:cglab-public/agenfk#<tag>` installs that tag's release, not the newest one over the tag's
+  source. A pin that cannot be fetched stops before touching the install. A git clone without a built dist
+  fetches its own version's release (#216).
+- Windows: `uninstall` removes the extensionless `agenfk` wrapper Git Bash runs, and only when it is the
+  wrapper the installer wrote (#215).
+- The close commit is no longer refused as "a rebase is in progress" because of a stale `.git/REBASE_HEAD`.
+  A rebase is detected the way git does, and a cherry-pick or revert sequence stopped between picks is
+  declined too (#251).
+- Releases are gated on the suite: the release commands run it on the version-bump commit and stop on red,
+  `release.yml` tests before pushing anything, and CI runs on pushes to `beta` (#249).
+- `agenfk hub deadletter requeue` resends deadlettered events, and refusals are surfaced (#223).
+- `agenfk flow install` installs community-registry flows again: it no longer requires a `schemaVersion` the
+  registry's files never carried (#252).
+
+### Test suite
+
+- The full suite runs on Linux and, in shards, on Windows in CI; the Windows job blocks.
+- The board's specs run inside the root vitest run as their own project, so verify and the test report see
+  them.
+- Tests make no non-loopback network connections, and server tests keep their sqlite files in the HOME
+  sandbox instead of the repo root.
+- The load-only `ECONNRESET` failures are gone (supertest now dials the loopback it bound), and orphaned jsdom
+  stylesheets are dropped after each test (`AppShell.test.tsx` 80s to 11s).
+- `npm run e2e:tdd` walks a full TDD cycle, human gates included, in a container.
+
+### Dependencies
+
+- The hub declares `express ^5` and `@types/express ^5`, matching what its image always ran.
+- Hub and server rate limiting runs on `express-rate-limit`.
+- `figlet` is removed with the ASCII banners.
+- `js-yaml` is declared in the root lockfile.
+- The majors that landed on `main` after 1.1.20 now ship: `zod` 4 (server), `vite` 8 (board and hub UI),
+  `jwks-rsa` 4 and `bcryptjs` 3 (hub), with the npm production and development group bumps (#257).
+
+### License
+
+- AgEnFK is licensed under Apache-2.0 instead of ISC. Every package declares it, and the release tarballs
+  and the hub image now carry the license text (#257).
+
+
+## [2.0.0-beta.46] — 2026-10-16
+
+Pre-release, cut from the `beta` line. Cumulative over `2.0.0-beta.45` (#241).
+
+### The PR reminder names the branch the push actually ran in (#241)
+
+- `agenfk-pr-hook` resolved the pushed branch in the HOOK's own cwd, so
+  `cd <other-repo> && git push -u origin HEAD` was reported as the session repo's branch —
+  typically `main` while the push went to a feature branch in another repo or worktree.
+  `git -C <repo> push` was not matched at all. The classifier now carries the directory from
+  `cd`/`git -C` (a chained relative target joins onto the previous one), resolves `HEAD` in
+  that tree, takes the destination of a `src:dst` refspec, and stays silent when the target
+  cannot be resolved rather than guessing the hook's cwd. A scan of local sessions found 841
+  of 2181 "just pushed to" messages naming a branch absent from the command.
+- An independent adversarial review was recorded with the change (2 HIGH and 1 MEDIUM finding
+  fixed; 3 LOW rejected with reasons).
+
+### Test suite
+
+- Three pre-existing whole-suite failures fixed so the beta line is green: the missing
+  `2.0.0-beta.45` changelog entry (added above), and two macOS `/var` → `/private/var`
+  temp-path assertions, corrected without weakening the Windows 8.3 intent.
+
+### Dependencies
+
+- `js-yaml` (+ `argparse`) declared in the root lockfile, completing the dependabot regeneration.
+
+## [2.0.0-beta.45] — 2026-10-14
+
+Pre-release, cut from the `beta` line. Cumulative over `2.0.0-beta.44` (#238, #235, #234).
+
+### The pi extension gates every mutating tool (#238)
+
+- The pi.dev extension resolves the hook runtime it can actually spawn, so the gatekeeper,
+  MCP enforcer and PR reminder run instead of the extension reporting itself loaded while the
+  gate silently did not. Edits/writes with no active task are blocked, as are the bash/read
+  bypass routes.
+
+### The full suite runs on Windows (#234, #208)
+
+- CI runs the whole test suite on Windows in shards, and the Windows compat check gates on all
+  of them — an empty known-gaps list rather than a non-blocking job. Native-Windows fixes across
+  the CLI, desktop, hub, git fixtures and process teardown (tree kill, temp-repo teardown,
+  browser launch from PowerShell/cmd, `tar` from the release tarball).
+
+### A PR's title describes the change (#235)
+
+- The PR guidance states the change in the PR's own title rather than the card id.
+
+## [2.0.0-beta.44] — 2026-10-13
+
+Pre-release, cut from the `beta` line (PR #236). Cumulative over `2.0.0-beta.43`.
+
+### The project id stays out of version control (CGLAB-625)
+
+- `projectId` is a row in one machine's database, so it now lives in the git-ignored
+  `.agenfk/local.json`. `.agenfk/project.json` carries only the repository's shared settings
+  (`verifyCommand`, `flow`, `setupCommand`, ...). `agenfk init` writes `local.json` and adds
+  `.agenfk/local.json` to `.gitignore` unless git already ignores it.
+- `agenfk init --project <id>` links a fresh clone; `agenfk init --help` states which file is
+  shared and which is this machine's.
+- Existing repositories keep working: an id still in `project.json` is read with a warning, and
+  re-running `agenfk init` moves it into `local.json` when this machine's server has that project.
+  An emptied `project.json` stays as `{}` so other clones keep their project marker.
+- A git worktree takes its project id from its main checkout; `agenfk init` and `configure-ide`
+  refuse to run inside one.
+- The CLI, MCP server, gatekeeper/mcp-enforcer hooks and run hook resolve the project the same way.
+
+## [2.0.0-beta.43] — 2026-10-13
+
+Pre-release, cut from the `beta` line (PR #231). Cumulative over `2.0.0-beta.42`.
+
+### Adherence copy states the rule, not the bookkeeping (CGLAB-619)
+
+- The Flow adherence page read "How often work moved **within the flow revision in force**",
+  which reads as if the score measured revision stability. It measures whether a move's start
+  and end are both steps of the flow. Copy-only: /adherence subtitle, rules line (now naming
+  what is NOT adherent — to or from PAUSED/BLOCKED/off-flow) and tile hints, plus the
+  PR-overview Adherence strings. No data, API or semantics change.
+
+## [2.0.0-beta.42] — 2026-10-12
+
+Pre-release, cut from the `beta` line (PR #230). Cumulative over `2.0.0-beta.41`.
+
+### Naming: the PR-overview metric is flow adherence (CGLAB-618)
+
+- The PR overview's metric now says **adherence** like every other surface — the response field
+  (`compliance` → `adherence`, aggregate and per-developer) and all UI labels. The stored event
+  payload field `compliant` and the rollup column `transitions_compliant` are untouched: they name
+  the boolean in historical data, not the metric. Hub and UI ship in one image, so the rename rolls
+  atomically; after deploying, run the admin full rollup recompute once to backfill historical days.
+
+## [2.0.0-beta.41] — 2026-10-12
+
+Pre-release, cut from the `beta` line (PR #229). Cumulative over `2.0.0-beta.40`.
+
+### Flow compliance on the PR overview (CGLAB-617)
+
+- **Compliance on the PR overview**: `/v1/prs/overview` carries an overall judged/compliant/score
+  for the request's window and filters, plus a per-developer verdict on every By-developer row —
+  judged from the stamped `step.transitioned` events under the SAME predicates as `/v1/adherence`,
+  so the surfaces cannot disagree. A rollback within the revision is compliant; unstamped events
+  count on neither side; a null score is an explicit em dash, never 0%.
+- **By developer** gets a sortable compliance column; the **PR Volume timeline** gets one aggregate
+  tile (the grid stays four-wide on hubs whose response predates the field).
+- **By model shows an honest placeholder**: transitions carry no model and there is no session
+  reference to attribute one from, so the column renders an em dash titled "transitions do not
+  carry a model" instead of a fabricated split.
+- **No compliance under a PR search**: `?pr=` supersedes the window, so a number scoped to nothing
+  is omitted rather than silently computed over all time.
+
+## [2.0.0-beta.40] — 2026-10-12
+
+Pre-release, cut from the `beta` line (PRs #224–#228). Cumulative over `2.0.0-beta.39`.
+
+### Org-level flow adherence in the hub UI (CGLAB-611–615)
+
+- **The server judges every transition it can** (CGLAB-612): `step.transitioned` events now carry
+  `flowId`, `flowRevision` and a `compliant` verdict — from board drags, verify moves and the PUT
+  rollback path alike. A move between two steps of the SAME revision is compliant, rollbacks included:
+  there is no direction term, so honest rollbacks never drag the score down. Transitions without a
+  resolvable flow stay unstamped and count on neither side of any score.
+- **The hub rolls adherence up** (CGLAB-613): `rollups_daily` gains `transitions_judged` and
+  `transitions_compliant` (schema + idempotent `IF NOT EXISTS` migrations on SQLite and Postgres).
+  Historical days default to 0 so they stay out of both sides of the score.
+- **`GET /v1/adherence`** (CGLAB-614): the org's score under the SAME filter set as every other hub
+  view (users, types, projects, itemTypes, childHubId, from, to). It branches between the rollup
+  counters and raw events exactly as `/v1/metrics` documents, and both branches answer the same
+  window the same way — pinned on SQLite and the real Postgres adapter. `score` is `null`, not 0,
+  when nothing was judged.
+- **A Flow adherence view in the hub UI** (CGLAB-615): `/adherence` in the dashboard nav — score,
+  judged/compliant/off-flow tiles and a by-day table, with an explicit em dash (and sr-only text)
+  for a day that judged nothing and an explicit empty state for a window that judged nothing at all;
+  never a bare 0% for missing data. Filter parity is structural (the Org page's `useUrlFilters`/
+  `FilterAccordion`/facet machinery), the two scoring rules are stated in the page copy, and an
+  event-type selection that excludes Step changed names itself as the cause of an empty board.
+- **Org flow picker marks the active flow** (CGLAB-611): the picker compared the project's local
+  flow id against hub ids; it now prefers the hub id, so the installed flow shows as selected.
+- Also fixes a date bomb in a hub-ui test: the peopleNames heatmap test now pins its window instead
+  of silently depending on the wall clock.
+
+## [2.0.0-beta.39] — 2026-10-10
+
+Pre-release, cut from the `beta` line. Cumulative over `2.0.0-beta.37`.
+
+### Flow adherence score (CGLAB-607–610)
+
+- **Immutable flow revisions**: every flow write lands as a new revision (`flow_revisions` table); legacy blob-only databases are backfilled to revision 1 on init. `getFlow`/`listFlows` serve the newest revision stamped with its number; `listFlowRevisions` exposes the history. Writes are transactional so the blob and the newest revision cannot disagree.
+- **Transition events carry their flow version**: every item history entry (including the initial one) is stamped with `flowId` + `flowRevision` at transition time — verify, board drags, propagation and rollbacks alike. Projects without a resolvable flow transition unstamped.
+- **Flow adherence score, versioned events only**: `computeFlowAdherence` in core judges each stamped transition against the flow revision it names; unstamped and unresolvable-revision events are excluded from both numerator and denominator (backwards compatible). Exposed via `GET /items/:id/flow-adherence` and `GET /projects/:id/flow-adherence`.
+- **Adherence in the board UI**: an Adherence tab on the card detail modal — score %, judged counts, explicit no-score and error states, live refresh.
+
+## [2.0.0-beta.37] — 2026-10-09
+
+Pre-release, cut from the `beta` line (PRs #218, #219, #220, #206). Cumulative over `2.0.0-beta.36`.
+
+### Agent-run attribution
+
+- **Agent runs are no longer misattributed across concurrent sessions.** `agenfk gatekeeper` now keys the
+  active-work note to the harness session (`--session`, else `AGENFK_SESSION_ID`, else
+  `CLAUDE_CODE_SESSION_ID`), and the run-recorder hook no longer falls back to the shared note for named
+  sessions — no keyed note, no run. One session's card can no longer capture every other session's tool
+  calls for the TTL.
+
+### CLI
+
+- **`agenfk pr create --base <branch>`** chooses the PR's target branch (pass-through to
+  `gh pr create --base`). A branch cut from `beta` no longer opens its PR against `main` by accident. Arg
+  assembly is a pinned pure helper.
+
+### Reviews
+
+- **The review range is the server's to work out** (PR #206, thanks @gabrielnov). `review record` may omit `--range` (or pass `auto`):
+  the server fills in where the card's work began, up to HEAD, uncommitted work included. Explicit ranges
+  are checked exactly as before.
+- **The reviewer's brief is written by the server** (PR #206, thanks @gabrielnov). `agenfk review brief <id>` (MCP: `review_brief`,
+  GET `/items/:id/review-brief`) hands an independent reviewer the range, the files changed, the tree's
+  warnings with their answers, the author's evidence labelled as claims, the tests already run and the
+  independence rules. The verify reply on a review step points the agent at it.
+- **Flow contract lint** (PR #206, thanks @gabrielnov). Flows whose exit criteria ask for a check the step does not carry are flagged
+  in the flow editor on save and on verify. Warnings only — nothing is refused and nothing is switched on.
+
+### Desktop
+
+- **Tag-pushed releases ship the framework dist bundle** (PR #218, thanks @gabrielnov). A `desktop-v*` tag now attaches
+  `agenfk-dist.tar.gz` alongside the installers, so a release cut without the manual Release workflow no
+  longer leaves `agenfk upgrade` 404ing into a source build.
+
+### Windows
+
+- **Every child process is spawned hidden.** All runtime `child_process` call sites pass
+  `windowsHide: true`; a guard test fails the build on any new one that does not.
+
+## [2.0.0-beta.36] — 2026-10-08
+
+Pre-release, cut from the `beta` line (PR #217). Cumulative over `2.0.0-beta.35`.
+
+### Framework
+
+- **Reviews are visible: a Reviews tab on the card detail modal.** Independent review records
+  were server-written but never shown. The tab renders each record — reviewer client/agent/session, the
+  commit range reviewed, and each finding with its fate — newest first, and only on cards that carry one.
+- **Findings can carry a severity** (`HIGH` / `MEDIUM` / `LOW`), validated by `record_review` and rendered
+  as a chip; findings within a review are ordered most-serious-first. Records without severity render
+  unchanged, and unknown fields are stripped server-side.
+- **Severity is advertised to reviewers**: the `record_review` MCP schema, the `agenfk review record`
+  `--findings` help and the shipped rule bundles document the field.
+- **Tag-pushed releases now ship the framework dist bundle.** A `desktop-v*` tag used to attach only the
+  installers, so a release cut without the manual Release workflow left `agenfk upgrade` 404ing into a
+  source build. The desktop workflow now packages and uploads `agenfk-dist.tar.gz` too.
+
+## [2.0.0-beta.35] — 2026-10-06
+
+Pre-release, cut from the `beta` line (PRs #207, #209, #210, #213). Cumulative over `2.0.0-beta.34`.
+
+### Windows
+
+- **Every child process is spawned hidden (#200, PR #207, thanks @Caldas).** The background API server has no
+  console, so each console child it started got a new, visible window that stole keyboard focus - every
+  `agenfk verify`, close commit and git probe flashed a CMD window. All 170 runtime `child_process` call sites
+  now pass `windowsHide: true` (a no-op on macOS and Linux), and a guard test fails the build on any new one
+  that does not.
+- **Hook wrappers are written on a single-client install (#192, PR #209, thanks @Caldas).** `agenfk integration
+  install|resume <client>` skipped writing the `~/.local/bin` wrappers its hooks point at, so a missing
+  wrapper exited 127 and the guard silently disappeared.
+- **`agenfk down/up/kill` find the native server (#199, PR #210, thanks @Caldas).** Under Git Bash the kill
+  helpers took the POSIX branch and never saw the native `node.exe`, and PowerShell/cmd relied on `wmic`,
+  which current Windows 11 no longer ships. `down` no longer reports "not running" while the server holds the
+  port, and `restart` no longer starts a second server beside the first.
+
+### Desktop (PR #213)
+
+- **Installed agents are found, and opened, on the PATH a fresh terminal would have (CGLAB-164).** The agent
+  picker said "Not installed" for CLIs the user had: a Finder-launched Mac app gets launchd's minimal PATH,
+  and a Windows app keeps the PATH it started with. Each OS profile now provides that fresh PATH (login shell
+  on Unix; the Machine and User Path on Windows) and the terminal opens exactly the path detection found. On
+  Windows an npm `.cmd` shim runs through `cmd.exe /d /v:off /s /c` with its arguments escaped for both
+  parses, so a card's text cannot start a second command. **Check again** in the picker re-detects and
+  re-reads the PATH, so an agent installed with the app open shows up without a restart.
+- **The server the desktop starts gets that PATH too.** Settings > Account said the GitHub CLI was not
+  installed with `gh` in `/opt/homebrew/bin`; the server had been forked with `/usr/bin:/bin:/usr/sbin:/sbin`.
+- Sidebar: the project's `+` opens a terminal with a default agent chosen in Settings (Shell by default), and
+  "Ask before opening" applies to every terminal.
+- Known limit: through npm's `claude.cmd` on Windows, cmd.exe's 8191-character command line can reject a very
+  long first prompt; the native `claude.exe` is unaffected.
+
+## [2.0.0-beta.34] — 2026-10-05
+
+Pre-release, cut from the `beta` line (PR #205). Cumulative over `2.0.0-beta.33`.
+
+### Board / verify
+
+- **A dirty tree shared with live cards warns instead of blocking a card's start (aa98ccf4).** `tree-clean`
+  counted every uncommitted file in the tree as the starting card's own, so a live sibling's work in a shared
+  tree forced serializing siblings — the starting card stayed blocked until the other closed. When the server
+  resolves other live cards in the same tree (anchors, DONE, inactive and `isSpecial` boundaries excluded),
+  `tree-clean` now warns and names them instead of blocking; the dirt is not attributable, and the post-claims
+  stance (26c059f6) never blocks a card on its siblings. The exit side stays guarded by the ownerless-staged
+  close refusal.
+
+### Docs
+
+- `docs/RELEASES.md`: how the `beta`/`main` release model works — channels, cutting betas, hub deploys,
+  graduation to stable, hotfix rules.
+
+## [2.0.0-beta.33] — 2026-10-05
+
+Pre-release, cut from the `beta` line (carried by PR #194). Cumulative over `2.0.0-beta.32`.
+
+### Hub
+
+- **Registry copies land on the org's configured registry branch (CGLAB-495).** `writeRegistryFile` sent the
+  target branch only as a `?ref=` query on the Contents-API PUT; GitHub reads the branch from the JSON body
+  (default = the repo's default branch) and ignores `ref` on PUT — so `copyCommunityFlows` into an org registry
+  whose configured branch is not the repo default wrote every flow to the default branch, while browse/install
+  read the configured branch and never saw them. The PUT now carries `branch` in its body, the misleading query
+  is gone from its URL, and a test pins the body.
+
+## [2.0.0-beta.32] — 2026-10-04
+
+Pre-release, cut from `feat/CGLAB-164_electron-desktop` (PR #194). Cumulative over `2.0.0-beta.31`, which never
+reached production: its hub crash-looped on boot and ECS rolled back to `2.0.0-beta.28`.
+
+### Hub
+
+- **The hub runs on Express 5, as its image always did.** `packages/hub` declared `express ^4`, but the Docker
+  image copies only the repo-root `node_modules`, where express is 5 - so production ran Express 5 while the
+  tests ran 4. The config-audit route walker (new in beta.29) read Express 4's `app._router`, found no routes on
+  Express 5, and refused to boot. The hub now declares `express ^5` and `@types/express ^5`; routers are mounted
+  through `mountRouter`, which records their paths (Express 5 keeps none), and a test fails if any production
+  dependency is nested under a package the image ships without its own `node_modules`.
+- **Installs outside Docker (npx / the dist tarball) move from Express 4 to Express 5.** Query strings now use
+  the simple parser: `?from[a]=b` is an unknown key rather than a nested object. No board or CLI request relies
+  on bracket syntax.
+
+### Board
+
+- **The card title is always in the detail header** - on every tab, and above a running verify's output, which
+  used to push it down. Edit mode edits it there too; a very long title scrolls within the header instead of
+  squeezing the body.
+- **No focus ring around the whole card detail or card picker** when they open (the brand `:focus-visible` ring,
+  CGLAB-434, framed the focused panel). Fields and buttons keep their rings; forced-colors mode keeps an outline.
+- **The card picker opens on its search box** when it has one; the panel used to take focus back from it.
+
+### Deploy (private hub deploy repo)
+
+- A deploy now fails when ECS rolls it back: `services-stable` is satisfied by the rollback, which is how the
+  beta.31 run went green while production stayed on beta.28.
+
+## [2.0.0-beta.31] — 2026-10-04
+
+Pre-release, cut from `feat/CGLAB-164_electron-desktop` (PR #194). It rejoins the two beta lines: everything in
+`2.0.0-beta.30` (the desktop changes and the Windows compat CI job from `main`) together with `2.0.0-beta.27`
+to `2.0.0-beta.29` (the visual system recolour, CGLAB-434, and the CGLAB-494 TODO sweep), which `2.0.0-beta.30`
+did not carry. No other changes; see those entries below.
+
+## [2.0.0-beta.30] — 2026-10-04
+
+Pre-release, cut from the `feat/CGLAB-164_electron-desktop` line. It held the desktop changes below and `main`
+(PR #202, the Windows compat CI job), but not the `2.0.0-beta.27`-`2.0.0-beta.29` work, which was cut from
+the stacked `feat/CGLAB-434` / `feat/CGLAB-494` branches. The two lines rejoin in the next beta.
+
+### Desktop
+
+- **Terminal tabs scroll sideways** when more terminals are open than fit in the bar.
+- **Wider desktop rail:** 40 to 56px, 18px icons; tabs recede 32px.
+- **No empty title bar on macOS:** gone in full screen; the terminal tabs become the bar.
+
+## [2.0.0-beta.29] — 2026-10-04
+
+Pre-release, cut from `feat/CGLAB-494_todo-sweep` (CGLAB-494, the TODO sweep). Cumulative over `2.0.0-beta.28`.
+
+### Verify engine
+
+- **Monorepos: reuse looks beside the project root.** In a project that is a subdirectory of its repository, a
+  green is shared (capture reuse, close-green-on-record, sibling propagation) only when the content OUTSIDE the
+  root is the same too - HEAD's tree there plus the work in progress, by content. A green from before another
+  agent changed a neighbouring package is no longer reused. Top-level projects hash exactly as before. Simulated
+  A/B against beta.28 on a scratch monorepo.
+- **The board's specs gate cards:** `packages/ui` runs inside the root vitest run as its own project, so the
+  verify command, the test report and `vitest related` see them.
+- **Hub-switched-off checks:** a parent the roll-up walks past a switched-off review records it for the PR;
+  `--check-note` on a switched-off check says so; `pr-register` / `pr create` are quiet on a 404 from an older
+  server; a hub admin's copy of a hub flow keeps its switched-off checks.
+
+### Server and CLI
+
+- **Uncaught route errors reach the CLI and MCP as JSON** with their message (no stack), not an HTML 500.
+- **Windows:** `configure-ide` and the installer register the MCP server as `cmd /c <agenfk.cmd> mcp`.
+- **Hook commands are quoted** when the home path holds a space or a shell character; such a home silently
+  disabled every guard. A Windows end-to-end hook test runs the real installer and every hook under Git Bash.
+
+### Hub
+
+- **Config audit log (Admin -> Audit log):** who changed which setting, when, from where (board / CLI /
+  federation, IP), before -> after. Secrets never stored; append-only, kept forever; rows link to older trails;
+  CSV export of the filtered view. Recorded inside each config route after its guards, before the reply.
+- **Admin recovery for an SSO-only hub:** `AGENFK_HUB_RESET_ADMIN_EMAIL` makes a boot log a single-use, one-hour
+  token; `/recover` sets that admin's password and signs them in.
+- **Client errors keep their 4xx** (malformed JSON, an undecodable path escape).
+
+### Board
+
+- **Breadcrumb:** too long for its row, the topmost levels ellipsise first, so the immediate parent and the
+  current level stay visible.
+
+## [2.0.0-beta.28] — 2026-10-03
+
+Pre-release. Beta, cumulative over `2.0.0-beta.27`: everything below, plus the changes in this section. Measured
+on the 2.0 lineage simulation (beta.27 snapshot, same machine load, back to back): suite runs halved (14 -> 7) and
+the time spent in `agenfk verify` fell 40%.
+
+### Reuse
+
+- **The close stands on a green of this tree already on record (ef1342b8).** The move that ends the flow used to
+  run the verify command again on a tree a green was already recorded for - the card's own earlier run, a
+  sibling's, the previous card's close, REFACTOR's whole run. It now closes on that green when its content
+  matches, with the same command, in the same checkout, and no command check on the step. A card that changed
+  code runs its suite once, not twice; a no-op card runs it zero times.
+- **A docs-only change closes without a run.** Files under `--test-report-reuse-ignore` (default `**/*.md`, minus
+  any a test names) are left out of that match at the final step too. If the verify command checks such files (a
+  markdown lint, `prettier --check .`, a link checker), narrow the globs or set them to `none`.
+- **`agenfk verify --plan` predicts it:** "would not run `<cmd>`: a green of this tree's content is on record".
+
+### Faster verifies
+
+- **A quick background verify answers in about half a second (cc5e4943).** `agenfk verify` and MCP
+  `validate_progress` polled a background run every 1.5s, so every such verify took at least 1.6s. They now poll
+  after 100ms and back off to 1.5s.
+
+## [2.0.0-beta.27] — 2026-10-03
+
+Pre-release. Beta, cumulative over `2.0.0-beta.26`: everything below, plus the fixes in this section.
+
+### Windows
+
+- **agenfk can launch the AI client CLIs on Windows (ad57c267).** The installer, the uninstaller and
+  `agenfk configure-ide` could not start claude, codex, gemini, cursor, opencode or pi: an npm-installed client is a
+  `.cmd` shim, which Node 22 refuses to spawn without a shell (EINVAL, CVE-2024-27980), and Claude Code's native
+  installer ships `claude.exe`, which the forced `claude.cmd` never found. A client is now looked up on PATH only
+  (never the current directory, so a repo's stray `claude.js` cannot run in its place), as `.exe`/`.cmd`/`.bat`; an
+  `.exe` is spawned directly, a shim through cmd.exe with every argument quoted. `--with-mcp` now registers the MCP
+  server on Windows.
+- **The Windows CI job is blocking.** It is the only place the Windows-only cases run; a failure there now fails
+  the run.
+
+### Fixes
+
+- **`agenfk init` respects the CLI-only default (98aab7b6).** On a machine with Claude Code, every `init` registered
+  the agenfk MCP server at user scope and wrote its permissions, undoing the CLI-only install. It now does so only on
+  a `--with-mcp` install (`agenfk configure-ide` still adds it on demand), a failure in that step no longer reads
+  "Could not connect to API server", and a missing db path is a warning, not a red error.
+- **`agenfk init` without Claude Code prints no error (5cc7de1e).**
+- **A card cannot be created under a project that does not exist (f36c8a42).** `POST /items` and the JIRA/GitHub
+  imports answer 404 naming the project; verifying a card whose project is gone answers a clear 409 pointing at
+  `agenfk move`, instead of a bare 500.
+- **The board announces the stable that graduates a beta (61bc10b0).**
+
+## [2.0.0-beta.26] — 2026-10-02
+
+Pre-release. Beta, cumulative over `2.0.0-beta.25`: everything in beta.25 and beta.24 (below), plus the fixes in
+this section and the Windows CI job from `main` (PR #202).
+
+### Security
+
+- **JIRA secrets are owner-only (cc26b206).** `~/.agenfk/config.json` (the JIRA client secret) and
+  `jira-token.json` (access and refresh token) were written 0644, readable by every local user. Every writer -
+  the CLI, the server, telemetry and the installer - now writes them 0600, through a fresh file renamed over the
+  old one, so a reader that opened the old file cannot follow later writes. The server also tightens both on
+  start. If other people have logins on your machine, rotate the JIRA client secret: it may already have been read.
+- **A federation parent is never a link-local or cloud-metadata address (9afde47e, fa4f7dbd).**
+  `AGENFK_HUB_ALLOW_PRIVATE_PARENT` admits a parent on the LAN; it no longer admits `169.254.0.0/16`, `fe80::/10`,
+  AWS/GCP/OCI/Alibaba metadata (including their IPv6 addresses), Azure WireServer `168.63.129.16` or OCI Classic
+  `192.0.0.192`, in any spelling (IPv4-mapped, NAT64, 6to4, RFC 8215 local-use NAT64 under every placement). The
+  rule is applied to the URL, to every DNS answer and, for a stored IP-literal parent, before the socket opens. A
+  parent reached over link-local, which used to work with the opt-in, is now refused.
+
+### Upgrades pick the newest release by version
+
+- **`agenfk upgrade` never downgrades without being asked (3a261573).** On a beta, plain `upgrade` used to install
+  the older latest stable. It now refuses a version that is not newer; `--force` reinstalls the same version only,
+  and only `--version <x>` goes backwards. `--beta` includes stable, so a beta install moves to the stable that
+  graduates it. `/agenfk-upgrade` picks the channel from the installed version and no longer passes `--force`.
+- **"Latest" means newest by version, everywhere.** GitHub's `/releases/latest` picks by date, so an older line's
+  hotfix or a hub release could win. The CLI, the server's `/releases/latest` (which feeds the upgrade-tier gate,
+  the MCP notice and the board's reminder) and both npx installers now take the newest framework release by
+  version: never a `hub-v*` tag, a draft, or a tag with a prerelease part on stable (022b229a, 4bd98e16).
+- **The upgrade tier is the strongest among releases newer than yours (022b229a).** A mandatory hotfix on an older
+  line still gates, and `agenfk upgrade`, which installs the newest, satisfies it.
+
+### CI
+
+- **A Windows compat job runs beside the Linux one (PR #202).** Advisory for now (`continue-on-error`); it runs
+  `npm run test:windows` with a HOME that has spaces and accents.
+
+## [2.0.0-beta.25] — 2026-10-02
+
+Pre-release. Beta, cumulative over `2.0.0-beta.24`.
+
+- **Desktop terminal on Windows opens again.** Opening a terminal failed with `pty:spawn File not found`, because
+  the shell resolved to `/bin/sh` on every OS. On Windows the terminal and the agent picker's **Shell** entry now
+  start PowerShell by its absolute path (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`), and
+  `$SHELL` is ignored there (2fd7c65c).
+- **The agent picker's Shell entry uses your own shell on macOS and Linux.** It was fixed to `bash -l`: a machine
+  without bash could not open it, and zsh or fish users got bash. It now opens your shell (`$SHELL`, else your
+  account's shell, else `/bin/sh`) as a login shell where that shell takes `-l`. The plain terminal already used
+  `$SHELL` and is unchanged (df675f82).
+- **Server tests keep their databases out of the repository.** About 60 sqlite files (with their `-wal`/`-shm`
+  sidecars) were left in the repo root by test runs. Each server test now takes its database from `testDbPath()`,
+  in a directory the runner pins inside the HOME sandbox, which is deleted when the run ends; a guard test refuses a
+  server test that builds one with `path.resolve('<name>.sqlite')` (c89e677d).
+
+## [2.0.0-beta.24] — 2026-10-02
+
+Pre-release. Beta, cumulative over `2.0.0-beta.23`: everything in beta.23 and beta.22 (below) and the CGLAB-164
+desktop line under them, plus the two changes in this section.
+
+### ⚠️ BREAKING — claims are removed (26c059f6)
+
+Claims (a card's declared list of owned paths) locked the parallel work they were meant to protect: two agents
+could not change different regions of one file, and the refusals fired on the very work they guarded. They are
+gone end to end:
+
+- `agenfk update` has no `--claims` option, and `PUT /items/:id` no longer knows the field (an old client that
+  still sends it is not refused, and nothing is stored).
+- No claim gate anywhere: the gatekeeper, the PreToolUse hook (no more `CLAIM CONFLICT`), the worktree choice
+  and the check engine no longer read claims. Every file changed in a card's tree is that card's change.
+- The close commit and a step's `autoCommit` take the whole index, exactly what was staged. Staging only your
+  own card's files is each agent's job; nothing is ever staged for you.
+- The board shows no claim chip, and the fleet sheet launches every child that is not running or stopped by the
+  circuit breaker.
+- The rule bundles no longer tell agents to declare claims. The `claims` field old cards carry is dropped from
+  the database once, when the server starts.
+
+### Every build starts from an empty `dist/` (d781db05)
+
+`tsc` never deletes the output of a source that was removed, so old files kept shipping - the removed claim gate
+reached the desktop app's bundle that way. Each package that builds with `tsc` (cli, core, desktop, hub, server,
+storage-sqlite, telemetry) now cleans its own `dist/` in a `prebuild`, for the root build and `npm run build -w`
+alike. The hub and e2e-harness Dockerfiles copy the clean script. Your projects and cards are untouched: they live
+in the database and in each repository's `.agenfk/project.json`, never in a package's `dist/`.
+
+## [2.0.0-beta.23] — 2026-10-02
+
+Beta, cumulative over `2.0.0-beta.22`.
+
+- **The flow editor is on the shared type scale.** The five sizes (caption 11 / small 12 / body 14 / title 18 /
+  display 24), the two content widths and `eyebrow` moved from the hub's stylesheet into
+  `packages/brand/type-scale.css`, imported by both the hub and the local board, so the flow editor looks the same in
+  both. Visible changes: flow-name headings are 18px (were 20px) and the exit-criteria token estimate is 11px (was
+  10px).
+
+## [2.0.0-beta.22] — 2026-10-02
+
+Beta, cumulative over `2.0.0-beta.21`: everything in beta.21 (the CGLAB-164 desktop line), plus the CGLAB-434 work below.
+
+- **Cards stay small.** A card's step records no longer carry every suite run it ever took: each card keeps the
+  latest capture of each step and its latest green (rolled-back runs: greens only, newest 20), and the authoredTests
+  record points at its capture instead of copying every test name. On the first start after upgrading, the server
+  prunes existing cards the same way, keeps their `updatedAt`, frees the unreferenced results, and logs what it did;
+  later starts find nothing to do. In this repo a card's read went from 11 MB to under 20 KB.
+- **Reading a card leaves its step records out unless asked.** `GET /items/:id?records=1`, MCP `get_item` with
+  `includeRecords: true`, `agenfk get --records`. A test-count check whose recorded tests can no longer be read now
+  holds the card instead of passing it.
+- **The enforcer hook is CLI-first.** With the agenfk MCP server registered it no longer blocks `agenfk get`/`list`
+  (the CLI and MCP are interchangeable); direct database reads and `curl` to the local server stay blocked, and the
+  `mcp-fallback-approved` bypass is gone. pi's `read` tool now goes through the enforcer too.
+- **Board:** a bug split into tasks shows them - child-count drill-down, progress bar and the Subitems tab now work
+  for any card with children; drilling in shows a ← Back button that returns you to the card you came from.
+- **Hub admin safety:** the last admin cannot be demoted, deactivated or deleted; the admin guard re-reads the role
+  instead of trusting the session token; password sign-in is really off when "Email + password" is switched off;
+  destructive and fleet-wide actions ask for confirmation; failed admin actions say what went wrong where they happened.
+- **Hub mobile and accessibility:** phone layout with a drawer; every control named and stating its state; labelled
+  sign-in and setup forms; no information reachable only by hover; one type scale and two content widths; charts,
+  the heatmap and the timeline usable from the keyboard.
+- **Hub data fixes:** org tiles agree with the per-person rows; day and hour keys no longer depend on the Postgres
+  session time zone.
+
+## [2.0.0-beta.21] — 2026-10-02
+
+Pre-release. Beta, cumulative over `2.0.0-beta.20`: everything in beta.20 (and the `1.1.20` stable under
+it), plus the Electron desktop line (CGLAB-164) below.
+
+### New in this beta
+
+- **Project page, Cards tab.** Finished cards no longer offer Start: they say when they closed ("Done 4w ago",
+  read from the card's own history). Cards part-way through say Resume. Filters are two multi-select menus —
+  State (presets Open / In flight / Done / All above a tick per state, each counted) and Type — plus a search on
+  title or id. Open is the default, so finished cards are hidden until asked for. Long lists page 25 at a time.
+- **A card no longer closes while anything under it is unfinished.** The move that ends a card's flow is refused
+  (`CHILDREN_OPEN`, naming every open card) while a child or deeper descendant is open, judged by each card's own
+  project flow and checked again right before the write. The parent roll-up no longer closes a parent over a
+  paused or blocked child, and is released again when the last open descendant finishes.
+- **Commands a repository declares need a person's approval on the board.** A `verifyCommand` from
+  `.agenfk/project.json` runs only once approved on the project's Settings tab; approvals are pinned to a SHA-256
+  fingerprint of the exact command, and a command carrying hidden characters (bidi overrides, zero-width) is
+  refused and shown with them made visible. The CLI no longer approves. Existing approvals made before this beta
+  need approving again.
+- **Upgrades and the installer never overwrite a development checkout.** `agenfk upgrade`, the hub's
+  self-update and `install.mjs` refuse to extract a published build over a git checkout, comparing directories by
+  identity rather than by path spelling.
+- **Board date filter** (from the CGLAB-164 branch): choose Created or Updated, then a range.
+- **Settings:** the per-project "A worktree per card" setting is a real switch again.
+- **Merged onto the visual system (CGLAB-434).** The type square, the type badges, the project and card forms
+  and the board's date filter use the shared tokens; item types take their `--type-*` colours everywhere.
+
+### Earlier on this line (CGLAB-164)
+
+### ⚠️ BREAKING — one origin: the API and the Kanban UI share a port (CGLAB-165)
+
+The server serves the built UI itself, and `agenfk up` no longer starts `vite preview`
+beside it. **The dashboard is on the API's port — `http://localhost:3000` by default — and
+nothing listens on `5173` any more.**
+
+What this breaks, and what to do:
+
+- **Bookmarks, scripts and `open http://localhost:5173`.** Use `agenfk ui`, which resolves
+  the port rather than assuming one: the vite log wins when a dev server IS running, and
+  otherwise it reads `~/.agenfk/server-port`. A hard-coded 5173 opens a dead URL.
+- **Anything that assumed two origins.** The browser now talks to one, so a reverse proxy,
+  a CSP, or a CORS allowlist written for `5173` → `3000` describes a topology that no longer
+  exists. This is the point of the change: the desktop shell loads REST, Socket.io and the
+  assets from a single origin.
+- **`AGENFK_SERVE_UI`** selects the bundle. Unset, the server probes the shipped layout;
+  set it to a path and that path must be a BUILD OUTPUT — a directory containing `src/` or
+  `node_modules/` is refused, because `packages/ui/index.html` exists and the near-miss typo
+  would otherwise publish the source tree.
+- **`agenfk down` / `agenfk kill` still free 5173**, so a dev server someone starts by hand
+  is still cleaned up.
+
+Development note, found the hard way: the server reads `index.html` ONCE into memory
+(deliberately — serving it from disk risks a 500 when the directory is swapped underneath a
+running process), while assets are read per request. So rebuilding the UI with the server up
+leaves it serving a shell that points at hashed files Vite has just deleted, and the page
+renders black. `agenfk restart` after a UI build. Tracked as `2c8e4b64`.
+
+### Add Project: three doors, and none of them decides for you
+
+A dialog with tabs that TRADE the fields — **Pick a folder**, **Clone**, **Create on
+GitHub** — with the project name above them, because all three end in a project.
+
+- Picking a folder is two steps: choosing fills the folder and suggests a name from it, and
+  a separate press creates. The picker used to BE the decision, so a project existed the
+  moment it closed, under a name nobody was offered. That one-shot door is now gone from the
+  IPC surface entirely rather than left reachable.
+- Clone names its destination before it runs and remembers it, and refuses a "URL" that is
+  not an address: a leading dash is an argument to git, `ext::` is a transport that runs
+  commands (and the clone passes `-c protocol.ext.allow=never`, so the guarantee is ours
+  rather than the user's gitconfig), and a name carrying a path separator would land the
+  checkout outside the chosen folder.
+- Create on GitHub goes **remote first, then clone, then the project row** — any other order
+  leaves rubbish behind when the far end refuses — names the account it is acting as, and
+  defaults to private with both states visible. Owner and repository name are validated
+  before they reach `gh`: an owner is the START of an argv element, and `--source=/path`
+  would turn "create my repository" into "publish that local checkout".
+- Where clones land defaults to `~/agenfk`, shown in the field and changeable. It is created
+  when a clone actually runs, and the proposal is never written to preferences — otherwise
+  "remembered" and "suggested" stop being different things.
+
+### The project page, and starting work from it
+
+The page lists **the project's own cards** — it was reading the "which card?" list, which
+excludes TODO by design, so a project whose cards had just been created looked empty — and
+each row can start the agent on that card: `Start`, or `Open` when this app already has a
+terminal for it.
+
+Creating cards or adding a project now lands you on that page instead of closing onto the
+screen you started from.
+
+### Terminals begin on their card
+
+Pressing Start hands the agent the card — id, title, description — as a positional
+ARGUMENT at launch (`claude [prompt]`, `codex [PROMPT]`, `pi -- <message>`, each verified
+against the real CLI). Typing it into the terminal afterwards was a race nobody wins: these
+CLIs paint, load their servers, and only then take the terminal into raw mode.
+
+A project that is not a git repository opens the terminal in the project root instead of
+refusing, and the server's own sentence survives the trip — "HTTP 400" used to replace
+"fatal: not a git repository". Whether a directory IS a repository is now `git rev-parse
+--git-dir`, the same question the server asks: looking for a `.git` entry calls a project
+root nested inside a checkout "not a repository", and would have opened the card's terminal
+on whatever branch you had out, with no worktree.
+
+### Fixes found by using it, and by three independent reviews
+
+- The project dropdown did nothing: a `mousedown` guard closed the portal list before the
+  click could complete. Every test passed, because `fireEvent.click` sends only the click.
+- The terminal never showed its input line. The region holding it was a flex ITEM and not a
+  flex CONTAINER, so the pane grew to its content and xterm measured 64 rows where ~36 were
+  visible — the agent drew its box thirty rows below the window's edge, with nothing
+  overflowing to scroll.
+- A BLOCKED row was skipped at creation while its children were created anyway, with no
+  parent: a story with a missing title turned its tasks into loose cards at the board root.
+- The project page never refetched, so the flow that lands you on it landed you on a stale
+  list.
+- `Cancel`, the X and Escape did not stop the creation loop they appeared to stop.
+- The agent and project menus became portals and needed real dismissal: two dropdowns could
+  be open at once, over the modal.
+- What an agent prints while it is asked for a decomposition is now on screen, stderr
+  marked — "out of tokens" arrived on a stream nobody displayed — and its stdin is closed at
+  launch, which is why `pi` appeared to hang forever.
+
+## [2.0.0-beta.20] — 2026-10-01
+
+Beta, cumulative over `2.0.0-beta.19`: everything in beta.19, plus the dashboard consistency work below.
+
+- **The dashboards read as one product.** Org, PR overview and the user page open with the same header, keep the
+  period in the same place, and draw every headline number the same way.
+- **One rule for dates and times.** Times show in your local zone with the UTC time on hover, dates use one
+  unambiguous format ("30 Sep 2026"), and a custom range is picked with paired From/To fields and a clear button.
+  PR overview and the activity timeline now file events under your local day by your zone's own rules, so a range
+  across a daylight-saving change is no longer an hour off. A malformed date in a shared link no longer breaks a page;
+  a shared `?from=` now means local midnight.
+- **Plain language.** Event types read as words under a few headings (Work items, Checks, Pull requests, Sessions,
+  Security, Fleet) with the raw id on hover; "Checks passed/failed" became one "Check pass rate" tile; size points say
+  what they are and link to how they are derived.
+- **Sortable, searchable tables.** Org's Users and PR overview's By developer / By model tables sort by any column;
+  Users can be searched by name or email. The user page says "Showing latest 200 of N" and loads more on request.
+- **Richer Org user rows.** Each person shows items closed, check pass rate, PRs and closures per day, computed by
+  the hub (`GET /v1/users` now returns these per person).
+- **Stat tiles filter on click.** Clicking a tile sets the Event type filter to what it counts; clicking again clears it.
+- **Readable event details.** Expanding an event on the user page shows its key fields (step change, failed checks,
+  PR, model, size, command…) with PR and JIRA links, and the raw JSON behind a toggle.
+- **Hub events carry the tracker link.** The local server now sends a linked item's tracker URL with its key, and
+  sends the key reliably (a stale cache dropped links added after an item's first event).
+- **Hub API:** `/v1/timeline` pages by cursor (`before`) and returns `total` and `pr_url`; `/v1/prs/overview`,
+  `/v1/histogram` and `/v1/users` accept `tz` (IANA zone). A repeated `tzOffsetMin` on `/v1/histogram` is now a 400.
+- **Federation:** a parent hub shows child-hub developers by name under the keep policy.
+
+## [2.0.0-beta.19] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.18`: everything in beta.18, plus the dashboard changes below.
+
+- **Dashboards open on data, not on filters.** Org rollup, PR overview and the user page start with their filters
+  collapsed behind one summary line ("30 days · item.closed · all projects") and an Edit filters button; the period,
+  and PR overview's PR search, stay in view. Opening the filters is kept in the link (`filters=1`); an old `filters=0`
+  link still opens collapsed.
+- **Filters live in the link on every dashboard.** Org and the user page now keep their facets and period in the URL,
+  like PR overview, so a reload or a shared link shows the same view. A bare visit opens the way this browser last
+  left it; a custom date range is never carried from one person to the next.
+- **Loading and errors no longer look like an empty fleet.** Tiles, the Users list, the event list and the activity
+  timeline show a skeleton while loading instead of zeros ("0 reporting", "0 shown", "0 events"), and a failed query
+  shows the hub's reason with a Retry.
+- **People are shown by name.** The Users list, PR overview's developer table, heatmap and developer filter, and the
+  user page heading show the name from the person's installation, with the email under it; someone with no known name
+  still shows their key. New hub endpoint: `GET /v1/people/names`.
+- **Org's Users panel follows the Event type filter.** Its counts match the chart next to it and say so ("with
+  matching events"); the tiles above, which apply every filter except event type, now say that.
+- **Hub pages sit against the sidebar on wide screens** instead of floating in the middle of a large monitor.
+
+## [2.0.0-beta.18] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.17`: everything in beta.17, plus the admin reorganisation, the card dates and the
+hook fixes below.
+
+- **The hook guards now run on Windows, and the MCP enforcer runs at all under Claude Code** (#192, #198, thanks
+  @Caldas). Claude Code runs hook commands through Git Bash; the installer registered unquoted backslash `.cmd` paths,
+  which bash cannot run, so every hook was skipped without a word. The gatekeeper and PR hook also never recognised
+  themselves as the entry script on Windows. And on every OS the enforcer read `tool` where Claude Code sends
+  `tool_name`, so its Bash/Read rules (direct database reads, `curl` to the local server) never fired: they do now.
+  The run hook, added after the fix was written, gets the same treatment, and every Claude Code hook command now comes
+  from one rule, so a new hook cannot miss it.
+- **Hub admin is grouped, with a landing page.** The rail groups the admin pages into People, Access, Fleet and Hub,
+  and `/admin` opens on an overview instead of the sign-in settings. Installations lead with the person, Flows and the
+  flow registry are separate tabs, enum values read as plain words, secrets and tokens get a copy button and a token
+  shown once warns before you leave the page, disabled sign-in providers collapse, and admin pages load and validate
+  fields the same way.
+- **A refused upgrade cancel says so on its row.** A hub error on Cancel waiting / Clear stuck used to go into the
+  issue form's banner, which is only shown while that form is open, so nothing appeared.
+- **Cards show when they were created and last updated**, on the card face and in the detail modal.
+
+## [2.0.0-beta.17] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.16`: everything in beta.16, plus the visual system below (CGLAB-434).
+
+- **One visual system for the hub, the flow editor and the board.** Colours now come from shared tokens in
+  `packages/brand/tokens.css`: teal only for the brand mark and the one primary action on a surface, indigo for
+  selection, focus and links, muted neutral surfaces, status colours only for real state, a validated six-hue chart
+  palette and a size ramp whose ends stay visible in both themes. Item types keep their own colour everywhere.
+- **"Running" is one colour everywhere**, selected rows and tabs are visibly selected in dark mode, and dialogs,
+  dropdowns and menus are opaque instead of letting the page show through.
+- **Focus is visible on every control**, and light-mode helper text now meets 4.5:1 contrast.
+
+## [2.0.0-beta.16] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.15`: everything in beta.15, plus the fix below (CGLAB-164).
+
+- **A close onto an exit step not named DONE now tells the agent what the close commit did.** The close commit
+  was made, but the verify reply only reported it, with the push instructions, when the card landed on the
+  literal `DONE`. On a flow ending in `SHIPPED`, say, the agent was not told the commit had FAILED or what was
+  left unstaged, and could push a branch without its work. The reply now follows the move that ends the flow,
+  whatever the exit step is named. The same close also stops handing the agent the exit step's criteria as work
+  still to do.
+
+## [2.0.0-beta.15] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.14`: everything in beta.14, plus the fixes below (CGLAB-164).
+
+- **The suite no longer runs twice on the move that ends the flow.** With a test report whose command is the
+  project's verify command, leaving the last working step captured the suite and then ran the verify command
+  again. The close now stands on the step's own capture when it is a whole green that ran on this move, of the
+  same command, in the same tree, with the tree unchanged since. A reused green, a partial run, a step with a
+  command check, or a project with no report path still runs the command. The leave plan says which (`closes`
+  instead of `then`), and `verify --plan` predicts it. In a simulated walk of the same cards: 10 suite runs on
+  beta.14, 7 now.
+- **Sibling propagation works on flows whose exit step is not named DONE.** A sibling's green of the same tree
+  only carried over when the sibling sat on the literal `DONE`, so on any `agenfk flow create` flow (exit step
+  `SHIPPED`, say) every child ran the verify command again. "Finished" is now the step the move that ends the flow
+  lands on - the same rule the hub's `item.closed` uses - and the dry run follows it.
+- **The default flow's TEST step no longer tells the agent to run the full suite itself.** Leaving it runs the
+  project's verify command, so the criteria now say to run only the tests being worked on, then verify, and to
+  report the numbers of the tests the agent ran. Projects on the built-in default flow get the new text on
+  upgrade; a flow copied from it keeps its own.
+
+## [2.0.0-beta.14] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.13`: everything in beta.13, plus the change below (CGLAB-164).
+
+### What leaving a step runs, told before it runs
+
+Agents ran the full suite themselves and then `agenfk verify` ran it again. The server now says, in advance,
+what leaving the current step will run - from the same code the verify uses, so the two cannot disagree.
+
+- **`agenfk gatekeeper` and every verify reply** end with it: the project's suite (and why: which checks, or
+  the next step's entry baseline), then the verify command on the final step, or nothing - with "don't run the
+  full suite yourself first" when it runs, and "the tests your exit criteria ask for are yours" when it does not.
+  It also says when the suite is deferred to the parent, waits on a person's approval, or when verify will refuse
+  (no verify command, no tree to run in).
+- **`agenfk verify <id> --plan`** (MCP: `validate_progress` with `plan: true`) predicts it on the current tree -
+  a reuse of a green of this tree, only the changed or affected tests, the whole suite, a sibling's green, or
+  nothing - without running anything or moving the card. A final move with a capture predicts both legs.
+- **`agenfk flow show`** gets an "On leave" column; `--json` adds each step's `leavePlan`.
+  New endpoints: `GET /items/:id/leave-plan[?predict=1]`, `GET /projects/:id/flow/leave-plans`.
+- The rules for every client say to read it before running the suite.
+
+## [2.0.0-beta.13] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.12`: everything in beta.12, plus the changes below (CGLAB-164).
+
+- **Bare `agenfk` no longer offers an older stable as an update.** On a beta it offered 1.1.20: it asked only the
+  stable channel and fired whenever the versions differed. It now compares against the newest release the install's
+  channel reaches - the latest stable, and on a beta also the latest beta - offers only a strictly newer one, and
+  names the command that installs it (`agenfk upgrade --beta` for a beta). A stable install is never pointed at a
+  beta, even one published without the pre-release flag.
+- **The latest beta is the newest version, not the newest publish date.** A hotfix beta for an older line,
+  published later, is no longer "the latest beta", so `agenfk upgrade --beta` cannot downgrade to it.
+- **What's New shows the installed release's notes.** The version chip showed the latest stable's notes on a beta.
+  It now reads the new `GET /releases/current` - the installed version's own release - and says so, with a link to
+  the releases page, when that version has none. `GET /releases/latest` is unchanged.
+
+## [2.0.0-beta.12] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.11`: everything in beta.11, plus the change below (CGLAB-164).
+
+- **The Settings dialog's edge is visible in dark mode.** It was filled with the board's own colour, outlined at
+  10% and set over an unblurred backdrop, so it blended into the board. It now wears the Org Flows picker's frame
+  (fill, outline, shadow) over the GitHub Import modal's blurred backdrop, in both themes.
+
+## [2.0.0-beta.11] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.10`: everything in beta.10, plus the changes below (CGLAB-164).
+
+### Quieter install, upgrade and services
+
+- **An upgrade prints two lines** (`Upgrading AgEnFK X → Y...`, `✓ Upgraded to Y`) instead of ~130. `up`, `down`,
+  `restart` and `kill` print one line each. A first install prints a short next-steps block and the telemetry
+  notice once; re-installs print neither. `install.mjs --quiet` (what `agenfk upgrade` runs) prints only warnings.
+- **The step-by-step log is behind `--debuglog`** on `agenfk upgrade`, `agenfk up`, `scripts/install.mjs` and the
+  npx installer. Warnings and errors always print, prefixed ⚠, including a failing child's own output (npm ci, tar,
+  `mcp add`), which is otherwise no longer shown.
+- **The ASCII banners are gone**, from the CLI and from the npx installer, and so is the `figlet` dependency.
+- **`agenfk down` says what happened**: it stopped the server, found nothing, or could not stop it (a warning and
+  exit 1). It used to say "stopped" either way. `kill` reports how many processes it killed.
+- **Only the listener is killed.** `up`, `restart` and `kill` stop the process listening on the board's port, not a
+  browser or the desktop app connected to it, and no longer kill whatever listens on vite's port 5173.
+- **`agenfk restart` runs `up` in the foreground**, so its line - and any warning: a moved port, a server that never
+  reported one - reaches the terminal.
+- The PATH hint prints only when `~/.local/bin` really is off PATH.
+
+An upgrade *from* beta.10 still shows beta.10's own upgrade output: that code runs before the new version lands.
+
+### Also
+
+- The board's lifecycle is the server's: no separate vite UI process anywhere.
+- The Settings dialog keeps its tallest section's height, capped at the viewport, and scrolls inside.
+- Agent Runs label runs by harness; Claude Code runs record the real model.
+- Rate limits on `GET /verify-runs` and `PUT`/`DELETE /items/:id`.
+
+## [2.0.0-beta.10] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.9`: everything in beta.9, plus the changes below (CGLAB-429, CGLAB-430).
+
+### Running verifies, in every project
+
+- **A "N verifies running" chip** appears once a verify has run for more than 10 seconds, in any project: in the
+  browser board's header, and in the desktop app's status bar (on every tab, terminals included). Its list shows,
+  for each: the project and card, the step, how long, what it is doing (running the whole suite, only the affected
+  tests, reusing a green run, waiting for a suite-run slot and how many are ahead, waiting on another run of the
+  same tree, or waiting on a person's approval) and the last line it printed.
+- **Clicking one opens its card** - switching project if needed - on Overview, where the run's output streams.
+- Served by the new `GET /verify-runs` and pushed over the socket as `verify_runs` (coalesced); it carries no step
+  records or output bodies, and the board reads it again when its connection comes back.
+
+### Faster step verifies
+
+- **Only the tests the change affects, on intermediate steps.** A project that sets a related-tests command
+  (`agenfk update-project <id> --test-report-related-command "npx vitest related --run {files}"`, `jest
+  --findRelatedTests {files}`, ...) runs, on a step that changed code, only the tests related to the changed files,
+  merged over the step's entry results by file. It runs the whole suite instead for a config, lockfile or setup
+  change, a deleted file, a declared test-path file, too many files, a change outside the tree, a changed test
+  file the run did not report, a changed file that is not JS/TS source (a snapshot, a fixture, a template - a related
+  run follows imports and cannot trace them), or a related run that finds no test at all. A step with the `testing`
+  role always runs the whole suite, and so does the final step. The partial runs also work from a step entered on an
+  uncommitted tree or through a partial run - how a TDD coding step is entered - from the per-file map each capture
+  records. A whole run that only code changes caused suggests the command.
+- **A Markdown edit no test names no longer re-runs the suite.** Capture reuse compares the tree without the
+  project's reuse-ignore globs (default `**/*.md`, `--test-report-reuse-ignore '<globs>|none'`), except a file some
+  test names (this repo's release test reads `CHANGELOG.md`), or whose directory a test names - by its path, or its
+  name as a quoted string, as a test that lists `.claude/commands` does. The final step, sibling propagation and command-check
+  sharing still see every file.
+- **Suite runs are queued server-wide.** At most `maxConcurrentSuiteRuns` run at once across every project (0 =
+  automatic = half the CPUs; 1 up to the CPU count). The rest wait first in first out and say they are waiting.
+  Several agents' suites at full parallelism had put a 12-core machine at load 76-88, and timing tests failed only
+  under agenfk. Raising the limit starts waiting runs at once.
+
+### Fixes
+
+- **A red run is no longer replayed as green.** A capture counted as green on exit code 0 alone, so a test report
+  command joining suites with `;` (the last suite's exit wins) recorded a run with failures as the tree's green, and
+  every later verify at the same content re-judged that stale red report - no retry could clear it. Green now needs
+  exit 0 and a report with no failed test and no broken file.
+- **The board no longer stalls during verifies.** `GET /items` left step records in: one project's list was 88 MB,
+  and every verify made every open board refetch it, blocking the server for seconds. The list leaves them out, and
+  capture records' per-test results now live in their own table (deduplicated, read back only when asked); existing
+  databases are moved over once at startup.
+- **What a capture records is what it ran on.** The file map and the reuse state were read after the check that the
+  run saw one stable tree, so an edit in that moment was recorded as tested. They now come from that one read. A
+  record whose per-test results cannot be read back is never green; the close-commit stamp judges green by the report
+  too, not the exit code alone; and tree states recorded before this release are not compared (in a project that is
+  a subdirectory of its repository, an uncommitted edit to a tracked file had hashed as the committed file).
+
+### Upgrading
+
+- **`GET /items` (and `agenfk list --json`) no longer carries `stepRecords` or `supersededRecords`.** Read a card
+  with `GET /items/:id` / `agenfk get <id> --json` for them.
+- **The database is migrated at startup** (per-test results move to a `blobs` table). A server older than beta.10
+  does not read the moved results, and would take such a record for a green run: to be able to downgrade, take a
+  backup first (`agenfk backup`) and restore it.
+
+### Removing tests while changing behaviour
+
+- `test-count-not-lower` still holds a coding step, naming the tests that went - until the agent answers why they go
+  (`--check-note test-count-not-lower="..."`). The answer and the names go to the reviewer and the PR. An agent
+  refused a legitimate deletion had kept the tests' names and repointed them at another case, hiding the change.
+- The card's own red tests (`red-set-passes-by-name`) are its specification: renaming or removing one is not
+  answered by the agent - it is put back, or a person overrides the check on the board. A red test that still fails
+  is never passed either way, and refactoring stays strict.
+
+### Settings
+
+- **The browser board has Settings** (a gear in its toolbar; the panel had only been reachable in the desktop app),
+  with a new Verification section: "Suite runs at once".
+- **`agenfk config get [key]` / `agenfk config set <key> <value>`** reach every server setting by name, the value
+  read by the setting's type and validated by the server. `telemetry` and `flowRegistry` stay local.
+
+## [2.0.0-beta.9] — 2026-09-28
+
+Beta, cumulative over `2.0.0-beta.8`: everything in beta.8, plus the change below (CGLAB-428).
+
+### A hub admin can switch individual checks off on a step
+
+- **In Admin → Flows, the step dialog has an on/off switch for each check**: the step role's built-ins (until now
+  locked as "always on"), the checks every step runs (`tree-clean`, `on-card-branch`) and the flow's own, a custom
+  check by its name. A human approval keeps its own setting and gets no switch. It is stored per step as
+  `disabledChecks` and reaches installations with the flow.
+- **A switched-off check does not run**, and it produces no record, so a later check that needs that record does not
+  apply either (or, if the flow added it, the save is refused, naming it).
+- **Only the org's hub can do this.** An installation keeps `disabledChecks` only on a flow the hub sync delivered: a
+  local `POST`/`PUT /flows` with it is refused (400), a registry install or a local copy drops it, and a flow row that
+  carries it without coming from the hub is read as if it did not. An installation on an older version ignores the
+  field and runs every check.
+- **Never silently.** A switched-off check is struck through in the editor and named in the step's preview; the
+  verify reply carries `🔕 Switched off by your org's hub on this step (not run): ...`, pass or refusal; the card's
+  `GET /items/:id/gates` lists `disabledChecks`; and the PR check history (`agenfk pr create`, `agenfk pr-register`)
+  gains a "Checks switched off by the org's hub" section, from the new `GET /items/:id/disabled-checks`.
+- The agent rules say how to read it: the org's decision, not a flow bug, and never something an agent sets.
+
+## [2.0.0-beta.8] — 2026-09-28
+
+Beta, cumulative over `2.0.0-beta.7`: everything in beta.7, plus the change below (CGLAB-427).
+
+### `agenfk create` returns the card it created
+
+- **The created card is printed as JSON.** Agents used to create a card and then query agenfk again (`get`/`list`)
+  to learn its id. `agenfk create` now prints the card's JSON after the confirmation line; `--json` (or `--toon`)
+  prints the card alone, with a JIRA-link warning sent to stderr so stdout stays parseable.
+- **A failed create exits non-zero.** It printed the error and exited 0, so an agent could not tell a failure from a
+  success without querying again.
+- The rules and skills (`SKILL.md`, `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, the Cursor rule, `agenfk-plan`) tell agents
+  to rely on it.
+
+## [2.0.0-beta.7] — 2026-09-26
+
+Beta, cumulative over `2.0.0-beta.6`: everything in beta.6, plus the changes below (CGLAB-420). Found by following a
+real story (five tasks in one tree, reviewed once at the story) end to end, and replayed in the TDD harness before
+release.
+
+### The fixes to a review's findings are flagged
+
+- **New `fixes-reviewed` check at the review step.** The fixes to a review's findings are written after the reviewer
+  read the diff, and recording the review afterwards certified code nobody reviewed. When a review is recorded, the
+  server now notes the card's changes made after the reviewer began - its commits since, not main merged in, not other
+  cards' commits, and its uncommitted work in files written since or removed - counted against the last commit before
+  the reviewer began. Over 20 lines it warns, naming the files, on the verify and on the PR: have a reviewer read them
+  (a new one, or the same one given a new message) and record that review. The card's own reviewed work, however large
+  and uncommitted, is not counted. It warns rather than refuses: file times are evidence to tell a reviewer, not to
+  hold an honest card.
+
+### A parent's review sees what its children recorded
+
+- **New `tree-warnings` check at the review step**: it lists the warnings the card and its children raised, with each
+  answer, so the reviewer sees them.
+- **The verify that brings a card onto its review step hands those warnings over** in its reply. On a parent that is
+  the verify of the child that pushed it there, the only reply anyone reads at that moment.
+- **`tests-added-late` works at a parent**: it reads the tests its children froze, and a test file one child
+  committed after its own freeze is late even when a later child's freeze holds it.
+
+### Warnings are answered, and the PR shows them
+
+- **A test that passes on arrival must be answered.** On the step that writes tests, a failing `new-tests-born-green`
+  holds the card until the agent says why it is fine, or what it changed:
+  `agenfk verify <id> --check-note new-tests-born-green="..."` (MCP: `checkAnswers`). Any warning can be answered the
+  same way; the answers go on the record, to the reviewer and on the PR. Red on a missing symbol - the normal path of
+  TDD - needs no answer.
+- **The PR carries the check history.** `agenfk pr create` lists the warnings in the body; `agenfk pr-register`, which
+  follows a PR opened with plain `gh pr create`, posts the history (overrides, approvals, custom checks, warnings) as
+  one comment.
+
+### on-card-branch judges the branch when none is recorded
+
+- With no branch recorded it used to pass without looking. It now refuses a tree on a branch named for another JIRA key
+  (`feat/OTHER-9_...`) and passes on the card's own; a branch that names no key (main, develop, release/...) is not
+  judged.
+
+## [2.0.0-beta.6] — 2026-09-26
+
+Beta, cumulative over `2.0.0-beta.5`: everything in beta.5, plus the changes below (CGLAB-418).
+
+### A vitest test file that fails to import is no longer a phantom red test
+
+- **The JUnit reader recognises vitest's load failure.** vitest writes a file that fails to import as one failed
+  testcase named after the file (in a multi-project repository, the file relative to its project's root). It used
+  to be read as a red test: it entered the red set at the test-writing step, and once the module existed the name
+  was gone, so `red-set-passes-by-name` refused the card until a person overrode it. It is now a broken file, as
+  the vitest JSON reader already had it. A failed top-level hook in a file whose tests ran stays a failing test,
+  and jest-junit / mocha tests whose classname equals their title are untouched.
+- **Red sets recorded before this fix unstick themselves.** An entry of that old shape is read as its file's tests:
+  it passes once the file reports tests and every one of them passes, and not before.
+- **`no-broken-test-files` says what to do**: import code that does not exist yet inside the test (in JavaScript,
+  `await import(...)`), so the missing module fails that test rather than the whole file.
+
+### Sibling propagation on an intermediate step says what happened
+
+- It no longer reports "Skipped - already verified by sibling" after the step's own checks ran: the comment names
+  the step, the sibling that is further along, and the checks that passed.
+- A command handed to `agenfk verify` on such a step now runs instead of being dropped.
+
+## [2.0.0-beta.5] — 2026-09-26
+
+Beta, cumulative over `2.0.0-beta.4`: everything in beta.4, plus the changes below. Found by following a real
+TDD Flow card end to end.
+
+### Checks run the suite only where something changed
+
+- **A verify reuses a capture the tree's content still matches** instead of running the suite again: a no-op
+  REFACTOR, a rollback and re-entry on an unchanged tree, and a test-path declaration that adds no test file run
+  no suite. A change to code, tests or `.gitignore` still runs it. The verify output says when a capture was
+  reused.
+- **A failed capture blocks instead of disarming the checks.** A capture that could not be read or tied to the
+  tree used to degrade the TDD checks to soft-unavailable on a new card; now it blocks and asks for a re-capture.
+  `entry-baseline` passes only when per-test results tied to the tree were produced.
+- **New `tests-added-late` warning at review**: it flags test files added after the tests were written and frozen,
+  which nothing has shown to fail without the change. It reads git and runs no suite.
+
+### The CLI says what happened
+
+- A refused `agenfk verify` exits non-zero, prints every check it judged (soft, warn and pass included), and
+  prints its verdict last.
+- The gatekeeper names the role of the step the card is on instead of `CODING` everywhere.
+- `agenfk pr create` / `pr check` mention `/agenfk-release` only in a repository that has that command.
+- `--test-report-path` takes a comma list, one report per suite, read as one run; a report the command did not
+  write is named.
+- Model detection no longer gives up because a subagent wrote recently when that subagent has already handed back:
+  a reviewer that finished minutes before `agenfk pr create` used to send the PR out with the model unverified.
+
+## [2.0.0-beta.4] — 2026-09-25
+
+Beta, cumulative over `2.0.0-beta.3`: everything in beta.3, plus the changes below.
+
+### Work starts from an up-to-date tree
+
+- **A new `backlog` role, with a `tree-in-sync` check.** A card leaves a backlog step only from a tree that is not
+  behind its remote and has not diverged from it: the server fetches the tree's upstream itself (in the background,
+  bounded, never interactive, no auto-gc) and refuses with the count and `git pull --ff-only`. Ahead - unpushed work -
+  is fine. A fresh branch that tracks nothing is checked as a base: sitting strictly behind the remote's default
+  branch is refused. A tree with no remote passes; an unreachable remote only warns. Nothing is fetched while a
+  person's approval is still missing.
+- **The shipped flows start with it.** The default flow's, the TDD preset's and the flow editor's templates' TODO
+  steps now carry the `backlog` role, so **leaving TODO now runs a `git fetch` of the card's tree**. To opt out, remove
+  the role from the TODO step of your flow. A project with no flow of its own uses the built-in default flow and gets it.
+- **Org flows using the role need this version everywhere.** An older agenfk rejects a flow whose step has the
+  `backlog` role (`unknown role`): upgrade every member before dispatching such a flow from the hub.
+- **Resuming a card pulls too.** The rules' Clean Start pull applies when resuming an existing card, in the tree it
+  works in - a card resumed on a checkout 25 commits behind origin is what prompted this.
+
+### Implementing may change existing tests
+
+- **`test-surface-frozen` is no longer part of the Implementing (coding) role.** Implementing a behaviour change
+  rightly changes the tests that pin the old behaviour. Refactoring keeps it (strict: its tests must stay identical),
+  and any flow can still add it to a step explicitly. `red-set-passes-by-name` and `test-count-not-lower` still stop a
+  red test from disappearing.
+
+### Fewer suite runs
+
+- **A close's green becomes the next card's baseline.** A card's last per-test capture, taken on its dirty tree just
+  before its close commit, is re-stamped as a green of that commit when the close leaves the tree holding exactly the
+  files it ran on, so the next card's entry baseline runs nothing. Identical captures that start at once are
+  single-flight: one runs, the others take its record.
+- **Lazy capture.** A step that changed only test files runs just those files, merged over its clean per-test entry
+  baseline; anything else - a helper, a fixture, a config, a change outside the project - runs the whole suite.
+
+### A card chooses where it runs
+
+- **`agenfk update <id> --worktree <path>|none|inherit`** picks the tree a card runs and commits in (a git worktree of
+  the repository, the project root, or its parent's), instead of re-parenting the card to move it.
+
+### Board and rules
+
+- **Calmer column headers:** a one-line title-case name with the card count, a muted second line (role, checks as an
+  icon and a number with the names on hover, approval), add and archive on hover.
+- **Review sub-agents are exempt from Standard Mode's single-agent rule:** an independent review asked for by a step
+  may be run by a separate agent.
+
+### Cards in one tree share step-check work at the same tree state
+
+- **Reuse no longer needs a clean tree.** A test capture, the final verify's sibling propagation and single-flight
+  waiting all used to key on a clean commit, so one untracked file anywhere in a shared worktree made every card run
+  everything again: three siblings walking one flow ran the suite 9 times where a clean tree ran it twice. They now key
+  on the tree's state - the content of every tracked and untracked (non-ignored) file - so cards that see the same
+  content share one green, the card's own earlier one included. Content that differs, or that changed while the
+  command ran, still runs its own. HEAD is not part of it: a sibling's close commit commits files without changing
+  them, and must not make the next sibling run everything again.
+- **The final verify runs once for siblings closing together.** A sibling that reaches its final verify while another
+  runs the same command on the same tree state waits for that run, then propagates its green (or runs its own if it
+  failed or the tree moved). In a TDD simulation of three siblings the project's verify command now runs once, not
+  three times.
+- **Command checks share a pass the same way.** A command check sees only its argv and its tree, so the project's
+  cards reaching it at the same tree state take one run's pass (named in the result and on the PR as the card whose
+  run it was), and a card arriving while it runs waits for it. A failure is never shared. A check whose command reads
+  something outside the tree - a remote, a PR, the clock - opts out with the new param `share: none`.
+- **Approvals and overrides stay per card.** Nothing a person gives is shared.
+
+### Siblings in one tree are judged on their own tests
+
+- **A test in a file another active card claims is that card's.** The per-test checks judged the whole shared tree: a
+  sibling's legitimately red test blocked this card's `suite-green`, so siblings could only leave their coding step one
+  after another, and `new-tests-exist` / `some-new-test-red` counted every sibling's new tests - a card that wrote none
+  passed on another's red one. The new-test checks now count only the card's own tests; `suite-green` and
+  `no-broken-test-files` leave a sibling's unfinished tests to it; `test-set-identical` and `test-count-not-lower`
+  compare the card's own tests. `test-surface-frozen` is not relaxed: a new file under a claim can load on its own (a
+  `conftest.py`, an `init()`) and mask the tests.
+- **A regression still blocks.** A sibling's test that passed when the card entered the step and now fails - or is gone
+  - counts as before, whoever claims its file (a claim costs nothing, so it excuses no deletion); so does an edit to, or
+  deletion of, an existing test file. Only a card working beside this one counts as "another card": not its own
+  ancestors, and not a card that never left a step through verify (whatever its status - BLOCKED and PAUSED need no
+  verify). A parent that claims its children's files leaves their tests shared between them, as before this change.
+- **Where it applies.** It needs a per-test entry record, so it acts on steps whose entry is captured (the TDD flow's);
+  elsewhere a sibling's red test still blocks. A runner that names tests by class rather than file (pytest via JUnit)
+  cannot be matched to a claim and keeps the old behaviour, broken modules included. A non-zero exit is taken as explained by a sibling's red
+  tests only when nothing of this card's fails, and never for a killed or timed-out run; the final verify command still
+  runs the whole suite and needs exit 0 (a flow with `verifyAt: parent` runs it once at the parent).
+
+## [2.0.0-beta.3] — 2026-09-25
+
+Beta, cumulative over `2.0.0-beta.2`: everything in beta.2, plus the changes below. It is about one thing: a
+person asked for an approval is shown the card at once, and nobody waits on a suite that cannot help.
+
+### Approvals
+
+- **`--no-wait` and `AGENFK_NO_BROWSER` are gone.** When only a person's approval holds a card, `agenfk verify`
+  always opens the card on the board and waits for it (not in `CI`, where no person can approve). An old script
+  passing `--no-wait` still runs: the flag is ignored with a warning, and verify waits all the same.
+- **The approval is asked for first.** While a step waits for a person - its own approval, or a command waiting for
+  theirs - verify answers at once, before any test capture or command check runs; cheap checks are still judged, so
+  they can be seen and overridden while approving. The slow ones show as "deferred" and run on the verify after
+  the approval.
+- **The request reaches the chat.** Verify prints an `APPROVAL NEEDED` block naming the card, its link and how to
+  reopen it if the board's tab was closed - before it waits, again at the deadline, and in CI. The rules tell agents
+  to relay it as it is, to run a verify that may wait in the background where their harness can, and never to
+  claim or relay an approval: only a person approves, on the board. Card titles are shown as one plain line.
+
+### Seeing a verify run
+
+- **A running verify is on the card, animated, with the card closed**: "Verifying… 1m 12s" with a spinner (still
+  under reduced motion), one shared clock for the whole board. The card's Overview shows the run's latest output.
+- **The chat is no longer silent while the suite runs.** A step's test capture now streams its output to whoever
+  follows the run, like the verify command always did; a runner's leftover process no longer holds a run open.
+
+### Fewer suite runs
+
+- **A green on record is reused as the entry baseline.** When a card enters a step on a clean tree at a commit a run
+  of the same command already went green in (the commit a close stamps, or an earlier per-test capture), in the same
+  tree of the same project, that run is the baseline and no suite runs. Records now carry the tree they ran in.
+
+### A missing test report
+
+- **`NO_TEST_REPORT` is the agent's to fix.** A refusal for want of per-test results now says so once, with a ready
+  `agenfk update-project <id> --test-report-...` command built from the project's own verify command (vitest,
+  `npm test` over vitest, pytest, `node --test`; nothing is made up for other runners), and warns when the report
+  path is not git-ignored. The rules tell agents to run it and verify again rather than ask for an override.
+- **It is raised on the way in.** A card is held before entering a step whose blocking checks judge its tests
+  against a per-test baseline the project cannot record - where setting the report still gives that card a real
+  baseline - instead of letting those checks degrade to warnings. No suite runs for a hold. A person can still pass
+  the hold on the board (a runner that writes no report), and overrides given against the old wording still count.
+- The board labels a deferred check "deferred" (its detail says to what), not "run by the verify command".
+
+## [2.0.0-beta.2] — 2026-09-25
+
+Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the changes below.
+
+### Dark and light mode
+
+- **Dark mode is neutral gray, app-wide.** The Kanban UI, the Hub UI and the flow editor used Tailwind's
+  blue-tinted slate; the flow editor showed as a navy panel on the hub's neutral page. The slate colours are now a
+  neutral ramp in dark mode (light mode is unchanged), the hub's own text and border tokens and rendered markdown
+  follow it, and secondary text meets WCAG AA (it was 3.8:1, and 2.4:1 in places).
+- **Dialogs stand out from the editor behind them**: a dimmed, blurred backdrop, a raised surface and a border, with
+  hover states and form fields that stay visible inside it.
+- **The hub's PR heatmap tooltip is readable in light mode.** It was white text on the light glass card.
+- **The hub's sidebar stays full height.** It used to stretch with long pages; now the content pane scrolls on
+  its own and the sidebar stays put.
+
+### Workflow
+
+- **Agents are told when a step commits on leave.** The gatekeeper, verify's reply and the flow editor's preview
+  say "stage your work before you advance the card" on a step with auto commit, and stay silent on the step whose
+  leaving ends the flow, where the close commit takes the work instead. `flowChecksErrors` now also refuses the
+  flag on a step followed by a mid-list DONE.
+- **The hub now sees every closed card.** A parent closed by the roll-up when its last child closes, a card
+  closed by sibling propagation, and a card on a custom flow whose last step is not named DONE all emit
+  `item.closed` (and `step.transitioned`). Before, none of them reached the hub, so its closed counts
+  (`items_closed`, the Org and User pages) were low; expect them to rise after upgrading. (On a flow with a
+  review step the roll-up stops a parent there, and the parent's own verify closes it - that was counted
+  already.) Every step move verify makes now reaches the hub as `step.transitioned`, not only command runs.
+
+### JIRA, configured once on the hub
+
+- **A hub admin registers the org's Atlassian OAuth app once** (Admin → JIRA on the hub: client id, write-only
+  encrypted secret, the callback URL to register, a count of connected installations and "Disconnect everyone").
+- **Every joined installation connects its own JIRA identity through the hub** (per-user OAuth; the token is bound
+  to that installation's hub API key and stored encrypted on the hub) and reaches JIRA only through the hub's
+  read-only relay with its own token, so JIRA's permissions apply per person. No JIRA credential lives on laptops.
+- **While joined there is no fallback to a local JIRA config.** `agenfk jira setup` on a joined installation says to
+  ask a hub admin; `agenfk jira status` shows the hub's app and this user's connection; `agenfk jira disconnect`
+  drops this user's hub connection. The board says "Ask your hub admin to configure JIRA", offers Connect JIRA, or
+  shows the connection with Disconnect. Installations not joined to a hub keep today's local behaviour.
+
+### Checks on the board
+
+- **A Checks tab on every card** lists its check runs, approvals and overrides by date, with each check's status.
+  The server keeps every verify's check results on the card (bounded) and serves them with the approvals.
+- **Each column shows its step's role** under the step name.
+- **`agenfk verify` waits for a person.** When the only thing holding a card is a person's approval - of the step,
+  or of a command a custom check wants to run - verify opens the board on the card's Overview (where the approval
+  is given) and waits up to 9 minutes, then verifies again by itself. It does not wait in `CI`, where no
+  person can approve; `--wait-minutes <n>` changes the wait. It wakes only for the approval it is waiting on, and stops
+  if a person moves the card on the board meanwhile.
+- **`agenfk ui --open <id> --details`** opens the card itself on its Overview tab instead of only highlighting it.
+  Every "a person must approve this" hint now gives that form.
+
+### Custom checks
+
+- **Two new check kinds a flow step can carry**: a *command check* (an argv list the server runs in the card's
+  tree, without a shell; it passes on exit 0, can ask for a person's passkey approval of the exact command, and
+  never runs from a flow installed from the community registry) and an *agent check* (an instruction the coding
+  agent carries out and reports). The flow editor adds and edits both.
+- **Agents report agent checks with `agenfk verify <id> --check <name>=pass|fail --check-note <name>=<text>`**
+  (repeatable; MCP: `validate_progress` with `agentChecks`). A malformed flag is refused before anything is sent.
+- **The PR body gets a Custom checks section**: each result, whether the server ran it or took the agent's word,
+  and who approved a command. A command that never ran, an override and an unreported agent check say so.
+
+### Where the suite runs
+
+- **A flow can run the project's suite once, at the top-level card** (`verifyAt: parent`, a flow-level setting;
+  a toggle in the flow editor, a field on the MCP flow tools). A card whose parent is still open then closes
+  without its own run, and the parent's final verify runs the suite over everything its children did. A child
+  whose parent has already finished, is paused or blocked, lives in another project, or whose work is in another
+  worktree runs its own; so does a child whose parent's verify is already running. The roll-up never closes a
+  parent a child deferred to - its own verify has to run - even if the flow is switched back to `leaf`. The default
+  (`leaf`) is unchanged: every card runs it. Carried by registry install/publish and the hub flow sync.
+- Known limits: a parent trashed, deleted or detached after children deferred to it leaves those children DONE
+  without a suite run; and a synchronous REST verify of the parent is not guarded against a child deferring
+  meanwhile (the CLI and MCP always verify asynchronously, which is guarded).
+
+### Claims
+
+- **Claims lock files only between cards in the same worktree.** Cards in different worktrees meet at worst as a
+  merge conflict, so a claim no longer refuses them; a card whose worktree cannot be told stays strict. (Claims
+  mechanism: 819e7192.)
+- **A card does not close with ownerless staged files.** The move that ends a card's flow is refused while files
+  are staged outside its claims that no other card in the same worktree claims; the reply lists them and gives
+  the `--claims` or `git restore --staged` fix. A working card in that worktree that claims nothing may own them,
+  so then it is a note instead. A step that must commit refuses the same way. Cards without claims are unaffected.
+
+### Test reports (JUnit)
+
+- JUnit reports from `node:test`, pytest and xUnit are read correctly: a file that fails to load or a pytest
+  collection error is a broken file (not a new red test), and errors are no longer read as assertion failures.
+- **`node:test` and xUnit projects must declare their test paths** (`agenfk update-project <id> --test-report-surface <paths>`): their JUnit reports
+  name no file, so without it the test surface is empty and the surface-freeze check cannot see edits.
+
+### Contributors
+
+- `npm run e2e:tdd` builds this tree's server and CLI into a container with a temp HOME and walks a full TDD
+  cycle through every check, the human gates (a software WebAuthn authenticator) and the review record.
+
+### Security
+
+- The authority routes (passkeys, approvals, overrides) are rate limited; transcript paths are checked on the
+  resolved path; PR-body table cells escape backslashes.
+
+## [2.0.0-beta.1] — 2026-09-24
+
+Beta, cumulative over `1.1.21-beta.12`. Deterministic flow adherence (CGLAB-376): the server now enforces step
+transitions instead of trusting the agent. Major version because forward moves and the final command change.
+
+### Breaking
+
+- **Forward moves go through `agenfk verify` only.** A forward `update --status` is refused (409) with a message
+  naming `agenfk verify <id>`, and the internal token no longer lets anything land DONE.
+- **The final step runs the project's own verify command.** A command passed to verify there is ignored, with a
+  warning on the reply (never a 400, so older skills keep working).
+
+### New
+
+- **Step roles and a record-based check engine**: tree-clean, on-card-branch, jira-key-valid, the TDD red/green
+  and test-surface checks, test-set identity, suite-green. Step snapshots and a test-report adapter record what
+  each check needs.
+- **Roles on the shipped DEFAULT and TDD flows**, and an independent review record (`agenfk review record`)
+  checked against the reviewer's transcript.
+- **Human gates on the board**: approve, and override a check with a reason; both appear on the PR. Optional
+  passkey (WebAuthn) signing, set per step.
+- **Friendly flow editor** (Kanban and Hub): role picker, check gallery, approvals, inline validation with
+  one-click fixes, templates.
+- **Per-step auto commit** (`autoCommit` / `requireCommit`): commits the card's staged, claimed work as it leaves
+  a step, only once the advance is certain.
+
+### Backwards compatibility
+
+- Older CLIs, servers and editors keep working: unknown step fields are dropped by old installs, and an edit that
+  omits them keeps the stored ones. A publish never strips a registry flow's roles, checks or commit settings;
+  removing them on purpose takes `agenfk flow publish <id> --allow-removing-checks`.
+- The MCP `create_flow` / `update_flow` tools carry the step contract.
+
+### Fixes
+
+- Codex verifies record the author (`CODEX_THREAD_ID`).
+- Malformed test records on a card no longer make verify answer 500.
+
+## [1.1.21-beta.12] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.11`. Proxy-derived URLs, and the flaky test suite fixed at its root (CGLAB-371).
+
+### Behaviour change for hubs that set `AGENFK_HUB_PUBLIC_URL`
+
+- **`AGENFK_HUB_PUBLIC_URL` now works.** It was documented (and set by the reference deployment) but read
+  nowhere. It is now the origin of every URL the hub hands to others: invite join commands, the device-code
+  approval link, `hubUrl` in join/redeem responses, a federation child's parent URL. A hub served on two
+  hostnames hands out the canonical one, whichever the admin browsed - and `agenfk hub join <other-name>`
+  saves the canonical name. Invalid values are refused at boot.
+- **OAuth callbacks deliberately do not use it**: sign-in returns to the host it started on, so every
+  hostname users browse must stay registered as a redirect URI at Google/Entra (unchanged).
+
+### The hub no longer believes client-written forwarding headers
+
+- **`X-Forwarded-Host` is not read at all.** The AWS ALB never sets it, so any value was written by the
+  client - which let a repoint report claim to have "arrived on" the target host. The arrival host is the
+  `Host` header (parsed properly, so IPv6 literals match). If your proxy rewrites `Host`, set
+  `AGENFK_HUB_PUBLIC_URL`.
+- The protocol (session cookie `Secure`, OAuth redirect) comes from Express's `req.secure`/`req.protocol`,
+  which honour `X-Forwarded-Proto` only from the hops `AGENFK_HUB_TRUST_PROXY` trusts.
+- The "cannot enrol with itself" guard recognises the hub under either of its names.
+
+### Verify logs
+
+- **A log that exactly filled `AGENFK_VERIFY_MAX_LOG_BYTES` was silently short.** The next chunk was dropped
+  without the truncation flag or notice. Under load a pipe delivers exact 64 KiB reads, so this happened in
+  practice; it now says it truncated.
+
+### Test suite (contributors)
+
+- **The wandering load-only failures are gone.** supertest bound the wildcard address but dialled
+  `127.0.0.1`; macOS let that port be shared with another process's `127.0.0.1` listener, which then
+  received the request (bare `ECONNRESET`, or a foreign 404/400). It now dials the loopback it bound.
+  Reproduced with 656 squatting listeners: 8 of 14 files failing before, none after.
+- **The UI suite no longer slows down as it runs.** jsdom 28.1 re-registers an unmounted `<style>`'s sheet
+  (fixed upstream in 30.1), and each xterm terminal left ~1,580 CSS rules behind that every later query paid
+  for - one AppShell spec hit the 20s timeout on CI. Orphaned sheets are dropped after each test:
+  `AppShell.test.tsx` went from 80s to 11s.
+
+## [1.1.21-beta.11] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.10`. Hub rate limits are per person where a person is known (CGLAB-371).
+
+- **Dashboard (`/v1`), admin (`/v1/admin`) and `/auth/me` limits are keyed by the signed-in user**, not
+  the client address. The hub is reached through shared corporate egress, so an address bucket was an
+  office-wide cap: everyone behind one NAT or VPN shared 300 requests a minute. A cookie that does not
+  verify (forged, expired, signed with an old secret) is charged to the address bucket, so it cannot buy
+  a fresh budget.
+- **`/auth/me` no longer mints a bucket per cookie value.** It keyed on the raw cookie string, so every
+  forged value created an in-memory bucket kept for 15 minutes and was never refused.
+- **The first refusal in each bucket's window is logged** as `[RATE_LIMIT] <method> <path> refused: over
+  <limit> per <window> for one user|client address` - no address, no token. The load balancer keeps no
+  access logs, so this is the only record that a limit is biting.
+- Sign-in, device-code, invite redemption and first-run setup stay per address: there is no session yet.
+
+## [1.1.21-beta.10] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.9`. Hub security hardening (CGLAB-371).
+
+### The hub decides the client IP from how many proxies it trusts
+
+- **New `AGENFK_HUB_TRUST_PROXY`**, default `1`. Behind a load balancer or reverse proxy the proxy
+  *appends* the address it saw to `X-Forwarded-For`; the hub used to key every rate limit on the
+  **first** entry - the part the client writes - so a fresh header per request bought a fresh budget
+  (login, device-code, invite redemption). The client is now the hop the trusted proxy appended.
+- `0` for a hub exposed directly (the compose quickstart now sets it), a hop count for a proxy chain,
+  or a list of proxy addresses/CIDRs. `true`, more than 5 hops, and list entries that are not
+  addresses are **refused at boot**, since each either trusts every hop or silently trusts none.
+- Assumes the proxy appends (an ALB's default `xff_header_processing.mode=append`). An `ip:port`
+  entry (ALB client ports) is keyed by its address.
+- Upgrade-directive audit rows now record the real requester instead of the proxy's address.
+
+### Invite redemption and first-run setup
+
+- **`POST /hub/invite/redeem` is rate limited**, counting only failed attempts so a scripted rollout of
+  many machines behind one office NAT completes. Invite tokens over 4096 characters are refused before
+  their signature is checked.
+- **`/setup/initial-admin` makes exactly one admin.** The bootstrap token is consumed inside the
+  transaction that creates the admin, and a request that did not consume it creates nothing; every
+  leftover token is cleared. The route is rate limited.
+
+## [1.1.21-beta.9] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.8`.
+
+### Federation: a parent hub is judged by the address it resolves to (CGLAB-371)
+
+- A child hub's calls to its parent (enrolment, release requests, and the background ping, directives
+  and delivery) now check the parent's **resolved** address as the connection is made, on the socket's
+  own lookup. A public name pointing at a private address - or changing its answer after a check
+  (DNS rebinding) - is refused before anything, the invite or the bearer token included, is sent.
+- Private addresses are judged by range rather than by spelling, covering CGNAT (100.64/10, where one
+  cloud's metadata service lives), NAT64 and 6to4 forms of private IPv4, and the other reserved ranges.
+  The same ranges now apply to a parent URL written as an IP literal.
+- **Behaviour change:** federation calls no longer go through `HTTP_PROXY`/`HTTPS_PROXY`. Behind a
+  proxy the proxy resolves the parent itself, which the check cannot see, so these calls always dial
+  directly. `AGENFK_HUB_ALLOW_PRIVATE_PARENT=1` still admits a parent on the private network.
+- A refusal tells the admin why, without echoing the internal address (that goes to the server log).
+
+### "Published by" names the GitHub login (CGLAB-372)
+
+- A flow published through the hub now credits the laptop's GitHub login (from `gh`, pinned to
+  github.com) when `gh` is signed in, falling back to the OS login. The lookup is bounded and never
+  holds up the publish.
+
+### Code-scanning fixes on the beta PR (CGLAB-371)
+
+- **Hub rate limiting runs on `express-rate-limit`.** Same limits, same 429 with a JSON `error` and
+  `Retry-After`; an IPv6 client is now bucketed by its /64, so rotating addresses no longer buys a
+  fresh budget. The hand-rolled limiter it replaces was invisible to code scanning.
+- **The JIRA OAuth routes are rate limited** on the local server (authorize and callback).
+- **Hub query endpoints refuse a repeated or nested single-value parameter** (`from`, `to`,
+  `limit`, `offset`, `bucket`) with a 400 naming it, instead of a 500. Repeated list filters are
+  still merged.
+- **`agenfk verify` no longer runs git inside the directory the caller reports.** The caller's path
+  is matched against git's own list of the tested repository's checkouts; a caller in another
+  checkout of the same repository is still refused, anything else is ignored.
+- **Fix:** a verify issued from another project's checkout no longer re-records it as this project's
+  root. The root is learned only when the recorded one is missing, is `$HOME`/`~/.agenfk`, or is a
+  linked worktree - and such a root is now corrected by the next verify from the real checkout.
+
+## [1.1.21-beta.8] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.7`.
+
+### Publish goes to the org's own flow registry, as a pull request (CGLAB-367)
+
+- In a hub-connected org that points its flow registry at its own repository, the flow editor's
+  **Publish** now goes through the hub, which opens a pull request on that repository with the token
+  it holds (the token never reaches a laptop). It used to push to the public community registry with
+  the laptop's own `gh` login, whatever the org had chosen.
+- One branch per flow, `flow/<slug>`: publishing again while its pull request is open updates that
+  pull request instead of opening a second one. A changed flow is published one patch past the
+  registry's version.
+- The branch is only ever moved when that loses nothing: an open pull request into a different branch,
+  or commits that are in no merged pull request, make the publish refuse and say why.
+- No fallback to the public registry on any hub failure. An org on the public registry keeps
+  publishing from the laptop, as before.
+- The editor names the repository every publish went to.
+- Hub admins: installations in the org can now open pull requests on the org registry as the stored
+  token's GitHub account (rate-limited per installation and per org).
+
+### Hub admins see the flow registry's open pull requests (CGLAB-368)
+
+- Admin > Flows lists the open pull requests on the org's registry, marking the ones published from
+  installations. Each opens on GitHub in a new tab for review and merge. It loads once and refreshes
+  on request, because every fetch spends the org's token.
+
+### `agenfk verify` follows the card's worktree (CGLAB-366)
+
+- The verify command and the close commit now run in the card's worktree - its own, or its top-level
+  item's, since children have none - instead of always in the project's main checkout, where another
+  agent may be working.
+- A linked git worktree can no longer be recorded as the project's root. A `.agenfk` marker inside one
+  used to repoint every card in the project at that single worktree.
+- Verifying from a different checkout of the same repository than the one the card is tested in is
+  refused with an explanation, in both directions. A deleted worktree is reported as such.
+
+## [1.1.21-beta.7] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.6`.
+
+### Connect JIRA works again: no PKCE on the Atlassian OAuth flow (CGLAB-361)
+
+- "Connect JIRA" dead-ended on Atlassian's "Something went wrong" page for every user. Atlassian's
+  consent endpoint began returning HTTP 500 (`{"failedToLoad":true,"error":{"category":"generic"}}`)
+  for any authorize request carrying `code_challenge`. Our request had not changed since February.
+- Measured against live Atlassian by changing one variable: with only the PKCE parameters removed,
+  the consent screen renders, Accept issues a code, and the code exchanges for access and refresh
+  tokens without a `code_verifier`. The authorize redirect and the token exchange now carry no PKCE.
+- The `state` nonce stays as the callback's CSRF protection and is now pinned by tests: issued by
+  `/jira/oauth/authorize`, single-use, and refused once expired.
+- Atlassian still documents PKCE support for 3LO, so this is a workaround for a change on their
+  side; the code records the experiment so it is not restored blind.
+
+### Hub shows the signed-in user's name instead of their UUID (CGLAB-354, PR #193)
+
+- The hub's signed-in indicator displayed the account UUID; it now shows the user's name.
+- `/auth/me` is rate-limited per session.
+- The Postgres column migration behind the change is safe when several hub instances boot at once.
+
+## [1.1.21-beta.6] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.5`.
+
+### PR model detection reads the harness's own session identity (CGLAB-365)
+
+- `agenfk pr create` / `pr-register` / `pr-resize` matched session logs on cwd and then on
+  most-recent mtime, so two live sessions in one repo directory were indistinguishable: a
+  Fable session's `--model` was "corrected" to `claude-opus-5` from a concurrent Opus
+  session's transcript. The environment every tool shell receives names the session exactly —
+  `CLAUDE_CODE_SESSION_ID` under Claude Code, `PI_SESSION_FILE` / `PI_MODEL` under pi — and
+  is now read first; the cwd heuristic is only the fallback when nothing is named.
+- A named session with no usable answer is final: a transcript with no model yet, a log
+  older than the freshness bound (a dead session whose variable outlived it), or a Claude
+  Code subagent writing concurrently (it shares the parent's id and may run another model)
+  all leave the declared model in place as unverified rather than handing over to a sibling.
+- `PI_SESSION_FILE` is honoured only under `~/.pi/agent/sessions/*.jsonl`; model ids are
+  length-capped; `CLAUDE_CONFIG_DIR` is honoured on both paths.
+
+## [1.1.21-beta.5] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.4`. Two parent-hub controls whose API had shipped
+(CGLAB-182, CGLAB-183) but which nothing in the product could reach.
+
+### Dispatch a flow to child hubs from Admin > Flows (CGLAB-358)
+
+- Every org-owned flow gets a *Dispatch to child hubs* action with an all / selected child
+  picker; `all` covers hubs that enrol later. A board below the flows list shows each dispatch
+  with per-child pending / installed / failed state and a Cancel.
+- A flow received from a parent can be relayed onward. The directives feed serves a hub's
+  direct children only and a middle hub never re-dispatches what it installs, so relaying is
+  the only route to grandchild hubs.
+- A dispatch whose flow has since been deleted is labelled as unable to land and no longer
+  keeps the board polling.
+
+### Issue a group upgrade to child hubs from Admin > Upgrades (CGLAB-360)
+
+- The Group upgrades section now always renders for a parent, with an *Upgrade child hubs*
+  form: release list, the same child picker, and an explicit downgrade checkbox that travels
+  as `confirmDowngrade` and is applied per installation by each child.
+- `GET /v1/admin/upgrade/available-versions?unfiltered=1` skips the parent's own fleet floor,
+  which says nothing about a child's fleet.
+- `Flow.source` includes `'parent'` in the flow-editor and UI types.
+
+## [1.1.21-beta.4] — 2026-09-18
+
+Beta, cumulative over `1.1.21-beta.3`. Closes out the CGLAB-275 incident: every piece of
+agent-facing output that misled the pi agent is now fixed, not only the rollback.
+
+### The gatekeeper and the verify banner say what a step IS, never what to do on it (CGLAB-275)
+
+- The gatekeeper's step-shape block printed `Coding step: DISCOVERY` on a TDD flow — the
+  first non-anchor step, labelled as if it were where code is written. It now reads
+  `First working step (the step after TODO): DISCOVERY` — the anchor's name comes from the
+  flow, nothing is assumed to be called TODO or DONE — and the final-step line says plainly
+  what happens there: `Final step (omit the command here; the project's verifyCommand runs
+  and closes the item): REVIEW`.
+- The shipped skill and slash commands called the first non-anchor step "the coding step"
+  throughout, which is the same misread written down. They now say "first working step",
+  and the rule against editing without a card says "an active working step".
+- The verify success response's `MANDATORY EXIT CRITERIA` banner did not name the step the
+  criteria belong to. After the silent rollback, the agent read the criteria of the step it
+  had just re-entered as those of the step it believed it was on, and concluded that a
+  no-command verify does not advance. The banner now reads `MANDATORY EXIT CRITERIA for
+  <STEP> — the step this item is now on`, on both the TODO→first-step and the
+  intermediate paths.
+
+## [1.1.21-beta.3] — 2026-09-18
+
+Beta, cumulative over `1.1.21-beta.2` (which shipped without its own entry here — it
+carried the desktop installer fixes and the merge-conflict-marker cleanup in the rule
+bundles, PR #182).
+
+### A failed verify command refuses the advance; it no longer rolls the card back (CGLAB-275)
+
+Observed on a TDD flow driven by a pi agent: the agent wrote red tests on the
+"create unit tests" step — exactly what that step asked for — and passed pytest as the
+verify command. The suite exited non-zero, and the server rolled the card back to the
+flow's first non-anchor step, computed by position. On that flow the step is DISCOVERY,
+two steps behind, and the failure response never said so. The agent then read the
+criteria banner of a later verify as "still on the same step" and learned the wrong
+lesson: that tests must pass to move between steps.
+
+- A non-zero verify command on **any** step leaves the card **where it is**. The server
+  cannot judge prose exit criteria, so the exit code of an optional command is not
+  evidence the step failed. On the step before DONE the command is the gate, and there too
+  the answer is "not DONE", not "back to the coding step".
+- The code assumes only what a flow guarantees: a first anchor, ordered steps, a last
+  anchor. No step name or position is consulted on the failure path any more.
+- **Every verify response ends with the resulting status** ("Item is now on X" /
+  "Item stays on X"), so an agent that truncates the output still sees where the card is.
+- The `validate.failed` hub event carries `stayedOn` instead of `fellBackTo`.
+- The skill, slash commands, README and SDLC no longer tell agents to pass a build
+  command on every intermediate step: the command is optional there, and a step whose
+  criteria expect red tests is not verified with the test runner.
+
+## [1.1.21-beta.1] — 2026-09-18
+
+Beta, cumulative over `1.1.20` (the merged stable line) — this branch carries the Electron
+desktop epic (CGLAB-164) plus the fixes found while exercising it end to end.
+
+### Runs are registered, reused, and attributed correctly (53ed7163, 9fece9e1, 43b37c93)
+
+The desktop now records a run when it opens an agent (`PtyRegistry.registerRun`, with the
+transcript glob the tailer follows); a re-registration of a session that is still running
+reuses its row instead of opening a second one, keyed on session id, falling back to
+card+harness for agents that cannot be handed an id. The recorder refuses a gatekeeper note
+that names a DIFFERENT project, so one session's runs can no longer land on another's card,
+and `agensfk run list --item` accepts an 8-char prefix like every other command.
+
+### The terminal layout is a pane tree (7a717cb8, e488bcdd, ccbe7ba4, 992376b8)
+
+Splits nest, `layoutPanes` draws one divider per split (each writing only its own node's
+ratio), a tab can be dropped on a pane edge to split or moved to rearrange, tabs can be
+reordered by dragging, every pane carries its own agent name and branch, and the header is
+hidden once more than one pane is on screen. Four panes fit the width — wrapped lines and a
+narrow-pane advice, never a horizontal scroller.
+
+### See a file's diff from the worktree panel (be411ffb)
+
+`GET /items/:id/diff` returns the unified diff of one file in the item's worktree (staged or
+working tree, untracked shown as added), and the panel's rows open it in a modal.
+
+### Packaging and releases
+
+- The installer no longer generates `scripts/start-services.mjs` over a TRACKED repo file
+  (ccc7e57c) — the script is shipped and read by `agenfk up`.
+- The release job bumps with `bump-version.mjs` (internal refs included) and regenerates the
+  lockfile, and marks a suffixed version as a GitHub PRE-release.
+- macOS, Windows and Linux installers all build: a safe `executableName` for Linux, an
+  explicit `artifactName` for deb/AppImage, `homepage` metadata, and signing that stays off
+  unless a certificate is supplied (macOS was auto-discovering a runner identity and failing).
+
+### Server correctness
+
+`findProjectRoot` returns `null` when the walk finds no `.agenfk`, so a verify run from a
+worktree can no longer repoint the project's `projectRoot` at one card's directory (957513e9);
+the validate route is rate-limited; and the close commit runs git with argv rather than a
+shell (c3d36f46).
+
 ## [1.1.20] — 2026-09-18
 
 Stable, cumulative over `1.1.20-beta.1` and `1.1.20-beta.2` (PR #189). Both fixes were

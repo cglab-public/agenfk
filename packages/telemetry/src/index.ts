@@ -104,8 +104,15 @@ export class TelemetryClient {
     }
   }
 
+  /**
+   * Whether anything would actually be sent right now.
+   *
+   * Asks the file rather than the boolean captured at construction, for the
+   * same reason `capture` does: a caller that checks this before doing work
+   * must not be told "on" over a switch the user turned off a minute ago.
+   */
   get isEnabled(): boolean {
-    return this.enabled && this.client !== null;
+    return this.enabled && this.client !== null && isTelemetryEnabled();
   }
 
   get id(): string {
@@ -114,6 +121,21 @@ export class TelemetryClient {
 
   capture(event: string, properties?: Record<string, unknown>): void {
     if (!this.client) return;
+    /*
+     * The flag is re-read HERE, not only in the constructor.
+     *
+     * The constructor's copy was safe for as long as the only writer was
+     * `agenfk config set telemetry`, because that is a fresh process every
+     * time. The settings screen is the first IN-PROCESS opt-out: the route
+     * writes config.json and answers "off", and the long-lived server holds a
+     * client built from what the flag said at boot. Events keep going out until
+     * the next restart, over a switch the user has just watched turn off.
+     *
+     * A file read per captured event is affordable - these are user-scale
+     * events (a card created, a step advanced), not a hot loop - and the
+     * alternative is a setter that every future writer has to remember to call.
+     */
+    if (!isTelemetryEnabled()) return;
     try {
       this.client.capture({
         distinctId: this.installationId,
@@ -150,6 +172,53 @@ export function getInstallationId(): string {
 export function isTelemetryEnabled(): boolean {
   const config = readConfig();
   return config.telemetry !== false;
+}
+
+/**
+ * Record the opt-in/opt-out choice, next to the only thing that reads it.
+ *
+ * `agenfk config set telemetry` wrote this file itself, inline in the command,
+ * and that was fine while the CLI was the only writer. The settings screen is a
+ * second one. Two hand-rolled read-modify-writes over the same JSON is how a
+ * config file loses the keys the other writer did not know about — flowRegistry
+ * and the GitHub repo mappings live in here, and the JIRA credentials will.
+ *
+ * Deliberately NOT `readConfig()`, which answers `{}` for a file it cannot
+ * parse. That is the right reading for "tell me the flag" and the wrong one
+ * here: writing `{telemetry:false}` over unparseable JSON throws away whatever
+ * was in it, including credentials the user cannot regenerate. Refusing is
+ * recoverable; a silent overwrite is not.
+ */
+export function setTelemetryEnabled(enabled: boolean): void {
+  const file = configPath();
+  let config: Record<string, unknown> = {};
+  if (fs.existsSync(file)) {
+    // Throws on malformed JSON, on purpose. See above.
+    config = JSON.parse(fs.readFileSync(file, 'utf8'));
+  }
+  config.telemetry = enabled;
+  // The directory may not exist: this screen is reachable on a machine where no
+  // agenfk command has ever been typed.
+  fs.mkdirSync(agenfkDir(), { recursive: true });
+  // Owner-only: the same file carries the JIRA clientSecret (BUG cc26b206).
+  // A fresh 0600 temp file renamed over the target, as @agenfk/core's
+  // writePrivateFileSync does (telemetry does not depend on core): a rewrite in
+  // place would keep an inode an older release left 0644.
+  // A symlinked config.json stays a symlink: write where it points.
+  let target = file;
+  try { target = fs.realpathSync(file); } catch { /* not there yet */ }
+  const tmp = path.join(path.dirname(target), `.config.json.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    // Run as root over a user's home, keep the file the user's.
+    if (process.getuid?.() === 0) {
+      try { const st = fs.statSync(target); fs.chownSync(tmp, st.uid, st.gid); } catch { /* no existing file */ }
+    }
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* never created, or already renamed */ }
+    throw e;
+  }
 }
 
 export {

@@ -1,7 +1,7 @@
 /**
  * On-demand hub flow refresh.
  *
- * The 5-minute poll (`startFlowSync`) keeps the local server eventually
+ * The hub loop's `flows` channel (hubSync.ts) keeps the local server eventually
  * consistent with the corp Hub's flow assignments, but a user who just pressed
  * "Use this flow" in the Hub expects `agenfk flow show` to reflect it now. This
  * helper performs a single ETag-aware reconcile for one project on demand,

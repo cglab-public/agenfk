@@ -37,7 +37,7 @@ AgenFK features an automated orchestration layer where the primary agent acts as
     - **Protocol**: Decomposes request into `TODO` sub-items and **PAUSES** for human approval.
 2.  **Coding Agent (IN_PROGRESS Phase)**:
     - **Trigger**: Human approval of the plan.
-    - **Protocol**: Implements the plan, then calls `validate_progress` to close the coding step. Never signal completion with `update_item({ status })` — a forward transition by any route other than `validate_progress` skips the gate.
+    - **Protocol**: Implements the plan, then calls `validate_progress` to close the step it is on. Never signal completion with `update_item({ status })` — a forward transition by any route other than `validate_progress` skips the gate.
 3.  **Review Agent (REVIEW Phase)**:
     - **Trigger**: Automatic spawn when item enters REVIEW.
     - **Protocol**: Calls `workflow_gatekeeper(itemId)` to read exit criteria, audits code for security and requirements, then calls `validate_progress` to advance to `TEST`.
@@ -71,6 +71,37 @@ AgenFK supports six AI coding assistants. Each integrates with the same MCP serv
 ### Note on Codex hook coverage
 
 Codex's hook system reliably fires for the shell tool but not for `apply_patch` or most MCP tool calls (open issues `openai/codex#14882`, `#16732`, May 2026). The PR sizing hook is unaffected because `gh pr create` and `git push` always run via the shell tool. If pre-edit gatekeeping is added to Codex later, this caveat will need to be revisited.
+
+## Where a preference lives
+
+Three stores exist, and which one a setting belongs in is decided by a single
+question: **what is the worst thing a wrong value can do?**
+
+| Store | Holds | Reached by |
+|---|---|---|
+| `~/.agenfk/config.json` | What is needed to FIND or START the system: `dbPath`, `rulesScope`, `withMcp` | The CLI, directly. No server in the path — by necessity, since `dbPath` has to be known before the database can be opened. |
+| `app_settings` table (SQLite) | Behaviour preferences shared across clients: `tmuxByDefault` | `GET`/`PUT /settings`, so the CLI, the UI and MCP all see the same value. |
+| `packages/desktop` prefs (`userData/prefs.json`) | Preferences with EXECUTION semantics: `autoApprove` | The desktop's preload IPC only. No HTTP route reaches it. |
+
+The third store exists because of a specific finding rather than a preference
+for tidiness. `autoApprove` appends `--dangerously-skip-permissions` — and for
+codex `sandbox_mode=danger-full-access` — to every agent spawned afterwards.
+`PUT /settings` is unauthenticated and accepts requests with no `Origin`
+header, so an agent running WITH its prompts on, granted approval for a single
+localhost call, could have removed the prompts for every future session. That
+is the boundary the gatekeeper architecture exists to hold.
+
+The server already draws this line elsewhere and it is the precedent to follow:
+`verifyCommand` sits behind `VERIFY_TOKEN` because it is a shell string, and
+`autoWorktree` is open because it is "a boolean preference with no execution
+semantics". A new setting goes in the database only if it is genuinely in the
+second category.
+
+**Known inconsistency, recorded rather than hidden:** `telemetry` and
+`flowRegistry` are behaviour preferences and still live in `config.json`, from
+before this rule existed. They are reachable only from the CLI, so the settings
+screen cannot show them. Moving them is a migration, and the migration is only
+worth doing if the settings screen is going to surface them.
 
 ## Hub Federation (hub of hubs)
 
@@ -218,6 +249,17 @@ Neither role needs much more than that. `HUB_ARCHITECTURE.md` §2.7 covers what 
 operator actually sets — which is almost nothing, plus one flag for a parent on a
 private network — and why enrolment is deliberately a decision made in the UI
 rather than a variable in the environment.
+
+## Airlock runtime (smolvm)
+
+Airlock (GH-294) sandboxes pi, OpenCode, Claude Code and Codex sessions (GH-356 added the last two, with no launch gate: running them in Airlock is optional). Since CGLAB-696 its only runtime is smolvm (`packages/cli/src/airlock/smolvm.ts`): the Sandbox Runtime (ASRT) it replaced could not mediate non-HTTP egress.
+
+- **One machine per workspace.** `machineNameOf(workspace)`; created on first launch from the policy's image (`image.ts`), started for a session, stopped by the last session out. Concurrent sessions share it only on identical terms (network, model keys, protections, mounts); a command the server runs (`exec.ts`) joins a live session on that session's terms, in a mount namespace of its own.
+- **Egress.** smolvm's mediated egress hands each guest flow to a per-machine decider (`egress.ts`, run detached from `egressMain.js` so it outlives the session that started the machine). It names the flow by SNI / HTTP Host / the DNS audit, applies the policy (`enforce` allow+deny, `observe` deny only and report), and redirects the session's relay and inference flows to host-side services (`serverRelay.ts`, `keyInjector.ts`). Decisions reach the server through the launcher's reporter (`proxyReport.ts`).
+- **Claude Code and Codex (GH-356).** Their per-call hook is `bin/agenfk-airlock-hook.mjs`, which judges only when `AGENFK_AIRLOCK_SANDBOX` says it runs in the machine. A host-held login (the default) puts a stand-in in the guest; the injector asks a `TokenSource` (`tokenSource.ts`) for the real token per request, caches it until 60 s before it expires, and on a 401 invalidates it and tries once more. The login file is the machine's own in either mode (`machineOwn`, bound from `/var/lib/agenfk/own`), seeded from the host's only with `--login mount`. The hooks the host's settings name at `~/.local/bin` are given to the session as wrappers over its `~/.agenfk/bin`.
+- **Files.** Only the spec's write roots are mounted; a root script applies read-only binds and hides (`guestSetupScript`) before the session, which runs as the host user's uid.
+- **Install.** `smolvmInstall.ts` pins the release tarball per platform by sha256 into `~/.agenfk/smolvm/<version>`; the desktop app bundles the same release (`packages/desktop/scripts/bundle-airlock.mjs`).
+- **Conformance.** `airlock-sandbox-conformance.test.ts` runs the guarantees against the pinned smolvm, the base image and the real decider; CI runs it on a KVM Linux runner (`ci.yml`, `airlock-conformance`).
 
 ## Tech Stack
 - **Language**: TypeScript (Strong typing across the stack)

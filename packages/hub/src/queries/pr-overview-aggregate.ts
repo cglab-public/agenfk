@@ -176,7 +176,45 @@ export interface PrOverviewResult {
 }
 
 const emptyDist = (): SizeDist => ({ xs: 0, s: 0, m: 0, l: 0, xl: 0 });
-const dayOf = (iso: string): string => iso.slice(0, 10);
+/** Most a real zone sits from UTC (Kiribati +14h, Baker Island −12h). */
+const MAX_TZ_OFFSET_MIN = 14 * 60;
+
+/** Clamp a viewer's UTC offset (minutes EAST of UTC) to a real zone; anything
+ *  that is not a finite number means UTC. */
+export function clampTzOffsetMin(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v)
+    ? Math.max(-MAX_TZ_OFFSET_MIN, Math.min(MAX_TZ_OFFSET_MIN, Math.trunc(v)))
+    : 0;
+}
+
+/**
+ * How a PR's open instant becomes the calendar day it is filed under, for the
+ * viewer. An IANA zone wins because it knows each date's own offset (a January
+ * range viewed in July must not be read at the summer offset); a bare offset is
+ * the fallback; neither means UTC days. A zone the runtime does not know is
+ * ignored rather than refused. A timestamp that does not parse keeps its own
+ * first ten characters instead of throwing, as the UTC path always did.
+ */
+export function dayKeyer(timeZone?: string | null, tzOffsetMin?: number | null): (iso: string) => string {
+  const utc = (iso: string) => iso.slice(0, 10);
+  if (timeZone) {
+    try {
+      // en-CA formats as YYYY-MM-DD.
+      const fmt = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+      return iso => {
+        const t = Date.parse(iso);
+        return Number.isNaN(t) ? utc(iso) : fmt.format(t);
+      };
+    } catch { /* unknown zone: fall through */ }
+  }
+  const shift = clampTzOffsetMin(tzOffsetMin);
+  if (shift === 0) return utc;
+  return iso => {
+    const t = Date.parse(iso);
+    return Number.isNaN(t) ? utc(iso) : new Date(t + shift * 60_000).toISOString().slice(0, 10);
+  };
+}
+
 const pointsOf = (r: NormRow): number =>
   prSizePoints({ leafStory: r.leafStory, task: r.task, bug: r.bug });
 
@@ -230,6 +268,15 @@ export interface PrWindow {
    * ever reported.
    */
   prNumber?: number | string | null;
+  /**
+   * The viewer's offset from UTC in minutes EAST (UTC+2 is 120), so a PR lands
+   * on the day it was opened where the viewer is. Clamped to ±14h; absent means
+   * UTC days. Only the day a PR is filed under moves: `from`/`to` are instants.
+   */
+  tzOffsetMin?: number | null;
+  /** The viewer's IANA zone (e.g. Europe/Berlin). Preferred over
+   *  `tzOffsetMin`, which cannot follow a DST change. */
+  timeZone?: string | null;
 }
 
 interface ResolvedPr {
@@ -254,7 +301,7 @@ interface ResolvedPr {
 // Collapse the raw event stream into one record per PR. A pr.updated never adds a
 // new PR — it re-sizes the existing one. The PR is counted once, placed on its
 // OPEN day at its LATEST size, and attributed to whoever OPENED it.
-function resolvePrs(rows: ReadonlyArray<PrEventRow>, mapping: ModelMapping): ResolvedPr[] {
+function resolvePrs(rows: ReadonlyArray<PrEventRow>, mapping: ModelMapping, dayOf: (iso: string) => string): ResolvedPr[] {
   const groups = new Map<string, NormRow[]>();
   for (const raw of rows) {
     const r = normaliseRow(raw, mapping);
@@ -310,7 +357,7 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
   // there a search?" and "what number?" — an unparseable value falls back to the
   // windowed filters instead of silently matching nothing.
   const prNumber = parsePrNumberFilter(window?.prNumber);
-  const prs = resolvePrs(rows, mapping).filter(pr =>
+  const prs = resolvePrs(rows, mapping, dayKeyer(window?.timeZone, window?.tzOffsetMin)).filter(pr =>
     prNumber !== null
       // Search mode: number only. The window, model and developer predicates
       // above are deliberately not consulted — see PrWindow.prNumber. Note this

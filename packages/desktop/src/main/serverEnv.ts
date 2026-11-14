@@ -1,0 +1,103 @@
+/**
+ * Which database does the desktop app open?
+ *
+ * The server's own last resort is `findProjectRoot(process.cwd())`, which is
+ * fine for a CLI launched inside a project and wrong for a GUI app: launched
+ * from Finder the cwd is "/", so the server would try to create
+ * /.agenfk/db.sqlite and die on EPERM before serving anything. On Windows the
+ * cwd is the executable's directory — a different wrong answer.
+ *
+ * So the desktop process decides, using the same chain
+ * `scripts/start-services.mjs` uses. That is not merely a safe default: it is
+ * what makes the app and the terminal show the same board.
+ */
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { platform, type PlatformProfile } from './platform.js';
+import { mergePath, pathKeyOf } from './ptyEnv.js';
+
+export interface FsReader {
+  exists(p: string): boolean;
+  read(p: string): string;
+}
+
+export interface ResolveDbPathOptions {
+  env?: Record<string, string | undefined>;
+  homedir?: string;
+  fs?: FsReader;
+}
+
+const realFs: FsReader = {
+  exists: (p) => fs.existsSync(p),
+  read: (p) => fs.readFileSync(p, 'utf8'),
+};
+
+/**
+ * Resolve the SQLite path: AGENFK_DB_PATH, then `dbPath` from
+ * ~/.agenfk/config.json (what the installer writes), then a default under the
+ * home directory. Never cwd-relative, and never below the filesystem root.
+ */
+export function resolveDbPath(opts: ResolveDbPathOptions = {}): string {
+  const {
+    env = process.env,
+    homedir = os.homedir(),
+    fs: reader = realFs,
+  } = opts;
+
+  const explicit = env.AGENFK_DB_PATH?.trim();
+  if (explicit) return explicit;
+
+  const configPath = path.join(homedir, '.agenfk', 'config.json');
+  if (reader.exists(configPath)) {
+    try {
+      const cfg = JSON.parse(reader.read(configPath));
+      if (typeof cfg?.dbPath === 'string' && cfg.dbPath.trim()) return cfg.dbPath;
+    } catch {
+      // A malformed config must not push us onto the cwd fallback — that is
+      // the very failure this function exists to prevent.
+    }
+  }
+
+  return path.join(homedir, '.agenfk-system', '.agenfk', 'db.sqlite');
+}
+
+/**
+ * The environment the server is forked with (BUG 474a8240).
+ *
+ * The server runs tools by name - `gh` for the GitHub account, among others -
+ * so its PATH is the one that decides whether they exist. Inherited as-is, an
+ * app opened from the Finder hands it launchd's /usr/bin:/bin:/usr/sbin:/sbin,
+ * and Settings reported the GitHub CLI missing with gh in /opt/homebrew/bin.
+ * The fresh PATH leads, the inherited one follows - the same merge the
+ * terminals get.
+ */
+export function buildServerEnv(
+  base: NodeJS.ProcessEnv,
+  opts: {
+    uiDir: string; dbPath: string; freshPath: string | null;
+    /**
+     * ea94c023: how the server runs `agenfk airlock exec` for a card an Airlock
+     * sandbox touched - the shipped helper (null: the CLI beside the server) and
+     * the Node to run it with, which in the app is Electron itself.
+     */
+    airlockExec?: { cli: string | null; node: string };
+  },
+  profile: Pick<PlatformProfile, 'pathDelimiter' | 'envKeysIgnoreCase'> = platform,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  if (opts.freshPath) {
+    const key = pathKeyOf(env, profile);
+    env[key] = mergePath(opts.freshPath, env[key], profile.pathDelimiter);
+  }
+  // One origin for everything (CGLAB-165).
+  env.AGENFK_SERVE_UI = opts.uiDir;
+  // Never let the database location depend on how the app was launched.
+  env.AGENFK_DB_PATH = opts.dbPath;
+  if (opts.airlockExec) {
+    if (opts.airlockExec.cli) env.AGENFK_AIRLOCK_EXEC_CLI = opts.airlockExec.cli;
+    env.AGENFK_AIRLOCK_EXEC_NODE = opts.airlockExec.node;
+    env.AGENFK_AIRLOCK_EXEC_RUN_AS_NODE = '1';
+  }
+  return env;
+}

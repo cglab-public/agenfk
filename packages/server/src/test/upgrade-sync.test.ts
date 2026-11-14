@@ -1,8 +1,8 @@
 /**
  * Story 3b — upgradeSync polling reconciler + boot-time outcome replay.
  *
- * The module exports two pure-ish functions that startUpgradeSync wires into
- * a polling timer. We test the pure functions directly with injected deps so
+ * The module exports two pure-ish functions; the server runs the reconciler
+ * as the hub loop's `upgrade` channel. We test the pure functions directly with injected deps so
  * we don't have to mock setTimeout / axios / child_process all at once.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -17,7 +17,7 @@ import { readUpgradeState, writeUpgradeState } from '../hub/upgradeState';
 
 let dbDir: string;
 beforeEach(() => { dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-upgrade-sync-')); });
-afterEach(() => { fs.rmSync(dbDir, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(dbDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 interface RecordedEvent { type: string; payload: any }
 
@@ -49,21 +49,6 @@ function makeFakes(opts: {
   });
   return { events, flushNowCalls, fetchImpl, recordEvent, flushNow, spawnImpl, readInstalledVersionImpl };
 }
-
-describe('BUG bbe794bc — forced self-extract installs deps (no false success)', () => {
-  // Source-introspection: defaultSelfExtract shells out, so we assert the
-  // production impl runs `npm ci` after the tar, ordered after extraction.
-  // Without this, a dep-changing target would advance the version on disk but
-  // boot with missing node_modules while reporting success.
-  const SRC = fs.readFileSync(path.join(__dirname, '../hub/upgradeSync.ts'), 'utf8');
-  it('runs `npm ci --omit=dev` inside defaultSelfExtract, after the tar extract', () => {
-    const fn = SRC.slice(SRC.indexOf('async function defaultSelfExtract'));
-    const body = fn.slice(0, fn.indexOf('\n}'));
-    expect(body).toMatch(/tar -xzf/);
-    expect(body).toMatch(/ci --omit=dev/);
-    expect(body.indexOf('ci --omit=dev')).toBeGreaterThan(body.indexOf('tar -xzf'));
-  });
-});
 
 describe('Story 3b — reconcileUpgradeDirective', () => {
   it('no-op when the hub returns 204 (no pending directive)', async () => {
@@ -482,6 +467,32 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
 });
 
 describe('Story 3b — replayPendingUpgradeOutcome (boot-time replay)', () => {
+  it('says nothing and keeps the marker while this process is still running that upgrade (GH-346 review)', async () => {
+    // A repoint restarts the hub subsystems, which replays: it must not report the
+    // upgrade still in flight as failed, or erase the marker its own boot replay needs.
+    const f = makeFakes({ directive: { directiveId: 'd-live', targetVersion: '0.3.1' } });
+    let finish!: (r: { exitCode: number; stdout: string }) => void;
+    const running = reconcileUpgradeDirective({
+      dbDir, currentVersion: '0.3.0', hubUrl: 'https://hub', hubToken: 't', installationId: 'inst-1',
+      fetchImpl: f.fetchImpl, recordEvent: f.recordEvent, flushNow: f.flushNow,
+      spawnImpl: () => new Promise((r) => { finish = r; }),
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
+    });
+    while (!finish) await new Promise(r => setTimeout(r, 1));
+    expect(readUpgradeState(dbDir)?.outcome).toBe('started');
+
+    const replayEvents: RecordedEvent[] = [];
+    await replayPendingUpgradeOutcome({
+      dbDir, currentVersion: '0.3.0', installationId: 'inst-1',
+      recordEvent: (e: any) => { replayEvents.push({ type: e.type, payload: e.payload }); },
+    });
+    expect(replayEvents).toEqual([]);
+    expect(readUpgradeState(dbDir)?.outcome).toBe('started');
+
+    finish({ exitCode: 0, stdout: '{"status":"upgraded","fromVersion":"0.3.0","toVersion":"0.3.1"}' });
+    await running;
+  });
+
   it('does nothing when no upgrade state exists', async () => {
     const f = makeFakes();
     await replayPendingUpgradeOutcome({

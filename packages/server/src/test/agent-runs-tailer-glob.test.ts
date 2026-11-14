@@ -42,7 +42,7 @@ describe('tailRunsOnce resolves a glob sourcePath (CGLAB-23)', () => {
       expect(emitted[0]).toMatchObject({ itemId: 'item-glob', runId: 'run-glob' });
       expect(emitted[0].event).toMatchObject({ kind: 'tool', tool: 'bash' });
     } finally {
-      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

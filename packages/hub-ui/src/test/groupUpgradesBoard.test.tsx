@@ -16,6 +16,7 @@ import { GroupUpgrades } from '../pages/AdminUpgrades';
 import { groupUpgradesLive } from '../pages/groupUpgradeState';
 import { api } from '../api';
 import { ThemeProvider } from '../ThemeContext';
+import { answerConfirm, letMutationsLand } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -78,16 +79,26 @@ describe('Admin → Upgrades: the group-upgrade board', () => {
   it('surfaces the skip reasons rather than only a number', async () => {
     renderBoard();
     await waitFor(() => screen.getByTestId('group-target-skips-d-1-ch-a'));
-    expect(screen.getByTestId('group-target-skips-d-1-ch-a')).toHaveAttribute(
-      'title', expect.stringContaining('i9'),
-    );
+    // Listed in a disclosure anyone can open, not only in a hover title.
+    expect(screen.getByTestId('group-target-skips-d-1-ch-a')).toHaveTextContent('i9: retired');
   });
 
   it('cancels a dispatch through the admin endpoint', async () => {
     renderBoard();
     await waitFor(() => screen.getByTestId('group-dispatch-cancel-d-1'));
     fireEvent.click(screen.getByTestId('group-dispatch-cancel-d-1'));
+    // A group upgrade reaches every child hub's fleet, so cancelling asks first.
+    expect(await answerConfirm(true)).toMatch(/already (installed|upgraded)/i);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade-dispatches/d-1/cancel', {}));
+  });
+
+  it('declining the cancel sends nothing', async () => {
+    renderBoard();
+    await waitFor(() => screen.getByTestId('group-dispatch-cancel-d-1'));
+    fireEvent.click(screen.getByTestId('group-dispatch-cancel-d-1'));
+    await answerConfirm(false);
+    await letMutationsLand();
+    expect(post).not.toHaveBeenCalled();
   });
 
   it('offers no cancel for a dispatch already cancelled, and says it is', async () => {

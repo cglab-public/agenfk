@@ -6,8 +6,8 @@
  * drift between a plain `vitest run` and a workspace/`--project` run.
  *
  * `fileParallelism: true` opts a project into running its FILES in separate
- * workers — see PARALLEL_INCLUDE in vitest.config.ts for which packages qualify
- * and why the rest must stay serial.
+ * workers — see vitest.config.ts for which packages run so, and the HOME per
+ * worker (scripts/vitest-home-pin.mjs) that lets server/hub/cli (GH-274).
  *
  * There is deliberately no option for `sequence.concurrent`, which is a
  * different thing: concurrency of tests WITHIN one file. The two used to share
@@ -50,9 +50,9 @@ export function sharedTest(
     env: testEnv(),
     globals: true,
     environment: opts.environment ?? 'node', // Use node for server/storage
-    // Files that share filesystem state (sqlite DBs, install dirs) must run one
-    // at a time; `fileParallelism: true` is only for the fs-free packages listed
-    // in vitest.config.ts.
+    // A project whose files share filesystem state across workers (sqlite DBs,
+    // install dirs) must run them one at a time; every project in
+    // vitest.config.ts opts in, the server/hub/cli ones on a HOME per worker.
     fileParallelism: !!opts.fileParallelism,
     // Never concurrent within a file. Every package here has specs that mutate
     // shared per-file state — a jsdom document, a module mock, a temp dir — and
@@ -62,11 +62,19 @@ export function sharedTest(
     // run serially: under load, bcrypt/AES-GCM in hub setup hooks and mocked
     // axios calls in upgrade-tier specs would otherwise trip the lower ceiling
     // on different files run-to-run, producing pseudo-random failures.
-    testTimeout: 30000,
-    hookTimeout: 30000,
+    // Doubled on Windows (#208): every git call and child process there costs
+    // several times what it does on POSIX, and the git-heavy server specs run
+    // 20-25s alone - a loaded run pushed them over 30s. A hang still fails.
+    testTimeout: process.platform === 'win32' ? 60000 : 30000,
+    hookTimeout: process.platform === 'win32' ? 60000 : 30000,
     // Repairs `localStorage` for jsdom specs — Node's own undefined global
     // clobbers jsdom's. See vitest.setup.ts.
     setupFiles: ['./vitest.setup.ts'],
+    // Deletes the HOME sandbox above once the run is over - with the server
+    // suite's sqlite databases in it (scripts/vitest-sandbox-teardown.mjs).
+    // Absolute: globalSetup resolves against the config's own root, and
+    // packages/hub-ui runs this config from its package directory.
+    globalSetup: [path.join(ROOT, 'scripts/vitest-sandbox-teardown.mjs')],
     include: opts.include,
     exclude: [
       '**/dist/**',

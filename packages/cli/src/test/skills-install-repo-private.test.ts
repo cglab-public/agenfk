@@ -44,7 +44,7 @@ beforeAll(() => {
   });
 });
 
-afterAll(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+afterAll(() => { if (home) rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 /** Every dest a sync step writes to, as (dir, ext). */
 const DESTS: Array<[string, string]> = [

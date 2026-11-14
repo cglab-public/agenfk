@@ -78,7 +78,7 @@ describe('SQLiteStorageProvider — init / shutdown / database guard', () => {
     } finally {
       await storage.shutdown();
       cleanup(dbPath);
-      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
     }
   });
 
@@ -95,7 +95,7 @@ describe('SQLiteStorageProvider — init / shutdown / database guard', () => {
     } finally {
       await storage.shutdown();
       process.chdir(cwd);
-      try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
     }
   });
 
@@ -264,6 +264,28 @@ describe('SQLiteStorageProvider — Items', () => {
     await storage.updateItem('child', { parentId: 'parent' });
     const children = await storage.listChildren('parent');
     expect(children.map(c => c.id)).toEqual(['child']);
+  });
+
+  it('failureCount round-trips through the item JSON, with no migration', async () => {
+    // Items are stored as one `data` blob, so a new optional field needs no
+    // column - which is why this is a type plus two lines, not a schema change.
+    await storage.createItem(makeItem({ status: Status.IN_PROGRESS, failureCount: 2 }));
+    expect((await storage.getItem('i1'))!.failureCount).toBe(2);
+  });
+
+  it('reaching DONE clears the failure count', async () => {
+    // The one event that means the work landed. `done` on a *run* does not,
+    // which is why this lives at the item, not at the attempt.
+    await storage.createItem(makeItem({ status: Status.IN_PROGRESS, failureCount: 3 }));
+    const done = await storage.updateItem('i1', { status: Status.DONE });
+    expect(done.failureCount).toBe(0);
+    expect((await storage.getItem('i1'))!.failureCount).toBe(0);
+  });
+
+  it('a non-terminal status change leaves the count alone', async () => {
+    await storage.createItem(makeItem({ status: Status.IN_PROGRESS, failureCount: 2 }));
+    const moved = await storage.updateItem('i1', { status: Status.REVIEW });
+    expect(moved.failureCount).toBe(2);
   });
 
   it('listItems filters by projectId, type, status, and parentId', async () => {

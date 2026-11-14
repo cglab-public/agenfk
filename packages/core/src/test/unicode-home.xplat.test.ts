@@ -32,7 +32,7 @@ describe('testHomePrefix', () => {
       expect(raw[0]).not.toBe(0xef); // no UTF-8 BOM
       expect(JSON.parse(raw.toString('utf8')).nome).toBe('Fábio Téixeira — ação');
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

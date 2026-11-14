@@ -9,6 +9,17 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { drainApp } from './helpers/drainApp';
+
+/**
+ * The app the most recent test built.
+ *
+ * These specs construct one per test rather than once per file, so there is no
+ * module-scope `app` to drain. Without draining, a response still writing when
+ * the DB closes has its socket reset, and the ECONNRESET surfaces on whichever
+ * spec runs NEXT — which is why the failures rotated.
+ */
+let lastApp: { closeIdleConnections?: () => void; closeAllConnections?: () => void } | null = null;
 import { createHubApp } from '../server';
 
 const tmpDir = (label: string) =>
@@ -30,7 +41,11 @@ describe('hub SPA fallback — /setup', () => {
     process.env.AGENFK_HUB_UI_DIR = uiDir;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts.
+    // Without it a response still writing when the DB closes resets its socket,
+    // and the ECONNRESET lands on whichever spec runs NEXT.
+    if (lastApp) await drainApp(lastApp);
     if (prevUiDir === undefined) delete process.env.AGENFK_HUB_UI_DIR;
     else process.env.AGENFK_HUB_UI_DIR = prevUiDir;
     try { fs.rmSync(path.dirname(dbPath), { recursive: true, force: true }); } catch { /* ignore */ }
@@ -43,6 +58,7 @@ describe('hub SPA fallback — /setup', () => {
       sessionSecret: 'test-session-secret-min-32-bytes-please',
       defaultOrgId: 'org',
     });
+  lastApp = out.app;
     try {
       const r = await supertest(out.app).get('/setup');
       expect(r.status).toBe(200);
@@ -60,6 +76,7 @@ describe('hub SPA fallback — /setup', () => {
       sessionSecret: 'test-session-secret-min-32-bytes-please',
       defaultOrgId: 'org',
     });
+  lastApp = out.app;
     try {
       // Without a token this returns 401 (token gate), proving the request
       // reached the API route rather than being handed an HTML body.

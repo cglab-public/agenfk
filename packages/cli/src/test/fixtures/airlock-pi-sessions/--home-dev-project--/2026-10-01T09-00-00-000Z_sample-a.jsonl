@@ -1,0 +1,7 @@
+{"type":"session","version":3,"id":"sample-a","timestamp":"2026-10-01T09:00:00.000Z","cwd":"/home/dev/project"}
+{"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-10-01T09:00:00.100Z","provider":"example-provider","modelId":"example-model"}
+{"type":"message","id":"u1","parentId":"m1","timestamp":"2026-10-01T09:00:01.000Z","message":{"role":"user","timestamp":1,"content":[{"type":"text","text":"fetch https://user-typed.example.com/ for me"}]}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-10-01T09:00:02.000Z","message":{"role":"assistant","timestamp":2,"content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"curl -s 'https://api.example.com/v1/items?token=SAMPLE_SECRET_VALUE'"}}]}}
+{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-10-01T09:00:03.000Z","message":{"role":"toolResult","timestamp":3,"content":[{"type":"text","text":"{\"next\":\"https://result-only.example.com/page2\"}"}]}}
+{"type":"message","id":"a2","parentId":"r1","timestamp":"2026-10-01T09:05:00.000Z","message":{"role":"assistant","timestamp":4,"content":[{"type":"toolCall","id":"c2","name":"bash","arguments":{"command":"git clone https://git.example.org/team/repo.git && npm install --registry https://registry.example.net/"}},{"type":"toolCall","id":"c3","name":"read","arguments":{"path":"/home/dev/project/README.md"}}]}}
+not even json

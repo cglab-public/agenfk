@@ -19,14 +19,16 @@
  *
  * Offline by construction: PATH holds only the tools each case needs. `curl`
  * and `gh` are absent unless a case deliberately fakes them, and the fakes are
- * shell scripts that never touch the network.
+ * node scripts behind a launcher (helpers/fakeBin, so they answer through sh
+ * and cmd.exe alike) that never touch the network.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, cpSync, rmSync, symlinkSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, cpSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { REPO_ROOT } from './helpers/runInstaller';
+import { fakeBin, hostTar, type FakeBin } from './helpers/fakeBin';
 
 let work: string;
 
@@ -55,26 +57,20 @@ function makeInstallDir(home: string): string {
   return installDir;
 }
 
-function makeBin(tools: string[]): string {
-  const binDir = mkdtempSync(path.join(work, 'bin-'));
-  symlinkSync(process.execPath, path.join(binDir, 'node'));
-  for (const tool of tools) {
-    const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
-    if (found) symlinkSync(found, path.join(binDir, tool));
-  }
-  return binDir;
+function makeBin(tools: string[], stubs?: Record<string, string>): FakeBin {
+  return fakeBin(mkdtempSync(path.join(work, 'bin-')), { node: true, tools, stubs });
 }
 
-function run(source: string, home: string, binDir: string, args: string[] = []) {
+function run(source: string, home: string, bin: FakeBin, args: string[] = []) {
   return spawnSync(process.execPath, [path.join(source, 'bin', 'agenfk.js'), ...args], {
     encoding: 'utf8',
     timeout: 180_000,
-    env: { HOME: home, USERPROFILE: home, PATH: binDir, NODE_ENV: 'production', VITEST: '1' },
+    env: bin.env({ HOME: home, USERPROFILE: home, NODE_ENV: 'production', VITEST: '1' }),
   });
 }
 
 beforeAll(() => { work = mkdtempSync(path.join(os.tmpdir(), 'agenfk-bootstrap-')); });
-afterAll(() => rmSync(work, { recursive: true, force: true }));
+afterAll(() => rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 describe('npx upgrade, --rebuild: prunes against the npx source tree', () => {
   // --rebuild fetches no archive, so the source tree really is the last writer.
@@ -154,18 +150,20 @@ describe('npx upgrade with an archive: prunes against the ARCHIVE', () => {
     cpSync(path.join(REPO_ROOT, 'commands'), path.join(stage, 'commands'), { recursive: true });
     writeFileSync(path.join(stage, 'commands', 'agenfk-archive-only.md'), '---\ndescription: x\n---\nonly in the archive\n', 'utf8');
     const tarball = path.join(work, 'fake-dist.tar.gz');
-    spawnSync('tar', ['-czf', tarball, '-C', stage, 'commands'], { encoding: 'utf8' });
+    spawnSync(hostTar(), ['-czf', tarball, '-C', stage, 'commands'], { encoding: 'utf8' });
 
     // Fake curl + gh: no network, just a tag and a file copy.
-    const binDir = makeBin(['tar', 'gzip', 'cp']);
-    writeFileSync(path.join(binDir, 'gh'), '#!/bin/sh\necho v9.9.9\n', 'utf8');
-    chmodSync(path.join(binDir, 'gh'), 0o755);
-    writeFileSync(path.join(binDir, 'curl'),
-      `#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) shift; out="$1";; esac; shift; done\n` +
-      `if [ -n "$out" ]; then cp ${JSON.stringify(tarball)} "$out"; else echo '"v9.9.9"'; fi\n`, 'utf8');
-    chmodSync(path.join(binDir, 'curl'), 0o755);
+    const bin = makeBin(['tar', 'gzip'], {
+      gh: `console.log('v9.9.9');`,
+      curl: `const args = process.argv.slice(2);
+const out = args.includes('-o') ? args[args.indexOf('-o') + 1] : '';
+// The API answer is the release LIST the installer picks from (BUG 4bd98e16).
+if (out) require('fs').copyFileSync(${JSON.stringify(tarball)}, out);
+else console.log('[{"tag_name":"v9.9.9","prerelease":false,"published_at":"2026-01-01T00:00:00Z"}]');
+`,
+    });
 
-    r = run(source, home, binDir);
+    r = run(source, home, bin);
   });
 
   it('fetched and extracted the archive (guard)', () => {

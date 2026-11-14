@@ -12,7 +12,7 @@ import * as path from 'path';
 
 let dir = '';
 afterEach(() => {
-  if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   dir = '';
 });
 

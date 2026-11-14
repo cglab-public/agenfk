@@ -10,8 +10,21 @@ describe('resolveSourcePath (CGLAB-23)', () => {
   });
 
   it('expands a leading ~ using the injected home dir', () => {
+    // Joined natively: `\home\tester\x\session.jsonl` on Windows (#208).
     expect(resolveSourcePath('~/x/session.jsonl', { home: '/home/tester' }))
-      .toBe('/home/tester/x/session.jsonl');
+      .toBe(path.join('/home/tester', 'x', 'session.jsonl'));
+  });
+
+  it('resolves a glob written with forward slashes, as the orchestrator registers it, on every OS (#208)', () => {
+    const base = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'agenfk-resolvesrc-'));
+    try {
+      const dir = path.join(base, 'sessionA'); fs.mkdirSync(dir);
+      const file = path.join(dir, '2026-01-01T00-00-00_sid.jsonl');
+      fs.writeFileSync(file, 'a');
+      expect(resolveSourcePath(`${base.replace(/\\/g, '/')}/*/*_sid.jsonl`)).toBe(file);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
   });
 
   it('resolves a glob to the most-recently-modified matching file', () => {
@@ -30,7 +43,7 @@ describe('resolveSourcePath (CGLAB-23)', () => {
       const resolved = resolveSourcePath(path.join(base, '*', '*_sid.jsonl'));
       expect(resolved).toBe(newer);
     } finally {
-      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -39,7 +52,7 @@ describe('resolveSourcePath (CGLAB-23)', () => {
     try {
       expect(resolveSourcePath(path.join(base, '*', '*_nomatch.jsonl'))).toBeUndefined();
     } finally {
-      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

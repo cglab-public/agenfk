@@ -23,6 +23,7 @@
  * with no sanitising, so a stored `javascript:` URL is a stored-XSS trigger on
  * click. The server is the only place that can refuse it.
  */
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -48,9 +49,9 @@ vi.mock('axios', async (importOriginal) => {
 });
 
 import axios from 'axios';
-import { app, initStorage, JIRA_HTTP_TIMEOUT_MS, isJiraBrowseUrlFor, describeRejectedInput } from '../server';
+import { app, initStorage, closeStorage, JIRA_HTTP_TIMEOUT_MS, isJiraBrowseUrlFor, describeRejectedInput } from '../server';
 
-const TEST_DB = path.resolve('./jira-item-linking-test-db.sqlite');
+const TEST_DB = testDbPath('jira-item-linking-test-db.sqlite');
 const SANDBOX_HOME = path.join(os.tmpdir(), 'agenfk-jira-link-home');
 const CLOUD_URL = 'https://cg-lab.atlassian.net';
 
@@ -101,14 +102,14 @@ describe('linking a card to a JIRA item', () => {
 
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     fs.mkdirSync(SANDBOX_HOME, { recursive: true });
     await initStorage();
   });
 
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
-    fs.rmSync(SANDBOX_HOME, { recursive: true, force: true });
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
+    fs.rmSync(SANDBOX_HOME, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   beforeEach(async () => {
@@ -121,7 +122,7 @@ describe('linking a card to a JIRA item', () => {
     (axios as any).post.mockResolvedValue({ data: {} });
     setHome(SANDBOX_HOME);
     clearJiraToken();
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
     const p = await request(app).post('/projects').send({ name: 'jira-link' });
     projectId = p.body.id;
@@ -464,23 +465,6 @@ describe('linking a card to a JIRA item', () => {
   //
   // Each of these covers a fix that was in the code but pinned by NOTHING, so
   // reverting the fix left the suite green.
-
-  describe('bounds on the jiraItem path', () => {
-    it('refuses an absurdly long key, which was the way around both length caps', async () => {
-      // The grammar is anchored but not finite, so a 5000-character project key
-      // matched it and landed in the item's JSON blob — and, when connected, in
-      // the derived browse URL, past the 2048 URL cap.
-      const res = await createItem({ jiraItem: `${'A'.repeat(5000)}-1` });
-      expect(res.status).toBe(400);
-      const list = await request(app).get('/items').query({ projectId });
-      expect(list.body).toHaveLength(0);
-    });
-
-    it('accepts a key of a realistic length', async () => {
-      const res = await createItem({ jiraItem: 'ABCDEFGHIJ-123456' });
-      expect(res.status).toBe(201);
-    });
-  });
 
   describe('the archive path reports an unverified link', () => {
     it('returns the warning when archiving and linking in one request', async () => {

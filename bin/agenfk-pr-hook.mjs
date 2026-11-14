@@ -11,7 +11,11 @@
  *
  * Usage in client config: `agenfk-pr-hook --client <name>`
  */
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // ── Pure helpers (also exported for unit tests) ──────────────────────────────
 
@@ -71,6 +75,83 @@ export function stripEnvAssignments(segment) {
   return segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/, '');
 }
 
+/**
+ * The destination branch of a push refspec.
+ *
+ * `HEAD:feat/x` pushed to feat/x, not to a branch called 'HEAD:feat/x' — the
+ * old classifier handed the whole refspec back, so the nudge read
+ * "you just pushed to 'HEAD:staging'" (BUG 40ff964b). A git ref cannot contain
+ * ':', so cutting at the LAST colon is unambiguous; `:feat/x` (a delete) has an
+ * empty source and still names feat/x.
+ */
+export function normalizePushRef(ref) {
+  if (!ref) return undefined;
+  let branch = ref;
+  const colon = branch.lastIndexOf(':');
+  if (colon !== -1) branch = branch.slice(colon + 1);
+  branch = branch.replace(/^\+/, '');
+  branch = branch.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
+  return branch || undefined;
+}
+
+/** Strip one layer of matching shell quotes, if present. */
+function unquote(token) {
+  if (typeof token !== 'string' || token.length < 2) return token;
+  const first = token[0];
+  const last = token[token.length - 1];
+  if ((first === '"' && last === '"') || (first === "'" && last === "'")) return token.slice(1, -1);
+  return token;
+}
+
+/**
+ * Is this a directory the shell would read as absolute, or as something the
+ * hook must leave for the runtime to resolve (`~user`, `$VAR`)?
+ */
+function isShellAbsolute(dir) {
+  return dir.startsWith('/') || dir.startsWith('~') || dir.startsWith('$') || /^[A-Za-z]:[\\/]/.test(dir);
+}
+
+/**
+ * Join a relative `cd` onto the previous one.
+ *
+ * `cd /repo && cd wt1 && git push` pushes in `/repo/wt1`. Carrying `wt1`
+ * verbatim and resolving it against the hook's cwd read a decoy repo (review
+ * finding), which is the original defect wearing a different hat.
+ */
+function joinShellDir(base, next) {
+  return base.endsWith('/') ? base + next : `${base}/${next}`;
+}
+
+/**
+ * Read `git <global options> push <args>` back as `{ cwd, args }`, or null when
+ * this is not a push.
+ *
+ * A second reason to look past `push` (BUG 40ff964b): the old anchor was
+ * `^git\s+push`, so `git -C <repo> push` never matched at all and those pushes
+ * got no nudge. `-C` is also a directory, and the repo it points at is the one
+ * whose branch the push reports.
+ */
+export function splitGitPush(rest) {
+  let cwd;
+  for (let i = 0; i < rest.length; i++) {
+    const tok = rest[i];
+    if (tok === '-C') {
+      const value = rest[i + 1];
+      if (value) { cwd = unquote(value); i++; continue; }
+    } else if (tok.startsWith('-C') && tok.length > 2) {
+      cwd = unquote(tok.slice(2));
+      continue;
+    } else if (tok === '-c' || tok === '--git-dir' || tok === '--work-tree' || tok === '--namespace') {
+      i++; // option with a separate value
+      continue;
+    }
+    if (tok === 'push') return { cwd, args: rest.slice(i + 1) };
+    // Any other non-option token before `push` means this is not a push.
+    if (!tok.startsWith('-')) return null;
+  }
+  return null;
+}
+
 export function classifyTrigger(command) {
   if (typeof command !== 'string') return null;
   // Segment-aware (CGLAB-11): the old ^-anchored match on the whole command
@@ -78,12 +159,29 @@ export function classifyTrigger(command) {
   // never got the register nudge. An `open` anywhere in the chain wins over a
   // `push` (the same chain often pushes then opens).
   let push = null;
+  // The directory the command moves into. A push that runs in another repo has
+  // to be reported by THAT repo's branch (BUG 40ff964b); without this, the
+  // runtime fell back to the hook's own cwd and named the session repo's branch
+  // - typically 'main' while the push went to a feature branch in a worktree.
+  let cwd;
   for (const rawSegment of splitShellSegments(command)) {
     const segment = stripEnvAssignments(rawSegment);
     if (/^gh\s+pr\s+create\b/.test(segment)) return { kind: 'open' };
-    const pushMatch = segment.match(/^git\s+push\b(.*)$/);
-    if (pushMatch && !push) {
-      let rest = (pushMatch[1] || '').trim().split(/\s+/).filter(Boolean);
+    // `cd <dir>` is the whole segment; the last one before the push wins, and a
+    // relative target is relative to the PREVIOUS one, not to the hook's cwd.
+    const cdMatch = segment.match(/^cd\s+(?:--\s+)?("[^"]*"|'[^']*'|\S+)\s*$/);
+    if (cdMatch) {
+      const next = unquote(cdMatch[1]);
+      cwd = cwd && !isShellAbsolute(next) ? joinShellDir(cwd, next) : next;
+      continue;
+    }
+    const gitMatch = segment.match(/^git\b(.*)$/);
+    if (gitMatch && !push) {
+      const parsed = splitGitPush((gitMatch[1] || '').trim().split(/\s+/).filter(Boolean));
+      if (!parsed) continue;
+      // `-C` is a directory too, and it overrides an earlier cd.
+      const targetCwd = parsed.cwd ?? cwd;
+      let rest = parsed.args;
       // Everything from the first redirection onwards is shell plumbing, not
       // arguments to git. Cutting there — rather than filtering tokens that
       // CONTAIN < or > — is what handles a target written as its own token:
@@ -110,7 +208,8 @@ export function classifyTrigger(command) {
         branch = tok;
         break;
       }
-      push = { kind: 'push', branch };
+      push = { kind: 'push', branch: normalizePushRef(branch) };
+      if (targetCwd) push.cwd = targetCwd;
     }
   }
   return push;
@@ -180,9 +279,40 @@ function extractCommand(input) {
   );
 }
 
-function getCurrentBranch() {
-  try { return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
-  catch { return null; }
+/**
+ * Turn the directory a `cd`/`-C` named into an absolute path, or null when it
+ * cannot be resolved statically.
+ *
+ * `~` and `$HOME` are the spellings the workflow itself emits, so they are
+ * expanded. Any other `$…` is a shell variable whose value the hook does not
+ * have; returning null (fall back to the hook's own cwd) is honest, while
+ * guessing would be the original defect again.
+ */
+function resolveTargetDir(dir) {
+  if (!dir) return null;
+  let d = dir;
+  if (d === '~') d = os.homedir();
+  else if (d.startsWith('~/')) d = path.join(os.homedir(), d.slice(2));
+  else if (d.startsWith('$HOME/') || d === '$HOME') d = path.join(os.homedir(), d.slice('$HOME'.length));
+  if (d.includes('$') || d.startsWith('~')) return null;
+  return path.isAbsolute(d) ? d : path.resolve(process.cwd(), d);
+}
+
+/**
+ * The branch of the repo the push actually ran in.
+ *
+ * `cwd` is the directory the command moved into. Running the read there —
+ * rather than leaning on the hook's own cwd — is the fix for BUG 40ff964b: the
+ * session repo can be on 'main' while the push happens in a worktree on a
+ * feature branch, and the old answer named the session repo.
+ */
+function getCurrentBranch(cwd) {
+  try {
+    const gitArgs = cwd
+      ? ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD']
+      : ['rev-parse', '--abbrev-ref', 'HEAD'];
+    return execFileSync('git', gitArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
+  } catch { return null; }
 }
 
 function emit(directive) {
@@ -215,9 +345,16 @@ async function main() {
   // name — `git push -u origin HEAD` is the form the workflow itself recommends
   // ("push your branch"), so resolve it to the real branch instead of nudging
   // with the literal 'HEAD' (independent review finding, CGLAB-86). The
-  // classifier stays a pure string parser; git resolution happens here.
-  const branch =
-    trigger.branch && trigger.branch !== 'HEAD' ? trigger.branch : getCurrentBranch();
+  // classifier stays a pure string parser; git resolution happens here, in the
+  // directory the command moved into (BUG 40ff964b).
+  const needsResolve = !trigger.branch || trigger.branch === 'HEAD';
+  const targetDir = resolveTargetDir(trigger.cwd);
+  // The command moved into a directory we cannot resolve ($VAR, ~user). The
+  // branch is therefore unknowable, and reaching for the hook's own cwd would
+  // report the session repo's branch - the exact bug this fixes. Stay silent
+  // instead of guessing (review finding).
+  if (needsResolve && trigger.cwd && !targetDir) process.exit(0);
+  const branch = needsResolve ? getCurrentBranch(targetDir) : trigger.branch;
   if (!branch) process.exit(0);
   // We don't currently index PRs by branch, but the agent can still answer the
   // "did I add items to this PR?" question itself. Emit the directive
@@ -232,8 +369,15 @@ async function main() {
 // ESM script entry detection: only run main() when executed directly, not when imported.
 const isMain = (() => {
   try {
-    const url = new URL(import.meta.url);
-    return process.argv[1] && url.pathname === process.argv[1];
+    if (!process.argv[1]) return false;
+    // Compare real filesystem paths, not `new URL(import.meta.url).pathname`:
+    // on Windows the URL pathname is `/C:/...` while argv[1] is `C:\...`, so
+    // a string compare never matched and the hook silently never ran.
+    const self = fs.realpathSync(fileURLToPath(import.meta.url));
+    const entry = fs.realpathSync(path.resolve(process.argv[1]));
+    return process.platform === 'win32'
+      ? self.toLowerCase() === entry.toLowerCase()
+      : self === entry;
   } catch { return false; }
 })();
 if (isMain) {

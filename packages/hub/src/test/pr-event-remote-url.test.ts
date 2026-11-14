@@ -20,6 +20,17 @@ import { issueApiKey } from '../auth/apiKey';
 import { remoteUrlFromRepo, sanitizeRemoteUrl } from '../util/remoteUrl';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-pr-remote-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 const cleanup = () => {
@@ -109,21 +120,23 @@ describe('Hub: PR events populate the remote_url filter dimension', { hookTimeou
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookieAdmin = login.headers['set-cookie']?.[0] ?? '';
     token = await issueApiKey(ctx.db, 'org-a', 'inst-1');
   });
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('derives remote_url from payload.repo when the event has no remoteUrl', async () => {
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [prEvent()] });
     const row = await ctx.db.get<{ remote_url: string }>('SELECT remote_url FROM events LIMIT 1');
@@ -133,7 +146,7 @@ describe('Hub: PR events populate the remote_url filter dimension', { hookTimeou
   it('prefers the emitter-resolved remoteUrl over the payload repo', async () => {
     // remoteUrl points at one repo, payload.repo at another: the resolved
     // remote wins (it may be a non-github / GHE host we can't infer from repo).
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [prEvent({
         remoteUrl: 'git@ghe.internal:team/service.git',
@@ -144,7 +157,7 @@ describe('Hub: PR events populate the remote_url filter dimension', { hookTimeou
   });
 
   it('leaves remote_url null when payload.repo is not a bare owner/repo slug', async () => {
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [prEvent({ payload: { prNumber: 2, repo: 'not-a-repo' } })] });
     const row = await ctx.db.get<{ remote_url: string | null }>('SELECT remote_url FROM events LIMIT 1');
@@ -152,17 +165,17 @@ describe('Hub: PR events populate the remote_url filter dimension', { hookTimeou
   });
 
   it('surfaces the derived repo as a project chip and matches the ?projects filter', async () => {
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [prEvent()] });
 
-    const projects = await supertest(app).get('/v1/projects').set('Cookie', cookieAdmin);
+    const projects = await supertest(__server).get('/v1/projects').set('Cookie', cookieAdmin);
     expect(projects.status).toBe(200);
     expect(projects.body.projects).toEqual(['git@github.com:carsales-private/dataservice.git']);
 
     // The UI filters by the chip value returned from /v1/projects (the
     // canonical remote form), and https/ssh variants canonicalise to it too.
-    const timeline = await supertest(app)
+    const timeline = await supertest(__server)
       .get('/v1/timeline?projects=' + encodeURIComponent('https://github.com/carsales-private/dataservice'))
       .set('Cookie', cookieAdmin);
     expect(timeline.status).toBe(200);

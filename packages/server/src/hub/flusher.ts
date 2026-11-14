@@ -5,9 +5,40 @@ import * as path from 'path';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { HubConfig, FlusherStatus } from './types.js';
 import { PENDING_ORG } from './hubClient.js';
+import { readDeadletterIndicator } from './deadletter.js';
+import { airlockDatasetDecidedOff } from './airlockSync.js';
+import { hubRequestTimeoutMs, hubRequestSignal } from './hubRequest.js';
 
+/** The hub loop's interval (hubSync.ts), which runs flush(): the base of the backoff. */
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 500;
+/**
+ * A batch's payloads, at most: the hub reads a body of up to 10 MB, and Airlock
+ * dataset rows run to 64 KB each, so a count alone (500 of them) could make a
+ * batch the hub refuses every time, holding up everything behind it (story review F2).
+ */
+export const MAX_BATCH_BYTES = 8 * 1024 * 1024;
+
+/** The oldest rows whose payloads fit in maxBytes together - always the first, however large. */
+export function withinBatchBytes<T extends { payload: string }>(rows: T[], maxBytes: number = MAX_BATCH_BYTES): T[] {
+  let bytes = 0;
+  let n = 0;
+  for (const r of rows) {
+    bytes += Buffer.byteLength(r.payload, 'utf8') + 1;
+    if (n > 0 && bytes > maxBytes) break;
+    n++;
+  }
+  return rows.slice(0, n);
+}
+
+const isAirlockDatasetPayload = (payload: string): boolean => {
+  try {
+    const type = (JSON.parse(payload) as { type?: unknown }).type;
+    return type === 'airlock.dataset' || type === 'airlock.dataset-label';
+  } catch {
+    return false;
+  }
+};
 const HALT_AFTER_4XX_ATTEMPTS = 5;
 /**
  * 4xx codes that mean "come back later", not "your request is invalid". These
@@ -22,9 +53,12 @@ const MAX_BACKOFF_MS = 5 * 60_000;
  * Where hub-rejected events are preserved before their outbox rows are
  * deleted (CGLAB-117). Same idiom as hubClient.ts's HUB_CONFIG_PATH; the CLI
  * `hub deadletter` commands duplicate this path expression (packages/cli/src/
- * commands/hub.ts deadletterFile) — the packages share no module, so rename
- * here and the CLI reader must move with it (hub-carryover-deadletter.test.ts
- * pins the literal against drift).
+ * commands/hub.ts deadletterFile) — the line format is shared through
+ * @agenfk/core (hubDeadletter.ts), the path is not, so rename here and the CLI
+ * reader must move with it. The literal is pinned against drift by
+ * packages/server/src/test/flusher-org-boundary.test.ts ("defaultDeadletterPath
+ * is the ~/.agenfk/hub-deadletter.jsonl contract the CLI reads") and the CLI
+ * side by packages/cli/src/test/hub-carryover-actions.test.ts.
  */
 export function defaultDeadletterPath(): string {
   return path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl');
@@ -95,7 +129,6 @@ function isAuthoritativeRejection(data: unknown): boolean {
 }
 
 export class Flusher {
-  private timer: NodeJS.Timeout | null = null;
   private inflight: Promise<void> | null = null;
   private status: FlusherStatus;
   private http: AxiosInstance;
@@ -113,7 +146,7 @@ export class Flusher {
   ) {
     this.http = httpClient ?? axios.create({
       baseURL: config.url,
-      timeout: 15_000,
+      timeout: hubRequestTimeoutMs(),
       headers: {
         'Authorization': `Bearer ${config.token}`,
         'X-Installation-Id': installationId,
@@ -121,6 +154,8 @@ export class Flusher {
         'Content-Type': 'application/json',
       },
     });
+    // The whole-request deadline (GH-346): axios's timeout alone stops at the headers.
+    if (!httpClient) this.http.interceptors.request.use((c) => { c.signal ??= hubRequestSignal(); return c; });
     this.status = {
       enabled: true,
       lastFlushAt: null,
@@ -132,16 +167,6 @@ export class Flusher {
       staleOrgDepth: 0,
       deadletterDepth: 0,
     };
-  }
-
-  start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(() => { this.flush().catch(() => { /* logged in flush */ }); }, this.intervalMs);
-    this.timer.unref?.();
-  }
-
-  stop(): void {
-    if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
   getStatus(): FlusherStatus {
@@ -156,7 +181,9 @@ export class Flusher {
       ...this.status,
       outboxDepth: this.storage.hubOutboxCount(),
       staleOrgDepth,
-      deadletterDepth: countJsonlLines(this.deadletterPath),
+      // The same count as the sticky refusal indicator (#223), from its cache:
+      // this runs on every CLI command, and two counts of one file must agree.
+      deadletterDepth: readDeadletterIndicator(this.deadletterPath).count,
       // Surfaced so the CLI can warn about an install that is stuck WITHOUT
       // being halted — a retired hub URL answering 404 HTML now backs off
       // forever instead of halting, and would otherwise be invisible.
@@ -261,7 +288,18 @@ export class Flusher {
     // stamp, nothing to leak — the hub judges them); unparseable payloads
     // never ship: they can never deliver and would throw for the WHOLE batch
     // on the way into the POST.
-    const rows = this.storage.hubOutboxPeekDeliverable(this.batchSize, this.config.orgId);
+    let rows = this.storage.hubOutboxPeekDeliverable(this.batchSize, this.config.orgId);
+    // Airlock dataset rows queued while the hub's switch was on are not sent once a
+    // sync has turned it off (story review F1): the hub would drop them, but they
+    // need not leave this machine at all.
+    if (airlockDatasetDecidedOff()) {
+      const dropped = rows.filter(r => isAirlockDatasetPayload(r.payload));
+      if (dropped.length) {
+        this.storage.hubOutboxDelete(dropped.map(r => r.event_id));
+        rows = rows.filter(r => !dropped.includes(r));
+      }
+    }
+    rows = withinBatchBytes(rows);
     if (rows.length === 0) {
       this.status.lastFlushAt = new Date().toISOString();
       // A cycle with nothing deliverable is not a failed attempt. Without
@@ -417,14 +455,5 @@ export class Flusher {
     // applies only on creation; chmod covers the pre-existing-file case.
     fs.appendFileSync(this.deadletterPath, lines.join('\n') + '\n', { mode: 0o600 });
     try { fs.chmodSync(this.deadletterPath, 0o600); } catch { /* best effort */ }
-  }
-}
-
-/** Line count of a JSONL file; 0 when it does not exist yet. */
-function countJsonlLines(filePath: string): number {
-  try {
-    return fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean).length;
-  } catch {
-    return 0;
   }
 }

@@ -13,6 +13,7 @@
  *  - no selection → no model param sent, and the legacy single <select> is gone.
  */
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { MixBar } from '../pages/PrOverview';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -20,6 +21,7 @@ import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PrOverviewPage } from '../pages/PrOverview';
 import { api } from '../api';
+import { withFiltersOpen } from './filtersOpen';
 
 vi.mock('../api', () => ({ api: { get: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -71,7 +73,7 @@ const renderPage = (entry: string, models: string[] = THREE_MODELS) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[entry]}>
+      <MemoryRouter initialEntries={[withFiltersOpen(entry)]}>
         <PrOverviewPage />
         <UrlProbe />
       </MemoryRouter>
@@ -82,7 +84,12 @@ const renderPage = (entry: string, models: string[] = THREE_MODELS) => {
 const overviewUrls = () =>
   get.mock.calls.map(c => String(c[0])).filter(u => u.startsWith('/v1/prs/overview'));
 const qs = (url: string) => new URLSearchParams(url.split('?')[1] ?? '');
-const urlNow = () => screen.getByTestId('url-probe').textContent;
+// The query string minus the bar's open flag, which these tests open to reach the facets.
+const urlNow = () => {
+  const q = new URLSearchParams(screen.getByTestId('url-probe').textContent ?? '');
+  q.delete('filters');
+  return q.toString();
+};
 
 // Same fixed-date fixture as the drill-down suite, so the same clock coupling
 // applies: the page's axis is a window measured from the real `now`, and from
@@ -109,7 +116,7 @@ describe('PrOverviewPage model multi-select', () => {
 
     // The Model facet is present (label) and reports two selected values.
     await screen.findByRole('heading', { name: 'Model' });
-    await screen.findByRole('button', { name: 'Clear (2)' });
+    await screen.findByRole('button', { name: 'Clear (2) Model filter' });
 
     // The URL write-back must preserve the CSV (join separator), not collapse it.
     // (URLSearchParams percent-encodes the comma in the written-back URL, so
@@ -128,17 +135,17 @@ describe('PrOverviewPage model multi-select', () => {
   it('still honours a legacy single-value ?model= link as one selection', async () => {
     renderPage('/prs?model=glm-5.2');
     await screen.findByRole('heading', { name: 'Model' });
-    await screen.findByRole('button', { name: 'Clear (1)' });
+    await screen.findByRole('button', { name: 'Clear (1) Model filter' });
     expect(qs(overviewUrls()[0]).get('model')).toBe('glm-5.2');
   });
 
   it('toggling a selected model off updates the URL and refetches with the reduced filter', async () => {
     renderPage('/prs?model=claude-opus-4-8,glm-5.2');
-    await screen.findByRole('button', { name: 'Clear (2)' });
+    await screen.findByRole('button', { name: 'Clear (2) Model filter' });
 
     fireEvent.click(screen.getByRole('button', { name: 'glm-5.2' }));
 
-    await screen.findByRole('button', { name: 'Clear (1)' });
+    await screen.findByRole('button', { name: 'Clear (1) Model filter' });
     await waitFor(() => expect(urlNow()).toBe('model=claude-opus-4-8'));
     // The refetched data query carries only the remaining model.
     expect(
@@ -181,10 +188,105 @@ describe('PrOverviewPage model multi-select', () => {
 
     // Popover trigger reports the selection count, and each selected model is
     // a removable chip.
-    await screen.findByRole('button', { name: '2 selected · 7 total' });
+    await screen.findByRole('button', { name: 'Model 2 selected · 7 total' });
     fireEvent.click(screen.getByRole('button', { name: 'Remove gpt-5.2' }));
 
-    await screen.findByRole('button', { name: '1 selected · 7 total' });
+    await screen.findByRole('button', { name: 'Model 1 selected · 7 total' });
     await waitFor(() => expect(urlNow()).toBe('model=gemini-3-flash'));
+  });
+});
+
+describe('size mix without hover (story f17f36a5)', () => {
+  it('each size-mix bar says its counts to a screen reader', async () => {
+    renderPage('/prs');
+    const bars = await screen.findAllByRole('img', { name: /^Size mix: / });
+    expect(bars.length).toBeGreaterThan(0);
+    for (const b of bars) expect(b.getAttribute('aria-label')).toMatch(/^Size mix: (no PRs|(XS|S|M|L|XL) \d+(, (XS|S|M|L|XL) \d+)*)$/);
+  });
+
+  it('a mix bar names its sizes, or says there are no PRs', () => {
+    const { unmount } = render(<MixBar sizes={{ xs: 2, s: 0, m: 3, l: 0, xl: 1 }} total={6} />);
+    expect(screen.getByRole('img')).toHaveAccessibleName('Size mix: XS 2, M 3, XL 1');
+    unmount();
+    render(<MixBar sizes={{ xs: 0, s: 0, m: 0, l: 0, xl: 0 }} total={0} />);
+    expect(screen.getByRole('img')).toHaveAccessibleName('Size mix: no PRs');
+  });
+
+  it('the By model table shows the size counts the developer table does', async () => {
+    renderPage('/prs');
+    await screen.findAllByRole('img', { name: /^Size mix: / });
+    // One per table: developers and models.
+    expect(screen.getAllByRole('columnheader', { name: 'XS · S · M · L · XL' })).toHaveLength(2);
+  });
+});
+
+describe('PrOverviewPage flow adherence (CGLAB-617/618)', () => {
+  const renderWithData = (data: any) => {
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/v1/projects')) return { data: { projects: ['acme/api'] } };
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
+      return { data };
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[withFiltersOpen('/prs')]}>
+          <PrOverviewPage />
+          <UrlProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  };
+
+  const withAdherence = () => {
+    const o = makeOverview(['claude-opus-4-8']);
+    o.adherence = { judged: 4, compliant: 3, score: 0.75 };
+    o.byDeveloper[0].adherence = { judged: 3, compliant: 2, score: 2 / 3 };
+    return o;
+  };
+
+  it('renders the aggregate adherence tile', async () => {
+    renderWithData(withAdherence());
+    expect(await screen.findByText('75%')).toBeInTheDocument();
+    // The 75% lives on a StatTile — the aggregate tile, not a table cell.
+    expect(screen.getByText('75%').closest('[data-stat-tile]')).not.toBeNull();
+  });
+
+  it('gives each developer their own score, distinct from the aggregate', async () => {
+    renderWithData(withAdherence());
+    await screen.findByText('75%');
+    // alice: 2 of 3 — not the aggregate's 75%.
+    expect(screen.getByText('67%')).toBeInTheDocument();
+  });
+
+  it('says so when nothing was judged, and never renders 0%', async () => {
+    const o = makeOverview(['claude-opus-4-8']);
+    o.adherence = { judged: 0, compliant: 0, score: null };
+    renderWithData(o);
+    await screen.findAllByRole('img', { name: /^Size mix: / });
+    expect(screen.getAllByTitle('nothing judged').length).toBeGreaterThan(0);
+    expect(screen.queryByText('0%')).not.toBeInTheDocument();
+  });
+
+  it('shows the honest placeholder in By model — transitions carry no model', async () => {
+    renderWithData(withAdherence());
+    await screen.findByText('75%');
+    // Two adherence columns: one per table.
+    expect(screen.getAllByRole('columnheader', { name: 'Adherence' })).toHaveLength(2);
+    // Every By model cell says why it is a dash, and never shows a score.
+    const dashes = screen.getAllByTitle('transitions do not carry a model');
+    expect(dashes.length).toBe(makeOverview(['x']).byModel.length);
+    for (const dash of dashes) expect(dash.textContent).not.toMatch(/%$/);
+  });
+
+  it('an old hub without adherence fields renders the old four-tile grid', async () => {
+    renderWithData(makeOverview(['claude-opus-4-8'])); // no compliance anywhere
+    await screen.findAllByRole('img', { name: /^Size mix: / });
+    // No StatTile carries the label — the column headers do, but they sit
+    // outside the KPI grid.
+    expect(screen.getAllByText('Adherence').every(el => el.closest('[data-stat-tile]') === null)).toBe(true);
+    // The per-developer column still renders, as an explicit dash — the row's
+    // verdict is simply unknown, never invented.
+    expect(screen.getAllByTitle('nothing judged').length).toBeGreaterThan(0);
   });
 });

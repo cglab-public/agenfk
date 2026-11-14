@@ -8,6 +8,7 @@
  * are different failures — the latter is what the user sees.
  */
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
+import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -108,12 +109,18 @@ describe('ThemeToggle', () => {
     expect(localStorage.getItem('theme')).toBe('light');
   });
 
-  it('exposes aria-pressed reflecting whether dark is active', () => {
+  it('names the mode it switches to, and claims no pressed state that would contradict it', () => {
+    // "Switch to light mode, pressed" read as two answers to one question. The
+    // name carries the state alone, and contains the visible "Light"/"Dark".
     renderToggle();
     const btn = screen.getByTestId('theme-toggle');
-    expect(btn.getAttribute('aria-pressed')).toBe('false');
+    expect(btn).toHaveAccessibleName('Switch to dark mode');
+    expect(btn.textContent).toContain('Dark');
+    expect(btn.hasAttribute('aria-pressed')).toBe(false);
     fireEvent.click(btn);
-    expect(btn.getAttribute('aria-pressed')).toBe('true');
+    expect(btn).toHaveAccessibleName('Switch to light mode');
+    expect(btn.textContent).toContain('Light');
+    expect(btn.hasAttribute('aria-pressed')).toBe(false);
   });
 });
 

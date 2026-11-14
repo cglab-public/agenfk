@@ -127,9 +127,10 @@ describe('estimateTooltipSize', () => {
   // clamping in placeTooltip is only as good as this estimate, so pin the
   // formula rather than merely its monotonicity.
   it('pins the documented size formula', () => {
-    expect(estimateTooltipSize('abc').width).toBe(3 * 6 + 18);
+    // 11px mono caption: 0.6em = 6.6px per glyph (was 6, for the old 10px text).
+    expect(estimateTooltipSize('abc').width).toBeCloseTo(3 * 6.6 + 18);
     // empty text still gets a non-zero minimum box (Math.max(1, length))
-    expect(estimateTooltipSize('').width).toBe(1 * 6 + 18);
+    expect(estimateTooltipSize('').width).toBeCloseTo(1 * 6.6 + 18);
     expect(estimateTooltipSize('abc').height).toBe(26);
   });
 });
@@ -211,5 +212,28 @@ describe('placeTooltip', () => {
     // would be far off-screen.
     expect(p.x).toBe(400); // viewportWidth / 2
     expect(Number.isFinite(p.y)).toBe(true);
+  });
+});
+
+describe('placeTooltip at the caption size (story 7073be87)', () => {
+  // The tooltip renders in text-caption (11px) mono: a glyph is 0.6em = 6.6px
+  // wide, measured 6.62 in Chrome. The estimate must be at least that, or the
+  // margin clamp lets the real box run off the screen.
+  const GLYPH = 11 * 0.6;
+  const PAD = 18;
+
+  it('keeps a long tooltip near the right edge inside the screen on a phone', () => {
+    const text = 'bob@acme.com · Thu 2026-10-01: 0 PRs';
+    const viewport = 390;
+    const p = placeTooltip({ left: 370, top: 300, width: 10, height: 10 }, text, viewport);
+    const realHalf = (text.length * GLYPH + PAD) / 2;
+    expect(p.x + realHalf).toBeLessThanOrEqual(viewport - 8 + 0.5);
+    expect(p.x - realHalf).toBeGreaterThanOrEqual(8 - 0.5);
+  });
+
+  it('estimates the box no smaller than the caption text it holds', () => {
+    const text = 'x'.repeat(30);
+    // Text width alone, padding aside: the padding must not hide a short glyph.
+    expect(estimateTooltipSize(text).width - PAD).toBeGreaterThanOrEqual(text.length * GLYPH);
   });
 });

@@ -13,6 +13,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ModelTable } from '../components/ModelTable';
 import type { ModelGroup } from '../pages/modelMappings';
+import { answerConfirm, forbidWindowConfirm } from './helpers/confirmDialog';
 
 const put = vi.fn();
 const del = vi.fn();
@@ -183,9 +184,10 @@ describe('Models table', () => {
   });
 
   it('deletes a classification, leaving the model unknown', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmSpy = forbidWindowConfirm();
     render(<Harness groups={[group('glm-5.2', 5)]} metaRows={[meta('glm-5.2', 'Z.ai')]} />);
     fireEvent.click(screen.getByRole('button', { name: /delete classification for glm-5\.2/i }));
+    expect(await answerConfirm(true)).toMatch(/unknown/i);
     await waitFor(() => expect(del).toHaveBeenCalledWith('/v1/admin/models/meta/glm-5.2'));
     confirmSpy.mockRestore();
   });

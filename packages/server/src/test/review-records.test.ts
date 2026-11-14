@@ -1,0 +1,308 @@
+/**
+ * @file CGLAB-381 (S5-T1) — recording an independent review.
+ *
+ * `POST /items/:id/review-records` stores who reviewed what: the reviewer's
+ * identity, the commit range reviewed, and each finding's fate. The identity
+ * is READ FROM THE REVIEWER'S TRANSCRIPT, never taken from the request: a
+ * Claude Code sub-agent's transcript carries its session and its agent id, a
+ * fresh session its own session id. The server reads transcripts only under
+ * the harnesses' own session folders, so a record is never a way to read an
+ * arbitrary file. A transcript last written before the range's tip commit
+ * cannot have reviewed it.
+ *
+ * verify also records WHO advanced the card (the author identity the CLI
+ * reports from its harness), which S5-T2's check compares the reviewer with.
+ */
+import { removeTestDb, testDbPath } from './helpers/testDb';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import request from 'supertest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+vi.mock('axios', () => {
+  const mockAxios = vi.fn() as any;
+  mockAxios.get = vi.fn();
+  mockAxios.post = vi.fn();
+  mockAxios.create = vi.fn(() => mockAxios);
+  return { default: mockAxios };
+});
+
+const TEST_DB = testDbPath('review-records-test-db.sqlite');
+process.env.AGENFK_DB_PATH = TEST_DB;
+if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
+import { canSymlink, linkDir } from '../../../cli/src/test/helpers/links';
+import { transcriptRoot } from '../reviewRecords';
+
+let __server: import('http').Server;
+const agent = () => request(__server);
+const cleanup: string[] = [];
+const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
+let home: string;
+beforeAll(async () => {
+  home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-review-home-'));
+  cleanup.push(home);
+  process.env.HOME = process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
+  await initStorage();
+  __server = app.listen(0);
+});
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+afterAll(async () => {
+  process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile;
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+});
+
+const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
+
+/** Two commits: a.txt (one), then b.txt (two). */
+const buildTwoCommits: GitTemplateBuild = (d) => {
+  gitSync(d, 'init', '-q', '-b', 'main');
+  gitSync(d, 'config', 'user.email', 't@t');
+  gitSync(d, 'config', 'user.name', 't');
+  writeFiles(d, { 'a.txt': 'a' });
+  gitSync(d, 'add', '.');
+  gitSync(d, 'commit', '-qm', 'one');
+  writeFiles(d, { 'b.txt': 'b' });
+  gitSync(d, 'add', '.');
+  gitSync(d, 'commit', '-qm', 'two');
+};
+
+/** A repo with two commits; returns both SHAs and the tip's commit time. */
+function makeRepo(): { dir: string; base: string; tip: string } {
+  // A clone of the per-worker template (#311): same content and history as a
+  // fresh build, with real commit dates from when the worker built it.
+  const dir = cloneGitTemplate('review-records:two-commits', buildTwoCommits, 'agenfk-review-repo-');
+  cleanup.push(dir);
+  const [base, tip] = gitSync(dir, 'rev-parse', 'HEAD~1', 'HEAD').split(/\r?\n/);
+  return { dir, base, tip };
+}
+
+const line = (o: Record<string, unknown>) => JSON.stringify(o) + '\n';
+/** A Claude Code sub-agent transcript under the sandboxed ~/.claude/projects. */
+function claudeSubagentTranscript(session: string, agentId: string, lastAt: string, opts: { toolUses?: Array<Record<string, unknown>>; parent?: boolean } = {}): string {
+  const proj = path.join(home, '.claude', 'projects', '-repo');
+  const dir = path.join(proj, session, 'subagents');
+  fs.mkdirSync(dir, { recursive: true });
+  // The parent session's own transcript: a sub-agent's log sits beside it.
+  if (opts.parent !== false) fs.writeFileSync(path.join(proj, `${session}.jsonl`), line({ type: 'user', sessionId: session, timestamp: '2026-01-01T00:00:00.000Z' }));
+  const f = path.join(dir, `agent-${agentId}.jsonl`);
+  fs.writeFileSync(f,
+    line({ type: 'user', isSidechain: true, agentId, sessionId: session, timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'review' } })
+    + (opts.toolUses ?? []).map(u => line({ type: 'assistant', isSidechain: true, agentId, sessionId: session, timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', ...u }] } })).join('')
+    + line({ type: 'assistant', isSidechain: true, agentId, sessionId: session, timestamp: lastAt, message: { role: 'assistant', content: 'findings' } }));
+  return f;
+}
+/** A pi session transcript under ~/.pi/agent/sessions. */
+function piTranscript(id: string, lastAt: string): string {
+  const dir = path.join(home, '.pi', 'agent', 'sessions', '--repo--');
+  fs.mkdirSync(dir, { recursive: true });
+  const f = path.join(dir, `${id}.jsonl`);
+  fs.writeFileSync(f, line({ type: 'session', id, timestamp: '2026-01-01T00:00:00.000Z' }) + line({ type: 'message', timestamp: lastAt, message: { role: 'assistant' } }));
+  return f;
+}
+
+let seq = 0;
+async function cardIn(dir: string) {
+  const p = await agent().post('/projects').send({ name: `review-${++seq}` });
+  await storage.updateProject(p.body.id, { projectRoot: dir } as never);
+  await bindRoleLessDefaultFlow(storage, p.body.id);
+  const c = await agent().post('/items').send({ type: 'STORY', title: `card-${++seq}`, projectId: p.body.id });
+  return c.body.id as string;
+}
+const record = (id: string, body: Record<string, unknown>) =>
+  agent().post(`/items/${id}/review-records`).set(internal()).send(body);
+const FUTURE = '2099-01-01T00:00:00.000Z';
+const findings = [{ title: 'null deref in x', state: 'fixed' }, { title: 'rename y', state: 'rejected', reason: 'out of scope' }];
+
+describe('CGLAB-381: review records', () => {
+  it('records a review, taking the reviewer identity from a Claude Code sub-agent transcript', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const transcript = claudeSubagentTranscript('sess-A', 'agent123', FUTURE);
+    const res = await record(id, { transcript, range: `${base}..${tip}`, findings, reviewer: { sessionId: 'forged', agentId: 'forged' } });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.reviewer).toMatchObject({ client: 'claude-code', sessionId: 'sess-A', agentId: 'agent123' });
+    expect(res.body.range).toEqual({ from: base, to: tip });
+    expect(res.body.findings).toEqual(findings);
+    const got = (await agent().get(`/items/${id}?records=1`)).body;
+    expect(got.reviewRecords).toHaveLength(1);
+    expect(got.reviewRecords[0].reviewer.sessionId).toBe('sess-A');
+  });
+
+  it('reads a pi session transcript as a session of its own, with no agent id', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const res = await record(id, { transcript: piTranscript('pi-sess-9', FUTURE), range: `${base}..${tip}`, findings: [] });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.reviewer).toMatchObject({ client: 'pi', sessionId: 'pi-sess-9', agentId: null });
+  });
+
+  it('refuses a transcript outside the harness session folders', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const stray = path.join(dir, 'fake.jsonl');
+    fs.writeFileSync(stray, line({ sessionId: 's', timestamp: FUTURE }));
+    const res = await record(id, { transcript: stray, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/session folder|not a transcript/i);
+  });
+
+  // A FILE link: a junction cannot point at a file, and Windows lets only admin
+  // or Developer Mode make a symlink - so this runs wherever one can be made
+  // (Linux and macOS always) and is skipped only where it cannot be built.
+  it.skipIf(!canSymlink())('refuses a symlink inside a session folder that points outside it', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const target = path.join(dir, 'outside.jsonl');
+    fs.writeFileSync(target, line({ sessionId: 's', timestamp: FUTURE }));
+    const link = path.join(home, '.claude', 'projects', '-repo', 'link.jsonl');
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    // Guard: the folder itself is a session folder, so the refusal below is the link's.
+    const beside = path.join(path.dirname(link), 'beside.jsonl');
+    fs.writeFileSync(beside, line({ sessionId: 's', timestamp: FUTURE }));
+    expect(transcriptRoot(beside)).not.toBeNull();
+    fs.symlinkSync(target, link);
+    const res = await record(id, { transcript: link, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`${link} is not a transcript in a harness session folder`);
+  });
+
+  // The same escape through a DIRECTORY link, which every OS can make: a junction
+  // on Windows needs no privilege, so this one runs on a default Windows too.
+  it('refuses a transcript reached through a linked folder inside a session folder that points outside it', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const outside = path.join(dir, 'outside-sessions');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'sess-x.jsonl'), line({ sessionId: 'sess-x', timestamp: FUTURE }));
+    const project = path.join(home, '.claude', 'projects', '-repo');
+    fs.mkdirSync(project, { recursive: true });
+    // Guard: the folder itself is a session folder, so the refusal below is the link's.
+    const beside = path.join(project, 'beside.jsonl');
+    fs.writeFileSync(beside, line({ sessionId: 's', timestamp: FUTURE }));
+    expect(transcriptRoot(beside)).not.toBeNull();
+    const linked = path.join(project, 'linked');
+    linkDir(outside, linked);
+    const transcript = path.join(linked, 'sess-x.jsonl');
+    const res = await record(id, { transcript, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`${transcript} is not a transcript in a harness session folder`);
+  });
+
+  it('refuses a Claude transcript whose session does not match the folder it sits in', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const d = path.join(home, '.claude', 'projects', '-repo', 'real-sess', 'subagents');
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', 'projects', '-repo', 'real-sess.jsonl'), line({ sessionId: 'real-sess', timestamp: FUTURE }));
+    const t = path.join(d, 'agent-x1.jsonl');
+    fs.writeFileSync(t, line({ isSidechain: true, agentId: 'x1', sessionId: 'someone-else', timestamp: FUTURE }));
+    const res = await record(id, { transcript: t, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/layout|does not match/);
+  });
+
+  it('refuses a sub-agent transcript with no parent session beside it', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const t = claudeSubagentTranscript('lonely', 'x2', FUTURE, { parent: false });
+    expect((await record(id, { transcript: t, range: `${base}..${tip}`, findings: [] })).status).toBe(400);
+  });
+
+  it('refuses a transcript whose FILE was last written before the tip commit, whatever its content claims', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const t = claudeSubagentTranscript('sess-old-file', 'x3', FUTURE);
+    const past = new Date('2000-01-01T00:00:00Z');
+    fs.utimesSync(t, past, past);
+    const res = await record(id, { transcript: t, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/before/);
+  });
+
+  it('records what the reviewer edited and whether it advanced cards, from its tool calls', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const t = claudeSubagentTranscript('sess-acts', 'x4', FUTURE, { toolUses: [
+      { name: 'Edit', input: { file_path: path.join(dir, 'a.txt') } },
+      { name: 'Bash', input: { command: 'agenfk verify abc --evidence x' } },
+    ] });
+    const res = await record(id, { transcript: t, range: `${base}..${tip}`, findings: [] });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.reviewer.edits).toEqual([path.join(dir, 'a.txt')]);
+    expect(res.body.reviewer.advancedCards).toBe(true);
+  });
+
+  it('refuses a range the card\'s tree does not have, or one that is not a from..to pair', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const t = claudeSubagentTranscript('sess-C', 'agentC', FUTURE);
+    expect((await record(id, { transcript: t, range: `${base}..deadbeef`, findings: [] })).status).toBe(400);
+    expect((await record(id, { transcript: t, range: base, findings: [] })).status).toBe(400);
+    const reversed = await record(id, { transcript: t, range: `${tip}..${base}`, findings: [] });
+    expect(reversed.status).toBe(400);
+    expect(reversed.body.error).toMatch(/ancestor/);
+  });
+
+  it('refuses findings that are not fixed or rejected-with-a-reason', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const t = claudeSubagentTranscript('sess-D', 'agentD', FUTURE);
+    for (const bad of [[{ title: 'x', state: 'open' }], [{ title: 'x', state: 'rejected' }], [{ state: 'fixed' }], 'nope']) {
+      const res = await record(id, { transcript: t, range: `${base}..${tip}`, findings: bad });
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+  });
+
+  it('accepts a severity on a finding and refuses one that is not HIGH, MEDIUM or LOW (CGLAB-565)', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const t = claudeSubagentTranscript('sess-D2', 'agentD2', FUTURE);
+    const ok = await record(id, { transcript: t, range: `${base}..${tip}`, findings: [{ title: 'x', state: 'fixed', severity: 'HIGH' }] });
+    expect(ok.status).toBe(201);
+    expect(ok.body.findings[0].severity).toBe('HIGH');
+    for (const bad of ['CRITICAL', 'high', 2]) {
+      const res = await record(id, { transcript: t, range: `${base}..${tip}`, findings: [{ title: 'x', state: 'fixed', severity: bad }] });
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+  });
+
+  it('requires the internal token', async () => {
+    const { dir } = makeRepo();
+    const id = await cardIn(dir);
+    expect((await agent().post(`/items/${id}/review-records`).send({})).status).toBe(401);
+  });
+
+  it('cannot be written through PUT /items/:id', async () => {
+    const { dir } = makeRepo();
+    const id = await cardIn(dir);
+    await agent().put(`/items/${id}`).send({ reviewRecords: [{ reviewer: { sessionId: 'x' } }] });
+    expect((await agent().get(`/items/${id}?records=1`)).body.reviewRecords).toBeUndefined();
+  });
+
+  it('verify records the author identity the caller reports on the step record it writes', async () => {
+    const { dir } = makeRepo();
+    const id = await cardIn(dir);
+    await storage.updateItem(id, { status: 'IN_PROGRESS' } as any);
+    const res = await agent().post(`/items/${id}/validate`).set(internal())
+      .send({ evidence: 'ok', actor: { client: 'claude-code', sessionId: 'author-sess' } });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const exit = (await agent().get(`/items/${id}?records=1`)).body.stepRecords.find((r: any) => r.kind === 'exit' && r.step === 'IN_PROGRESS');
+    expect(exit.actor).toEqual({ client: 'claude-code', sessionId: 'author-sess', agentId: null });
+  });
+
+  it('verify ignores a malformed actor rather than storing it', async () => {
+    const { dir } = makeRepo();
+    const id = await cardIn(dir);
+    await storage.updateItem(id, { status: 'IN_PROGRESS' } as any);
+    await agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok', actor: { sessionId: 42 } });
+    const exit = (await agent().get(`/items/${id}?records=1`)).body.stepRecords.find((r: any) => r.kind === 'exit');
+    expect(exit.actor).toBeUndefined();
+  });
+});

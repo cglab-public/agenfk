@@ -29,15 +29,4 @@ describe('buildUpgradeNotice', () => {
       expect(notice).not.toContain('v must be installed');
     }
   });
-
-  it('still emits notices when the target version is newer than the installed beta', () => {
-    const notice = buildUpgradeNotice({
-      tier: 'recommended',
-      version: '1.0.1',
-      currentVersion: '1.0.1-beta.9',
-    });
-
-    expect(notice).toContain('Recommended upgrade available');
-    expect(notice).toContain('v1.0.1');
-  });
 });

@@ -27,7 +27,7 @@ Use the **Question UI** (`default_api:question`) to collect each input interacti
 
 ### Step 1 — Identify the project
 
-1. Run `agenfk current-project` to get the `projectId` (it resolves the nearest `.agenfk/project.json`, walking up from the cwd).
+1. Run `agenfk current-project` to get the `projectId` (it resolves the nearest `.agenfk/local.json`, walking up from the cwd).
 2. If not found, call `list_projects()` via MCP and use the Question UI to ask which project.
 3. Confirm: "I'll create this flow for project **[name]** (`[projectId]`). Is that correct?"
 

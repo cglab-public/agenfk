@@ -38,7 +38,7 @@ describe('bounded output capture', () => {
     // The whole point: what is retained is a fixed budget, not a fraction.
     expect(out.head.length).toBeLessThanOrEqual(CAPTURE_HEAD_BYTES);
     expect(out.tail.length).toBeLessThanOrEqual(CAPTURE_TAIL_BYTES);
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('keeps the FIRST bytes in the head and the LAST bytes in the tail', () => {
@@ -52,7 +52,7 @@ describe('bounded output capture', () => {
 
     expect(out.head.startsWith('FIRST')).toBe(true);
     expect(out.tail.endsWith('LAST\n')).toBe(true);
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('writes the whole output to the log file when it is under the ceiling', () => {
@@ -67,7 +67,7 @@ describe('bounded output capture', () => {
     const written = fs.readFileSync(file, 'utf8');
     expect(written.split('\n').filter(Boolean)).toHaveLength(100);
     expect(written).toContain('line 99');
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('bounds the disk too, and SAYS it did', () => {
@@ -86,7 +86,39 @@ describe('bounded output capture', () => {
     const size = fs.statSync(file).size;
     expect(size).toBeLessThan(8192);
     expect(fs.readFileSync(file, 'utf8')).toMatch(/truncated/i);
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+
+  it('says so when one chunk exactly fills the ceiling and the next is dropped', () => {
+    // Under load a pipe coalesces into exact 64 KiB reads, so a chunk landing
+    // precisely on the cap is common - and the next chunk used to be dropped by
+    // an early return that never set the flag or wrote the notice. The log was
+    // silently short, which reads as "the command stopped there".
+    const dir = tmp();
+    const file = path.join(dir, 'out.log');
+    const fd = fs.openSync(file, 'w');
+    const cap = createOutputCapture({ fd, maxLogBytes: 65_536 });
+    cap.write(Buffer.alloc(65_536, 0x61));
+    cap.write(Buffer.from('b'));
+    const out = cap.end();
+
+    expect(out.logTruncated).toBe(true);
+    expect(out.totalBytes).toBe(65_537);
+    expect(fs.readFileSync(file, 'utf8')).toMatch(/log truncated at .*AGENFK_VERIFY_MAX_LOG_BYTES/);
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+
+  it('does not claim truncation when the output is exactly the ceiling and nothing more', () => {
+    const dir = tmp();
+    const file = path.join(dir, 'out.log');
+    const fd = fs.openSync(file, 'w');
+    const cap = createOutputCapture({ fd, maxLogBytes: 65_536 });
+    cap.write(Buffer.alloc(65_536, 0x61));
+    const out = cap.end();
+
+    expect(out.logTruncated).toBe(false);
+    expect(fs.statSync(file).size).toBe(65_536);
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('does not split a multi-byte character across chunk boundaries', () => {
@@ -103,7 +135,7 @@ describe('bounded output capture', () => {
 
     expect(out.head).toBe('héllo — wörld ✓');
     expect(out.head).not.toContain('�');
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('still works with no log file at all', () => {
@@ -128,7 +160,7 @@ describe('bounded output capture', () => {
     expect(fs.statSync(file).size).toBeGreaterThan(0);
 
     cap.end();
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('refuses everything after end(), and closes the fd itself', () => {
@@ -156,7 +188,7 @@ describe('bounded output capture', () => {
     expect(fs.readFileSync(logFile, 'utf8')).toBe('during the run\n');
     // The snapshot is frozen too — the late bytes are not counted.
     expect(cap.end().totalBytes).toBe(out.totalBytes);
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('end() is idempotent, so a second close cannot hit a reused descriptor', () => {
@@ -165,7 +197,7 @@ describe('bounded output capture', () => {
     const cap = createOutputCapture({ fd });
     cap.write(Buffer.from('once\n'));
     expect(() => { cap.end(); cap.end(); cap.end(); }).not.toThrow();
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('a failed write is reported as a failed write, not as the ceiling', () => {
@@ -181,7 +213,7 @@ describe('bounded output capture', () => {
 
     expect(out.logWriteError).toBeTruthy();
     expect(out.logTruncated).toBe(false);
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('says the head is complete when it holds everything, multi-byte included', () => {

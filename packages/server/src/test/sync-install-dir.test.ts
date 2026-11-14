@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import fs, { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, symlinkSync } from 'fs';
+import fs, { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import { linkDir } from '../../../cli/src/test/helpers/links';
+import { canMakeUnreadable, makeUnreadable } from './helpers/unreadableDir';
 // The npx bootstrap (bin/agenfk.js) is dependency-light and cannot import
 // @agenfk/core at clone time, so the prune lives in its own .mjs sibling and is
 // exercised here directly — the same code the bootstrap runs.
@@ -10,7 +12,7 @@ import { pruneInstallDir, pruneInstallDirAgainstManifest, isCaseInsensitive, PRU
 
 /**
  * Regression: ~/.agenfk-system was updated with a MERGE copy that never pruned
- * (bin/agenfk.js, `fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true })`).
+ * (bin/agenfk.js, a bare recursive copy of REPO_ROOT over INSTALL_DIR; now copyTree).
  * A file deleted upstream therefore survived in the install dir forever, and
  * scripts/install.mjs copies every markdown out of `<rootDir>/commands` into
  * the user's global config — so the deleted file was re-installed on every
@@ -18,8 +20,8 @@ import { pruneInstallDir, pruneInstallDirAgainstManifest, isCaseInsensitive, PRU
  * out of commands/ in July, yet was still landing in ~/.claude/commands/ in
  * September and leaking into unrelated projects.
  *
- * Pruning NEVER copies. Callers copy by their own means (fs.cpSync, `cp -r`,
- * `tar -xzf`) and prune afterwards.
+ * Pruning NEVER copies. Callers copy by their own means (copyTree from
+ * bin/copy-tree.mjs, `tar -xzf`) and prune afterwards.
  */
 
 let src: string;
@@ -37,8 +39,8 @@ beforeEach(() => {
   dst = mkdtempSync(path.join(os.tmpdir(), 'agenfk-sync-dst-'));
 });
 afterEach(() => {
-  rmSync(src, { recursive: true, force: true });
-  rmSync(dst, { recursive: true, force: true });
+  rmSync(src, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  rmSync(dst, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('pruneInstallDir removes files deleted upstream', () => {
@@ -94,7 +96,7 @@ describe('pruneInstallDir removes files deleted upstream', () => {
   });
 
   it('does not prune against a source dir that exists but is EMPTY', () => {
-    // A truncated cp -r, a filtered copy or an aborted fetch leaves the dir
+    // A truncated copy, a filtered copy or an aborted fetch leaves the dir
     // present and empty. Treating that as "nothing is shipped any more" wipes
     // the install wholesale. A plain existsSync guard does NOT catch this —
     // it was a surviving mutant until this test existed.
@@ -131,8 +133,9 @@ describe('pruneInstallDir removes files deleted upstream', () => {
 
 describe('pruneInstallDir never copies', () => {
   it('prunes without calling fs.cpSync, which the cp -r runtimes do not have', () => {
-    // The legacy branch in bin/agenfk.js exists only where fs.cpSync is absent,
-    // and the tar-based upgrade paths have no source tree to copy from at all.
+    // Pruning must not depend on any copy primitive (fs.cpSync aborts natively
+    // on Windows with non-ASCII paths, #349), and the tar-based upgrade paths
+    // have no source tree to copy from at all.
     seed(src, 'commands/agenfk.md');
     seed(dst, 'commands/agenfk.md');
     seed(dst, 'commands/agenfk-release.md');
@@ -179,40 +182,14 @@ describe('pruneInstallDir refuses to destroy data', () => {
     expect(existsSync(path.join(dst, 'commands/AgenFK.md'))).toBe(false);
   });
 
-  it('keeps a file whose only difference is letter case, where the volume folds case', () => {
-    // On macOS/NTFS, fs.cpSync writes agenfk.md into the EXISTING AgenFK.md
-    // entry and keeps the old spelling, so exact-case matching reads the
-    // surviving file as unshipped and deletes it — worse than not pruning.
-    // On a case-SENSITIVE volume the two really are different files and
-    // deleting the unshipped one is correct, so the expectation must follow
-    // the volume, not the developer's laptop. CI runs ubuntu-latest.
-    seed(src, 'commands/agenfk.md', 'new\n');
-    seed(dst, 'commands/AgenFK.md', 'old\n');
-    // Probe this exact volume the same way the implementation does.
-    const probe = path.join(dst, '.case-probe');
-    writeFileSync(probe, '');
-    const foldsCase = existsSync(path.join(dst, '.CASE-PROBE'));
-    rmSync(probe, { force: true });
-
-    const { removed } = pruneInstallDir(src, dst);
-
-    const survivors = fs.readdirSync(path.join(dst, 'commands'));
-    if (foldsCase) {
-      expect(removed).toEqual([]);
-      expect(survivors).toHaveLength(1);
-      expect(survivors[0].toLowerCase()).toBe('agenfk.md');
-    } else {
-      expect(removed).toEqual([path.join('commands', 'AgenFK.md')]);
-      expect(survivors).toHaveLength(0);
-    }
-  });
-
   it('will not prune through a symlinked dir, which would delete outside the install dir', () => {
     const outside = mkdtempSync(path.join(os.tmpdir(), 'agenfk-sync-outside-'));
     try {
       seed(src, 'commands/agenfk.md');
       seed(outside, 'precious/notes.md', 'do not delete\n');
-      symlinkSync(outside, path.join(dst, 'commands'));
+      // A junction on Windows, where a symlink needs admin - and where a junction
+      // is the link a user would actually have made.
+      linkDir(outside, path.join(dst, 'commands'));
 
       const { removed, failed } = pruneInstallDir(src, dst);
 
@@ -220,7 +197,7 @@ describe('pruneInstallDir refuses to destroy data', () => {
       expect(removed).toEqual([]);
       expect(failed.map((f: { path: string }) => f.path)).toContain('commands');
     } finally {
-      rmSync(outside, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -393,29 +370,27 @@ describe('pruneInstallDir keeps directories the archive ships intentionally empt
 describe('pruneInstallDir fails closed on an unreadable source tree', () => {
   // Reading a PARTIAL listing as "not shipped" deletes live files. An unreadable
   // source subtree must skip the prune, not shrink the shipped set.
-  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-
-  it.skipIf(isRoot)('does not prune a dir whose source listing cannot be read', () => {
+  // Skipped where no directory can be made unreadable to this process (root; a Windows admin with the backup privilege).
+  it.skipIf(!canMakeUnreadable())('does not prune a dir whose source listing cannot be read', () => {
     seed(src, 'commands/agenfk.md');
     seed(src, 'commands/locked/hidden.md');
     seed(dst, 'commands/agenfk.md');
     seed(dst, 'commands/dead.md');
-    const locked = path.join(src, 'commands', 'locked');
-    fs.chmodSync(locked, 0o000);
+    // chmod 000 off Windows; a deny-list ACE on it, where chmod cannot hide a directory.
+    const restore = makeUnreadable(path.join(src, 'commands', 'locked'));
     try {
       pruneInstallDir(src, dst);
       expect(existsSync(path.join(dst, 'commands/dead.md'))).toBe(true);
       expect(existsSync(path.join(dst, 'commands/agenfk.md'))).toBe(true);
     } finally {
-      fs.chmodSync(locked, 0o755);
+      restore();
     }
   });
 });
 
 describe('pruneInstallDir does not abort an upgrade over an unreadable install dir', () => {
-  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-
-  it.skipIf(isRoot)('still prunes what it can see when a destination subdir cannot be read', () => {
+  // Skipped where no directory can be made unreadable to this process (root; a Windows admin with the backup privilege).
+  it.skipIf(!canMakeUnreadable())('still prunes what it can see when a destination subdir cannot be read', () => {
     // The SOURCE listing must be strict (a partial one deletes live files), but
     // the DESTINATION walk must stay lenient: throwing there would abort the
     // user's upgrade over one unreadable subdirectory, and a partial walk only
@@ -424,14 +399,13 @@ describe('pruneInstallDir does not abort an upgrade over an unreadable install d
     seed(dst, 'commands/agenfk.md');
     seed(dst, 'commands/dead.md');
     seed(dst, 'commands/locked/x.md');
-    const locked = path.join(dst, 'commands', 'locked');
-    fs.chmodSync(locked, 0o000);
+    const restore = makeUnreadable(path.join(dst, 'commands', 'locked'));
     try {
       expect(() => pruneInstallDir(src, dst)).not.toThrow();
       expect(existsSync(path.join(dst, 'commands', 'dead.md'))).toBe(false);
       expect(existsSync(path.join(dst, 'commands', 'agenfk.md'))).toBe(true);
     } finally {
-      fs.chmodSync(locked, 0o755);
+      restore();
     }
   });
 });

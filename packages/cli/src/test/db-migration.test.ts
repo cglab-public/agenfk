@@ -54,7 +54,7 @@ describe('stageJsonMigration', () => {
       fs.unlinkSync(migrationPath);
     }
     // Clean temp dir
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('should return false and do nothing when no db.json exists', () => {
@@ -132,5 +132,5 @@ describe('stageJsonMigration', () => {
 
 afterAll(() => {
   vi.mocked(os.homedir).mockRestore();
-  try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
 });

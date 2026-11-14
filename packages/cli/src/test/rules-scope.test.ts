@@ -52,7 +52,7 @@ describe('install.mjs — rulesScope=project routes rules to the project, not th
   });
   afterAll(() => {
     cleanupHome(r.home);
-    rmSync(project, { recursive: true, force: true });
+    rmSync(project, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('persists rulesScope=project to config.json', () => {

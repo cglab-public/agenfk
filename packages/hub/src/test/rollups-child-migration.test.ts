@@ -43,6 +43,30 @@ function seedOldSchema(withPrsOpened: boolean): void {
   raw.close();
 }
 
+/** A hub from AFTER federation but BEFORE CGLAB-613: child_hub_id is present
+ *  (so no rebuild fires) and the adherence counters are absent. */
+function seedPostFederationSchema(): void {
+  const { DatabaseSync } = require('node:sqlite');
+  const raw = new DatabaseSync(DB);
+  raw.exec(`CREATE TABLE rollups_daily (
+    org_id TEXT NOT NULL, user_key TEXT NOT NULL, day TEXT NOT NULL,
+    events_count INTEGER NOT NULL DEFAULT 0, items_closed INTEGER NOT NULL DEFAULT 0,
+    tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
+    validate_passes INTEGER NOT NULL DEFAULT 0, validate_fails INTEGER NOT NULL DEFAULT 0,
+    prs_opened INTEGER NOT NULL DEFAULT 0, child_hub_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (org_id, child_hub_id, user_key, day)
+  );`);
+  raw.exec("INSERT INTO rollups_daily (org_id, user_key, day, events_count) VALUES ('org','a@x','2026-09-01',3)");
+  raw.exec(`CREATE TABLE events (
+    event_id TEXT PRIMARY KEY, org_id TEXT NOT NULL, installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL, occurred_at TEXT NOT NULL, received_at TEXT NOT NULL,
+    type TEXT NOT NULL, project_id TEXT, item_id TEXT, item_type TEXT,
+    remote_url TEXT, item_title TEXT, external_id TEXT, reporting_version TEXT,
+    payload TEXT NOT NULL, child_hub_id TEXT
+  );`);
+  raw.close();
+}
+
 describe('rollups_daily gains child_hub_id on an existing hub', () => {
   it('boots and adds the column to the primary key', async () => {
     cleanup();
@@ -63,7 +87,31 @@ describe('rollups_daily gains child_hub_id on an existing hub', () => {
     seedOldSchema(false);
     const db = await openDb(DB);
     const cols = await db.all<{ name: string }>("SELECT name FROM pragma_table_info('rollups_daily')");
+    await db.close();
     expect(cols.map(c => c.name)).toEqual(expect.arrayContaining(['child_hub_id', 'prs_opened']));
+  });
+
+  it('adds the flow-adherence counters to a pre-existing hub, NOT NULL DEFAULT 0', async () => {
+    // CGLAB-613: existing rows must stay out of BOTH sides of the score, so
+    // the migration adds the counters NOT NULL DEFAULT 0 rather than leaving
+    // them NULL (which would make the score NULL for every historical day).
+    // This is the POST-FEDERATION vintage: child_hub_id is already present, so
+    // no rebuild fires. The row itself cannot be asserted — every boot runs
+    // DELETE FROM rollups_daily and recomputes — so the DEFAULT is what proves
+    // the historical-day rule.
+    cleanup();
+    seedPostFederationSchema();
+    const db = await openDb(DB);
+    const cols = await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
+      "SELECT * FROM pragma_table_info('rollups_daily')",
+    );
+    const byName = Object.fromEntries(cols.map(c => [c.name, c]));
+    for (const col of ['transitions_judged', 'transitions_compliant']) {
+      expect(byName[col], `${col} was added`).toBeTruthy();
+      expect(Number(byName[col].notnull), `${col} is NOT NULL`).toBe(1);
+      expect(String(byName[col].dflt_value), `${col} defaults to 0`).toBe('0');
+    }
+    await db.close();
   });
 
   it('indexes events by originating hub on an UPGRADED hub, not just a fresh one', async () => {

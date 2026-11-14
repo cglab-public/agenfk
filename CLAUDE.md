@@ -28,7 +28,7 @@ Build a single package:
 npm run build -w packages/server
 ```
 
-Run all tests (vitest, node env, file-parallelism off — tests share filesystem state):
+Run all tests (vitest, node env, files in parallel on a quarter of the CPUs — each worker has its own HOME sandbox):
 ```
 npm test
 ```
@@ -44,7 +44,7 @@ Coverage (gated at 80% for `core`, `storage-sqlite`, `server` per `vitest.config
 npm run test:coverage
 ```
 
-UI is excluded from the root vitest run. For UI tests + coverage:
+The board (`packages/ui`) runs inside the root vitest run as its own project (`--project ui`), under its own config. For UI coverage:
 ```
 npm run test:ui:coverage
 ```
@@ -76,7 +76,9 @@ The old version is read from the root `package.json`; commit the manifest change
 
 **Single Owner**: the API server in `packages/server` is the only writer of state. CLI, MCP clients, and UI all go through its REST endpoints; updates fan out over Socket.io. Never read `.agenfk/db.sqlite` directly from other packages — go through the storage interface in `core`.
 
-**Storage**: SQLite-only via `better-sqlite3` (`packages/storage-sqlite`). The repo previously supported `db.json`; existing JSON DBs are auto-migrated by the installer. WAL mode + indexed schema.
+**Storage**: SQLite-only via Node's built-in `node:sqlite` (`DatabaseSync`, in `packages/storage-sqlite`; no native module). The repo previously supported `db.json`; existing JSON DBs are auto-migrated by the installer. WAL mode + indexed schema.
+
+**Serving the UI**: the server serves the built board itself - `agenfk up` (`scripts/start-services.mjs`) sets `AGENFK_SERVE_UI` to `packages/ui/dist`, so REST, Socket.io and assets share one origin and the board's lifecycle is the server's (no separate UI process; with no build the API runs alone and says so). That one origin is also what the Electron desktop shell loads. For UI development, `cd packages/ui && npm run dev` still runs vite against the API. The path must be a *build output*: a directory containing `node_modules/` or `src/` is rejected, because `packages/ui/index.html` exists and the near-miss typo would otherwise expose the source tree. With the variable unset, behaviour is unchanged.
 
 **Workflow engine** (`packages/core` + enforced by `packages/server`):
 - Items have type (EPIC / STORY / TASK / BUG) and move through a configurable **Flow** of `FlowStep`s (default: TODO → IN_PROGRESS → REVIEW → TEST → DONE; per-project flows override this).
@@ -86,13 +88,13 @@ The old version is read from the root `package.json`; commit the manifest change
 
 **MCP surface**: the server registers MCP tools (`mcp__agenfk__*`) backed by the same handlers as the REST endpoints. Tool definitions live in `packages/server/src` alongside the Express routes. Adding a new MCP tool means: handler in core, REST route in server, MCP tool registration in server, and (usually) a CLI subcommand in `packages/cli` for the fallback path.
 
-**Client integrations**: three clients are supported, with different enforcement models — see `AFK_ARCHITECTURE.md` for the full table. Claude Code and OpenCode get *mechanical* PreToolUse hooks (`agenfk-gatekeeper`, `agenfk-mcp-enforcer`) that hard-block edits without an active task and block bypass routes (direct DB reads, `curl localhost:3000`, raw CLI state queries). Cursor has no hook system, so enforcement there is instructional via `cursorrules/agenfk.mdc` (`alwaysApply: true`) plus the server-side gatekeeper.
+**Client integrations**: three clients are supported, with different enforcement models — see `AFK_ARCHITECTURE.md` for the full table. Claude Code and OpenCode get *mechanical* PreToolUse hooks (`agenfk-gatekeeper`, `agenfk-mcp-enforcer`) that hard-block edits without an active task and block the bypass routes around the server (direct DB reads, `curl localhost:3000`; the `agenfk` CLI and MCP are interchangeable and never blocked). Cursor has no hook system, so enforcement there is instructional via `cursorrules/agenfk.mdc` (`alwaysApply: true`) plus the server-side gatekeeper.
 
 ## Testing notes
 
-- Root vitest config splits the suite into two projects. `serial` (server, hub, cli) runs one file at a time because those tests share a per-run HOME sandbox and on-disk state; `parallel` (core, storage-sqlite, telemetry, hub-ui, ui, flow-editor) runs its files concurrently. Don't move a package between them without auditing what it writes.
+- Root vitest config splits the suite into three projects. `serial` (server, hub, cli - named for what it was) writes under HOME, so each vitest worker gets its own HOME inside the run's sandbox (`pinWorkerHome` in `scripts/vitest-home-pin.mjs`, applied by `vitest.setup.ts`) and its files run in parallel too, with a doubled timeout and the run capped at a quarter of the CPUs (at least 2) at the root config, so `--maxWorkers` still overrides it (GH-274). Files on one worker share its home one after another, so a test must not rely on another file's leftovers; `parallel` (core, storage-sqlite, telemetry, hub-ui, flow-editor) runs its files concurrently; `ui` is the board under `packages/ui/vitest.config.ts` (jsdom, react plugin, its own setup). Don't move a package between them without auditing what it writes.
 - `sequence.concurrent` is `false` everywhere and is not a knob: it runs tests WITHIN a file at once, and the jsdom packages are component specs sharing one document. It used to be fused to file parallelism under a single `parallel` flag, which is why neither could be enabled (BUG c03aa92e). Note the root-level `test` block's `fileParallelism` is the GLOBAL and overrides a project's own value — setting it false there silently serialises everything.
-- `packages/cli/src/test/cli.test.ts` and `packages/ui/src/test/**` are excluded from the root run — they have their own runners.
+- `packages/cli/src/test/cli.test.ts` is excluded from the root run — it has its own runner. The board's specs are in the root run (4ac25844), so the project's verify command and test report see them.
 - Aliases `@agenfk/core` and `@agenfk/telemetry` resolve to source in tests so you don't need to rebuild between iterations.
 - `scripts/enforce-coverage.ts` parses Vitest's `coverage-summary.json` to enforce per-file thresholds beyond the global 80% gate; it's the canonical example of the "newly inserted code must be ≥80% covered" rule referenced in `AFK_ARCHITECTURE.md`.
 
@@ -100,6 +102,8 @@ The old version is read from the root `package.json`; commit the manifest change
 
 - `README.md` — user-facing overview, install/usage.
 - `AFK_ARCHITECTURE.md` — system architecture, multi-agent orchestration, client enforcement matrix.
+- `MULTI_AGENT.md` — **read before touching worktrees or the close commit.** Several agents share ONE worktree; a branch-and-worktree per child was tried and withdrawn, and so were claims (per-card owned paths). Carries why staging is each agent's own job and what was verified against Orca.
 - `SDLC.md` — the lifecycle the framework enforces on its users (also describes rules this repo dogfoods on itself).
+- `docs/RELEASES.md` — how releases work in this repo: the `beta`/`main` branch model, cutting betas, hub deploys and graduation to stable. Read before tagging anything.
 - `SKILL.md` — the master skill file installed across clients; mirror changes here when editing `commands/` or `skills/`.
 - `AGENFK_COMPARISON.md`, `AFK_PROJECT_SCOPE.md` — design context.

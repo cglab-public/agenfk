@@ -1,3 +1,8 @@
+import { existsSync, statSync } from 'fs';
+import os from 'os';
+import path from 'path';
+import { HOOK_VARIANTS } from './uninstall-helpers.mjs';
+
 // Pure, side-effect-free helpers extracted from install.mjs / bin/agenfk.js so the
 // install-flow decision logic can be unit-tested as real behavior (issue #86).
 
@@ -33,6 +38,146 @@ export function resolveRulesScope({ rulesScopeArg, envScope, existingScope, isTT
   return { scope: 'global', shouldPrompt: Boolean(isTTY) };
 }
 
+// --- Windows hook commands under Git Bash (issue #192) ---------------------
+//
+// Claude Code hands a hook `command` to `bash -c` (Git Bash on Windows). An
+// unquoted `C:\Users\x\.local\bin\agenfk-*.cmd` loses every backslash to bash's
+// escape handling and fails "command not found" -- non-blocking, so the guard is
+// silently skipped. The command must be a quoted, forward-slash path to the
+// extensionless `#!/bin/sh` wrapper (a `.cmd` cannot be run by bash anyway).
+
+// Forward-slash form of a path; safe inside bash and accepted by Windows APIs.
+export function toBashPath(p) {
+  return String(p).replace(/\\/g, '/');
+}
+
+// The hook `command` string to register for Claude Code. `destBase` is the
+// extensionless path (e.g. ~/.local/bin/agenfk-mcp-enforcer); `args` is appended
+// outside the quotes. Off Windows a plain path is kept as-is (quoted when it needs it).
+export function buildClaudeHookCommand(destBase, { platform = process.platform, args = '' } = {}) {
+  const suffix = args ? ` ${args}` : '';
+  if (platform === 'win32') return `"${toBashPath(destBase)}"${suffix}`;
+  // af174cdd: a home holding a space or a shell character split the bare path
+  // into words - "No such file or directory", which Claude Code treats as
+  // non-blocking, so every guard silently stopped. Single-quoted then; a plain
+  // path stays as it was.
+  if (/^[A-Za-z0-9_@%+=:,.\/-]+$/.test(destBase)) return `${destBase}${suffix}`;
+  return `'${destBase.replace(/'/g, `'\\''`)}'${suffix}`;
+}
+
+// The command + args `claude mcp add ... -- agenfk <these>` registers for the
+// agenfk MCP server (BUG 3a939855). Claude Code starts an MCP server without a
+// shell, and Node refuses a .cmd/.bat without one (CVE-2024-27980), so on
+// Windows the installer's agenfk.cmd goes through `cmd /c` - the wrapper Claude
+// Code's docs ask for on native Windows. `platform` is required: the caller's
+// choice is the thing that goes wrong. Mirrored in packages/cli/src/mcpCommand.ts.
+export function claudeMcpServerCommand(platform, bin) {
+  if (platform === 'win32' && /\.(cmd|bat)$/i.test(bin)) return ['cmd', '/c', bin, 'mcp'];
+  return [bin, 'mcp'];
+}
+
+// Body of the extensionless POSIX wrapper that forwards to a hook's .mjs. The
+// .mjs path uses forward slashes so no backslash survives anywhere in the chain.
+export function buildPosixWrapper(mjsPath) {
+  return `#!/bin/sh\nexec node "${toBashPath(mjsPath)}" "$@"\n`;
+}
+
+// Every Claude Code hook command the installer registers, keyed by hook name.
+// Deriving the keys from HOOK_VARIANTS is the point: agenfk-run-hook (CGLAB-177)
+// was added after #192 was fixed and registered as a bare `.cmd` path, which Git
+// Bash cannot run. A hook added to HOOK_VARIANTS now gets the same command shape
+// or fails the test for this table.
+const CLAUDE_HOOK_ARGS = {
+  'agenfk-pr-hook': '--client claude-code',
+  'agenfk-run-hook': '--client claude-code',
+};
+
+export function claudeHookCommands(localBinDir, { platform = process.platform } = {}) {
+  const join = (name) => (platform === 'win32' ? path.win32 : path.posix).join(localBinDir, name);
+  return Object.fromEntries(HOOK_VARIANTS.map((name) => [
+    name,
+    buildClaudeHookCommand(join(name), { platform, args: CLAUDE_HOOK_ARGS[name] ?? '' }),
+  ]));
+}
+
+// Merge the agenfk hooks into a Claude Code settings object. Pure, so the win32
+// command shape can be tested on any OS: the installer only ever runs on the
+// host platform, and on POSIX a hand-built command and the table's are the same
+// string. Existing agenfk entries are replaced, never duplicated, so an upgrade
+// over the old bare `.cmd` registrations leaves one of each.
+export function applyClaudeHooks(settings, localBinDir, { platform = process.platform } = {}) {
+  const claudeHookCmd = claudeHookCommands(localBinDir, { platform });
+  if (!settings.hooks) settings.hooks = {};
+  if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
+  
+  settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry =>
+      !JSON.stringify(entry).includes('agenfk-gatekeeper') &&
+      !JSON.stringify(entry).includes('agenfk-mcp-enforcer')
+  );
+
+  settings.hooks.PreToolUse.push({
+      matcher: 'Edit|Write|NotebookEdit',
+      hooks: [{ type: 'command', command: claudeHookCmd['agenfk-gatekeeper'] }]
+  });
+
+  settings.hooks.PreToolUse.push({
+      matcher: 'Bash|Read',
+      hooks: [{ type: 'command', command: claudeHookCmd['agenfk-mcp-enforcer'] }]
+  });
+
+  // PostToolUse hook for PR sizing (fires on Bash so it can react to
+  // `gh pr create` and `git push`).
+  if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
+  settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(entry =>
+      !JSON.stringify(entry).includes('agenfk-pr-hook') &&
+      !JSON.stringify(entry).includes('agenfk-run-hook')
+  );
+  settings.hooks.PostToolUse.push({
+      matcher: 'Bash',
+      hooks: [{ type: 'command', command: claudeHookCmd['agenfk-pr-hook'] }]
+  });
+  // Records tool calls as agent-run events (CGLAB-177). Matches the tools
+  // worth a transcript line; the hook itself filters further and never
+  // blocks, so a slow or absent server costs nothing.
+  settings.hooks.PostToolUse.push({
+      matcher: 'Bash|Edit|Write|NotebookEdit|Task|WebFetch',
+      hooks: [{ type: 'command', command: claudeHookCmd['agenfk-run-hook'] }]
+  });
+  // Closes the run when the session ends. Without this every run the
+  // hook opens stays `running` with no endedAt forever — the sessions
+  // rail shows work that finished weeks ago as still in flight, and the
+  // states that need a run to reach an outcome are unreachable.
+  //
+  // SessionEnd, NOT Stop. `Stop` is a per-TURN hook — it fires each time
+  // the assistant finishes answering, and can block "the turn from
+  // ending" — so registering it there closed the run after the first
+  // turn of a live session and, because closing drops the cache entry,
+  // made the next tool call open a brand new run. One session became
+  // dozens. See `closesRun` in bin/agenfk-run-hook.mjs.
+  settings.hooks.SessionEnd = (settings.hooks.SessionEnd ?? []).filter(
+      entry => !JSON.stringify(entry).includes('agenfk-run-hook'),
+  );
+  settings.hooks.SessionEnd.push({
+      // An explicit timeout, and it is NOT belt-and-braces. SessionEnd
+      // hooks are given a far tighter budget than every other event —
+      // 1.5 seconds against ten minutes — and the per-hook `timeout`
+      // field (in seconds) is the only way to raise it. Without this the
+      // close has to finish node startup and a PATCH inside 1.5s, and a
+      // slow local server eats the whole budget silently, which is the
+      // exact failure closing on SessionEnd was meant to fix.
+      hooks: [{ type: 'command', command: claudeHookCmd['agenfk-run-hook'], timeout: 10 }]
+  });
+  // Remove the old registration from anyone who installed before the fix,
+  // or the per-turn close keeps happening beside the correct one.
+  if (settings.hooks.Stop) {
+      settings.hooks.Stop = settings.hooks.Stop.filter(
+          entry => !JSON.stringify(entry).includes('agenfk-run-hook'),
+      );
+      if (settings.hooks.Stop.length === 0) delete settings.hooks.Stop;
+  }
+  return settings;
+}
+
 // Build a valid Codex CLI hooks.json config that registers the AgEnFK PR-sizing
 // hook (CGLAB-12). Codex rejects a Claude-Code-style top-level `PostToolUse` key
 // ("unknown field `PostToolUse`, expected `description` or `hooks`") and refuses
@@ -46,7 +191,10 @@ export function resolveRulesScope({ rulesScopeArg, envScope, existingScope, isTT
 //     upgrade self-heals the crash. Unrelated legacy entries are preserved, not dropped.
 //   - A prior AgEnFK entry is replaced (idempotent — no duplication on re-install).
 //   - Unrelated user entries, other events, and `description` are left intact.
-export function buildCodexHooksConfig(existingConfig, prHookCommand) {
+//
+// GH-356: with `airlockHookCommand`, the Airlock PreToolUse hook too (no matcher: every tool, which
+// Codex reports as Bash, apply_patch or mcp__*). It judges calls only inside the Airlock sandbox.
+export function buildCodexHooksConfig(existingConfig, prHookCommand, airlockHookCommand) {
   const src = (existingConfig && typeof existingConfig === 'object' && !Array.isArray(existingConfig))
     ? existingConfig
     : {};
@@ -66,6 +214,11 @@ export function buildCodexHooksConfig(existingConfig, prHookCommand) {
   preserved.push({ matcher: 'Bash', hooks: [{ type: 'command', command: prHookCommand }] });
 
   hooks.PostToolUse = preserved;
+  if (airlockHookCommand) {
+    const pre = (Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []).filter((e) => !JSON.stringify(e).includes('agenfk-airlock-hook'));
+    pre.push({ hooks: [{ type: 'command', command: airlockHookCommand }] });
+    hooks.PreToolUse = pre;
+  }
   config.hooks = hooks;
   return config;
 }
@@ -136,6 +289,17 @@ export function isInstallableMarkdown(name) {
   return typeof name === 'string' && name.endsWith('.md') && !isMacMetadata(name);
 }
 
+// A command file installed as a skill needs a `name:` in its frontmatter
+// (Claude Code, Codex, OpenCode, Cursor, Gemini). Injected right after the
+// opening `---` when missing, in the file's own line ending: a Windows checkout
+// (core.autocrlf) has CRLF, and matching only `---\n` skipped the injection there.
+export function withSkillName(content, skillName) {
+  const open = /^---(\r?\n)/.exec(content);
+  if (!open || /^name:\s/m.test(content)) return content;
+  const eol = open[1];
+  return `---${eol}name: ${skillName}${eol}${content.slice(open[0].length)}`;
+}
+
 // Commands that cut releases of the AgEnFK framework itself. They live in the
 // repo's own .claude/commands/ and must NEVER reach a user's global config.
 const REPO_PRIVATE_NAMES = ['agenfk-release', 'agenfk-release-beta', 'agenfk-release-hub'];
@@ -166,4 +330,121 @@ function shadowedName(name) {
 // where this module may be missing, which is exactly when it gets run.
 export function isAgenfkOwnedEntry(name) {
   return typeof name === 'string' && shadowedName(name).startsWith('agenfk');
+}
+
+/**
+ * Are these the same directory on disk? By (dev, inode), not by spelling: a
+ * symlinked ~/.agenfk-system, or a path cased differently on APFS, is still
+ * that directory (Codex review of 658ef023). False when either is missing.
+ */
+export function sameDirectory(a, b) {
+  try {
+    // BigInt: as plain numbers, distinct 64-bit inodes can round to one value
+    // (2^53 and 2^53+1 do). And an inode of 0 is no identity at all - some
+    // filesystems report it - so it never proves two paths the same: when in
+    // doubt, the tree is treated as a checkout and left alone.
+    const x = statSync(a, { bigint: true });
+    const y = statSync(b, { bigint: true });
+    if (!x.ino || !y.ino) return false;
+    return x.dev === y.dev && x.ino === y.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A developer's working tree, not an installed copy (658ef023): it holds .git
+ * (a directory, or the file a worktree or submodule has). Except
+ * ~/.agenfk-system, which IS a clone in real installs - packages/create's
+ * --rebuild and download-failure fallbacks clone into it.
+ *
+ * Mirrored in packages/cli/src/index.ts and packages/server/src/hub/upgradeSync.ts,
+ * which cannot import from scripts/.
+ */
+export function isDevCheckout(root, home = os.homedir()) {
+  if (!existsSync(path.join(root, '.git'))) return false;
+  return !sameDirectory(root, path.join(home, '.agenfk-system'));
+}
+
+
+const SERVER_PATTERN = 'packages/server/dist/server.js';
+
+/**
+ * The port the installer may probe for a server of its own (BUG d95009ff), or null: the port
+ * this install's server persisted (~/.agenfk/server-port), else an AGENFK_PORT the caller set.
+ * Never the bare default - in a HOME that has run no server, port 3000 is somebody else's.
+ */
+export function probeServerPort({ env = process.env, readPortFile }) {
+  const valid = (v) => (typeof v === 'string' && /^\d{1,5}$/.test(v.trim()) ? v.trim() : null);
+  let persisted = null;
+  try { persisted = valid(readPortFile()); } catch { persisted = null; }
+  return persisted ?? valid(env.AGENFK_PORT ?? '');
+}
+
+/**
+ * Is an agenfk server process alive right now? `run` is spawnSync's shape,
+ * passed in so this stays side-effect-free. Only an actual node/bun invocation
+ * of the server bin counts - not any process whose argv happens to embed the
+ * path (an editor with the file open, a `grep`/`tail`, the install's own tooling).
+ *
+ * On win32 the list comes from CIM, even under Git Bash: wmic is gone from
+ * current Windows 11, and Git Bash's `ps` cannot see a native node.exe (#199).
+ * The CLI's killPatterns (packages/cli/src/index.ts) lists the same way; it
+ * cannot import from scripts/.
+ */
+export function serverProcessAlive(run, { platform = process.platform, root } = {}) {
+  // BUG d95009ff: only THIS install's server. Matching the bare relative path saw every
+  // install's server on the machine, so an install into another HOME restarted - killed -
+  // the developer's live one. Required: a caller that forgets it must not match them all.
+  if (typeof root !== 'string' || !root) throw new TypeError('serverProcessAlive: root (this install\'s directory) is required');
+  // Windows paths take either slash and any case; POSIX paths are what they say.
+  const asPath = (line) => (platform === 'win32' ? line.replace(/\\/g, '/').toLowerCase() : line);
+  const target = asPath(`${root.replace(/[\\/]+$/, '')}/${SERVER_PATTERN}`);
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // The whole path, as an argument: not the tail of a longer one (/x/opt/agenfk/... for /opt/agenfk).
+  const ownServer = new RegExp(`(?:^|[\\s"'])${escaped}(?=$|[\\s"'])`);
+  const looksLikeServerCmd = (line) =>
+    ownServer.test(asPath(line)) && /(^|[\/\\\s"])(node|node\.exe|bun|bun\.exe)([\s."]|$)/i.test(line);
+  try {
+    if (platform === 'win32') {
+      const out = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'],
+        { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 30_000, windowsHide: true });
+      const json = (out.stdout || '').trim();
+      if (!json) return false;
+      const parsed = JSON.parse(json);
+      // ConvertTo-Json prints a lone process as an object, not an array of one.
+      return (Array.isArray(parsed) ? parsed : [parsed])
+        .some(p => typeof p?.CommandLine === 'string' && looksLikeServerCmd(p.CommandLine));
+    }
+    const out = run('ps', ['-ax', '-o', 'command'], { encoding: 'utf8', windowsHide: true });
+    if (out.status === 0 && typeof out.stdout === 'string') {
+      return out.stdout.split('\n').some(looksLikeServerCmd);
+    }
+    // Fallback: pgrep against a node-anchored regex if ps is unavailable.
+    // Escape every regex metacharacter, not just the dot - a partial escape is
+    // the kind that quietly stops matching when the pattern changes.
+    const pgPattern = escaped;
+    const pg = run('pgrep', ['-f', `(node|bun).*${pgPattern}`], { encoding: 'utf8', windowsHide: true });
+    return pg.status === 0 && (pg.stdout || '').trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * CGLAB-696: installs the pinned smolvm Airlock runs on, where Airlock is in use, with the CLI
+ * just installed (`agenfk airlock install --if-enabled`). A failure is warned about with how to
+ * retry, never thrown: the rest of AgEnFK works without it.
+ */
+export function installAirlockRuntime({ run, rootDir, node = process.execPath, warn, detail }) {
+  const cli = path.join(rootDir, 'packages/cli/bin/agenfk.js');
+  const r = run(node, [cli, 'airlock', 'install', '--if-enabled'], { encoding: 'utf8', windowsHide: true, timeout: 900_000 });
+  const said = `${r?.stdout ?? ''}${r?.stderr ?? ''}`.trim();
+  if (r?.status === 0) {
+    if (said) detail(`  ${said}`);
+    return;
+  }
+  const why = said || r?.error?.message || `exit ${r?.status}`;
+  warn(`Could not install smolvm for Airlock: ${why}. Install it with: agenfk airlock install`);
 }

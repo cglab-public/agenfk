@@ -1,3 +1,4 @@
+import { recordAudit } from '../configAudit.js';
 import type { DB } from '../../db.js';
 
 /**
@@ -31,6 +32,12 @@ import type { DB } from '../../db.js';
  * makes it safe to call on every exit path without checking first.
  */
 export async function releaseParentFlows(db: DB): Promise<number> {
+  const held = await db.all<{ id: string; name: string; org_id: string }>("SELECT id, name, org_id FROM flows WHERE source = 'parent'", []);
   const result = await db.run("UPDATE flows SET source = 'hub' WHERE source = 'parent'");
+  // STORY a89af514: the parent's lock coming off is a config change of its own.
+  for (const orgId of new Set(held.map(f => f.org_id))) {
+    const flows = held.filter(f => f.org_id === orgId).map(f => ({ id: f.id, name: f.name }));
+    await recordAudit(db, { orgId, actor: null, source: 'federation', ip: null, area: 'federation', action: 'flows.release', target: `${flows.length} flow(s) from the parent hub`, before: { source: 'parent', flows }, after: { source: 'hub', flows } });
+  }
   return result.changes ?? 0;
 }

@@ -3,9 +3,21 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-projects-discovery-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -17,10 +29,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 // remoteUrl is stored already-sanitized on real ingest; tests insert the
 // canonical form directly. Discovery is repo-centric: it groups by remote_url.
@@ -56,6 +64,8 @@ describe('GET /v1/admin/projects (repo discovery)', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await ctx.db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', ['org-b', 'org-b']);
     await ctx.db.run('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)', ['org-b']);
@@ -68,7 +78,7 @@ describe('GET /v1/admin/projects (repo discovery)', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -80,7 +90,7 @@ describe('GET /v1/admin/projects (repo discovery)', () => {
     await seedEvent(ctx.db, 'org-a', 'p-3', '2026-05-03T10:00:00Z', REPO_API);
     await seedEvent(ctx.db, 'org-b', 'p-4', '2026-05-04T10:00:00Z', 'git@github.com:other/repo.git');
 
-    const r = await supertest(app).get('/v1/admin/projects').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/projects').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     const repos = r.body.map((p: any) => p.remoteUrl).sort();
     expect(repos).toEqual([REPO_API, REPO_WEB]);
@@ -91,7 +101,7 @@ describe('GET /v1/admin/projects (repo discovery)', () => {
   it('includes the most-recent occurredAt as lastSeen per repo', async () => {
     await seedEvent(ctx.db, 'org-a', 'p-1', '2026-05-01T10:00:00Z', REPO_WEB);
     await seedEvent(ctx.db, 'org-a', 'p-2', '2026-05-05T10:00:00Z', REPO_WEB);
-    const r = await supertest(app).get('/v1/admin/projects').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/projects').set('Cookie', cookieAdmin);
     const web = r.body.find((p: any) => p.remoteUrl === REPO_WEB);
     expect(web.lastSeen).toBe('2026-05-05T10:00:00Z');
   });
@@ -99,18 +109,18 @@ describe('GET /v1/admin/projects (repo discovery)', () => {
   it('excludes events that carry no remote URL (not repo-identifiable)', async () => {
     await seedEvent(ctx.db, 'org-a', 'p-noremote', '2026-05-01T10:00:00Z', null);
     await seedEvent(ctx.db, 'org-a', 'p-1', '2026-05-02T10:00:00Z', REPO_WEB);
-    const r = await supertest(app).get('/v1/admin/projects').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/projects').set('Cookie', cookieAdmin);
     const repos = r.body.map((p: any) => p.remoteUrl);
     expect(repos).toEqual([REPO_WEB]);
   });
 
   it('rejects non-admin', async () => {
-    const r = await supertest(app).get('/v1/admin/projects').set('Cookie', cookieView);
+    const r = await supertest(__server).get('/v1/admin/projects').set('Cookie', cookieView);
     expect(r.status).toBe(403);
   });
 
   it('returns empty array when no events for the org', async () => {
-    const r = await supertest(app).get('/v1/admin/projects').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/projects').set('Cookie', cookieAdmin);
     expect(r.body).toEqual([]);
   });
 });

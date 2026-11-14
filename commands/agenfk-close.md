@@ -8,9 +8,9 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 
 **Step 1 — Collate History**
 - Read the item details using `agenfk get <id> --json`.
-- **Cross-project guard**: Run `agenfk current-project` to get the working directory's project id (it resolves the nearest `.agenfk/project.json`). If it prints an id that does NOT match `item.projectId`, **STOP immediately** — do not commit, do not proceed. Warn the user:
+- **Cross-project guard**: Run `agenfk current-project` to get the working directory's project id (it resolves the nearest `.agenfk/local.json`). If it prints an id that does NOT match `item.projectId`, **STOP immediately** — do not commit, do not proceed. Warn the user:
   > "⚠️ Item [`<id>`] belongs to project `<item.projectId>`, but the current directory is linked to project `<local.projectId>`. Running `/agenfk-close` here would pollute this repo's git history with a foreign task. Please `cd` to the correct project directory and re-run."
-- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `agenfk current-project` errors (no `.agenfk/project.json` found), create the file with `{ "projectId": "<projectId>" }`.
+- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `agenfk current-project` errors (this directory is not linked on this machine), link it with `agenfk init --project <projectId>`: it writes the id to the git-ignored `.agenfk/local.json`. In a git worktree, link the main checkout instead (the error names it); never run `agenfk init` inside a card's worktree. Never write the id into the shared `.agenfk/project.json`.
 - Extract all progress comments from `item.comments`.
 - Extract the final test coverage metrics from the `item.reviews`.
 
@@ -26,12 +26,18 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 
 **Step 4 — Close Children First (Bottom-Up)**
 - If the item has children (EPIC with STORYs, STORY with TASKs), run `agenfk list --project <id> --json` (filter by parent) to check their status.
-- Any child still in an intermediate flow step must be progressed to DONE first: run `agenfk verify <childId> --evidence "<how this step's criteria were met>" "<build command>"` once per remaining step. Pass a command on every intermediate step — omitting it advances **without running anything**; `verifyCommand` is substituted only on the final step. Never set `DONE` directly by any route.
+- Any child still in an intermediate flow step must be progressed to DONE first: run `agenfk verify <childId> --evidence "<how this step's criteria were met>"` once per remaining step. The command is optional on intermediate steps — pass one only when the step's criteria call for it; `verifyCommand` is substituted only on the final step. A non-zero command refuses the advance and leaves the child where it is. Never set `DONE` directly by any route.
 - **Sibling propagation**: If one child's `agenfk verify` already reached DONE, remaining siblings will pass immediately (same verified code). Run `agenfk verify <id> --evidence "<evidence>"` on each — the server skips execution via sibling propagation.
-- Any child still sitting in the flow's coding step should be flagged to the user before proceeding. Identify that step from `agenfk flow show --project <projectId> --json` — it is the first non-anchor step, whatever it is named — rather than assuming it is called `IN_PROGRESS`.
+- Any child still sitting in the flow's first working step should be flagged to the user before proceeding. Identify that step from `agenfk flow show --project <projectId> --json` — it is the first non-anchor step, whatever it is named — rather than assuming it is called `IN_PROGRESS`.
 - Only proceed to Step 5 once ALL children are DONE.
 
-**Step 5 — Move to DONE**
+**Step 5 — Stage what this card changed**
+- Run `git add <the files this card changed>` before advancing. Be specific — `git add -A` is exactly what this step exists to avoid.
+- The server commits **what you staged**, and nothing else. It used to run `git add -A` itself; it no longer does, because several agents can share one worktree and that swept their half-finished work into your card. Twice in one session it produced a commit containing another agent's failing tests.
+- **Staging nothing means committing nothing.** Your work stays uncommitted and the push below sends an empty branch. The server will say so in its reply to `agenfk verify`, but it cannot stage on your behalf: it has no way to know which files are yours.
+- Check with `git status` if you are unsure what you touched.
+
+**Step 6 — Move to DONE**
 - Run `agenfk comment <id> "Closing complete: final summary prepared."` to log the step completion.
 - For EPIC/STORY parents: when all children reach DONE, the parent propagates to DONE automatically — no manual transition needed.
 - **Stage this item's work FIRST.** Reaching DONE makes a `close(<type>)` commit of whatever is in the git index, and the server stages nothing for you. Run `git add` (or `git add -A -- <paths>`) over the files that belong to THIS item — including new files, which are the ones most often forgotten — and leave everything else alone. Anything unstaged is reported back in the DONE response and is yours to deal with.
@@ -43,8 +49,8 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
   ```
   Use the item's `branchName` if set, otherwise `git push -u origin HEAD`.
 
-**Step 6 — Next Steps**
+**Step 7 — Next Steps**
 - After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
     1. **Release**: Cut a release following the project's own release process (release command, CI pipeline, or manual tag + GitHub release).
     2. **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
-    3. **Continue Current**: Keep working on the current item (you MUST then ask what else should be included, then roll the item back to the flow's coding step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).
+    3. **Continue Current**: Keep working on the current item (you MUST then ask what else should be included, then roll the item back to the flow's first working step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).

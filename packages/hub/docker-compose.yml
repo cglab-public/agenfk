@@ -7,6 +7,10 @@
 #
 # For production behind TLS termination (nginx, Caddy, ALB, etc.), set
 # NODE_ENV=production so session cookies are flagged Secure.
+#
+# AGENFK_HUB_TRUST_PROXY decides which X-Forwarded-For hop rate limits treat
+# as the client. This file publishes the hub directly (no proxy), so it is 0
+# here; set it to 1 when you put a reverse proxy or load balancer in front.
 
 services:
   hub:
@@ -21,6 +25,7 @@ services:
       - .env
     environment:
       NODE_ENV: production
+      AGENFK_HUB_TRUST_PROXY: "0"
     volumes:
       - hub-data:/data
     healthcheck:

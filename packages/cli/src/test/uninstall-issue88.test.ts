@@ -12,8 +12,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import path from 'path';
 import {
   HOOK_VARIANTS,
@@ -23,6 +24,8 @@ import {
   stripAgenfkHookEntries,
   resolveConfirmation,
   summarizeResults,
+  topLevelEntryWithin,
+  isAgenfkCliWrapper,
 } from '../../../../scripts/uninstall-helpers.mjs';
 
 const ROOT = path.resolve(__dirname, '../../../..');
@@ -32,26 +35,60 @@ const UNINSTALL = path.join(ROOT, 'scripts', 'uninstall.mjs');
 // Part A — pure helpers
 // ---------------------------------------------------------------------------
 describe('issue #88 — uninstall-helpers', () => {
-  it('tracks all three hook variants, not just the gatekeeper (Bug 2)', () => {
+  it('tracks every hook variant, not just the gatekeeper (Bug 2)', () => {
+    // agenfk-run-hook joined the set in CGLAB-177. It matters here for the
+    // reason this test exists: a hook the uninstaller does not know about is
+    // left armed on disk, firing into a framework that is no longer there.
     expect(HOOK_VARIANTS).toEqual(
-      expect.arrayContaining(['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook'])
+      expect.arrayContaining([
+        'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook',
+      ])
     );
-    expect(HOOK_VARIANTS).toHaveLength(3);
+    expect(HOOK_VARIANTS).toHaveLength(4);
   });
 
-  it('hookBinFilenames includes the CLI symlink + all 3 hooks, with .cmd on win32', () => {
+  it('hookBinFilenames includes the CLI symlink + every hook, with .cmd on win32', () => {
     expect(hookBinFilenames('linux')).toEqual([
-      'agenfk', 'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook',
+      'agenfk', 'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook',
     ]);
     expect(hookBinFilenames('win32')).toEqual([
-      'agenfk.cmd', 'agenfk-gatekeeper.cmd', 'agenfk-mcp-enforcer.cmd', 'agenfk-pr-hook.cmd',
+      'agenfk.cmd', 'agenfk-gatekeeper.cmd', 'agenfk-mcp-enforcer.cmd',
+      'agenfk-pr-hook.cmd', 'agenfk-run-hook.cmd',
+      // #192: the extensionless sh wrappers Claude Code's Git Bash hooks run,
+      // and (#215) the CLI's own, which install.mjs writes under MinGW too
+      'agenfk', 'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook',
     ]);
   });
 
-  it('opencodePluginFilenames are the three .mjs plugins (Bug 3)', () => {
-    expect(opencodePluginFilenames()).toEqual([
-      'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs',
+  it('opencodePluginFilenames covers exactly the plugins that exist on disk (Bug 3)', () => {
+    // Asserting a hardcoded list here is what let the previous version claim a
+    // plugin the installer never writes. The installer copies
+    // `bin/<name>-opencode.mjs` and nothing else, so that directory is the
+    // authority — read it. Adding a plugin without listing it (or listing one
+    // that does not exist) fails here instead of leaking a file on uninstall.
+    const binDir = path.resolve(fileURLToPath(import.meta.url), '../../../../../bin');
+    const onDisk = readdirSync(binDir)
+      .filter(f => f.endsWith('-opencode.mjs'))
+      .map(f => f.replace('-opencode.mjs', '.mjs'))
+      .sort();
+    expect(opencodePluginFilenames().slice().sort()).toEqual(onDisk);
+  });
+
+  it('removes every bin the installer writes, so none is left armed', () => {
+    // The real invariant, and the reason HOOK_VARIANTS gained a fourth entry:
+    // a hook binary the uninstaller does not know about stays on disk and keeps
+    // firing into a framework that is gone. Opencode plugins are deliberately
+    // NOT tied to this count — not every hook has one.
+    expect(hookBinFilenames('linux')).toEqual(['agenfk', ...HOOK_VARIANTS]);
+    // On win32 each is also an extensionless sh wrapper: Claude Code runs hooks
+    // through Git Bash, which cannot execute a .cmd (#192), and Git Bash runs
+    // the CLI's own wrapper as `agenfk` (#215).
+    expect(hookBinFilenames('win32')).toEqual([
+      ...['agenfk', ...HOOK_VARIANTS].map(n => `${n}.cmd`),
+      'agenfk',
+      ...HOOK_VARIANTS,
     ]);
+    expect(HOOK_VARIANTS).toContain('agenfk-run-hook');
   });
 
   it('isAgenfkHookEntry recognizes every variant and ignores unrelated entries', () => {
@@ -59,6 +96,13 @@ describe('issue #88 — uninstall-helpers', () => {
     expect(isAgenfkHookEntry({ hooks: [{ command: '/x/agenfk-mcp-enforcer' }] })).toBe(true);
     expect(isAgenfkHookEntry({ command: '/x/agenfk-pr-hook --client codex' })).toBe(true);
     expect(isAgenfkHookEntry({ hooks: [{ command: '/x/some-other-tool' }] })).toBe(false);
+  });
+
+  // GH-356: Codex's Airlock hook is AgEnFK's too, though Claude's settings never get it (the launcher
+  // hands it to a sandboxed claude), so it is not one of the HOOK_VARIANTS the installer registers there.
+  it('isAgenfkHookEntry recognizes the Airlock hook, which is not a Claude hook variant', () => {
+    expect(isAgenfkHookEntry({ hooks: [{ command: 'node "/h/.agenfk/bin/agenfk-airlock-hook.mjs"' }] })).toBe(true);
+    expect(HOOK_VARIANTS).not.toContain('agenfk-airlock-hook');
   });
 
   it('stripAgenfkHookEntries removes all variants but preserves unrelated entries', () => {
@@ -109,6 +153,28 @@ describe('issue #88 — uninstall-helpers', () => {
 // ---------------------------------------------------------------------------
 // Part B — end-to-end uninstall against a throwaway HOME
 // ---------------------------------------------------------------------------
+describe('#215 — isAgenfkCliWrapper', () => {
+  it('recognises the Git Bash wrapper install.mjs writes', () => {
+    expect(isAgenfkCliWrapper('#!/bin/sh\nnode "C:/Users/u/.agenfk-system/packages/cli/bin/agenfk.js" "$@"')).toBe(true);
+    expect(isAgenfkCliWrapper('#!/bin/sh\r\nnode "C:\\Users\\u\\.agenfk-system\\packages\\cli\\bin\\agenfk.js" "$@"\r\n')).toBe(true);
+  });
+  it('leaves anything else alone', () => {
+    expect(isAgenfkCliWrapper('#!/bin/sh\nexec /opt/my-own-agenfk "$@"')).toBe(false);
+    expect(isAgenfkCliWrapper('')).toBe(false);
+  });
+});
+
+describe('#214 — topLevelEntryWithin', () => {
+  it('treats a name that merely starts with ".." as inside the root', () => {
+    expect(topLevelEntryWithin('/r', '/r/..boards/db.sqlite', path.posix)).toBe('..boards');
+  });
+  it('rejects the parent, a sibling and the root itself', () => {
+    expect(topLevelEntryWithin('/r', '/db.sqlite', path.posix)).toBeNull();
+    expect(topLevelEntryWithin('/r', '/r2/db.sqlite', path.posix)).toBeNull();
+    expect(topLevelEntryWithin('/r', '/r', path.posix)).toBeNull();
+  });
+});
+
 describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
   let home: string;
 
@@ -119,9 +185,12 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
   function seedInstall() {
     // bins
     mkdirSync(p('.local', 'bin'), { recursive: true });
-    for (const f of ['agenfk', 'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook']) {
+    for (const f of ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook']) {
       writeFileSync(p('.local', 'bin', f), '#!/bin/sh\n');
     }
+    // The CLI wrapper as install.mjs writes it. On win32 the uninstaller removes
+    // the extensionless `agenfk` only when it is this wrapper (#215).
+    writeFileSync(p('.local', 'bin', 'agenfk'), `#!/bin/sh\nnode "${p('.agenfk-system', 'packages', 'cli', 'bin', 'agenfk.js')}" "$@"`);
     // opencode plugins
     mkdirSync(p('.config', 'opencode', 'plugins'), { recursive: true });
     for (const f of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs']) {
@@ -140,6 +209,7 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     writeFileSync(p('.codex', 'hooks.json'), JSON.stringify({
       hooks: {
         PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '/h/agenfk-pr-hook --client codex' }] }, UNRELATED],
+        PreToolUse: [{ hooks: [{ type: 'command', command: 'node "/h/.agenfk/bin/agenfk-airlock-hook.mjs"' }] }, UNRELATED],
       },
     }, null, 2));
     // gemini settings.json — AfterTool
@@ -186,7 +256,7 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     seedInstall();
   });
   afterEach(() => {
-    rmSync(home, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('removes all three hook bins and the agenfk CLI symlink (Bug 2)', () => {
@@ -221,11 +291,30 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     expect(JSON.stringify(s.hooks.PostToolUse)).toContain('user-hook');
   });
 
+  // Behaviour behind run-hook-close.test.ts's scan of uninstall.mjs (GH-281): the
+  // run hook lives on SessionEnd (and, on older installs, Stop). Left behind, it
+  // runs a deleted binary at the end of every Claude Code session.
+  it('strips the run hook from SessionEnd and from a leftover Stop, keeping unrelated entries', () => {
+    const s0 = readJson('.claude', 'settings.json');
+    s0.hooks.SessionEnd = [{ hooks: [{ type: 'command', command: '/h/agenfk-run-hook --client claude-code', timeout: 10 }] }, UNRELATED];
+    s0.hooks.Stop = [{ hooks: [{ type: 'command', command: '/h/agenfk-run-hook --client claude-code' }] }, UNRELATED];
+    writeFileSync(p('.claude', 'settings.json'), JSON.stringify(s0, null, 2));
+    expect(runUninstall(['-y']).status).toBe(0);
+    const s = readJson('.claude', 'settings.json');
+    expect(JSON.stringify(s.hooks.SessionEnd ?? [])).not.toContain('agenfk-');
+    expect(JSON.stringify(s.hooks.Stop ?? [])).not.toContain('agenfk-');
+    expect(JSON.stringify(s.hooks.SessionEnd)).toContain('user-hook');
+    expect(JSON.stringify(s.hooks.Stop)).toContain('user-hook');
+  });
+
   it('strips pr-hook from codex hooks.json, gemini AfterTool, and cursor afterShellExecution (Bug 3)', () => {
     runUninstall(['-y']);
     const codex = readJson('.codex', 'hooks.json');
     expect(JSON.stringify(codex.hooks.PostToolUse)).not.toContain('agenfk-');
     expect(JSON.stringify(codex.hooks.PostToolUse)).toContain('user-hook');
+    // GH-356: the Airlock PreToolUse hook goes too.
+    expect(JSON.stringify(codex.hooks.PreToolUse)).not.toContain('agenfk-');
+    expect(JSON.stringify(codex.hooks.PreToolUse)).toContain('user-hook');
 
     const gemini = readJson('.gemini', 'settings.json');
     expect(JSON.stringify(gemini.hooks.AfterTool)).not.toContain('agenfk-');
@@ -260,8 +349,10 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     expect(codex).not.toHaveProperty('PostToolUse');
   });
 
-  it('removes the entire ~/.agenfk data dir, not just verify-token (Bug 3)', () => {
-    runUninstall(['-y']);
+  it('--purge-data removes the entire ~/.agenfk data dir, not just verify-token (Bug 3)', () => {
+    // #214: a default uninstall keeps the user's data; the whole-directory
+    // removal Bug 3 asked for is now the explicit --purge-data path.
+    runUninstall(['-y', '--purge-data']);
     expect(existsSync(p('.agenfk'))).toBe(false);
   });
 
@@ -269,6 +360,23 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     const r = runUninstall(['-y']);
     expect(existsSync(p('.agenfk-system'))).toBe(false);
     expect(r.status).toBe(0);
+  });
+
+  it.runIf(process.platform === 'win32')('removes the extensionless agenfk wrapper Git Bash runs, not only agenfk.cmd (#215)', () => {
+    // install.mjs writes both under MinGW: agenfk.cmd for cmd/PowerShell and an
+    // extensionless #!/bin/sh wrapper for Git Bash. Leaving the wrapper behind
+    // kept `agenfk` on PATH pointing at a framework that was gone.
+    writeFileSync(p('.local', 'bin', 'agenfk.cmd'), '@echo off\r\n');
+    writeFileSync(p('.local', 'bin', 'agenfk'), `#!/bin/sh\nnode "${p('.agenfk-system', 'packages', 'cli', 'bin', 'agenfk.js')}" "$@"`);
+    runUninstall(['-y']);
+    expect(existsSync(p('.local', 'bin', 'agenfk.cmd'))).toBe(false);
+    expect(existsSync(p('.local', 'bin', 'agenfk'))).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')('keeps a ~/.local/bin/agenfk that is not the wrapper it wrote (#215 review)', () => {
+    writeFileSync(p('.local', 'bin', 'agenfk'), '#!/bin/sh\nexec /opt/my-own-agenfk "$@"\n');
+    runUninstall(['-y']);
+    expect(existsSync(p('.local', 'bin', 'agenfk'))).toBe(true);
   });
 
   it('aborts without -y on non-interactive stdin and leaves artifacts intact (Bug 5)', () => {

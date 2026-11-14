@@ -1,6 +1,6 @@
 {
   "name": "agenfk",
-  "version": "1.1.20",
+  "version": "2.1.0-beta.17",
   "description": "AgenFK Engineering Framework",
   "private": true,
   "workspaces": [
@@ -13,14 +13,15 @@
     "packages/flow-editor",
     "packages/create",
     "packages/hub",
-    "packages/hub-ui"
+    "packages/hub-ui",
+    "packages/desktop"
   ],
   "bin": {
     "agenfk": "bin/agenfk.js",
     "agenfk-hub": "bin/agenfk-hub.js"
   },
   "scripts": {
-    "build": "npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui -w packages/hub -w packages/hub-ui",
+    "build": "npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui -w packages/hub -w packages/hub-ui -w packages/desktop",
     "test": "vitest",
     "test:windows": "vitest run --config vitest.windows.config.ts",
     "test:coverage": "node scripts/home-integrity.mjs snapshot && vitest run --coverage && node scripts/home-integrity.mjs verify",
@@ -29,7 +30,8 @@
     "uninstall:framework": "node scripts/uninstall.mjs",
     "start:services": "node scripts/start-services.mjs",
     "test:home-integrity": "node scripts/home-integrity.mjs snapshot && npx vitest run && node scripts/home-integrity.mjs verify",
-    "test:stryker": "node scripts/stryker-home-wrap.mjs"
+    "test:stryker": "node scripts/stryker-home-wrap.mjs",
+    "e2e:tdd": "docker build -t agenfk-e2e-tdd -f e2e/tdd-harness/Dockerfile . && docker run --rm agenfk-e2e-tdd"
   },
   "keywords": [
     "agenfk",
@@ -44,35 +46,44 @@
     "agile"
   ],
   "author": "CG/lab",
-  "license": "ISC",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/cglab-public/agenfk.git"
   },
   "engines": {
-    "node": ">=22.5.0"
+    "node": "^22.13.0 || >=23.5.0"
   },
   "overrides": {
-    "hono": "^4.12.34",
+    "hono": "^4.13.11",
     "@hono/node-server": "^1.19.15",
-    "fast-uri": "3.1.7",
-    "ip-address": "10.3.1",
+    "fast-uri": "^3.1.9",
+    "ip-address": "^10.7.4",
     "socket.io-parser": "4.2.7",
-    "qs": "^6.16.0"
+    "qs": "^6.16.1",
+    "@tailwindcss/typography": {
+      "postcss-selector-parser": "^6.1.5"
+    },
+    "mermaid": {
+      "katex": "^0.18.2"
+    }
   },
   "type": "module",
   "devDependencies": {
-    "@stryker-mutator/core": "^10.0.0",
-    "@stryker-mutator/vitest-runner": "^10.0.0",
+    "@stryker-mutator/core": "^10.1.1",
+    "@stryker-mutator/vitest-runner": "^10.1.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/semver": "^7.8.0",
     "@types/supertest": "^7.2.1",
     "@vitest/coverage-v8": "^5.0.5",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^4.3.2",
     "jsdom": "^28.1.0",
+    "semver": "^7.8.5",
     "supertest": "^7.3.1",
+    "typescript": "~6.0.3",
     "vitest": "^5.0.5"
   }
 }

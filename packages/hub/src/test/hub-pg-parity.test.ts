@@ -2,7 +2,7 @@
 // the SQLite test files against the pg-mem backend so the dialect translator
 // gets full coverage of the SQL the hub actually emits at runtime.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
 import { backfillUserKeyAliases } from '../services/backfillUserKeyAliases';
 import { createHubApp } from '../server';
@@ -10,7 +10,18 @@ import { openPgMemDb, backfillPrEventRemoteUrls } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
+import { raceBehindGuard } from './helpers/raceBehindGuard';
+import { ACTIVE_ADMINS_SQL } from '../routes/admin';
 import type { HubDb } from '../db/types';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * drainApp calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and createHubApp returns an Express
+ * app, so with `?.` those calls vanished silently.
+ */
+let __server: any;
 
 const SECRET = 'a'.repeat(64);
 
@@ -32,8 +43,10 @@ async function bootHubOnPg(): Promise<Fixture> {
     // Otherwise every upgrade post 422s against the real GitHub release list.
     releaseExists: async (v: string) => v === '0.3.1',
   } as any);
+  if (__server) await new Promise<void>(r => __server.close(() => r()));
+  __server = out.app.listen(0);
   await createPasswordUser(db, 'org', 'admin@x', 'longenough1', 'admin');
-  const login = await supertest(out.app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+  const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
   const cookie = login.headers['set-cookie']?.[0] ?? '';
   const token = await issueApiKey(db, 'org', 'parity');
   return { app: out.app, db, cookie, token };
@@ -107,12 +120,68 @@ describe('PG parity: auth + setup', () => {
     expect(r.body.requiresSetup).toBe(false);
   });
 
+  it('admin recovery (a44f3697): a token minted at boot signs the admin in once, password sign-in off', async () => {
+    await fx.db.run('UPDATE auth_config SET password_enabled = 0 WHERE org_id = ?', ['org']);
+    const logs: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.map(String).join(' ')); });
+    const out = await createHubApp({ dbPath: '/tmp/unused-pg-parity.sqlite', secretKey: SECRET, sessionSecret: 'sess-secret', defaultOrgId: 'org', db: fx.db, resetAdminEmail: 'admin@x' } as any);
+    log.mockRestore();
+    const token = logs.find(l => /admin recovery/i.test(l))?.match(/([A-Za-z0-9_-]{40,})/)?.[1];
+    expect(token, logs.join('\n')).toBeTruthy();
+    const srv = out.app.listen(0);
+    try {
+      const r = await supertest(srv).post('/auth/recover').send({ token, password: 'a-new-password-1' });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.headers['set-cookie']?.[0]).toBeTruthy();
+      expect((await supertest(srv).post('/auth/recover').send({ token, password: 'a-new-password-1' })).status).toBe(401);
+    } finally {
+      await new Promise<void>(res => srv.close(() => res()));
+    }
+  });
+
   it('GET /auth/me requires session', async () => {
     const r = await supertest(fx.app).get('/auth/me');
     expect(r.status).toBe(401);
     const r2 = await supertest(fx.app).get('/auth/me').set('Cookie', fx.cookie);
     expect(r2.status).toBe(200);
     expect(r2.body.role).toBe('admin');
+  });
+});
+
+describe('PG parity: config audit log (a89af514)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  it('the audit layer records a real change on Postgres, before -> after, with no secret (BUG 91d2941d)', async () => {
+    const r = await supertest(__server).put('/v1/admin/auth-config').set('Cookie', fx.cookie).send({
+      passwordEnabled: false, googleEnabled: true, google: { clientId: 'id.apps.googleusercontent.com', clientSecret: 'pg-shh' },
+    });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const list = await supertest(__server).get('/v1/admin/audit?area=sign-in').set('Cookie', fx.cookie);
+    const row = list.body.rows[0];
+    expect(row).toMatchObject({ action: 'auth-config.update', actorEmail: 'admin@x', source: 'board' });
+    expect(Number(row.before.password_enabled)).toBe(1);
+    expect(Number(row.after.password_enabled)).toBe(0);
+    expect(JSON.stringify(list.body)).not.toContain('pg-shh');
+  });
+
+  it('records, filters, pages and exports on Postgres', async () => {
+    const { recordAudit } = await import('../services/configAudit');
+    for (let i = 0; i < 3; i++) {
+      await recordAudit(fx.db, { orgId: 'org', actor: { userId: 'u', email: 'admin@x' }, source: 'board', ip: null, area: i === 2 ? 'sign-in' : 'flows', action: `a${i}`, target: null, before: null, after: { clientSecret: 'shh', n: i }, at: `2026-10-0${i + 1}T00:00:00.000Z` });
+    }
+    const r = await supertest(__server).get('/v1/admin/audit?area=flows&limit=1').set('Cookie', fx.cookie);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.rows.map((x: any) => x.action)).toEqual(['a1']);
+    const next = await supertest(__server).get(`/v1/admin/audit?area=flows&limit=1&cursor=${encodeURIComponent(r.body.next)}`).set('Cookie', fx.cookie);
+    expect(next.body.rows.map((x: any) => x.action)).toEqual(['a0']);
+    expect(JSON.stringify(next.body)).not.toContain('shh');
+    expect((await supertest(__server).get('/v1/admin/audit?actor=ADMIN%40').set('Cookie', fx.cookie)).body.rows).toHaveLength(3);
+    expect((await supertest(__server).get('/v1/admin/audit?actor=nobody_100%25').set('Cookie', fx.cookie)).body.rows).toHaveLength(0);
+    const csv = await supertest(__server).get('/v1/admin/audit.csv?from=2026-10-02').set('Cookie', fx.cookie);
+    expect(csv.status).toBe(200);
+    expect(csv.text.trim().split(/\r?\n/)).toHaveLength(3);
   });
 });
 
@@ -151,6 +220,48 @@ describe('PG parity: admin endpoints', () => {
     const dup = await supertest(fx.app).post('/v1/admin/users/invite').set('Cookie', fx.cookie)
       .send({ email: 'new@x', password: 'longenough1', role: 'viewer' });
     expect(dup.status).toBe(409);
+  });
+
+  // The last-admin guard is a subquery inside the UPDATE, so it is dialect SQL
+  // that a SQLite-only suite would pass and Postgres could reject.
+  it('refuses demoting the last active admin when a cross-demotion lands between guard and write', async () => {
+    await createPasswordUser(fx.db, 'org', 'admin2@x', 'longenough1', 'admin');
+    const login2 = await supertest(__server).post('/auth/login').send({ email: 'admin2@x', password: 'longenough1' });
+    const cookie2 = login2.headers['set-cookie']?.[0] ?? '';
+    const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
+
+    // admin2 passes the session guard, then admin@x demotes admin2 (allowed:
+    // admin@x remains), then admin2's write runs. The UPDATE's own last-admin
+    // condition must keep admin@x.
+    const demote1 = await raceBehindGuard(fx.db, await idOf('admin2@x'),
+      async () => supertest(fx.app).put(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2).send({ role: 'viewer' }),
+      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ role: 'viewer' })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
+    expect(demote1.status).toBe(409);
+    expect((await fx.db.get<any>('SELECT role FROM users WHERE email = ?', ['admin@x'])).role).toBe('admin');
+  });
+
+  it('refuses deleting the last active admin when a deactivation lands between guard and delete', async () => {
+    await createPasswordUser(fx.db, 'org', 'admin2@x', 'longenough1', 'admin');
+    const login2 = await supertest(__server).post('/auth/login').send({ email: 'admin2@x', password: 'longenough1' });
+    const cookie2 = login2.headers['set-cookie']?.[0] ?? '';
+    const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
+    const r = await raceBehindGuard(fx.db, await idOf('admin2@x'),
+      async () => supertest(fx.app).delete(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2),
+      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ active: false })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
+    expect(r.status).toBe(409);
+    expect(await fx.db.get<any>('SELECT id FROM users WHERE email = ?', ['admin@x'])).toBeTruthy();
+  });
+
+  it('refuses password sign-in while it is switched off (BUG cdb1b47f)', async () => {
+    await fx.db.run('UPDATE auth_config SET password_enabled = 0 WHERE org_id = ?', ['org']);
+    const r = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    expect(r.status).toBe(403);
+    expect(r.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('refuses an auth-config save that leaves no way to sign in', async () => {
+    const r = await supertest(fx.app).put('/v1/admin/auth-config').set('Cookie', fx.cookie).send({ passwordEnabled: false });
+    expect(r.status).toBe(400);
   });
 
   it('hidden-users: hide lists, revokes installation api_keys, unhide reverses (CGLAB-31)', async () => {
@@ -317,10 +428,114 @@ describe('PG parity: queries + rollup', () => {
   });
   afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
 
+  it('GET /v1/people/names reads installations and recorded child-hub names on PG', async () => {
+    await fx.db.run(
+      'INSERT INTO child_people (org_id, child_hub_id, user_key, git_name, last_seen) VALUES (?, ?, ?, ?, ?)',
+      ['org', 'child-hub-1', 'hana@child.com', 'Hana Ito', '2026-05-05T10:00:00Z'],
+    );
+    const r = await supertest(fx.app).get('/v1/people/names').set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.names['bob@acme.com']).toBe('B');
+    expect(r.body.names['hana@child.com']).toBe('Hana Ito');
+  });
+
   it('GET /v1/users returns distinct user_keys', async () => {
     const r = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
     expect(r.status).toBe(200);
     expect(r.body.map((u: any) => u.user_key).sort()).toEqual(['alice@acme.com', 'bob@acme.com']);
+  });
+
+  it('GET /v1/users counts what each person got done, on PG (story f355efe4)', async () => {
+    const r = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
+    const u = Object.fromEntries((r.body as any[]).map(x => [x.user_key, x]));
+    expect(u['alice@acme.com']).toMatchObject({
+      items_closed: 1, validate_passes: 1, validate_fails: 0, prs_opened: 0, closed_daily: { '2026-05-03': 1 },
+    });
+    expect(u['bob@acme.com']).toMatchObject({ items_closed: 0, prs_opened: 1, closed_daily: {} });
+    expect(typeof u['alice@acme.com'].items_closed).toBe('number');
+  });
+
+  it('GET /v1/histogram files by an IANA zone on PG (BUG 27ede354)', async () => {
+    // alice's events are 08:00–10:00 UTC on 2026-05-03: 13:30–15:30 in Kolkata.
+    const r = await supertest(fx.app)
+      .get('/v1/histogram?bucket=hour&tz=Asia%2FKolkata&tzOffsetMin=330&users=alice@acme.com')
+      .set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.buckets.map((b: any) => b.time)).toEqual(['2026-05-03T13:00', '2026-05-03T14:00', '2026-05-03T15:00']);
+    // The single-offset fallback shifts by a modifier too, on PG as well.
+    const o = await supertest(fx.app).get('/v1/histogram?bucket=hour&tzOffsetMin=120&users=alice@acme.com').set('Cookie', fx.cookie);
+    expect(o.status).toBe(200);
+    expect(o.body.buckets.map((b: any) => b.time)).toEqual(['2026-05-03T10:00', '2026-05-03T11:00', '2026-05-03T12:00']);
+  });
+
+  it('GET /v1/adherence judges on PG — both branches, one verdict (CGLAB-614)', async () => {
+    // Two stamped transitions (one a rollback), one non-compliant move and one
+    // unstamped legacy event (a2 above) that must count on neither side.
+    const stamp = (eventId: string, at: string, payload: any, remoteUrl: string) =>
+      supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`)
+        .send({ events: [sample({ eventId, occurredAt: at, type: 'step.transitioned',
+          itemType: 'TASK', remoteUrl, itemTitle: 'Refactor', externalId: 'WEB-1', payload })] });
+    await stamp('s1', '2026-05-03T11:00:00Z', { fromStatus: 'PLAN', toStatus: 'WORK', flowId: 'f', flowRevision: 1, compliant: true }, 'git@x:web.git');
+    await stamp('s2', '2026-05-03T12:00:00Z', { fromStatus: 'WORK', toStatus: 'PLAN', flowId: 'f', flowRevision: 1, compliant: true }, 'git@x:web.git');
+    await stamp('s3', '2026-05-03T13:00:00Z', { fromStatus: 'WORK', toStatus: 'PAUSED', flowId: 'f', flowRevision: 1, compliant: false }, 'git@x:api.git');
+
+    // No narrowing filter: the rollups branch. Pin the day bucket — the
+    // rewritten date() must land the to_char key, not a Date object.
+    const rollups = await supertest(fx.app).get('/v1/adherence').set('Cookie', fx.cookie);
+    expect(rollups.status).toBe(200);
+    expect(rollups.body.judged).toBe(3);
+    expect(rollups.body.compliant).toBe(2);
+    expect(rollups.body.score).toBeCloseTo(2 / 3);
+    expect(rollups.body.series).toEqual([
+      { day: '2026-05-03', judged: 3, compliant: 2, score: 2 / 3 },
+      // A day with activity but nothing judged: 0/0, score null — not dropped.
+      { day: '2026-05-04', judged: 0, compliant: 0, score: null },
+    ]);
+
+    // A types filter: the events branch — same window, same answer, and the
+    // pg-mem SUM coming back as a native number must not change the shape.
+    const events = await supertest(fx.app)
+      .get('/v1/adherence?types=step.transitioned&from=2026-05-03&to=2026-05-03T23:59:59.999Z')
+      .set('Cookie', fx.cookie);
+    expect(events.body.judged).toBe(3);
+    expect(events.body.compliant).toBe(2);
+    expect(events.body.score).toBeCloseTo(2 / 3);
+    expect(events.body.series[0]).toMatchObject({ day: '2026-05-03', judged: 3, compliant: 2 });
+  });
+
+  it('GET /v1/timeline pages by cursor with a total and PR links on PG', async () => {
+    const all: string[] = [];
+    let before: string | undefined;
+    let first: any;
+    for (let i = 0; i < 10; i++) {
+      const r = await supertest(fx.app).get(`/v1/timeline?limit=1${before ? `&before=${encodeURIComponent(before)}` : ''}`).set('Cookie', fx.cookie);
+      expect(r.status).toBe(200);
+      first ??= r.body;
+      all.push(...r.body.events.map((e: any) => e.event_id));
+      before = r.body.nextBefore;
+      if (!before) break;
+    }
+    expect(first.total).toBe(4);
+    expect(typeof first.total).toBe('number');
+    expect(all.sort()).toEqual(['a1', 'a2', 'a3', 'b1']);
+    const pr = await supertest(fx.app).get('/v1/timeline?types=pr.opened').set('Cookie', fx.cookie);
+    // The fixture's remote is git@x:api.git: not github.com, so no link is guessed.
+    expect(pr.body.events[0]).toHaveProperty('pr_url', null);
+  });
+
+  it('GET /v1/users files closures by an IANA zone on PG', async () => {
+    // A close at 20:00 UTC on May 3 is 01:30 on May 4 in Kolkata: UTC filing
+    // and zone filing disagree, so this pins the zone path on PG.
+    await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+      sample({ eventId: 'z1', occurredAt: '2026-05-03T20:00:00Z', type: 'item.closed', itemId: 'zi',
+        actor: { osUser: 'zed', gitName: 'Z', gitEmail: 'zed@acme.com' } }),
+    ] });
+    const r = await supertest(fx.app).get('/v1/users?tz=Asia%2FKolkata').set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    const zed = (r.body as any[]).find(u => u.user_key === 'zed@acme.com');
+    expect(zed.closed_daily).toEqual({ '2026-05-04': 1 });
+    const utc = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
+    expect((utc.body as any[]).find(u => u.user_key === 'zed@acme.com').closed_daily).toEqual({ '2026-05-03': 1 });
   });
 
   it('GET /v1/timeline filters by user + type', async () => {
@@ -398,6 +613,18 @@ describe('PG parity: queries + rollup', () => {
     expect(m.status).toBe(200);
     expect(m.body.bucket).toBe('day');
     expect(m.body.series.length).toBeGreaterThan(0);
+  });
+
+  it('GET /v1/metrics totals are numbers on PG and agree with the live events', async () => {
+    const m = await supertest(fx.app).get('/v1/metrics').set('Cookie', fx.cookie);
+    expect(m.status).toBe(200);
+    const t = m.body.totals;
+    // Postgres answers COUNT/SUM as strings: the tiles would concatenate them.
+    for (const k of ['events_count', 'items_closed', 'validate_passes', 'validate_fails', 'prs_opened']) {
+      expect(typeof t[k]).toBe('number');
+    }
+    const live = await fx.db.get<{ n: number | string }>('SELECT COUNT(*) AS n FROM events');
+    expect(t.events_count).toBe(Number(live?.n));
   });
 
   it('rollups_daily computes items_closed and leaves token consumption at zero on PG', async () => {
@@ -667,6 +894,21 @@ describe('PG parity: hub endpoint lifecycle (CGLAB-62)', () => {
     expect(rows[0].canonical_key).toBe('new@acme.com');
   });
 
+  it('refuses an out-of-order revert and leaves the merge unreverted', async () => {
+    await fx.db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
+       VALUES ('lifo1', 'org', 'inst-pg', 'a', '2026-02-01T09:00:00Z', '2026-02-01T09:00:00Z', 'item.created', '{}')`,
+    );
+    const post = (path: string, body?: unknown) => supertest(fx.app).post(path).set('Cookie', fx.cookie).send(body ?? {});
+    const first = await post('/v1/admin/user-keys/merge', { from: 'a', to: 'b@acme.com' });
+    const second = await post('/v1/admin/user-keys/merge', { from: 'b@acme.com', to: 'c@acme.com' });
+    expect((await post(`/v1/admin/user-keys/merges/${first.body.mergeId}/revert`)).status).toBe(409);
+    const row = await fx.db.get<any>('SELECT reverted_at FROM user_key_merges WHERE id = ?', [first.body.mergeId]);
+    expect(row.reverted_at).toBeNull();
+    // The successful revert itself is SQLite-tested only (admin-merge-revert):
+    // its UPDATE uses a correlated subquery that pg-mem cannot execute.
+  });
+
   it('merge moves events, sums same-day rollups and repairs history', async () => {
     const ev = (id: string, key: string, day: string) => fx.db.run(
       `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
@@ -733,7 +975,7 @@ describe('PG parity: hub endpoint lifecycle (CGLAB-62)', () => {
     const send = (host: string) => supertest(fx.app).post('/v1/events')
       .set('Authorization', `Bearer ${bound}`)
       .set('X-Installation-Id', 'inst-pg')
-      .set('X-Forwarded-Host', host)
+      .set('Host', host)
       .send({ events: [{
         eventId: `pgev-${host}`, installationId: 'inst-pg', orgId: 'org',
         occurredAt: new Date().toISOString(),
@@ -813,5 +1055,178 @@ describe('PG parity: admin model mappings', () => {
     expect(removed.body.removed).toBe(true);
     const reverted = await (await supertest(fx.app).get('/v1/prs/overview').set('Cookie', fx.cookie)).body;
     expect(reverted.byModel).toHaveLength(2);
+  });
+});
+
+/**
+ * PG parity: repository settings (RFC-002).
+ *
+ * The repository record is claimed with an atomic first-writer-wins insert, and
+ * its revision history is a second table keyed by (org, remote_url, revision) —
+ * both statements are exactly the shape the dialect translator can get wrong
+ * (`INSERT OR IGNORE` has no PG spelling, and `shadowThreshold` is a nullable
+ * integer that must survive as NULL, not 0). So the whole admin path is walked
+ * on pg-mem here, with the view checked on the way.
+ */
+describe('PG parity: repository settings (RFC-002)', () => {
+  const REPO = 'https://github.com/acme/app.git';
+  const CANON = 'git@github.com:acme/app.git';
+  let fx: Fixture & { key: string };
+
+  beforeEach(async () => {
+    const booted = await bootHubOnPg();
+    fx = { ...booted, key: await issueApiKey(booted.db, 'org', 'pg-repo', { installationId: 'inst-pg-repo' }) };
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-repo', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'dev', 'dev@acme.com')`,
+    );
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-producer', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'ci', 'ci@acme.com')`,
+    );
+  });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  const bearer = (k: string) => ({ Authorization: `Bearer ${k}` });
+
+  it('init -> admin revise -> mode -> producers, and the view reflects all of it', async () => {
+    const init = await supertest(__server).post('/v1/repo-settings/init').set(bearer(fx.key))
+      .send({ repo: 'git@github.com:ACME/App', verifyCommand: 'npm test' });
+    expect(init.status, JSON.stringify(init.body)).toBe(201);
+    expect(init.body.created).toBe(true);
+    expect(init.body.settings).toMatchObject({
+      remoteUrl: CANON, verifyCommand: 'npm test', revision: 1, receiptsMode: 'off', producers: [],
+    });
+    expect(init.body.settings.shadowThreshold).toBeNull();
+
+    const revised = await supertest(__server).put('/v1/admin/repos/command').set('Cookie', fx.cookie)
+      .send({ repo: REPO, verifyCommand: 'pnpm verify' });
+    expect(revised.status, JSON.stringify(revised.body)).toBe(200);
+    expect(revised.body).toMatchObject({ remoteUrl: CANON, verifyCommand: 'pnpm verify', revision: 2 });
+
+    const mode = await supertest(__server).put('/v1/admin/repos/mode').set('Cookie', fx.cookie)
+      .send({ repo: REPO, mode: 'shadow', shadowThreshold: 12 });
+    expect(mode.status, JSON.stringify(mode.body)).toBe(200);
+    expect(mode.body).toMatchObject({ receiptsMode: 'shadow', shadowThreshold: 12, revision: 2 });
+
+    const producers = await supertest(__server).put('/v1/admin/repos/producers').set('Cookie', fx.cookie)
+      .send({ repo: REPO, installationId: 'inst-pg-producer', allowed: true });
+    expect(producers.status, JSON.stringify(producers.body)).toBe(200);
+    expect(producers.body.producers).toEqual(['inst-pg-producer']);
+
+    const view = await supertest(__server).get(`/v1/repo-settings?repo=${encodeURIComponent(REPO)}`).set(bearer(fx.key));
+    expect(view.status).toBe(200);
+    expect(view.body.settings).toMatchObject({
+      remoteUrl: CANON, verifyCommand: 'pnpm verify', revision: 2, receiptsMode: 'shadow',
+      shadowThreshold: 12, producers: ['inst-pg-producer'],
+    });
+    expect(view.headers.etag).toBeTruthy();
+
+    const revs = await supertest(__server).get(`/v1/admin/repos/revisions?repo=${encodeURIComponent(REPO)}`).set('Cookie', fx.cookie);
+    expect(revs.status).toBe(200);
+    expect(revs.body.revisions.map((r: any) => r.revision)).toEqual([2, 1]);
+    expect(revs.body.revisions[0]).toMatchObject({ source: 'admin', actorEmail: 'admin@x' });
+    expect(revs.body.revisions[1]).toMatchObject({ source: 'init', installationId: 'inst-pg-repo' });
+
+    const rows = await fx.db.all<{ n: number }>('SELECT COUNT(*) AS n FROM repo_settings', []);
+    expect(Number(rows[0].n)).toBe(1);
+  });
+});
+
+/**
+ * PG parity: receipts store (RFC-002).
+ *
+ * The receipt is written once and never again: on SQLite that is
+ * `INSERT OR IGNORE`, and Postgres has no such spelling — it is
+ * `INSERT ... ON CONFLICT DO NOTHING`, which the dialect translator has to get
+ * right including the `changes` count the route reads to tell a new row from a
+ * duplicate. `reusable` is a 1/0 integer and `report_bytes` a nullable integer
+ * that must stay NULL rather than become 0, and `body_hash` is compared as text
+ * both sides must agree on. So the write, the retry and the stored row are
+ * walked on pg-mem here.
+ */
+describe('PG parity: receipts store (RFC-002)', () => {
+  const REPO = 'https://github.com/acme/app.git';
+  const CANON = 'git@github.com:acme/app.git';
+  let fx: Fixture & { key: string };
+
+  beforeEach(async () => {
+    const booted = await bootHubOnPg();
+    fx = { ...booted, key: await issueApiKey(booted.db, 'org', 'pg-receipts', { installationId: 'inst-pg-producer' }) };
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-receipts', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'dev', 'dev@acme.com')`,
+    );
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-producer', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'ci', 'ci@acme.com')`,
+    );
+    const init = await supertest(__server).post('/v1/repo-settings/init').set(bearer(fx.key))
+      .send({ repo: REPO, verifyCommand: 'npm test' });
+    expect(init.status, JSON.stringify(init.body)).toBe(201);
+    const producers = await supertest(__server).put('/v1/admin/repos/producers').set('Cookie', fx.cookie)
+      .send({ repo: REPO, installationId: 'inst-pg-producer', allowed: true });
+    expect(producers.status, JSON.stringify(producers.body)).toBe(200);
+  });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  const bearer = (k: string) => ({ Authorization: `Bearer ${k}` });
+
+  const receipt = (id: string) => ({
+    id,
+    kind: 'verification',
+    version: 1,
+    repo: REPO,
+    receiptsMode: 'shadow',
+    card: {
+      id: 'card-1', title: 'Store the receipt', type: 'TASK',
+      closedAt: '2026-06-01T10:00:00.000Z', owner: null,
+      closedBy: { name: 'CI', email: 'ci@acme.com' }, link: null,
+    },
+    execution: {
+      id: 'test-1', command: 'npm test', commandRevision: 1, exitCode: 0,
+      startedAt: '2026-06-01T09:59:00.000Z', finishedAt: '2026-06-01T10:00:00.000Z', logPath: null,
+    },
+    content: { commit: 'b'.repeat(40), gitTree: 'a'.repeat(40), treeState: null, treeStateVersion: 1 },
+    reusable: true,
+  });
+
+  it('stores a receipt once, answers a retry as a duplicate, and keeps the row on Postgres', async () => {
+    const id = 'rcpt-pg-1';
+    const report = { encoding: 'gzip+base64', data: Buffer.from(require('node:zlib').gzipSync('log line\n')).toString('base64'), bytes: 9 };
+
+    const first = await supertest(__server).post('/v1/receipts').set(bearer(fx.key))
+      .send({ receipt: receipt(id), report });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(first.body).toMatchObject({ id, stored: 'new', reusable: true, reason: null });
+
+    const again = await supertest(__server).post('/v1/receipts').set(bearer(fx.key))
+      .send({ receipt: receipt(id), report });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body).toMatchObject({ id, stored: 'duplicate', reusable: true, reason: null });
+
+    const rows = await fx.db.all<any[]>('SELECT * FROM receipts', []);
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row.org_id).toBe('org');
+    expect(row.installation_id).toBe('inst-pg-producer');
+    expect(row.remote_url).toBe(CANON);
+    expect(row.kind).toBe('verification');
+    expect(row.card_id).toBe('card-1');
+    expect(row.content_tree).toBe('a'.repeat(40));
+    expect(Number(row.command_revision)).toBe(1);
+    expect(Number(row.reusable)).toBe(1);
+    expect(row.not_reusable_reason).toBeNull();
+    expect(Number(row.report_bytes)).toBe(9);
+    expect(row.report_gz_b64).toBe(report.data);
+    expect(row.received_at).toBeTruthy();
+
+    // A different body under the same id is a conflict, and the row does not move.
+    const clash = await supertest(__server).post('/v1/receipts').set(bearer(fx.key))
+      .send({ receipt: { ...receipt(id), card: { ...receipt(id).card, title: 'a different claim' } }, report });
+    expect(clash.status, JSON.stringify(clash.body)).toBe(409);
+    expect(clash.body.code).toBe('receipt_conflict');
+    expect(await fx.db.all<any[]>('SELECT * FROM receipts', [])).toHaveLength(1);
+    expect((await fx.db.all<any[]>('SELECT * FROM receipts', []))[0].card_id).toBe('card-1');
   });
 });

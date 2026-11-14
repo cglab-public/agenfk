@@ -143,11 +143,14 @@ server (the UI, CLI, install script) reads that file rather than assuming
 | `AGENFK_HUB_DB_PATH` | no | SQLite file path (Docker default `/data/hub.sqlite`). |
 | `AGENFK_HUB_PG_URL` | when `AGENFK_HUB_DB=postgres` | `pg`-driver DSN. |
 | `AGENFK_HUB_ORG_ID` | no | Default org for single-tenant deployments (`default`). |
-| `AGENFK_HUB_PUBLIC_URL` | no | Origin used in OIDC redirects + magic-link emails. |
+| `AGENFK_HUB_PUBLIC_URL` | no | The hub's canonical origin (e.g. `https://hub.example.com`), used for every URL the hub hands to others: invite join commands, the device-code link, `hubUrl`, a federation child's parent URL. Unset: the origin each request arrived on (the `Host` header plus the protocol from a trusted proxy). OAuth callbacks do **not** use it - they return to the host the user is browsing. `X-Forwarded-Host` is never read; if your proxy rewrites `Host`, set this. Anything but an http(s) URL is refused at boot. |
 | `AGENFK_HUB_INITIAL_ADMIN_EMAIL` / `_PASSWORD` | no | Bootstraps the first admin without the `/setup` wizard. |
 | `AGENFK_HUB_UI_DIR` | no | Override for the SPA bundle path (auto-detected). |
 | `AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS` | no | How recently an installation must have reported to block an identity merge (default `48`). A machine dormant longer stops blocking; the alias the merge records is what prevents it resurrecting the key. |
 | `AGENFK_HUB_ALLOW_PRIVATE_PARENT` | no | Set to `1` to let this hub enrol with a parent on a private or loopback address. Off by default — see §2.7. |
+| `AGENFK_HUB_TRUST_PROXY` | no | How many reverse proxies stand in front of the hub (default `1`: an ALB, nginx or Caddy), `0` when the hub is exposed directly, or a list of proxy addresses/CIDRs. Decides which `X-Forwarded-For` hop is the client, and so every per-client rate limit. A proxy appends the address it saw, so with the wrong value a client can pick its own bucket; `true` (trust every hop), more than 5 hops, and list items that are not addresses/CIDRs are refused at boot. Assumes the proxy APPENDS to `X-Forwarded-For` - an ALB's default (`routing.http.xff_header_processing.mode=append`); with `preserve` the client-written value comes through and limits are spoofable again. |
+| `AGENFK_HUB_FORCE_PASSWORD_LOGIN` | no | Break-glass. `1` accepts email + password sign-in (and shows the form) even while Admin → Sign-in has it switched off, so an operator can get back in after SSO breaks (a wrong secret, a revoked app, an IdP outage). Passwords are still checked. Any other value is off. The hub logs a warning on every boot while it is set: sign in, repair the sign-in settings, then unset it and restart. |
+| `AGENFK_HUB_RESET_ADMIN_EMAIL` | no | Admin recovery for a hub whose admins all sign in by SSO (no password, so the break-glass above has nothing to check). Set it to an active admin's email and restart: boot logs a one-time recovery token for that admin (works once, for an hour; only its hash is stored; a later boot clears only expired tokens, so a restart or a second instance does not withdraw it). Open the hub at `/recover`, paste the token with a new password: that admin is signed in, whatever Admin → Sign-in says, and lands on Admin → Sign-in to repair it. An email that is not an active admin mints nothing and logs a warning. Unset it and restart once you are back in. |
 
 For staging deployments, secrets typically live in AWS Secrets Manager (or
 equivalent) under `agenfk-hub-<env>/{pg-url,hub-secret-key,hub-session-secret}`
@@ -362,6 +365,28 @@ gate before the user lookup, so an admin who accidentally invites an
 out-of-scope email cannot let that user in. New SSO sign-ins default to
 `role=viewer` only via the *invite* — there is no implicit role.
 
+### 4.1a Human admins on the command line → admin CLI tokens
+
+`agenfk hub admin login` (CGLAB-702) gives a person's terminal the same
+session the board's cookie carries, through a device flow:
+
+- `POST /hub/admin-device/start` (no auth) returns a code and
+  `/connect?code=…&kind=admin`. A signed-in admin approves it on the board
+  (`POST /hub/admin-device/approve`); a CLI session may not approve one, so a
+  token cannot renew itself.
+- `POST /hub/admin-device/poll` hands the token over once. It is minted by the
+  poll that claims the approved grant (`consumed_at`), never held in memory, so
+  any hub process can answer; `admin_cli_tokens.grant_code` is UNIQUE, so one
+  grant never yields two tokens.
+- The token is `agka_<64-hex>`, stored as a SHA-256 hash, valid 12 hours.
+  `requireSession` accepts it as `Authorization: Bearer` when no cookie is sent
+  and runs the same per-request users-row check (role, active, org), so a
+  demoted admin's CLI is a viewer's at once. Installation keys (`agk_`) and CI
+  tokens are not sessions and stay refused.
+- `POST /auth/logout` with the token revokes it; admins list and revoke CLI
+  sessions at `/v1/admin/cli-sessions`. Changes made with it are audited with
+  source `cli` and the admin's email. An org rename carries the tokens with it.
+
 ### 4.2 Installations → bearer API keys
 
 - `agk_<64-hex>` tokens, generated by `generateApiKey()` and stored as a
@@ -575,6 +600,50 @@ loud `lastError` and escalating backoff.
 `agenfk hub deadletter discard --org X | --all` removes entries —
 re-reading the file immediately before writing, writing atomically
 (tmp + rename), and preserving unparseable lines on `--org` discards.
+`--reason <reason...>` (alone or with `--org`) and `--unparseable` remove
+exactly the lines a requeue can never move — `hidden_user`, `invalid`,
+unreadable lines — without taking requeueable events with them.
+
+**`agenfk hub deadletter requeue`** (#223) puts refused events back in
+the outbox once the cause is fixed — typically after re-onboarding with
+`agenfk hub join` — so the next flush sends them again **with their
+original `eventId`, `occurredAt` and payload**. The hub's ingest is
+`INSERT OR IGNORE` per `eventId`, so a duplicate resend is harmless, and
+the events land on the days they happened.
+
+- **Selection.** `--reason <reason...>`, `--org <orgId>`,
+  `--type <type...>` and `--since <iso>` narrow it. By default every
+  reason except `hidden_user` (an admin's decision, not a fault),
+  `org_mismatch` and `invalid` (refused identically on resend) is
+  selected. `org_mismatch` lines are only taken with `--org`: they come
+  back with their stale stamp, as stale-org rows, and `hub carry-over`
+  remains the only way to rewrite it. Unparseable lines, raw-string
+  payloads and lines whose `eventId` differs from the payload's are never
+  requeued — the outbox key must equal the payload's `eventId`, or a
+  later refusal could not be matched to its row.
+- **Binding check.** Before anything moves, the CLI calls `/v1/ping`,
+  which reports the key's bound `installationId`. It refuses (unless
+  `--force`) when the hub answers for another org, rejects the key, or
+  the key is bound to another installation than this machine or than the
+  one that recorded the selected events — the hub would refuse them all
+  again. An unbound key, an older hub or an unreachable one only warn.
+- **Order.** The local server (the outbox's only writer) runs
+  `POST /internal/hub/requeue-deadletter` (verify-token gated): outbox
+  insert **first**, deadletter rewrite **second**, in one synchronous
+  block so the flusher's own appends cannot interleave. A failure between
+  the two leaves an event in both places — never in neither — and the
+  same command run again finishes the job. Events the hub refuses again
+  simply go back to the deadletter; nothing retries on its own.
+- **Confirmation and audit.** A dry run prints the selection (count,
+  range, reasons, types, orgs, installations, what stays and why); the
+  run asks `[y/N]` (`--yes` skips; a non-TTY run refuses). The real run
+  moves only the `eventIds` that were confirmed — refusals appended while
+  the prompt was open wait for the next run — and the route never
+  defaults to a real run (`dryRun` must be given). Each run appends
+  `{ at, action: 'deadletter-requeue', filters, requeued, eventIds, osUser }`
+  to `~/.agenfk/hub-audit.jsonl`, plus `force: true` and the `overridden`
+  binding-check findings when `--force` overrode them. An audit failure
+  after a successful requeue is shouted, never swallowed.
 
 **`agenfk hub carry-over` is the sole stamp-rewrite path.** It moves
 queued events from one *named* org stamp to another:
@@ -604,6 +673,16 @@ the cycle ends with `lastError` (transport failure *or* refusals — a
 yellow carry-over guidance when stale rows remain, and only prints
 `✓ Flush completed` when the outbox is clean. `agenfk hub status` shows
 `Stale-org rows`, `Deadlettered`, and the per-org outbox breakdown.
+Refusals are **sticky** (#223): `lastError` clears on the next flush,
+so it cannot carry them. The deadletter file can: `/internal/hub/status`
+returns a `deadletter` indicator (`count`, `actionable` — everything but
+`hidden_user` —, `since` = the oldest `deadletteredAt`, per-reason
+counts), `agenfk hub status` prints it as a red `Refused:` line with the
+fix for the main reason (even with no hub configured or no server
+reachable, from the file), the CLI pre-action banner warns while any
+actionable refusal remains, and the board shows it through the public,
+counts-only `GET /hub/refusals`. It clears only when the file is emptied
+— by a requeue or a discard.
 `hub login`/`hub join` print the same stale-org guidance after writing
 config — with exact counts and ready-to-run commands — and never
 auto-rewrite a non-empty foreign org. Identity gates: `login` (both
@@ -611,15 +690,29 @@ paths) and `join` refuse to persist a `hub.json` unless the URL they are
 about to persist answers `/healthz` with `service=agenfk-hub` —
 including the server-supplied `hubUrl` in redeem/device responses.
 
+**Backdated events are rolled up on their own days.** The rollup timer
+recomputes forward from the latest rolled-up day, so an event dated
+before it — an outbox catching up after days offline, or a requeue
+resending refused events — reached the totals and the PR overview but
+never the per-day series. `/v1/events` now recomputes, after its
+transaction, exactly the earlier days of the events it stored (not
+duplicates, not refusals), for the ingesting org only
+(`recomputeBackdatedDays` in `packages/hub/src/rollup.ts`). The anchor
+is capped at today (UTC), so one future-dated event cannot make live
+traffic pay for a recompute on every batch. A failure there only warns:
+the events are stored either way.
+
 Code: `packages/server/src/hub/flusher.ts` (boundary, deadletter,
-rejection handling), `packages/storage-sqlite/src/index.ts`
+rejection handling), `packages/server/src/hub/deadletter.ts` (requeue,
+indicator), `packages/core/src/hubDeadletter.ts` (selection rules,
+indicator, hints), `packages/storage-sqlite/src/index.ts`
 (`hubOutboxPeekDeliverable`, `hubOutboxRewriteOrgId`,
-`hubOutboxOrgSummaries`), `packages/cli/src/commands/hub.ts`
-(carry-over, deadletter, gates, reporting),
-`packages/hub/src/routes/events.ts` (rejections). The deadletter path is
+`hubOutboxOrgSummaries`, `hubOutboxAppendMany`),
+`packages/cli/src/commands/hub.ts` (carry-over, deadletter, requeue,
+gates, reporting), `packages/hub/src/routes/events.ts` (rejections, ping
+binding, backdated rollups). The deadletter path is
 a contract between flusher and CLI (`defaultDeadletterPath()`),
-drift-pinned by tests in both packages; the docs↔code facts above are
-pinned by `packages/hub/src/test/hub-docs-tenancy.test.ts`.
+drift-pinned by tests in both packages.
 
 ---
 
@@ -952,15 +1045,19 @@ is the guard.
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/v1/ping` | api_key | Cheap "creds good?" check. |
+| GET | `/v1/ping` | api_key | Cheap "creds good?" check: `{ ok, orgId, installationId }`, where `installationId` is the installation a bound key belongs to (`null` for an org-wide key). |
 | POST | `/v1/events` | api_key | `{ events: HubEvent[] }`. Returns `{ ingested, skipped, rejected, installationId }`. Stamps the batch's `X-Agenfk-Version` onto each new event row's `reporting_version` and onto the installation row. |
 | GET | `/v1/upgrade-directive` | api_key | Oldest *pending* directive for this installation, or `204`. |
+| POST | `/v1/repo-settings/init` | installation key | Claim a repository's verify command; first writer wins (§13.2). |
+| POST | `/v1/receipts` | installation key | Publish a verification or review receipt, write-once (§13.4). |
 
 ### 8.4 Distribute (client → hub, read-mostly)
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | GET | `/v1/flows/active` | api_key | `{ flow, hubVersion }` for the org/project, or `{ flow: null }`. Honours `If-None-Match` → `304`. |
+| GET | `/v1/repo-settings?repo` | api_key | The repository's command, revision, receipts mode and producers, or `{ settings: null }`. ETag-cached. |
+| GET | `/v1/ci/receipts*` | `ci_` token | Read-only receipt lookup for CI (§13.5). |
 
 ### 8.5 Query (admin dashboard)
 
@@ -980,6 +1077,8 @@ is the guard.
 |---|---|---|
 | GET / PUT | `/auth-config` | Read or update per-org auth providers + email allowlist. |
 | GET / POST / DELETE | `/api-keys` | Manage installation tokens. |
+| GET / POST / DELETE | `/ci-tokens` | Mint (shown once), list and revoke read-only `ci_` tokens (§13.5). |
+| GET, PUT | `/repos`, `/repos/revisions`, `/repos/command`, `/repos/mode`, `/repos/producers` | Repository settings: command revisions, receipts mode + Shadow threshold, producer allowlist (§13.2). |
 | GET / POST / PUT / DELETE | `/users` (and `/users/invite`, `/users/:id`) | Admin user management. `POST /users/invite` body: `{ email, role, password? }` — password optional (omit for an SSO-only invite, in which case the row is created with `password_hash=NULL` and the user must sign in via Google/Entra). |
 | GET / POST / PUT / DELETE | `/flows`, `/flows/:id`, `/flows/default`, `/registry/flows`, `/flows/install` | Flow CRUD plus a community registry installer. |
 | GET / PUT | `/flow-assignments` | Bind a flow to an org or project scope. |
@@ -1167,3 +1266,216 @@ After provider config + invite:
 | `installations.agenfk_version` | Header from the running module — i.e. the version actually executing in memory. | Updates once per batch. |
 | `upgrade_directive_targets.result_version` | Payload of `fleet:upgrade:succeeded` — i.e. on-disk after the upgrade. | Per-directive, not the global "running" view. |
 | `events.reporting_version` | Header that delivered each individual event. | Per-event observability for stuck processes. |
+| Repository verify command | Hub, once claimed | First authorized client initializes it; admins revise it (§13.2). |
+| Receipts | Producer installation writes once, hub stores and decides reusability, CI reads | §13.4–13.6. |
+
+---
+
+## 13. CI receipts (RFC-002)
+
+A root card's final verify and its recorded independent review already happen on
+an engineer's machine. Receipts let CI reuse them instead of running the same
+test command and the same review agent again. The decision record is RFC-002
+("Verify Once, Reuse in CI"); this section is how the hub implements it.
+
+### 13.1 Trust model
+
+- **A receipt is a claim, not an attestation.** The hub knows *which installation*
+  published it (the installation-bound api key on the request; the body's own
+  claim is never read). It cannot prove what ran on that workstation. An org
+  that turns receipts on trusts its enrolled machines the way it trusts their
+  commits.
+- **Only allowed producers count.** Each repository has a producer mode
+  (RFC-002 Amendment 1). Under **Only these installations** (`listed`, the
+  default) its producer allowlist of installation ids decides. Under **All
+  installations in the organization** (`all`) any installation of the org
+  whose `retired_at` is null counts, decided live: an installation that joins
+  later counts with no admin action, and retiring one stops its receipts
+  counting. A receipt from an installation that is not an allowed producer is
+  stored but marked not reusable (`producer_not_allowed`). Org-wide api keys
+  bound to no installation can never publish (`installation_key_required`).
+  CI also re-checks the rule at read time (`producerAllowed`), so removing a
+  producer from the list, or retiring an installation under `all`, stops its
+  earlier receipts from qualifying.
+- **`all` trades the allowlist for the org's enrolment.** Under `all`, any
+  machine that joins the org can produce a receipt that lets CI skip a job in
+  Enforce. The hub still records which installation published each receipt,
+  and the pinned command and exact-tree match still hold. It fits an org where
+  joining the hub already requires a managed machine.
+- **Content is compared byte for byte.** CI computes the tree of its own
+  checkout (`HEAD^{tree}`, which on a `pull_request` run is the PR's merge
+  result) and only a receipt taken on that exact tree qualifies. Any change,
+  including to CI workflows, lockfiles and test configuration, or a base branch
+  that moved under the merge, rules the receipt out.
+- **Human gates are not receipts.** A review receipt reports the approvals and
+  overrides on the card (`humanGates`); neither a receipt nor a green CI job
+  creates an approval.
+
+### 13.2 Repository settings
+
+`repo_settings` holds one row per org and canonical repository (the same
+canonical remote URL as `events.remote_url`, so ssh and https spellings are one
+repository):
+
+| Setting | Meaning |
+|---|---|
+| `verify_command` + `revision` | The authoritative verify command. The first authorized installation that syncs the repository claims it from its declared command (`POST /v1/repo-settings/init`, first writer wins atomically). After that the hub is authoritative: clients adopt it on sync and a local setting cannot replace it. An admin revision (`PUT /v1/admin/repos/command`) bumps `revision`; every revision is kept in `repo_command_revisions` with who made it. |
+| `receipts_mode` | `off` (default), `shadow` or `enforce`. |
+| `shadow_threshold` | Admin-set, no default. `enforce` is refused while it is unset. |
+| `producer_mode` | `listed` (default: the `repo_producers` allowlist decides) or `all` (every live installation of the org). Switched by an admin with `PUT /v1/admin/repos/producer-mode` (`{ repo, producerMode }`), audited as `repo.producer-mode`. Hubs created before the column gain it at boot, with every existing repository on `listed`. |
+| producers | `repo_producers`: the installations whose receipts may be reused under `listed`. The list is kept untouched while `all` is on, stays editable, and applies again when the repository is switched back. |
+
+`GET /v1/repo-settings` (what installations sync and store as
+`hubRepoSettings`) carries `producerMode` beside `producers`; a client reading
+an older hub that sends no mode treats it as `listed`. The ETag covers the mode.
+
+Commands run from the repository root on every machine, so they must be
+portable. The client rewrites an absolute path inside the checkout to a
+repo-relative one and refuses the command whole if any path points outside the
+checkout or into a home directory. The hub refuses machine-specific paths too.
+A repo-relative script (`./scripts/verify.sh`) is the way to express a complex
+command.
+This is a portability check, not a sandbox: it reads the command as written, so a
+command can still reach outside the checkout through what the shell expands
+(`$HOME`, `eval`, a symlinked directory). Reuse rests on CI requiring the exact
+tree and the current command revision AND on trusting the allowlisted producers:
+those two checks do not pin scripts outside the repository, and neither does this one.
+
+### 13.3 Modes
+
+| Mode | Root card's final gate | CI |
+|---|---|---|
+| `off` | Today's behaviour, including closing on a green already on record. | `agenfk ci check` answers "run" (`receipts_off`). |
+| `shadow` | Runs the authoritative command fresh, even when a green is on record or a sibling root card verified the same tree, and publishes receipts. | Evaluates receipts and reports whether it *would* reuse (`would-reuse`), but always runs the step. |
+| `enforce` | As shadow. | Skips the gated steps when a receipt qualifies. |
+
+Child cards keep deferring to their parent; only the root card (the one the PR
+is opened for) runs fresh and produces receipts.
+
+### 13.4 Receipts
+
+Installations publish with `POST /v1/receipts` (installation key). Two kinds:
+
+- **verification** — the root card's fresh, successful run: card snapshot (id,
+  title, close time, owner, who closed it, issue/PR link), execution id,
+  command and revision, start/finish, exit code, content (commit, git tree,
+  tree-state hash and its version), and the run's log.
+- **review** — a recorded independent review (`agenfk review record`, with
+  `--lens` per lens covered, default `general`): reviewer and authors with the
+  server's independence verdict, the reviewed range, lenses, findings with their
+  dispositions, unreviewed fixes after the review, the transcript's sha256
+  (never the transcript or its path), human gates, and content.
+
+Storage rules:
+
+- **Write-once and idempotent.** The receipt id is the primary key. The same
+  body again is a `duplicate` (200); a different body under a taken id is a
+  conflict (409) and the original never moves.
+- **Reusability is decided at write time** by the hub, from the allowlist, the
+  report cap and the producer's own offer, and the first reason that applies is
+  stored (`producer_not_allowed`, `report_over_cap`, `not_reusable_by_producer`).
+  A review the server judged not independent, with too many unreviewed fixes,
+  or with uncommitted changes is published with `reusable: false` so Shadow can
+  count it.
+- **Reports are gzipped in the hub database** (SQLite or Postgres), capped at
+  32 MiB of uncompressed log (`receiptReportMaxBytes`). An over-cap receipt is
+  stored without its report and is not reusable.
+- **Delivery is acknowledged.** The client marks a receipt `acked` only when the
+  hub answered with its id; errors leave it `pending` for the next tick, and a
+  4xx refusal is `rejected` with a card comment. A delivery failure is never
+  recorded as a success.
+- **The log is redacted before upload** (`packages/server/src/hub/redact.ts`):
+  known secret formats (agenfk keys and CI tokens, GitHub, AWS key ids, Slack,
+  `sk-` API keys, JWTs, private-key blocks, `Bearer` values, URL passwords),
+  values assigned to secret-named keys, every value of a secret-named
+  environment variable of the machine (8+ characters), and the home directory
+  (`~`, so the username does not travel). Each is a visible
+  `[REDACTED:<kind>]`; the report carries the count. The local log is not
+  changed, and the receipt never sends the log's local path. This is best
+  effort: a secret in an unknown format that is not in the environment still
+  goes up, so keep secrets out of test output.
+
+### 13.5 CI tokens and the read API
+
+CI reads with a `ci_` token an org admin mints (`POST /v1/admin/ci-tokens`).
+It lives in its own table (`ci_tokens`, hash only), so no installation route
+accepts it: it cannot write events or receipts, claim a command or read flow
+selection. A token covers one repository by default (`repo`), or the whole
+organisation when asked for explicitly (`scope: "org"`). Issuance and
+revocation are audited (`ci-token.issue`, `ci-token.revoke`).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/v1/ci/receipts?repo&kind&pr&tree&lens` | Candidates, newest first. By `pr` first (the latest `pr.opened`/`pr.updated` event links the PR to its root card), falling back to `tree` when that card has no receipt of the kind, or none for the tree CI asks about (a PR of several root cards, registered on one that closed before the others). `lookup.by` then says `tree`. `lookup.by` says which answered. Each candidate carries its tree, commit, command revision, `reusable` + reason, producer and `producerAllowed`, lenses (reviews), and report availability. Also returns the repository's current command, revision and mode. |
+| GET | `/v1/ci/receipts/:id` | One receipt as published, plus the summary. |
+| GET | `/v1/ci/receipts/:id/report` | The run's log, inflated, as `text/plain`. |
+
+A repository token asking about another repository gets 403
+`repo_out_of_scope`. Another org's receipt answers exactly like one that does
+not exist (404), so the API reveals nothing about other tenants.
+
+### 13.6 `agenfk ci check` and the GitHub Action
+
+```
+agenfk ci check --kind verification|review [--lens <name>] [--policy run|require]
+                [--max-age <days>] [--report-dir .agenfk-ci] [--hub <url>]
+```
+
+Hub URL from `--hub` or `AGENFK_HUB_URL`, token from `AGENFK_CI_TOKEN`;
+repository and PR from the GitHub environment (or `--repo`/`--pr`, or the
+`origin` remote elsewhere). The call is the mapping: `--kind verification`
+stands for the repository's verify command, `--kind review --lens security` for
+a review that performed the security lens. A review call must name its lens; a
+general review never stands in for a lens it did not perform.
+
+A candidate qualifies only if it has the checkout's tree, the current command
+revision (verification) or the lens (review), is reusable, its producer is
+still allowed, it is younger than `--max-age` when given, and its report (or
+findings) downloads. Then:
+
+| Exit | Meaning |
+|---|---|
+| `0` | Enforce and a receipt qualifies: skip the gated steps. The report or findings are in `--report-dir`. |
+| `10` | Run the steps: Off, Shadow, nothing qualifies, or the hub could not answer under `--policy run`. |
+| `1` | `--policy require` in Enforce (or with the hub unreachable) and nothing qualifies, or a usage error. |
+
+A hub error or timeout is never `0`. The command writes `run`, `decision`,
+`reason`, `receipt-id`, `would-reuse` and `mode` to `$GITHUB_OUTPUT`, and a
+summary with a "Reused result" label and the original execution or review ids
+to `$GITHUB_STEP_SUMMARY`.
+
+The composite action `actions/ci-check` wraps it. Gate expensive **steps**,
+never a whole job (GitHub counts a skipped job as a passing required check),
+and test for `!= 'false'` so a check that never wrote its output runs them:
+
+```yaml
+- uses: actions/checkout@v4
+- id: receipt
+  uses: cglab-public/agenfk/actions/ci-check@v2.1.0
+  with:
+    kind: verification
+    hub-url: https://hub.example.com
+    token: ${{ secrets.AGENFK_CI_TOKEN }}
+    agenfk-version: 2.1.0
+- if: steps.receipt.outputs.run != 'false'
+  run: npm test
+```
+
+Builds, deployment smoke tests, environment checks and any review lens no
+receipt covers stay ordinary CI steps.
+
+### 13.7 Rollout and fallback
+
+1. Leave the repository on `off` while it adopts the hub's verify command.
+2. Allow its producers and switch it to `shadow`. Root cards run fresh and
+   publish; CI runs everything and reports whether it would have reused.
+3. Set the Shadow threshold and switch to `enforce`.
+
+Anything missing, stale, incompatible or unavailable runs the ordinary step, or
+fails the job under `--policy require`; setting the mode back to `off` restores
+today's behaviour everywhere.
+
+**Not in v1** (follow-up story): recording Shadow agreement on the hub, allowing
+Enforce only once the threshold is actually met with zero wrong reuses,
+returning a repository to Shadow after a wrong reuse, and re-running a random
+sample of reused jobs in Enforce with automatic producer revocation.

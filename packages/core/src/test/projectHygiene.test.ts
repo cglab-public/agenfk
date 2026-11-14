@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findDuplicateProjectRoots } from '../projectHygiene';
+import { findDuplicateProjectRoots, isPersistableProjectRoot } from '../projectHygiene';
 
 const p = (id: string, name: string, projectRoot?: string) => ({ id, name, projectRoot });
 
@@ -38,5 +38,89 @@ describe('findDuplicateProjectRoots', () => {
     ]);
     expect(dupes).toHaveLength(1);
     expect(dupes[0].projects.map((x) => x.id).sort()).toEqual(['1', '2']);
+  });
+});
+
+/**
+ * Refusing to record a project root that cannot be one.
+ *
+ * Four projects on this machine ended up with `projectRoot` = `/Users/<user>`
+ * — the home directory, not a repository — and the path that put them there is
+ * ordinary: `findProjectRoot` walks up looking for a `.agenfk` directory, and
+ * `~/.agenfk` exists. So `agenfk verify` run from anywhere under $HOME with no
+ * closer `.agenfk` resolves to $HOME, and the result is persisted.
+ *
+ * What that costs is not untidiness. `projectRoot` is the directory a worktree
+ * is cut from and the cwd `git add -A && git commit` runs in — so a project
+ * rooted at $HOME points both at the user's private files.
+ *
+ * Detecting the duplicates after the fact (above) was only ever half the job.
+ */
+describe('a project root that must be refused', () => {
+  const home = '/Users/someone';
+
+  it('refuses the home directory itself', () => {
+    expect(isPersistableProjectRoot('/Users/someone', home)).toBe(false);
+  });
+
+  it('refuses it however it is spelled', () => {
+    // A trailing slash or a `.` segment is the same directory, and the check
+    // is worth nothing if it can be walked around by accident.
+    for (const spelling of ['/Users/someone/', '/Users/someone/.', '/Users/someone/./']) {
+      expect(isPersistableProjectRoot(spelling, home), spelling).toBe(false);
+    }
+  });
+
+  it('refuses the agenfk directory itself', () => {
+    // ~/.agenfk is what the walk-up finds; recording it would point a worktree
+    // at the framework's own state.
+    expect(isPersistableProjectRoot('/Users/someone/.agenfk', home)).toBe(false);
+  });
+
+  it('accepts a real repository under home', () => {
+    // The common case must keep working: most repos live under $HOME.
+    expect(isPersistableProjectRoot('/Users/someone/code/agenfk', home)).toBe(true);
+  });
+
+  it('refuses nothing at all', () => {
+    for (const empty of ['', '   ', undefined, null]) {
+      expect(isPersistableProjectRoot(empty as never, home)).toBe(false);
+    }
+  });
+
+  it('refuses the filesystem root', () => {
+    // Same class of mistake with a worse blast radius.
+    expect(isPersistableProjectRoot('/', home)).toBe(false);
+  });
+});
+
+/**
+ * GitHub #208: the same refusals for Windows paths. The guard compared
+ * `${home}/.agenfk`, which a `C:\Users\x` home never matches, refused `/` but
+ * not `C:\`, and was case-sensitive on a filesystem that is not.
+ */
+describe('a project root that must be refused, on Windows', () => {
+  const home = 'C:\\Users\\Someone';
+  const ok = (root: string | null | undefined) => isPersistableProjectRoot(root, home, 'win32');
+
+  it('refuses the home directory, however it is spelled', () => {
+    for (const spelling of ['C:\\Users\\Someone', 'C:\\Users\\Someone\\', 'c:\\users\\someone', 'C:/Users/Someone', 'C:\\Users\\Someone\\.']) {
+      expect(ok(spelling), spelling).toBe(false);
+    }
+  });
+
+  it('refuses the agenfk directory itself', () => {
+    expect(ok('C:\\Users\\Someone\\.agenfk')).toBe(false);
+    expect(ok('C:/Users/Someone/.agenfk/')).toBe(false);
+  });
+
+  it('refuses a drive root', () => {
+    for (const root of ['C:\\', 'C:/', 'D:\\', '/']) expect(ok(root), root).toBe(false);
+  });
+
+  it('accepts a real repository under home, and nothing at all is still refused', () => {
+    expect(ok('C:\\Users\\Someone\\code\\agenfk')).toBe(true);
+    expect(ok('D:\\work\\agenfk')).toBe(true);
+    expect(ok('')).toBe(false);
   });
 });

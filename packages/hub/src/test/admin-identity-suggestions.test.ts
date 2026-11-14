@@ -19,6 +19,17 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-identsug-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -56,7 +67,7 @@ describe('identity-merge suggestions', () => {
     );
 
   const suggestions = (cookie = cookieAdmin) =>
-    supertest(app).get('/v1/admin/identity-suggestions').set('Cookie', cookie);
+    supertest(__server).get('/v1/admin/identity-suggestions').set('Cookie', cookie);
 
   beforeEach(async () => {
     cleanup();
@@ -64,23 +75,25 @@ describe('identity-merge suggestions', () => {
       dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
-    cookieAdmin = (await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
-    cookieView = (await supertest(app).post('/auth/login').send({ email: 'view@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+    cookieAdmin = (await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+    cookieView = (await supertest(__server).post('/auth/login').send({ email: 'view@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   describe('authz', () => {
     it('rejects unauthenticated and non-admin', async () => {
-      expect((await supertest(app).get('/v1/admin/identity-suggestions')).status).toBe(401);
+      expect((await supertest(__server).get('/v1/admin/identity-suggestions')).status).toBe(401);
       expect((await suggestions(cookieView)).status).toBe(403);
     });
   });
@@ -263,7 +276,7 @@ describe('identity-merge suggestions', () => {
       await event('e1', 'inst-1', 'gcs');
       expect((await suggestions()).body).toHaveLength(1);
 
-      const m = await supertest(app).post('/v1/admin/user-keys/merge')
+      const m = await supertest(__server).post('/v1/admin/user-keys/merge')
         .set('Cookie', cookieAdmin).send({ from: 'gcs', to: 'guilherme@cglab.com' });
       expect(m.status).toBe(200);
 
@@ -275,10 +288,10 @@ describe('identity-merge suggestions', () => {
     it('lists what has already been merged, newest first', async () => {
       await install('inst-1', 'guilherme@cglab.com', 'gcs');
       await event('e1', 'inst-1', 'gcs');
-      await supertest(app).post('/v1/admin/user-keys/merge')
+      await supertest(__server).post('/v1/admin/user-keys/merge')
         .set('Cookie', cookieAdmin).send({ from: 'gcs', to: 'guilherme@cglab.com' });
 
-      const r = await supertest(app).get('/v1/admin/user-keys/merges').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/admin/user-keys/merges').set('Cookie', cookieAdmin);
 
       expect(r.status).toBe(200);
       expect(r.body).toHaveLength(1);
@@ -292,11 +305,11 @@ describe('identity-merge suggestions', () => {
     });
 
     it('is empty before any merge, and org-scoped', async () => {
-      expect((await supertest(app).get('/v1/admin/user-keys/merges').set('Cookie', cookieAdmin)).body).toEqual([]);
+      expect((await supertest(__server).get('/v1/admin/user-keys/merges').set('Cookie', cookieAdmin)).body).toEqual([]);
     });
 
     it('rejects a viewer', async () => {
-      expect((await supertest(app).get('/v1/admin/user-keys/merges').set('Cookie', cookieView)).status).toBe(403);
+      expect((await supertest(__server).get('/v1/admin/user-keys/merges').set('Cookie', cookieView)).status).toBe(403);
     });
   });
 });

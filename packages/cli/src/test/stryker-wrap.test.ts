@@ -15,8 +15,12 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
+// @ts-expect-error - plain .mjs module without type declarations
+import { testHomePrefix } from '../../../../scripts/vitest-home-pin.mjs';
 
-const WRAPPER = new URL('../../../../scripts/stryker-home-wrap.mjs', import.meta.url).pathname;
+// fileURLToPath, not .pathname: a file URL's pathname is /C:/... on Windows.
+const WRAPPER = fileURLToPath(new URL('../../../../scripts/stryker-home-wrap.mjs', import.meta.url));
 
 function probe() {
   const r = spawnSync(process.execPath, [WRAPPER, '--probe'], { encoding: 'utf8' });
@@ -28,8 +32,9 @@ describe('stryker-home-wrap (item 9c297075)', () => {
   it('bakes the sandbox HOME into the spawned process (libuv-visible os.homedir)', () => {
     const p = probe();
     expect(p.home).toBeTruthy();
+    // The prefix this run uses: the accented one under AGENFK_TEST_UNICODE_HOME (#201).
     expect(p.home, 'child os.homedir() must be the wrapper sandbox')
-      .toContain('agenfk-test-home-');
+      .toContain(testHomePrefix());
     expect(p.home).not.toBe(process.env.HOME);
     expect(fs.existsSync(path.join(p.home, '.agenfk')), 'sandbox is pre-seeded').toBe(true);
   });

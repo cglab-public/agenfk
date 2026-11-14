@@ -92,3 +92,37 @@ export function groupUpgradesLive(
     d.targets.length === 0 || d.targets.some(t => !groupUpgradeRow(t.state, null).settled),
   );
 }
+
+export type GroupUpgradeRequest = {
+  targetVersion: string;
+  scope: 'all' | 'selected';
+  childHubIds?: string[];
+  confirmDowngrade?: true;
+};
+
+/**
+ * The request the group-upgrade form sends (CGLAB-360). Mirrors
+ * flowDispatchBody: 'all' carries no ids so a hub that joins later is covered,
+ * 'selected' with nothing ticked is refused here rather than by the server.
+ * `confirmDowngrade` is present only when true — the server reads `=== true`
+ * and the audit row should not say "false" for an admin who never saw the box.
+ * The parent cannot compute a child's downgrades, so this is the admin's
+ * explicit word, not a computed warning.
+ */
+export function groupUpgradeBody(
+  targetVersion: string,
+  mode: 'all' | 'selected',
+  selected: ReadonlySet<string>,
+  confirmDowngrade: boolean,
+): { ok: true; body: GroupUpgradeRequest } | { ok: false; error: string } {
+  if (!targetVersion) return { ok: false, error: 'Pick a version.' };
+  const body: GroupUpgradeRequest = { targetVersion, scope: 'all' };
+  if (mode === 'selected') {
+    const childHubIds = Array.from(selected);
+    if (childHubIds.length === 0) return { ok: false, error: 'Pick at least one child hub, or choose All.' };
+    body.scope = 'selected';
+    body.childHubIds = childHubIds;
+  }
+  if (confirmDowngrade) body.confirmDowngrade = true;
+  return { ok: true, body };
+}

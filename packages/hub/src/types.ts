@@ -6,6 +6,46 @@ export interface HubServerConfig {
   sessionSecret: string;      // HMAC key for session JWTs
   defaultOrgId: string;       // single-tenant v1: one org per hub deployment
   /**
+   * AGENFK_HUB_FORCE_PASSWORD_LOGIN=1: break-glass. Password sign-in is
+   * accepted (and offered on the login page) even while Admin → Sign-in has it
+   * switched off, so an operator can get back in after SSO breaks. Meant to be
+   * set briefly; the hub warns on every boot while it is on.
+   */
+  forcePasswordLogin?: boolean;
+  /**
+   * AGENFK_HUB_RESET_ADMIN_EMAIL (STORY a44f3697): the admin a boot mints a
+   * single-use recovery token for and logs, so an operator can get back into a
+   * hub whose SSO broke. Unset it once back in. A token lives until it is used or
+   * its hour runs out - another boot does not withdraw it.
+   */
+  resetAdminEmail?: string;
+  /** Most rows one audit CSV export carries (default 100000); set low by tests. */
+  auditCsvMaxRows?: number;
+  /**
+   * Largest verify-report LOG the hub keeps on a receipt, measured on the
+   * UNCOMPRESSED bytes, in bytes (default 32 MiB). Bigger than this the receipt
+   * is still stored, but with no report and not reusable — the hub would rather
+   * say "too big" than keep a log a reader would take for the whole thing. The
+   * client measures its own log against the same number before sending (and
+   * keeps the gzip that carries it under its own, smaller limit for the body),
+   * so an over-large log is omitted on the way rather than thrown away on
+   * arrival. Set low by tests.
+   */
+  receiptReportMaxBytes?: number;
+  /**
+   * Express `trust proxy`: how many reverse proxies stand in front of the hub
+   * (a hop count), or which addresses are proxies (a CIDR/`loopback` list).
+   * Decides which X-Forwarded-For hop is the client, and so which bucket every
+   * rate limit charges. 0 = exposed directly. Defaults to 1 (see configFromEnv).
+   */
+  trustProxy?: number | string;
+  /**
+   * AGENFK_HUB_PUBLIC_URL, reduced to an origin: the URL handed to others
+   * (invites, device-code links, hubUrl). OAuth callbacks deliberately do not
+   * use it - they return to the host the user is browsing.
+   */
+  publicUrl?: string;
+  /**
    * Validates that a given agenfk version actually exists as a published
    * release. Used by the fleet-upgrade-directive admin POST so we never fan
    * out a directive that no installation can resolve. Defaults to a GitHub
@@ -30,4 +70,8 @@ export interface SessionPayload {
   userId: string;
   orgId: string;
   role: 'admin' | 'viewer';
+  /** What carried the session: the board's cookie, or the admin CLI's bearer token (CGLAB-702). Not in the JWT. */
+  via?: 'board' | 'cli';
+  /** The admin CLI token's id, when `via` is 'cli'. */
+  cliTokenId?: string;
 }

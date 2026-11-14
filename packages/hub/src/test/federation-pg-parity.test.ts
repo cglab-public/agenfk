@@ -15,6 +15,7 @@ import { reportUpgradeProgress } from '../services/federation/upgradeProgress';
 import { releaseParentFlows } from '../services/federation/parentFlows';
 import { recomputeRollups } from '../rollup';
 import type { HubDb } from '../db/types';
+import { migrateChildPeopleNames, CHILD_PEOPLE_MIGRATION } from '../services/migrateChildPeopleNames';
 
 const SECRET = 'a'.repeat(64);
 
@@ -931,6 +932,43 @@ describe('PG parity: the identity policy that governs forwarded identities (CGLA
     // proves it is an override rather than an escalation.
     expect(child.effective).toBe('pseudonymize');
 
+    await db.close();
+  });
+});
+
+describe('PG parity: child-hub developer names (BUG 4159631f)', () => {
+  it('records names at delivery, keeps the newest, and backfills older forwarded rows', async () => {
+    const { app, db, cookie } = await bootHubOnPg();
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const enr = await supertest(app).post('/v1/federation/enroll').send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-child' } });
+    const child = enr.body as { token: string; childHubId: string };
+    const row = (eventId: string, occurredAt: string, gitName: string | null) => ({
+      id: `o-${eventId}`, kind: 'event',
+      payload: { childHubId: child.childHubId, identityPolicy: 'keep', event: {
+        eventId, orgId: 'org', installationId: 'ci', occurredAt, type: 'item.closed', payload: {},
+        userKey: 'hana@child.com', actor: { osUser: 'hana', gitName, gitEmail: 'hana@child.com' },
+      } },
+    });
+    const deliver = (rows: unknown[]) =>
+      supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${child.token}`).send({ rows });
+
+    // The conditional upsert (ON CONFLICT … DO UPDATE … WHERE) on Postgres.
+    expect((await deliver([row('e2', '2026-09-02T10:00:00.000Z', 'Hana Ito')])).status).toBe(200);
+    await deliver([row('e1', '2026-09-01T10:00:00.000Z', 'H. Ito'), row('e3', '2026-09-03T10:00:00.000Z', null)]);
+    let names = (await supertest(app).get('/v1/people/names').set('Cookie', cookie)).body.names;
+    expect(names['hana@child.com']).toBe('Hana Ito');
+
+    // The backfill's keyset paging over TIMESTAMPTZ (Date rows on Postgres).
+    await db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload, child_hub_id)
+       VALUES (?, 'org', 'ci', 'ivan@child.com', ?, ?, 'item.closed', ?, ?)`,
+      ['old1', '2026-08-01T10:00:00Z', '2026-08-01T10:00:00Z', JSON.stringify({ actor: { gitName: 'Ivan Re' } }), child.childHubId],
+    );
+    await db.run('DELETE FROM system_state WHERE key = ?', [CHILD_PEOPLE_MIGRATION]);
+    expect((await migrateChildPeopleNames(db)).skipped).toBe(false);
+    names = (await supertest(app).get('/v1/people/names').set('Cookie', cookie)).body.names;
+    expect(names['ivan@child.com']).toBe('Ivan Re');
+    expect(names['hana@child.com']).toBe('Hana Ito');
     await db.close();
   });
 });

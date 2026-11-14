@@ -48,12 +48,12 @@ vi.mock('fs', () => ({
   existsSync: mockExistsSync,
   readFileSync: mockReadFileSync,
   writeFileSync: mockWriteFileSync,
-  mkdirSync: vi.fn(),
+  mkdirSync: vi.fn(), chmodSync: vi.fn(), renameSync: (from: string, to: string) => { const c = mockWriteFileSync.mock.calls.find((x: any[]) => x[0] === from); if (c) mockWriteFileSync(to, c[1], c[2]); }, unlinkSync: vi.fn(),
   default: {
     existsSync: mockExistsSync,
     readFileSync: mockReadFileSync,
     writeFileSync: mockWriteFileSync,
-    mkdirSync: vi.fn(),
+    mkdirSync: vi.fn(), chmodSync: vi.fn(), renameSync: (from: string, to: string) => { const c = mockWriteFileSync.mock.calls.find((x: any[]) => x[0] === from); if (c) mockWriteFileSync(to, c[1], c[2]); }, unlinkSync: vi.fn(),
   },
 }));
 
@@ -64,9 +64,6 @@ vi.mock('child_process', () => ({
   default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: mockSpawnSync },
 }));
 
-vi.mock('figlet', () => ({
-  default: { textSync: vi.fn().mockReturnValue('AgEnFK') },
-}));
 
 vi.mock('axios');
 

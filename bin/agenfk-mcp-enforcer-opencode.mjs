@@ -1,91 +1,68 @@
 /**
  * AgenFK MCP Enforcer — Opencode plugin (tool.execute.before hook)
  *
- * Blocks all three bypass routes that agents use instead of MCP tool calls:
+ * Blocks the two routes around the AgEnFK server (the single owner of state):
  *   1. Direct database reads  — .agenfk/db.sqlite or .agenfk/db.json via bash or read
  *   2. Direct REST API calls  — curl/wget to localhost:3000 or 127.0.0.1:3000
- *   3. CLI state queries      — agenfk list/status/get/show, npx agenfk, etc.
+ *
+ * The `agenfk` CLI and the MCP tools are interchangeable ways in, so neither is
+ * blocked (BUG ec325925).
  *
  * Installed to ~/.config/opencode/plugins/ during agenfk install/upgrade.
  */
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 
-function isMcpAvailable() {
-    try {
-        const homeDir = os.homedir();
-        const claudeJsonPath = path.join(homeDir, '.claude.json');
-        if (!fs.existsSync(claudeJsonPath)) return false;
-        const claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf8'));
-        if (!claudeJson?.mcpServers?.agenfk) return false;
-        const remoteSettingsPath = path.join(homeDir, '.claude', 'remote-settings.json');
-        if (fs.existsSync(remoteSettingsPath)) {
-            const remoteSettings = JSON.parse(fs.readFileSync(remoteSettingsPath, 'utf8'));
-            const allowed = remoteSettings?.allowedMcpServers;
-            if (Array.isArray(allowed) && allowed.length === 0) return false;
-        }
-        return true;
-    } catch {
-        return true;
-    }
-}
+/** How to read state instead: the CLI first, MCP as its equivalent. */
+const INSTEAD =
+    '\nRead and change state through the agenfk CLI instead: agenfk list --project <id> --json • agenfk get <id> --json • ' +
+    'agenfk create ... • agenfk update <id> ... • agenfk verify <id> ... (or the equivalent agenfk MCP tools, when installed with --with-mcp).';
 
-const FALLBACK_FLAG = path.join(
-    process.env.HOME || process.env.USERPROFILE || '',
-    '.agenfk', 'mcp-fallback-approved'
-);
-const FALLBACK_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
-function isFallbackApproved() {
-    try {
-        if (!fs.existsSync(FALLBACK_FLAG)) return false;
-        const ageMs = Date.now() - fs.statSync(FALLBACK_FLAG).mtimeMs;
-        if (ageMs < FALLBACK_TTL_MS) return true;
-        fs.unlinkSync(FALLBACK_FLAG); // expired — clean up
-        return false;
-    } catch {
-        return false;
-    }
-}
-
-const FALLBACK_INSTRUCTIONS =
-    '\nIf MCP tools are genuinely unavailable: tell the user and ask permission. ' +
-    'Once approved, run: touch ~/.agenfk/mcp-fallback-approved (expires in 5 min).';
-
+// project.json (shared settings) or local.json (this machine's id, CGLAB-625) marks a project.
 function isInsideAgenFKProjectDir(dirPath) {
     if (!dirPath) return false;
     let dir = dirPath;
     const root = path.parse(dir).root;
     while (dir !== root) {
-        if (fs.existsSync(path.join(dir, '.agenfk', 'project.json'))) return true;
+        if (fs.existsSync(path.join(dir, '.agenfk', 'project.json')) || fs.existsSync(path.join(dir, '.agenfk', 'local.json'))) return true;
         dir = path.dirname(dir);
     }
     return false;
 }
 
+/** The command a tool is about to run, whatever the tool is called ('' when none). */
+function toolCommand(args) {
+    for (const v of [args.command, args.cmd]) if (typeof v === 'string' && v.trim()) return v;
+    return '';
+}
+
+/** The file a tool is about to touch, whatever the tool is called ('' when none). */
+function toolPath(args) {
+    for (const v of [args.filePath, args.file_path, args.path]) if (typeof v === 'string' && v.trim()) return v;
+    return '';
+}
+
 export default async function agenfkMcpEnforcer(context) {
     return {
-        'tool.execute.before': async (input) => {
-            // If user has approved fallback, allow bypass for this window
-            if (isFallbackApproved()) return;
-
-            const tool = (input.tool || '').toLowerCase();
-            const args = input.args || {};
+        // OpenCode passes the tool's arguments on the SECOND parameter
+        // (`output.args`, @opencode-ai/plugin); `input.args` is kept for older
+        // callers. Reading only `input.args` made this plugin a no-op.
+        'tool.execute.before': async (input, output) => {
+            const args = output?.args || input?.args || {};
             const cwd = context?.directory || process.cwd();
 
-            // ── bash tool checks ────────────────────────────────────────────────
-            if (tool === 'bash' || tool === 'execute') {
-                const command = args.command || '';
-
+            // ── command checks ──────────────────────────────────────────────────
+            // A tool is judged by what it carries, not by its name: plugin tools
+            // (bash_bg, a custom shell…) run commands too.
+            const command = toolCommand(args);
+            if (command) {
                 // 1. Block direct database access
                 if (/\.agenfk[/\\](db\.sqlite|db\.json)/.test(command)) {
                     throw new Error(
                         'AgenFK MCP ENFORCER: Direct database access is forbidden.\n' +
-                        'Do NOT read .agenfk/db.sqlite or .agenfk/db.json via Bash.\n' +
-                        'Use MCP tool invocations: list_items() • get_item() • create_item() • update_item()' +
-                        FALLBACK_INSTRUCTIONS
+                        'Do NOT read .agenfk/db.sqlite or .agenfk/db.json via Bash.' +
+                        INSTEAD
                     );
                 }
 
@@ -94,38 +71,23 @@ export default async function agenfkMcpEnforcer(context) {
                     if (isInsideAgenFKProjectDir(cwd)) {
                         throw new Error(
                             'AgenFK MCP ENFORCER: Direct REST API calls to the AgenFK server are forbidden.\n' +
-                            'Do NOT use curl/wget to http://localhost:3000.\n' +
-                            'Use MCP tool invocations: list_items() • create_item() • update_item() • verify_changes()' +
-                            FALLBACK_INSTRUCTIONS
+                            'Do NOT use curl/wget to http://localhost:3000.' +
+                            INSTEAD
                         );
                     }
                 }
-
-                // 3. Block agenfk CLI state query commands (only when MCP is available).
-                if (isMcpAvailable() &&
-                    (/\bagenfk\s+(list|status|get|show|board)\b/.test(command) ||
-                     /\bnpx\s+agenfk\s+(list|status|get|show|board)\b/.test(command))) {
-                    throw new Error(
-                        'AgenFK MCP ENFORCER: agenfk CLI state queries are forbidden while MCP is available.\n' +
-                        'Do NOT use: agenfk list, agenfk status, agenfk get, npx agenfk ...\n' +
-                        'Use MCP tool invocations: list_items() • get_item() • list_projects()' +
-                        FALLBACK_INSTRUCTIONS
-                    );
-                }
             }
 
-            // ── read tool checks ────────────────────────────────────────────────
-            if (tool === 'read') {
-                const filePath = args.filePath || args.file_path || '';
-
-                if (/\.agenfk[/\\](db\.sqlite|db\.json)/.test(filePath)) {
-                    throw new Error(
-                        'AgenFK MCP ENFORCER: Direct reads of AgenFK database files are forbidden.\n' +
-                        'Do NOT read .agenfk/db.sqlite or .agenfk/db.json.\n' +
-                        'Use MCP tool invocations: list_items() • get_item() • create_item() • update_item()' +
-                        FALLBACK_INSTRUCTIONS
-                    );
-                }
+            // ── path checks: any tool that names a file, read or otherwise ─────
+            // Checked even when the tool also carries a command: a harmless
+            // command must not carry a database path through with it.
+            const filePath = toolPath(args);
+            if (/\.agenfk[/\\](db\.sqlite|db\.json)/.test(filePath)) {
+                throw new Error(
+                    'AgenFK MCP ENFORCER: Direct reads of AgenFK database files are forbidden.\n' +
+                    'Do NOT read .agenfk/db.sqlite or .agenfk/db.json.' +
+                    INSTEAD
+                );
             }
         }
     };

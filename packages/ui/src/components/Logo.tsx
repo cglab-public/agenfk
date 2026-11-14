@@ -15,10 +15,10 @@ export const Logo: React.FC<LogoProps> = ({ size = 32, className = '' }) => {
           className="font-sans font-extrabold tracking-tight text-ink"
           style={{ fontSize: Math.max(14, Math.round(size * 0.5)) }}
         >
-          Ag<span className="text-brand">En</span>FK
+          Ag<span data-brand-mark className="text-brand">En</span>FK
         </div>
         <div className="text-[9px] font-sans font-semibold uppercase tracking-[0.18em] text-ink-tertiary">
-          BY <span className="text-accent-text">CG/LAB</span>
+          BY <span data-brand-mark className="text-accent-text">CG/LAB</span>
         </div>
       </div>
     </div>

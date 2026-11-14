@@ -26,12 +26,12 @@ vi.mock('fs', () => ({
   existsSync: mockExistsSync,
   readFileSync: mockReadFileSync,
   writeFileSync: mockWriteFileSync,
-  mkdirSync: vi.fn(),
+  mkdirSync: vi.fn(), chmodSync: vi.fn(), renameSync: (from: string, to: string) => { const c = mockWriteFileSync.mock.calls.find((x: any[]) => x[0] === from); if (c) mockWriteFileSync(to, c[1], c[2]); }, unlinkSync: vi.fn(),
   default: {
     existsSync: mockExistsSync,
     readFileSync: mockReadFileSync,
     writeFileSync: mockWriteFileSync,
-    mkdirSync: vi.fn(),
+    mkdirSync: vi.fn(), chmodSync: vi.fn(), renameSync: (from: string, to: string) => { const c = mockWriteFileSync.mock.calls.find((x: any[]) => x[0] === from); if (c) mockWriteFileSync(to, c[1], c[2]); }, unlinkSync: vi.fn(),
   },
 }));
 
@@ -41,9 +41,6 @@ vi.mock('child_process', () => ({
   spawn: vi.fn(),
   spawnSync: vi.fn(),
   default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
-}));
-vi.mock('figlet', () => ({
-  default: { textSync: vi.fn().mockReturnValue('AgEnFK') },
 }));
 
 import { program } from '../index';
@@ -125,6 +122,22 @@ describe('flow registry commands', () => {
         expect.stringContaining('/registry/flows/publish'),
         expect.objectContaining({ flowId: 'flow-uuid-registry-1', registry: 'my-org/my-flows' })
       );
+      logSpy.mockRestore();
+    });
+
+    it('sends allowContractRemoval when --allow-removing-checks is passed (S9 review)', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { url: 'https://x/pull/1', kind: 'pr', version: '1.0.1' } });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'publish', 'flow-uuid-registry-1', '--allow-removing-checks']);
+      expect(mockedAxios.post.mock.calls[0][1]).toMatchObject({ flowId: 'flow-uuid-registry-1', allowContractRemoval: true });
+      logSpy.mockRestore();
+    });
+
+    it('does not send allowContractRemoval without the flag', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { url: 'https://x/pull/1', kind: 'pr', version: '1.0.1' } });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'publish', 'flow-uuid-registry-1']);
+      expect(mockedAxios.post.mock.calls[0][1]).not.toHaveProperty('allowContractRemoval');
       logSpy.mockRestore();
     });
 
@@ -293,6 +306,26 @@ describe('flow registry commands', () => {
       logSpy.mockRestore();
     });
 
+    it('installs a flow in the shape the registry actually publishes, which has no schemaVersion (#252)', async () => {
+      // cglab-public/agenfk-flows/flows/tdd-flow.json carries name, description,
+      // author, version and steps - no schemaVersion - and nothing in the CLI
+      // (flow publish included) writes one, so requiring it refused every flow.
+      mockedAxios.get.mockResolvedValue({ data: {
+        name: 'TDD Flow', description: 'd', author: 'someone', version: '1.0.2',
+        steps: [
+          { name: 'TODO', label: 'To Do', exitCriteria: '', isAnchor: true, order: 0 },
+          { name: 'DONE', label: 'Done', exitCriteria: '', isAnchor: true, order: 1 },
+        ],
+      } });
+      mockedAxios.post.mockResolvedValue({ data: { id: 'new-flow-id', name: 'TDD Flow' } });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'install', 'tdd-flow.json']);
+      expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('Invalid flow file'));
+      expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/flows'), expect.objectContaining({ name: 'TDD Flow' }));
+      errSpy.mockRestore(); logSpy.mockRestore();
+    });
+
     it('should error when flow JSON is invalid (missing required fields)', async () => {
       mockedAxios.get.mockResolvedValue({ data: { description: 'No name here' } });
 
@@ -317,7 +350,8 @@ describe('flow registry commands', () => {
       expect(mockWriteFileSync).toHaveBeenCalledWith(
         expect.any(String),
         expect.stringContaining('my-org/my-registry'),
-        expect.any(String)
+        // Owner-only: the same file holds the JIRA clientSecret (BUG cc26b206).
+        expect.objectContaining({ mode: 0o600 })
       );
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('my-org/my-registry'));
       logSpy.mockRestore();

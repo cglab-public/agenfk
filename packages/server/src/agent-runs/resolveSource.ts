@@ -23,7 +23,7 @@ export interface ResolveOpts {
 
 function expandHome(p: string, home: string): string {
   if (p === '~') return home;
-  if (p.startsWith('~/')) return path.join(home, p.slice(2));
+  if (/^~[\\/]/.test(p)) return path.join(home, p.slice(2));
   return p;
 }
 
@@ -39,8 +39,14 @@ export function resolveSourcePath(pattern: string, opts: ResolveOpts = {}): stri
 
   if (!expanded.includes('*')) return expanded;
 
-  const segments = expanded.split(path.sep);
-  let candidates: string[] = [expanded.startsWith(path.sep) ? path.sep : '.'];
+  // Walk from the path's own root (`/`, or `C:\` - #208: splitting `C:\x` on
+  // the separator made `C:` a segment joined onto `.`, i.e. `C:x`, relative to
+  // the cwd on that drive). normalize also turns a pattern written with `/` into
+  // the platform's separator, so it splits on Windows too.
+  const normalized = path.normalize(expanded);
+  const root = path.parse(normalized).root;
+  const segments = normalized.slice(root.length).split(path.sep);
+  let candidates: string[] = [root || '.'];
 
   for (const seg of segments) {
     if (seg === '') continue;

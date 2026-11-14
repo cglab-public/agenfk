@@ -31,6 +31,20 @@ export const JiraConnectionButton: React.FC = () => {
         token_exchange_failed: 'JIRA authentication failed. Please try again.',
         invalid_state: 'OAuth session expired. Please try again.',
         missing_params: 'OAuth callback missing parameters.',
+        // Joined to a hub: the connect runs through the hub's Atlassian app.
+        jira_not_configured: 'JIRA is not configured on your hub. Ask a hub admin to configure it.',
+        completion_key_mismatch: 'That JIRA connection was started from a different installation. Start again from this board.',
+        invalid_completion: 'The JIRA connection link expired. Start again from this board.',
+        not_loopback: 'Open the board on localhost to connect JIRA.',
+        hub_unreachable: 'The hub could not be reached. Try again shortly.',
+        hub_auth_failed: "The hub rejected this installation's key. Run 'agenfk hub login'.",
+        access_denied: 'JIRA access was not granted.',
+        no_accessible_site: 'No JIRA sites found on this account.',
+        missing_code: 'JIRA did not complete the sign-in. Please try again.',
+        not_configured: 'JIRA is not configured on your hub. Ask a hub admin to configure it.',
+        jira_unreachable: 'JIRA could not be reached. Try again shortly.',
+        no_pending_connect: 'That JIRA connection was not started from this board. Click Connect JIRA to start one.',
+        key_not_personal: "This installation's hub key is shared, and JIRA connects per person. Run 'agenfk hub login' first.",
       };
       setToast({ type: 'error', message: messages[reason] || `JIRA error: ${reason}` });
       params.delete('jira');
@@ -57,6 +71,8 @@ export const JiraConnectionButton: React.FC = () => {
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10_000),
   });
 
+  const isHub = jiraStatus?.source === 'hub';
+
   const disconnectMutation = useMutation({
     mutationFn: api.disconnectJira,
     onSuccess: () => {
@@ -75,17 +91,19 @@ export const JiraConnectionButton: React.FC = () => {
     <>
       {/* Toast notification */}
       {toast && (
-        <div
-          data-testid="jira-toast"
-          className={clsx(
-            'fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium flex items-center gap-2',
-            toast.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'
-          )}
-          role="alert"
-        >
-          {toast.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
-          <span>{toast.message}</span>
-          <button onClick={() => setToast(null)} className="ml-2 hover:opacity-75" aria-label="Dismiss">×</button>
+        // The status tints are translucent; an opaque surface underneath keeps
+        // the board from showing through a toast that floats over it.
+        <div data-testid="jira-toast" role="alert" className="fixed top-4 right-4 z-50 rounded-lg bg-surface shadow-lg">
+          <div
+            className={clsx(
+              'px-4 py-3 rounded-lg text-sm font-medium flex items-center gap-2',
+              toast.type === 'success' ? 'bg-status-ok-bg text-status-ok-text border border-status-ok-text/40' : 'bg-status-danger-bg text-status-danger-text border border-status-danger-text/40'
+            )}
+          >
+            {toast.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
+            <span>{toast.message}</span>
+            <button onClick={() => setToast(null)} className="ml-2 hover:opacity-75" aria-label="Dismiss">×</button>
+          </div>
         </div>
       )}
 
@@ -95,8 +113,12 @@ export const JiraConnectionButton: React.FC = () => {
           <Loader2 size={16} className="animate-spin" />
         </div>
       ) : jiraStatus?.connected ? (
-        <div className="flex items-center gap-1.5" data-testid="jira-connected">
-          <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 rounded-md text-xs font-medium text-emerald-700 dark:text-emerald-400">
+        <div
+          className="flex items-center gap-1.5"
+          data-testid="jira-connected"
+          title={isHub ? `JIRA via your hub${jiraStatus.email ? ` as ${jiraStatus.email}` : ''}` : undefined}
+        >
+          <div className="flex items-center gap-1.5 px-2 py-1 bg-status-ok-bg border border-status-ok-text/40 rounded-md text-xs font-medium text-status-ok-text">
             <CheckCircle size={12} />
             <span>JIRA</span>
           </div>
@@ -105,11 +127,28 @@ export const JiraConnectionButton: React.FC = () => {
             disabled={disconnectMutation.isPending}
             title="Disconnect JIRA"
             aria-label="Disconnect JIRA"
-            className="p-1 text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50"
+            className="p-1 text-slate-400 hover:text-status-danger-text transition-colors disabled:opacity-50"
           >
             <Unlink size={14} />
           </button>
         </div>
+      ) : isHub && !jiraStatus?.configured ? (
+        // Joined to a hub that has no JIRA app yet: only an admin can fix that.
+        // With an app, the ordinary Connect below runs through the hub.
+        <button
+          disabled
+          title={jiraStatus?.reason === 'hub_auth_failed'
+            ? "The hub rejected this installation's key. Run 'agenfk hub login'."
+            : jiraStatus?.reason === 'hub_unreachable'
+              ? 'The hub cannot be reached right now, so JIRA is unavailable.'
+              : 'JIRA is managed by your hub. Ask your hub admin to connect JIRA.'}
+          aria-label="JIRA not connected on the hub"
+          data-testid="jira-hub-unconnected"
+          className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-xs font-medium text-slate-400 cursor-not-allowed"
+        >
+          <Link size={12} />
+          <span>JIRA</span>
+        </button>
       ) : jiraStatus?.configured === false ? (
         <button
           disabled
@@ -127,7 +166,7 @@ export const JiraConnectionButton: React.FC = () => {
           data-testid="jira-connect"
           title="Connect JIRA"
           aria-label="Connect JIRA"
-          className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-chip border border-slate-200 dark:border-slate-700 hover:border-border-brand rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-accent-text transition-colors"
+          className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-accent-fill border border-slate-200 dark:border-slate-700 hover:border-accent rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-accent-ink transition-colors"
         >
           <Link size={12} />
           <span>Connect JIRA</span>

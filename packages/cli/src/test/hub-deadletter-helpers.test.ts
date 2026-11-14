@@ -114,6 +114,42 @@ describe('filterDeadletterLinesForDiscard', () => {
     expect(filterDeadletterLinesForDiscard(lines, {})).toHaveLength(3);
   });
 
+  // #223 review finding 2: lines a requeue can never move (hidden_user,
+  // invalid, unreadable ones) need a discard that removes ONLY them — --all
+  // would also destroy the refused events that can still be sent again.
+  describe('--reason / --unparseable (#223)', () => {
+    const r = (eventId: string, orgId: string, reason: string) => parsed({ eventId, reason, payload: { orgId } });
+    const mixed = [
+      r('fi', 'org-a', 'foreign_installation'),
+      r('hu', 'org-a', 'hidden_user'),
+      r('hu-b', 'org-b', 'hidden_user'),
+      r('iv', 'org-a', 'invalid'),
+      { raw: 'TORN', entry: null },
+      parsed({ eventId: 'noreason', payload: { orgId: 'org-a' } }),
+    ];
+    const ids = (kept: any[]) => kept.map(l => l.entry?.eventId ?? l.raw);
+
+    it('--reason removes only lines with those reasons, keeping unparseable ones', () => {
+      expect(ids(filterDeadletterLinesForDiscard(mixed, { reasons: ['hidden_user', 'invalid'] }))).toEqual(['fi', 'TORN', 'noreason']);
+    });
+
+    it('a line without a reason counts as unknown', () => {
+      expect(ids(filterDeadletterLinesForDiscard(mixed, { reasons: ['unknown'] }))).toEqual(['fi', 'hu', 'hu-b', 'iv', 'TORN']);
+    });
+
+    it('--org with --reason removes only lines matching both', () => {
+      expect(ids(filterDeadletterLinesForDiscard(mixed, { org: 'org-b', reasons: ['hidden_user'] }))).toEqual(['fi', 'hu', 'iv', 'TORN', 'noreason']);
+    });
+
+    it('--unparseable removes only the unreadable lines', () => {
+      expect(ids(filterDeadletterLinesForDiscard(mixed, { unparseable: true }))).toEqual(['fi', 'hu', 'hu-b', 'iv', 'noreason']);
+    });
+
+    it('--unparseable combines with --reason', () => {
+      expect(ids(filterDeadletterLinesForDiscard(mixed, { unparseable: true, reasons: ['hidden_user'] }))).toEqual(['fi', 'iv', 'noreason']);
+    });
+  });
+
   it('preserves raw bytes verbatim for untouched lines', () => {
     const weird = { raw: '{"eventId":"c","payload":{"orgId":"org-z"},"extra":  1}', entry: { eventId: 'c', payload: { orgId: 'org-z' } } };
     const kept = filterDeadletterLinesForDiscard([...lines, weird], { org: 'org-a' });

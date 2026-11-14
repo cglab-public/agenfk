@@ -47,6 +47,29 @@ export interface SsoIdentity {
   provider: 'google' | 'entra';
   subject: string;
   email: string;
+  /** Display name as the provider reported it, when it reported one. */
+  name?: string | null;
+}
+
+/**
+ * A usable display name, or null. Providers do send whitespace-only values,
+ * and storing one would replace a good name with something that renders as an
+ * empty sidebar — worse than the UUID it was meant to fix.
+ */
+function usableName(name: string | null | undefined): string | null {
+  if (typeof name !== 'string') return null;
+  // The value is tenant-controlled at the provider, so bound it and drop
+  // control characters (newlines, and bidi overrides that can reorder the
+  // text around it) before it becomes a label we render.
+  const cleaned = Array.from(name).filter((ch) => {
+    const c = ch.codePointAt(0)!;
+    if (c < 0x20 || c === 0x7f) return false;       // C0 controls and DEL
+    if (c >= 0x200e && c <= 0x200f) return false;   // LRM / RLM
+    if (c >= 0x202a && c <= 0x202e) return false;   // bidi embedding and override
+    if (c >= 0x2066 && c <= 0x2069) return false;   // bidi isolates
+    return true;
+  }).join('').trim();
+  return cleaned.length > 0 ? cleaned.slice(0, 200) : null;
 }
 
 /**
@@ -64,22 +87,34 @@ export async function findInvitedSsoUser(
   _orgId: string,
   identity: SsoIdentity,
 ): Promise<UserRow | null> {
+  // The provider owns the name, so refresh it on every sign-in — people get
+  // married, change teams, fix a typo in their own profile. Only a usable
+  // name overwrites what is stored.
+  const name = usableName(identity.name);
+
   const existing = await db.get<UserRow>(
     'SELECT * FROM users WHERE provider = ? AND provider_subject = ?',
     [identity.provider, identity.subject],
   );
-  if (existing) return existing;
+  if (existing) {
+    if (name && name !== existing.name) {
+      await db.run('UPDATE users SET name = ? WHERE id = ?', [name, existing.id]);
+      return { ...existing, name };
+    }
+    return existing;
+  }
 
   const byEmail = await db.get<UserRow>(
     'SELECT * FROM users WHERE lower(email) = lower(?)',
     [identity.email],
   );
   if (byEmail) {
+    const nextName = name ?? byEmail.name ?? null;
     await db.run(
-      'UPDATE users SET provider = ?, provider_subject = ? WHERE id = ?',
-      [identity.provider, identity.subject, byEmail.id],
+      'UPDATE users SET provider = ?, provider_subject = ?, name = ? WHERE id = ?',
+      [identity.provider, identity.subject, nextName, byEmail.id],
     );
-    return { ...byEmail, provider: identity.provider, provider_subject: identity.subject };
+    return { ...byEmail, provider: identity.provider, provider_subject: identity.subject, name: nextName };
   }
 
   return null;

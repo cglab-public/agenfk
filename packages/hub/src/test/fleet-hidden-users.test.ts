@@ -7,9 +7,21 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-fleet-hidden-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -20,10 +32,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 async function seedInstallation(db: any, orgId: string, id: string, gitEmail: string | null, version = '0.3.0') {
   await db.run(
@@ -51,6 +59,8 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
       releaseExists: async (v: string) => v === '0.4.0',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     cookieAdmin = await loginAs(app, 'admin@x', 'longenough1');
@@ -58,7 +68,7 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -69,7 +79,7 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-hidden', 'departed@acme.com');
       await hide(ctx.db, 'org-a', 'departed@acme.com');
 
-      const r = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieAdmin);
       expect(r.status).toBe(200);
       expect(r.body.map((i: any) => i.id)).toEqual(['inst-visible']);
     });
@@ -78,7 +88,7 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-hidden', 'Departed@Acme.COM');
       await hide(ctx.db, 'org-a', 'departed@acme.com');
 
-      const r = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieAdmin);
       expect(r.body.map((i: any) => i.id)).toEqual([]);
     });
 
@@ -87,7 +97,7 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-hidden', 'departed@acme.com');
       await hide(ctx.db, 'org-a', 'departed@acme.com');
 
-      const r = await supertest(app).get('/v1/admin/installations?includeHidden=1').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/admin/installations?includeHidden=1').set('Cookie', cookieAdmin);
       expect(r.status).toBe(200);
       expect(r.body).toHaveLength(2);
       const byId = Object.fromEntries(r.body.map((i: any) => [i.id, i]));
@@ -100,7 +110,7 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
       await hide(ctx.db, 'org-a', 'departed@acme.com');
       await ctx.db.run('DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?', ['org-a', 'departed@acme.com']);
 
-      const r = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieAdmin);
       expect(r.body.map((i: any) => i.id)).toEqual(['inst-hidden']);
     });
   });
@@ -111,7 +121,7 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-hidden', 'departed@acme.com');
       await hide(ctx.db, 'org-a', 'departed@acme.com');
 
-      const r = await supertest(app).post('/v1/admin/upgrade')
+      const r = await supertest(__server).post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.4.0', scope: { type: 'all' } });
       expect(r.status).toBe(201);
@@ -126,7 +136,7 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-hidden', 'departed@acme.com');
       await hide(ctx.db, 'org-a', 'departed@acme.com');
 
-      const r = await supertest(app).post('/v1/admin/upgrade')
+      const r = await supertest(__server).post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.4.0', scope: { type: 'installation', installationId: 'inst-hidden' } });
       expect(r.status).toBe(409);
@@ -141,7 +151,7 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-hidden', 'departed@acme.com');
       await hide(ctx.db, 'org-a', 'departed@acme.com');
 
-      const r = await supertest(app).post('/v1/admin/upgrade')
+      const r = await supertest(__server).post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.4.0', scope: { type: 'installations', installationIds: ['inst-visible', 'inst-hidden'] } });
       expect(r.status).toBe(409);
@@ -154,7 +164,7 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
     it('scope=installation on a visible install still works', async () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-visible', 'active@acme.com');
 
-      const r = await supertest(app).post('/v1/admin/upgrade')
+      const r = await supertest(__server).post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.4.0', scope: { type: 'installation', installationId: 'inst-visible' } });
       expect(r.status).toBe(201);

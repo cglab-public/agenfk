@@ -19,5 +19,9 @@ export function flattenAdminFlow(row: any): Flow {
     source: row.source,
     hubVersion: typeof row.version === 'number' ? row.version : undefined,
     orgAvailable: row.orgAvailable === true,
+    // 281adef0: without it the editor loads every hub flow as 'leaf' and a save resets it.
+    ...(def.verifyAt === 'parent' ? { verifyAt: 'parent' as const } : {}),
+    // 7ddeaf7c: and how far it reaches, for the same reason.
+    ...(def.verifyAtScope === 'project' ? { verifyAtScope: 'project' as const } : {}),
   };
 }

@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import {
   StorageProvider,
   PluginConfig,
@@ -13,19 +14,81 @@ import {
   TokenEvent,
   TokenEventQuery,
   IngestionState,
+  AppSettings,
+  DEFAULT_APP_SETTINGS,
+  isLegalSettingValue,
+  TerminalSession,
   Pr,
   PrSizing,
   AgentRun,
   RunEvent,
   AgentRunQuery,
+  AirlockScope,
+  StoredAirlockPolicy,
+  AirlockDecisionRecord,
+  AirlockDecisionQuery,
+  AirlockApprovalRequest,
+  AirlockApprovalRecord,
+  AirlockApprovalTransition,
+  AirlockApprovalCapability,
+  AirlockGrantScope,
+  AirlockStaleRevisionError,
+  normalizeAirlockPolicy,
 } from '@agenfk/core';
+import { mergeHostObservation, sanitizeHostContext, type AirlockHostContext, type AirlockHostObservation, type AirlockLearnedHost } from '@agenfk/core';
 
 // node:sqlite is a built-in module available from Node.js v22+.
 // Using require() to avoid ESM/CJS interop issues in the compiled output.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+const sqlite = require('node:sqlite') as typeof import('node:sqlite');
+const { DatabaseSync } = sqlite;
+// The online backup API arrived in Node 22.16 / 23.8; older Nodes take VACUUM INTO.
+const onlineBackup = (sqlite as unknown as { backup?: (db: unknown, dest: string) => Promise<number> }).backup;
 
 type DB = InstanceType<typeof DatabaseSync>;
+
+/** What the database file holds (GH-288): `agenfk db status`. */
+export interface DbStats {
+  fileBytes: number;
+  walBytes: number;
+  pageSize: number;
+  pageCount: number;
+  freelistCount: number;
+  /** The free pages deleted rows left behind: what `agenfk db vacuum` gives back. */
+  reclaimableBytes: number;
+  /** Largest first; a table's indexes count toward it. Only when asked for: it reads every page. */
+  tables?: { name: string; bytes: number }[];
+}
+
+/**
+ * Whether a database file that is not open is a whole AgEnFK database (GH-288):
+ * "ok", else why not. An empty file counts as an empty database to SQLite and
+ * passes its integrity check, so the file must also have content and carry
+ * AgEnFK's own tables. Read-only: the file is not changed.
+ */
+export function checkSnapshotFile(file: string): string {
+  try {
+    if (fs.statSync(file).size === 0) return 'the file is empty';
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+      const check = (db.prepare('PRAGMA quick_check').all() as { quick_check: string }[]).map(r => r.quick_check).join('\n');
+      if (check !== 'ok') return check;
+      const tables = new Set((db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as { name: string }[]).map(r => r.name));
+      const missing = ['projects', 'items'].filter(t => !tables.has(t));
+      return missing.length ? `not an AgEnFK database (no ${missing.join(', ')} table)` : 'ok';
+    } finally {
+      db.close();
+    }
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
+/** Rows a dataset approval link keeps per key, and how long a link waits for its answer (BUG 9ff092e9). */
+const AIRLOCK_APPROVAL_LINK_MAX_ROWS = 20;
+const AIRLOCK_APPROVAL_LINK_MAX_AGE_MS = 30 * 86_400_000;
+/** And at most this many links in all, whatever the keys (review). */
+export const AIRLOCK_APPROVAL_LINK_MAX_TOTAL = 10_000;
 
 export class SQLiteStorageProvider implements StorageProvider {
   name = 'sqlite-storage';
@@ -45,6 +108,236 @@ export class SQLiteStorageProvider implements StorageProvider {
     // fs.watch() on the main file to detect writes (see server.ts).
     this.database.prepare('PRAGMA journal_mode = WAL').run();
     this.createTables();
+    // e248239d: rows written before per-test results moved out, then what nothing references any more.
+    this.moveInlineResults();
+    this.dropUnreferencedBlobs();
+    // 26c059f6: claims were removed; the field old cards carry goes with them.
+    this.dropClaimsField();
+  }
+
+  // ── Per-test results (e248239d) ──────────────────────────────────────────
+  //
+  // A capture record holds a whole run's per-test results; inline, one card
+  // weighed 1.8 MB and every listItems parsed hundreds of MB. Each record's
+  // `tests` is kept in `blobs` under the hash of its JSON (identical result
+  // sets share one row) and the item row keeps `testsBlob`. Reads put the
+  // results back unless the caller asks for `hydrate: false`.
+
+  private static readonly RECORD_LISTS = ['stepRecords', 'supersededRecords'] as const;
+  /** What a record's field is stored as (6e0d2fd6: a capture's per-file map rides along with its results). */
+  private static readonly HEAVY_FIELDS = [['tests', 'testsBlob'], ['fileShas', 'fileShasBlob']] as const;
+  /** What a read puts back (80920048): not the file map, which only a partial run reads - through readBlob. */
+  private static readonly HYDRATED_FIELDS = [['tests', 'testsBlob']] as const;
+  private static heavy(v: unknown): boolean {
+    return Array.isArray(v) ? v.length > 0 : !!v && typeof v === 'object' && Object.keys(v as object).length > 0;
+  }
+
+  /** The item as its row stores it: results out, references in. */
+  private rowOf(item: any): string {
+    let changed = false;
+    const lists: Record<string, unknown> = {};
+    for (const key of SQLiteStorageProvider.RECORD_LISTS) {
+      const records = item?.[key];
+      if (!Array.isArray(records)) continue;
+      lists[key] = records.map((r: any) => {
+        if (!r || typeof r !== 'object') return r;
+        let out = r;
+        for (const [field, ref] of SQLiteStorageProvider.HEAVY_FIELDS) {
+          if (!SQLiteStorageProvider.heavy(out[field])) continue;
+          const json = JSON.stringify(out[field]);
+          const hash = crypto.createHash('sha256').update(json).digest('hex');
+          this.database.prepare('INSERT OR IGNORE INTO blobs (hash, data) VALUES (?, ?)').run(hash, json);
+          changed = true;
+          const { [field]: _heavy, ...rest } = out;
+          out = { ...rest, [ref]: hash };
+        }
+        return out;
+      });
+    }
+    return JSON.stringify(changed ? { ...item, ...lists } : item);
+  }
+
+  /** The item with its records' results read back. */
+  private hydrated<T>(item: T): T {
+    const it: any = item;
+    // ec325925: one parse per blob per read - a capture and the authoredTests record that
+    // references the same results share it, rather than parsing megabytes twice.
+    const parsed = new Map<string, unknown>();
+    for (const key of SQLiteStorageProvider.RECORD_LISTS) {
+      const records = it?.[key];
+      if (!Array.isArray(records) || !records.some((r: any) => typeof r?.testsBlob === 'string')) continue;
+      it[key] = records.map((r: any) => {
+        let out = r;
+        for (const [field, ref] of SQLiteStorageProvider.HYDRATED_FIELDS) {
+          if (typeof out?.[ref] !== 'string') continue;
+          const hash = out[ref] as string;
+          if (!parsed.has(hash)) {
+            const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(hash) as { data: string } | undefined;
+            parsed.set(hash, row ? JSON.parse(row.data) : undefined);
+          }
+          const data = parsed.get(hash);
+          const { [ref]: _ref, ...rest } = out;
+          // A missing blob reads as missing - never as an empty, green run or an unchanged tree.
+          out = data !== undefined ? { ...rest, [field]: data } : { ...rest, [`${field}Missing`]: true };
+        }
+        return out;
+      });
+    }
+    return item;
+  }
+
+  async readBlob(hash: string): Promise<unknown | null> {
+    const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(hash) as { data: string } | undefined;
+    return row ? JSON.parse(row.data) : null;
+  }
+
+  /** Once per database: rows an older build wrote, with the results inline, get them moved out. */
+  private moveInlineResults(): void {
+    const rows = this.database.prepare(`SELECT id, data FROM items WHERE data LIKE '%"tests":[{%'`).all() as { id: string; data: string }[];
+    if (!rows.length) return;
+    this.database.exec('BEGIN');
+    try {
+      for (const row of rows) {
+        let item: any;
+        try { item = JSON.parse(row.data); } catch { continue; }
+        const next = this.rowOf(item);
+        if (next !== row.data) this.database.prepare('UPDATE items SET data = ? WHERE id = ?').run(next, row.id);
+      }
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  /** Once per database: the `claims` field rows kept after claims were removed. */
+  private dropClaimsField(): void {
+    const rows = this.database.prepare(`SELECT id, data FROM items WHERE data LIKE '%"claims":%'`).all() as { id: string; data: string }[];
+    if (!rows.length) return;
+    this.database.exec('BEGIN');
+    try {
+      const update = this.database.prepare('UPDATE items SET data = ? WHERE id = ?');
+      for (const row of rows) {
+        let item: any;
+        try { item = JSON.parse(row.data); } catch { continue; }
+        // The LIKE also matches text that merely mentions the word; only a top-level field goes.
+        if (!item || typeof item !== 'object' || !Object.prototype.hasOwnProperty.call(item, 'claims')) continue;
+        const { claims: _claims, ...rest } = item;
+        update.run(JSON.stringify(rest), row.id);
+      }
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  /** ec325925: the records replaced as housekeeping - the card's updatedAt and history stay as they were. */
+  async rewriteRecords(id: string, records: { stepRecords?: unknown[]; supersededRecords?: unknown[] }): Promise<void> {
+    const stored = this.database.prepare('SELECT data FROM items WHERE id = ?').get(id) as { data: string } | undefined;
+    if (!stored) throw new Error(`Item ${id} not found`);
+    const item: any = { ...this.parseItem(stored.data) };
+    for (const key of SQLiteStorageProvider.RECORD_LISTS) {
+      if (!(key in records)) continue;
+      const list = (records as any)[key];
+      if (list === undefined) delete item[key]; else item[key] = list;
+    }
+    this.database.prepare('UPDATE items SET data = ? WHERE id = ?').run(this.rowOf(item), id);
+  }
+
+  async sweepUnreferencedBlobs(): Promise<number> {
+    return this.dropUnreferencedBlobs();
+  }
+
+  /** Blobs no item row references: a rollback or a later capture replaced them. */
+  private dropUnreferencedBlobs(): number {
+    const keep = new Set<string>();
+    const rows = this.database.prepare(`SELECT data FROM items WHERE data LIKE '%Blob"%'`).all() as { data: string }[];
+    for (const row of rows) for (const m of row.data.matchAll(/"(?:testsBlob|fileShasBlob)":"([0-9a-f]{64})"/g)) keep.add(m[1]);
+    const all = this.database.prepare('SELECT hash FROM blobs').all() as { hash: string }[];
+    const drop = all.filter(b => !keep.has(b.hash));
+    if (!drop.length) return 0;
+    this.database.exec('BEGIN');
+    try {
+      const del = this.database.prepare('DELETE FROM blobs WHERE hash = ?');
+      for (const b of drop) del.run(b.hash);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+    return drop.length;
+  }
+
+  // ── Maintenance (GH-288) ─────────────────────────────────────────────────
+
+  /**
+   * What the file holds: its size and its WAL's, and the free pages a vacuum
+   * would reclaim. With `tables`, also the tables largest first - a walk over
+   * every page of the database, so only when asked for (review of GH-288).
+   */
+  dbStats(opts: { tables?: boolean } = {}): DbStats {
+    const pragma = (name: string) => Number((this.database.prepare(`PRAGMA ${name}`).get() as Record<string, unknown>)[name]);
+    const pageSize = pragma('page_size');
+    const pageCount = pragma('page_count');
+    const freelistCount = pragma('freelist_count');
+    const size = (p: string) => (fs.existsSync(p) ? fs.statSync(p).size : 0);
+    // dbstat lists indexes under their own names; each counts toward its table.
+    const rows = !opts.tables ? [] : this.database.prepare(
+      `SELECT coalesce(m.tbl_name, d.name) AS name, sum(d.pgsize) AS bytes
+         FROM dbstat d LEFT JOIN sqlite_schema m ON m.name = d.name
+        GROUP BY 1 ORDER BY 2 DESC`,
+    ).all() as { name: string; bytes: number }[];
+    return {
+      fileBytes: size(this.dbPath),
+      walBytes: size(this.dbPath + '-wal'),
+      pageSize,
+      pageCount,
+      freelistCount,
+      reclaimableBytes: freelistCount * pageSize,
+      ...(opts.tables ? { tables: rows.map(r => ({ name: r.name, bytes: Number(r.bytes) })) } : {}),
+    };
+  }
+
+  /**
+   * Fold the WAL into the file, rewrite the file without its free pages, and
+   * check the result. Holds the database for its whole duration: the caller
+   * makes sure nothing long-running needs it meanwhile.
+   */
+  vacuum(): { before: DbStats; after: DbStats; check: string } {
+    const before = this.dbStats();
+    this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    this.database.exec('VACUUM');
+    // VACUUM goes through the WAL too: fold it in again so the file is the whole database.
+    this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    const check = (this.database.prepare('PRAGMA quick_check').all() as { quick_check: string }[])
+      .map(r => r.quick_check).join('\n');
+    return { before, after: this.dbStats(), check };
+  }
+
+  /**
+   * Copy the whole database to `dest` as one SQLite file (GH-288): node:sqlite's
+   * online backup, which copies a step at a time without holding the database,
+   * or VACUUM INTO (one statement, compact) on a Node without it. Written beside
+   * `dest` and renamed into place, so `dest` is either the whole snapshot or
+   * absent.
+   */
+  async snapshotTo(dest: string, opts: { online?: boolean } = {}): Promise<void> {
+    const online = (opts.online ?? true) && typeof onlineBackup === 'function';
+    // Unique per call: two snapshots to one destination never share (or delete) a temporary file.
+    const partial = `${dest}.${process.pid}-${Math.random().toString(36).slice(2)}.partial`;
+    try {
+      if (online) await onlineBackup!(this.database, partial);
+      else this.database.prepare('VACUUM INTO ?').run(partial);
+      // The copy keeps the WAL mode it was taken in, and opening it would grow
+      // -wal/-shm files beside it: a backup is one self-contained file.
+      const copy = new DatabaseSync(partial);
+      try { copy.exec('PRAGMA journal_mode = DELETE'); } finally { copy.close(); }
+      fs.renameSync(partial, dest);
+    } catch (e) {
+      fs.rmSync(partial, { force: true });
+      throw e;
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -63,6 +356,10 @@ export class SQLiteStorageProvider implements StorageProvider {
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
+        data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS blobs (
+        hash TEXT PRIMARY KEY,
         data TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS items (
@@ -118,6 +415,36 @@ export class SQLiteStorageProvider implements StorageProvider {
       CREATE INDEX IF NOT EXISTS idx_token_events_session ON token_events(session_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_token_events_dedup
         ON token_events(client, source_path, source_offset);
+      CREATE TABLE IF NOT EXISTS terminal_sessions (
+        id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL,
+        project_id TEXT,
+        agent_id TEXT NOT NULL,
+        agent_session_id TEXT,
+        -- Part of the session IDENTITY, not decoration (BUG 63fcf702).
+        --
+        -- persist decides whether the terminal runs inside tmux, and
+        -- auto_approve is baked into the tmux session NAME, so a restore that
+        -- does not know them cannot find the session that survived: it looked
+        -- for the ask variant of a session created as auto, found nothing, and
+        -- started a second agent beside the one still running.
+        persist INTEGER NOT NULL DEFAULT 0,
+        auto_approve INTEGER NOT NULL DEFAULT 0,
+        opened_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_terminal_sessions_item ON terminal_sessions(item_id);
+      CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id);
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS flow_revisions (
+        flow_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (flow_id, revision)
+      );
       CREATE TABLE IF NOT EXISTS ingestion_state (
         source_path TEXT PRIMARY KEY,
         last_offset INTEGER NOT NULL,
@@ -167,8 +494,70 @@ export class SQLiteStorageProvider implements StorageProvider {
       );
       CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_dedup ON run_events(run_id, seq);
+      -- Airlock (GH-294). The policy is a JSON blob per scope, like flows, so a
+      -- later field never needs a column; revision is the compare-and-swap key.
+      CREATE TABLE IF NOT EXISTS airlock_policy (
+        scope TEXT PRIMARY KEY CHECK(scope IN ('local', 'hub')),
+        revision INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        authority TEXT NOT NULL,
+        etag TEXT
+      );
+      CREATE TABLE IF NOT EXISTS airlock_decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        client TEXT NOT NULL,
+        model TEXT,
+        tool TEXT NOT NULL,
+        capability_kind TEXT,
+        target TEXT,
+        decision TEXT NOT NULL,
+        rule TEXT,
+        mode TEXT NOT NULL,
+        item_id TEXT,
+        session_id TEXT,
+        source TEXT NOT NULL DEFAULT 'tool',
+        alert TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_airlock_decisions_ts ON airlock_decisions(ts);
+      CREATE TABLE IF NOT EXISTS airlock_dataset_approval_rows (
+        approval_key TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        row_id TEXT NOT NULL,
+        linked_at TEXT NOT NULL,
+        decision TEXT,
+        PRIMARY KEY (approval_key, scope, row_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_airlock_dataset_approval_rows_at ON airlock_dataset_approval_rows(linked_at);
+      CREATE TABLE IF NOT EXISTS airlock_approvals (
+        key TEXT PRIMARY KEY,
+        rule TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        project_id TEXT,
+        item_id TEXT,
+        session_id TEXT,
+        launch_id TEXT,
+        requested_at TEXT NOT NULL,
+        granted_at TEXT,
+        granted_by TEXT,
+        authority TEXT,
+        expires_at TEXT,
+        consumed_at TEXT,
+        denied_at TEXT,
+        denied_by TEXT,
+        capabilities TEXT,
+        generation INTEGER NOT NULL DEFAULT 1
+      );
     `);
+    this.migrateAirlockApprovalsTable();
+    this.migrateAirlockDecisionsTable();
+    this.createAirlockLearningTable();
+    this.createAirlockCoverageTable();
     this.migrateFlowsTable();
+    this.migrateTerminalSessionsTable();
+    this.backfillFlowRevisions();
   }
 
   // ── Hub outbox helpers ─────────────────────────────────────────────────────
@@ -181,6 +570,29 @@ export class SQLiteStorageProvider implements StorageProvider {
     this.database.prepare(
       'INSERT OR IGNORE INTO hub_outbox (event_id, occurred_at, payload) VALUES (?, ?, ?)'
     ).run(eventId, occurredAt, payloadJson);
+  }
+
+  /**
+   * Append several preserved events at once, all or nothing (#223: the
+   * deadletter requeue puts refused events back with their ORIGINAL id and
+   * occurred-at). Rows already queued are ignored, like hubOutboxAppend.
+   * Returns how many rows were actually inserted.
+   */
+  hubOutboxAppendMany(rows: Array<{ eventId: string; occurredAt: string; payload: string }>): number {
+    if (rows.length === 0) return 0;
+    const insert = this.database.prepare(
+      'INSERT OR IGNORE INTO hub_outbox (event_id, occurred_at, payload) VALUES (?, ?, ?)'
+    );
+    let inserted = 0;
+    this.database.exec('BEGIN');
+    try {
+      for (const r of rows) inserted += Number(insert.run(r.eventId, r.occurredAt, r.payload).changes ?? 0);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+    return inserted;
   }
 
   hubOutboxPeek(limit: number = 500): Array<{ event_id: string; occurred_at: string; payload: string; attempts: number; last_error: string | null }> {
@@ -311,6 +723,54 @@ export class SQLiteStorageProvider implements StorageProvider {
     return Number(result.changes ?? 0);
   }
 
+  /**
+   * Add `persist` / `auto_approve` to `terminal_sessions` when an older
+   * database lacks them (BUG 63fcf702).
+   *
+   * Plain ALTER with a default rather than a rebuild: both are new columns
+   * with a safe zero value, and rows written before this existed genuinely do
+   * not know their session's identity — defaulting them to "not persisted,
+   * prompts on" is the conservative answer, not a guess dressed up as data.
+   */
+  private migrateTerminalSessionsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(terminal_sessions)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes('persist')) {
+      this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN persist INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columns.includes('auto_approve')) {
+      this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
+  /** GH-294 T5: a table created before denials gains their columns (CREATE TABLE IF NOT EXISTS never adds one). */
+  private migrateAirlockApprovalsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(airlock_approvals)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes('denied_at')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN denied_at TEXT');
+    if (!columns.includes('denied_by')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN denied_by TEXT');
+    if (!columns.includes('capabilities')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN capabilities TEXT');
+    if (!columns.includes('generation')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN generation INTEGER NOT NULL DEFAULT 1');
+    // A row from before it asked from no launch: only a call outside the sandbox can spend it.
+    if (!columns.includes('launch_id')) this.database.exec('ALTER TABLE airlock_approvals ADD COLUMN launch_id TEXT');
+  }
+
+  /**
+   * GH-294 TEL-1: the decision log gains `source` ('tool' | 'proxy'). Every row
+   * written before it was a tool-call decision (the proxy reported nothing), so
+   * 'tool' is what those rows were, not a guess.
+   */
+  private migrateAirlockDecisionsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(airlock_decisions)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes('source')) this.database.exec("ALTER TABLE airlock_decisions ADD COLUMN source TEXT NOT NULL DEFAULT 'tool'");
+    // TEL-2: the alert a decision is. Rows written before it were never classified: NULL, no alert.
+    if (!columns.includes('alert')) this.database.exec('ALTER TABLE airlock_decisions ADD COLUMN alert TEXT');
+  }
+
   /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
   private migrateFlowsTable(): void {
     const columns = (
@@ -327,6 +787,46 @@ export class SQLiteStorageProvider implements StorageProvider {
       ALTER TABLE flows_new RENAME TO flows;
       COMMIT;
     `);
+  }
+
+  /**
+   * CGLAB-607: a build older than flow revisions wrote rows into `flows` with
+   * no revision history. Backfill each such flow's current blob as revision 1,
+   * so the first edit after the upgrade lands as revision 2, not 1.
+   */
+  private backfillFlowRevisions(): void {
+    this.database
+      .prepare(
+        `INSERT INTO flow_revisions (flow_id, revision, data, created_at)
+         SELECT f.id, 1, f.data, datetime('now') FROM flows f
+         WHERE NOT EXISTS (SELECT 1 FROM flow_revisions r WHERE r.flow_id = f.id)`
+      )
+      .run();
+  }
+
+  /**
+   * CGLAB-608: the flow stamp for a transition out of the given project —
+   * the project's flowId plus its CURRENT revision, captured at event time.
+   * Projects without a resolvable flow+revision (none, dangling flowId, or a
+   * flow with no revisions yet) transition UNSTAMPED and are simply not
+   * scored. Deliberately synchronous: an await here would be updateItem's
+   * first yield point and turn its read-modify-write into a lost-update
+   * window on the whole item blob.
+   */
+  private currentFlowStamp(projectId: string): { flowId?: string; flowRevision?: number } {
+    const projRow = this.database
+      .prepare('SELECT data FROM projects WHERE id = ?')
+      .get(projectId) as { data: string } | undefined;
+    if (!projRow) return {};
+    const flowId = (JSON.parse(projRow.data) as Project).flowId;
+    if (!flowId) return {};
+    const revRow = this.database
+      .prepare('SELECT revision FROM flow_revisions WHERE flow_id = ? ORDER BY revision DESC LIMIT 1')
+      .get(flowId) as { revision: number } | undefined;
+    // A dangling or revision-less flow stamps nothing: the effective flow is
+    // unresolvable, and a half-stamp would let the score claim a flow that
+    // never gated the move.
+    return revRow ? { flowId, flowRevision: revRow.revision } : {};
   }
 
   private parseProject(data: string): Project {
@@ -386,48 +886,73 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async createItem(item: AgEnFKItem): Promise<AgEnFKItem> {
     if (!item.history) item.history = [];
+    const stamp = this.currentFlowStamp(item.projectId);
     item.history.push({
       id: uuidv4(),
       fromStatus: 'TODO' as Status,
       toStatus: item.status,
       timestamp: new Date(),
+      ...stamp,
     });
     this.database.prepare(
       'INSERT INTO items (id, project_id, type, status, parent_id, data) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(item.id, item.projectId, item.type, item.status, item.parentId ?? null, JSON.stringify(item));
+    ).run(item.id, item.projectId, item.type, item.status, item.parentId ?? null, this.rowOf(item));
     return item;
   }
 
   async updateItem(id: string, updates: Partial<AgEnFKItem>): Promise<AgEnFKItem> {
-    const existing = await this.getItem(id);
+    // e248239d: merged onto the row as stored - unchanged results stay references, never re-read or re-hashed.
+    const stored = this.database.prepare('SELECT data FROM items WHERE id = ?').get(id) as { data: string } | undefined;
+    const existing = stored ? this.parseItem(stored.data) : null;
     if (!existing) throw new Error(`Item ${id} not found`);
 
     if (updates.status !== undefined && updates.status !== existing.status) {
+      const stamp = this.currentFlowStamp(existing.projectId);
       const history = existing.history || [];
       history.push({
         id: uuidv4(),
         fromStatus: existing.status,
         toStatus: updates.status,
         timestamp: new Date(),
+        ...stamp,
       });
       updates.history = history;
     }
 
     const updated = { ...existing, ...updates, updatedAt: new Date() } as AgEnFKItem;
+    /*
+     * A card that reached DONE has no failed-attempt history to carry
+     * (CGLAB-202). Reaching the end is the one event that means the work
+     * landed, so it is the one that clears - a run ending `done` does not,
+     * because the hook closes runs `done` on SessionEnd whether or not the
+     * attempt succeeded.
+     *
+     * Cleared HERE because every path to DONE routes through this method:
+     * validate_progress, its sibling propagation, and an internal PUT.
+     */
+    if (updated.status === Status.DONE && existing.status !== Status.DONE) {
+      updated.failureCount = 0;
+    }
     this.database.prepare(
       'UPDATE items SET project_id = ?, type = ?, status = ?, parent_id = ?, data = ? WHERE id = ?'
-    ).run(updated.projectId, updated.type, updated.status, updated.parentId ?? null, JSON.stringify(updated), id);
-    return updated;
+    ).run(updated.projectId, updated.type, updated.status, updated.parentId ?? null, this.rowOf(updated), id);
+    // The caller gets its results, as getItem would give them.
+    return this.hydrated({ ...updated });
   }
 
   async deleteItem(id: string): Promise<boolean> {
     const result = this.database.prepare('DELETE FROM items WHERE id = ?').run(id) as { changes: number };
+    // The card's remembered terminals go with it. Left behind, they would make
+    // the desktop try to resolve a worktree for a card that no longer exists —
+    // at app startup, which is the least helpful moment for it to fail, and on
+    // every launch from then on.
+    this.database.prepare('DELETE FROM terminal_sessions WHERE item_id = ?').run(id);
     return result.changes > 0;
   }
 
   async getItem(id: string): Promise<AgEnFKItem | null> {
     const row = this.database.prepare('SELECT data FROM items WHERE id = ?').get(id) as { data: string } | undefined;
-    return row ? this.parseItem(row.data) : null;
+    return row ? this.hydrated(this.parseItem(row.data)) : null;
   }
 
   async listItems(query?: StorageQuery): Promise<AgEnFKItem[]> {
@@ -445,7 +970,8 @@ export class SQLiteStorageProvider implements StorageProvider {
     }
 
     const rows = this.database.prepare(sql).all(...params) as { data: string }[];
-    return rows.map(r => this.parseItem(r.data));
+    // e248239d: hydrate: false for a caller that never reads per-test results.
+    return query?.hydrate === false ? rows.map(r => this.parseItem(r.data)) : rows.map(r => this.hydrated(this.parseItem(r.data)));
   }
 
   async listChildren(parentId: string): Promise<AgEnFKItem[]> {
@@ -499,35 +1025,106 @@ export class SQLiteStorageProvider implements StorageProvider {
   }
 
   async createFlow(flow: Flow): Promise<Flow> {
-    this.database.prepare(
-      'INSERT INTO flows (id, data) VALUES (?, ?)'
-    ).run(flow.id, JSON.stringify(flow));
+    const blob = JSON.stringify(flow);
+    this.database.exec('BEGIN');
+    try {
+      this.database.prepare(
+        'INSERT INTO flows (id, data) VALUES (?, ?)'
+      ).run(flow.id, blob);
+      this.database.prepare(
+        'INSERT INTO flow_revisions (flow_id, revision, data) VALUES (?, 1, ?)'
+      ).run(flow.id, blob);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
     return flow;
   }
 
   async updateFlow(id: string, updates: Partial<Flow>): Promise<Flow> {
     const existing = await this.getFlow(id);
     if (!existing) throw new Error(`Flow ${id} not found`);
-    const updated = { ...existing, ...updates, updatedAt: new Date() };
-    this.database.prepare('UPDATE flows SET data = ? WHERE id = ?').run(
-      JSON.stringify(updated), id
-    );
+    // getFlow stamps the revision number for readers; it must not leak into
+    // the stored blob, where it would go stale and propagate forward. The
+    // same goes for a caller passing a previously-read full Flow as updates.
+    const { revision: _stamped, ...flowWithoutRevision } = existing as Flow & { revision?: number };
+    const { revision: _passed, ...updatesWithoutRevision } = updates as Partial<Flow> & { revision?: number };
+    const updated = { ...flowWithoutRevision, ...updatesWithoutRevision, updatedAt: new Date() } as Flow & { revision?: number };
+    const blob = JSON.stringify(updated);
+    // One transaction: blob and revision row must agree, or a crash between
+    // the two writes would leave the newest content unreadable (getFlow
+    // serves revisions first).
+    this.database.exec('BEGIN');
+    try {
+      this.database.prepare('UPDATE flows SET data = ? WHERE id = ?').run(blob, id);
+      // CGLAB-607: every edit is a new immutable revision; the old ones stay.
+      this.database
+        .prepare(
+          'INSERT INTO flow_revisions (flow_id, revision, data) VALUES (?, (SELECT COALESCE(MAX(revision), 0) + 1 FROM flow_revisions WHERE flow_id = ?), ?)'
+        )
+        .run(id, id, blob);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
     return updated;
   }
 
   async deleteFlow(id: string): Promise<boolean> {
-    const result = this.database.prepare('DELETE FROM flows WHERE id = ?').run(id) as { changes: number };
-    return result.changes > 0;
+    this.database.exec('BEGIN');
+    try {
+      const result = this.database.prepare('DELETE FROM flows WHERE id = ?').run(id) as { changes: number };
+      if (result.changes > 0) {
+        this.database.prepare('DELETE FROM flow_revisions WHERE flow_id = ?').run(id);
+      }
+      this.database.exec('COMMIT');
+      return result.changes > 0;
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
   }
 
   async getFlow(id: string): Promise<Flow | null> {
+    // CGLAB-607: serve the newest revision, stamped with its number. A flow
+    // row with no revisions (read before backfill) falls back to the blob.
+    const revRow = this.database
+      .prepare('SELECT revision, data FROM flow_revisions WHERE flow_id = ? ORDER BY revision DESC LIMIT 1')
+      .get(id) as { revision: number; data: string } | undefined;
+    if (revRow) return { ...this.parseFlow(revRow.data), revision: revRow.revision } as Flow;
     const row = this.database.prepare('SELECT data FROM flows WHERE id = ?').get(id) as { data: string } | undefined;
     return row ? this.parseFlow(row.data) : null;
   }
 
+  async listFlowRevisions(id: string): Promise<Array<{ revision: number; flow: Flow; createdAt: Date }>> {
+    const rows = this.database
+      .prepare('SELECT revision, data, created_at FROM flow_revisions WHERE flow_id = ? ORDER BY revision ASC')
+      .all(id) as Array<{ revision: number; data: string; created_at: string }>;
+    return rows.map((r) => ({
+      revision: r.revision,
+      flow: this.parseFlow(r.data),
+      // created_at is written by SQLite datetime('now') — UTC 'YYYY-MM-DD
+      // HH:MM:SS' with no zone. The Z suffix marks it as UTC; if a future
+      // writer ever stores full ISO-8601 here, normalize before parsing.
+      createdAt: new Date(r.created_at + 'Z'),
+    }));
+  }
+
   async listFlows(): Promise<Flow[]> {
-    const rows = this.database.prepare('SELECT data FROM flows').all() as { data: string }[];
-    return rows.map(r => this.parseFlow(r.data));
+    // Read the newest revision per flow (not the blob) and stamp it, so
+    // listFlows and getFlow can never disagree (CGLAB-607). Single query —
+    // no N+1.
+    const rows = this.database
+      .prepare(
+        `SELECT f.id AS fid, r.revision, r.data
+         FROM flows f
+         JOIN flow_revisions r ON r.flow_id = f.id
+         WHERE r.revision = (SELECT MAX(revision) FROM flow_revisions WHERE flow_id = f.id)`
+      )
+      .all() as Array<{ fid: string; revision: number; data: string }>;
+    return rows.map((r) => ({ ...this.parseFlow(r.data), revision: r.revision }) as Flow);
   }
 
   // ── Observability: token events ─────────────────────────────────────────────
@@ -682,17 +1279,105 @@ export class SQLiteStorageProvider implements StorageProvider {
     const params: any[] = [];
     if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
     if (query.projectId !== undefined) { where.push('project_id = ?'); params.push(query.projectId); }
+    if (query.sessionId !== undefined) { where.push('session_id = ?'); params.push(query.sessionId); }
     if (query.status !== undefined) { where.push('status = ?'); params.push(query.status); }
     let sql = 'SELECT * FROM agent_runs';
     if (where.length) sql += ' WHERE ' + where.join(' AND ');
-    sql += ' ORDER BY started_at ASC';
+    /*
+     * Newest first, because the LIMIT applies AFTER the sort.
+     *
+     * Ordered ASC, a capped response was the OLDEST runs ever recorded — so on
+     * a machine with more history than the page size, an agent started right
+     * now was never in the answer, and the sessions rail showed work that
+     * finished weeks ago instead. Runs also stay `running` forever (nothing
+     * sends the closing update), so those old rows never aged out of the
+     * filter on their own.
+     */
+    // rowid breaks ties. started_at has millisecond resolution, so a burst of
+    // runs recorded in the same millisecond would otherwise come back in an
+    // arbitrary order — and with a LIMIT applied, an arbitrary SUBSET.
+    sql += ' ORDER BY started_at DESC, rowid DESC';
     if (query.limit !== undefined) { sql += ' LIMIT ?'; params.push(query.limit); }
     const rows = this.database.prepare(sql).all(...params) as any[];
-    return rows.map((r) => this.mapAgentRunRow(r));
+    // Oldest-first for the caller: the page is chosen from the newest end, but
+    // consumers that render a sequence still want it in the order it happened.
+    return rows.map((r) => this.mapAgentRunRow(r)).reverse();
   }
 
-  async appendRunEvent(event: RunEvent): Promise<void> {
-    this.database.prepare(
+  /**
+   * Append an event and report WHERE it landed.
+   *
+   * Returning the position is not bookkeeping. The number is assigned inside
+   * the insert — correctly, because computing it in the route raced — but that
+   * left the caller holding an object whose `seq` is still undefined, which is
+   * the object the server then emits over the socket. Every live consumer
+   * compares events by `seq`, so a stream of undefineds collapses to one
+   * event: a Claude Code session showed a single line in the Runs panel and
+   * then nothing, for as long as it ran.
+   *
+   * Null means nothing was written. The insert is `INSERT OR IGNORE` against
+   * `UNIQUE(run_id, seq)`, so a repeat is silently dropped — and reporting a
+   * position for a row that does not exist would have the caller broadcast a
+   * duplicate to every open panel.
+   */
+  async appendRunEvent(event: RunEvent): Promise<number | null> {
+    /*
+     * The position is assigned INSIDE the insert when the caller did not give
+     * one, and that is the whole fix.
+     *
+     * It used to be computed in the route as `(await listRunEvents(id)).length`
+     * — a read, an await, then a write. Two events in flight computed the SAME
+     * number, and the insert is `INSERT OR IGNORE` against
+     * `UNIQUE(run_id, seq)`, so the second was dropped SILENTLY: the API
+     * answered 201 and emitted run:event, and the UI showed an event that
+     * vanished on the next refresh.
+     *
+     * It survived because the pi tailer is a serialized loop that never
+     * produced two at once. The Claude Code hook makes concurrency ordinary.
+     *
+     * Zero-based, matching what `.length` produced before, so existing rows
+     * and existing readers are unaffected.
+     *
+     * A SELECT-based insert is atomic within the statement, so no two writers
+     * can read the same maximum. It also replaces an O(n) read of every event
+     * on the run with a single indexed aggregate.
+     */
+    if (event.seq === undefined || event.seq === null) {
+      const written = this.database.prepare(
+        `INSERT OR IGNORE INTO run_events
+          (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
+         SELECT ?, ?, COALESCE(MAX(seq) + 1, 0), ?, ?, ?, ?, ?, ?, ?
+           FROM run_events WHERE run_id = ?`
+      ).run(
+        event.id,
+        event.runId,
+        event.ts,
+        event.lane,
+        event.kind,
+        event.tool ?? null,
+        event.text ?? null,
+        // Already a string by the time it reaches storage: the route
+        // serialises it. Stringifying again double-encoded it, so a reader
+        // doing JSON.parse got back a string instead of the object.
+        event.payload ?? null,
+        event.tokens ?? null,
+        event.runId,
+      );
+      /*
+       * Read back by ID, not by recomputing the maximum. Another writer may
+       * have appended in between, and `MAX(seq)` would then report their
+       * position as ours. The id is the only thing that identifies this row.
+       */
+      if (written.changes === 0) return null;
+      const row = this.database
+        .prepare('SELECT seq FROM run_events WHERE id = ?')
+        .get(event.id) as { seq: number } | undefined;
+      return row?.seq ?? null;
+    }
+
+    // An explicit position wins. The pi tailer knows the real order from the
+    // transcript, and that order is better than arrival order.
+    const explicit = this.database.prepare(
       `INSERT OR IGNORE INTO run_events
         (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -705,10 +1390,18 @@ export class SQLiteStorageProvider implements StorageProvider {
       event.kind,
       event.tool ?? null,
       event.text ?? null,
+      // Passed through, exactly as the auto-position branch does. It is
+      // already a string - the route serialises it - and stringifying again
+      // stored a string OF a string, so a reader doing JSON.parse got the
+      // text back instead of the object. The two branches disagreed about
+      // the same field, and this is the one the pi tailer always took.
       event.payload ?? null,
       event.tokens ?? null,
     );
+    // The position asked for, or nothing when the row was already there.
+    return explicit.changes === 0 ? null : event.seq;
   }
+
 
   async listRunEvents(runId: string): Promise<RunEvent[]> {
     const rows = this.database.prepare(
@@ -729,6 +1422,114 @@ export class SQLiteStorageProvider implements StorageProvider {
   }
 
   // ── Observability: ingestion state (resumable file-watcher offsets) ────────
+
+  /**
+   * Installation-wide settings, as stored values layered over the defaults.
+   *
+   * Key/value rather than one column per setting: a new setting then needs no
+   * migration, and a row written by a NEWER version that this one does not know
+   * about is ignored on read instead of crashing — which matters because the
+   * desktop app, the CLI and the server can be different builds against the
+   * same database.
+   *
+   * Values are JSON so a boolean stays a boolean. Storing '1'/'0' or 'true' as
+   * bare text is how a preference comes back as a truthy string and inverts
+   * itself.
+   */
+  async listTerminalSessions(projectId?: string): Promise<TerminalSession[]> {
+    const rows = (projectId
+      ? this.database.prepare(
+          'SELECT * FROM terminal_sessions WHERE project_id = ? ORDER BY opened_at'
+        ).all(projectId)
+      : this.database.prepare('SELECT * FROM terminal_sessions ORDER BY opened_at').all()
+    ) as Array<Record<string, string | null>>;
+    return rows.map(r => ({
+      id: r.id as string,
+      itemId: r.item_id as string,
+      projectId: r.project_id ?? undefined,
+      agentId: r.agent_id as string,
+      // null and undefined both mean "cannot resume this one"; normalised here
+      // so no caller has to know which of the two it got back.
+      agentSessionId: r.agent_session_id ?? undefined,
+      // SQLite has no boolean. Compared against 1 rather than coerced, so the
+      // string "0" a legacy row might hold cannot come back as true.
+      persist: Number(r.persist) === 1,
+      autoApprove: Number(r.auto_approve) === 1,
+      openedAt: r.opened_at as string,
+    }));
+  }
+
+  async recordTerminalSession(session: TerminalSession): Promise<TerminalSession> {
+    this.database.prepare(
+      'INSERT INTO terminal_sessions ' +
+      '(id, item_id, project_id, agent_id, agent_session_id, persist, auto_approve, opened_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      session.id, session.itemId, session.projectId ?? null,
+      session.agentId, session.agentSessionId ?? null,
+      session.persist ? 1 : 0, session.autoApprove ? 1 : 0,
+      session.openedAt,
+    );
+    return session;
+  }
+
+  async forgetTerminalSession(id: string): Promise<void> {
+    this.database.prepare('DELETE FROM terminal_sessions WHERE id = ?').run(id);
+  }
+
+  async getSettings(): Promise<AppSettings> {
+    const rows = this.database.prepare('SELECT key, value FROM app_settings')
+      .all() as Array<{ key: string; value: string }>;
+    // Object.create(null), not {}: a row keyed '__proto__' would otherwise set
+    // the prototype instead of an own property, and the later lookups would
+    // resolve THROUGH it — turning a stored row into a way to flip settings
+    // this function claims to ignore. Needs direct database access to exploit,
+    // but the claim in the comment above should be true, not nearly true.
+    const stored: Record<string, unknown> = Object.create(null);
+    for (const row of rows) {
+      // A corrupt row must not take the whole settings read down with it; the
+      // default is a safe answer and the user can set it again.
+      try { stored[row.key] = JSON.parse(row.value); } catch { /* keep the default */ }
+    }
+    const settings = { ...DEFAULT_APP_SETTINGS };
+    // Only keys the CURRENT build knows. Anything else in the table belongs to
+    // another version and is none of this one's business.
+    for (const key of Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettings>) {
+      const value = stored[key];
+      // `isLegalSettingValue`, not a `typeof` comparison. They agree for every
+      // boolean; they part company on an enum, where `typeof` accepts any
+      // string at all. A row saying soundTiming is 'whenever' — written by an
+      // older build, a newer one, or a hand-edited database — would otherwise
+      // come back out and behave as whichever branch the UI falls through to.
+      if (isLegalSettingValue(key, value)) {
+        (settings[key] as unknown) = value;
+      }
+    }
+    return settings;
+  }
+
+  async updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+    const write = this.database.prepare(
+      'INSERT INTO app_settings (key, value) VALUES (?, ?) ' +
+      'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    );
+    // A transaction so a multi-key write cannot land half-applied and leave the
+    // user with a settings screen showing a state they never chose. Written as
+    // explicit BEGIN/COMMIT because the driver here is node:sqlite's
+    // DatabaseSync, which has no better-sqlite3-style transaction() wrapper.
+    this.database.exec('BEGIN');
+    try {
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) continue;
+        write.run(key, JSON.stringify(value));
+      }
+      this.database.exec('COMMIT');
+    } catch (err) {
+      this.database.exec('ROLLBACK');
+      throw err;
+    }
+    return this.getSettings();
+  }
 
   async getIngestionState(sourcePath: string): Promise<IngestionState | null> {
     const row = this.database.prepare(
@@ -843,5 +1644,490 @@ export class SQLiteStorageProvider implements StorageProvider {
       'SELECT * FROM prs WHERE item_id = ? ORDER BY opened_at ASC'
     ).all(itemId) as any[];
     return rows.map((r) => this.rowToPr(r));
+  }
+
+  // ── Airlock (GH-294) ────────────────────────────────────────────────────────
+
+  /** Rows the decision log keeps; the oldest go first. */
+  static readonly AIRLOCK_DECISION_CAP = 5000;
+
+  async getAirlockPolicy(scope: AirlockScope): Promise<StoredAirlockPolicy | null> {
+    const row = this.database.prepare('SELECT * FROM airlock_policy WHERE scope = ?').get(scope) as any;
+    if (!row) return null;
+    let raw: unknown = null;
+    // A corrupt blob reads as the (off) default rather than taking the route down.
+    try { raw = JSON.parse(row.data); } catch { /* normalised to the default below */ }
+    return {
+      scope: row.scope,
+      revision: Number(row.revision),
+      policy: normalizeAirlockPolicy(raw),
+      updatedAt: row.updated_at,
+      updatedBy: row.updated_by,
+      authority: row.authority === 'hub' ? 'hub' : 'local',
+      etag: row.etag ?? null,
+    };
+  }
+
+  async putAirlockPolicy(row: StoredAirlockPolicy, expectedRevision: number): Promise<StoredAirlockPolicy> {
+    const db = this.database;
+    // One transaction: the read of the current revision and the write are a
+    // single compare-and-swap, so two writers on the same revision cannot both land.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const current = db.prepare('SELECT revision FROM airlock_policy WHERE scope = ?').get(row.scope) as { revision: number } | undefined;
+      const currentRevision = current ? Number(current.revision) : 0;
+      if (currentRevision !== expectedRevision) {
+        const err = new Error(`airlock policy (${row.scope}) is at revision ${currentRevision}, not ${expectedRevision}`) as AirlockStaleRevisionError;
+        err.code = 'AIRLOCK_STALE_REVISION';
+        err.currentRevision = currentRevision;
+        throw err;
+      }
+      db.prepare(
+        `INSERT INTO airlock_policy (scope, revision, data, updated_at, updated_by, authority, etag)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(scope) DO UPDATE SET
+           revision = excluded.revision, data = excluded.data, updated_at = excluded.updated_at,
+           updated_by = excluded.updated_by, authority = excluded.authority, etag = excluded.etag`
+      ).run(row.scope, row.revision, JSON.stringify(row.policy), row.updatedAt, row.updatedBy, row.authority, row.etag ?? null);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+    return (await this.getAirlockPolicy(row.scope))!;
+  }
+
+  async deleteAirlockPolicy(scope: AirlockScope): Promise<boolean> {
+    const result = this.database.prepare('DELETE FROM airlock_policy WHERE scope = ?').run(scope);
+    return Number(result.changes) > 0;
+  }
+
+  async releaseAirlockHubPolicy(expectedHubRevision: number, meta: { updatedAt: string; updatedBy: string }): Promise<StoredAirlockPolicy | null> {
+    const db = this.database;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const hub = db.prepare("SELECT revision, data FROM airlock_policy WHERE scope = 'hub'").get() as { revision: number; data: string } | undefined;
+      if (!hub || Number(hub.revision) !== expectedHubRevision) {
+        db.exec('ROLLBACK');
+        return null;
+      }
+      const local = db.prepare("SELECT revision FROM airlock_policy WHERE scope = 'local'").get() as { revision: number } | undefined;
+      db.prepare(
+        `INSERT INTO airlock_policy (scope, revision, data, updated_at, updated_by, authority, etag)
+         VALUES ('local', ?, ?, ?, ?, 'local', NULL)
+         ON CONFLICT(scope) DO UPDATE SET
+           revision = excluded.revision, data = excluded.data, updated_at = excluded.updated_at,
+           updated_by = excluded.updated_by, authority = excluded.authority, etag = excluded.etag`
+      ).run((local ? Number(local.revision) : 0) + 1, hub.data, meta.updatedAt, meta.updatedBy);
+      db.prepare("DELETE FROM airlock_policy WHERE scope = 'hub' AND revision = ?").run(expectedHubRevision);
+      db.exec('COMMIT');
+    } catch (err) {
+      try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw err;
+    }
+    return this.getAirlockPolicy('local');
+  }
+
+  async recordAirlockDecision(d: AirlockDecisionRecord): Promise<void> {
+    const db = this.database;
+    const result = db.prepare(
+      `INSERT INTO airlock_decisions (ts, client, model, tool, capability_kind, target, decision, rule, mode, item_id, session_id, source, alert)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(d.ts, d.client, d.model ?? null, d.tool, d.capabilityKind ?? null, d.target ?? null, d.decision, d.rule ?? null, d.mode, d.itemId ?? null, d.sessionId ?? null, d.source ?? 'tool', d.alert ?? null);
+    const lastId = Number(result.lastInsertRowid);
+    // ids only grow, so everything at or below (newest - cap) is the overflow.
+    db.prepare('DELETE FROM airlock_decisions WHERE id <= ?').run(lastId - SQLiteStorageProvider.AIRLOCK_DECISION_CAP);
+  }
+
+  async listAirlockDecisions(query: AirlockDecisionQuery = {}): Promise<AirlockDecisionRecord[]> {
+    const limit = Math.max(1, Math.min(Math.floor(query.limit ?? 200), SQLiteStorageProvider.AIRLOCK_DECISION_CAP));
+    const where: string[] = [];
+    const params: string[] = [];
+    if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
+    if (query.client !== undefined) { where.push('client = ?'); params.push(query.client); }
+    if (query.source !== undefined) { where.push('source = ?'); params.push(query.source); }
+    if (query.alert === 'any') where.push('alert IS NOT NULL');
+    else if (query.alert !== undefined) { where.push('alert = ?'); params.push(query.alert); }
+    const sql = `SELECT * FROM airlock_decisions${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC LIMIT ?`;
+    const rows = this.database.prepare(sql).all(...params, limit) as any[];
+    return rows.map((r) => ({
+      id: Number(r.id),
+      ts: r.ts,
+      client: r.client,
+      model: r.model ?? null,
+      tool: r.tool,
+      capabilityKind: r.capability_kind ?? null,
+      target: r.target ?? null,
+      decision: r.decision,
+      rule: r.rule ?? null,
+      mode: r.mode,
+      itemId: r.item_id ?? null,
+      sessionId: r.session_id ?? null,
+      source: r.source === 'proxy' ? 'proxy' : 'tool',
+      ...(r.alert ? { alert: r.alert } : {}),
+    }));
+  }
+
+  private rowToAirlockApproval(r: any): AirlockApprovalRecord {
+    let capabilities: AirlockApprovalCapability[] = [];
+    try { capabilities = r.capabilities ? JSON.parse(r.capabilities) : []; } catch { capabilities = []; }
+    return {
+      key: r.key,
+      rule: r.rule,
+      summary: r.summary,
+      capabilities,
+      projectId: r.project_id ?? null,
+      itemId: r.item_id ?? null,
+      sessionId: r.session_id ?? null,
+      requestedAt: r.requested_at,
+      grantedAt: r.granted_at ?? null,
+      grantedBy: r.granted_by ?? null,
+      authority: r.authority ?? null,
+      expiresAt: r.expires_at ?? null,
+      consumedAt: r.consumed_at ?? null,
+      deniedAt: r.denied_at ?? null,
+      deniedBy: r.denied_by ?? null,
+      generation: Number(r.generation ?? 1),
+    };
+  }
+
+  async upsertAirlockApproval(req: AirlockApprovalRequest, now: string = new Date().toISOString()): Promise<AirlockApprovalRecord> {
+    // A repeated request refreshes what it asks for and who asked - unless a
+    // grant is held and still usable: that grant belongs to the session and
+    // card that asked, and a request from elsewhere must not take it over. A
+    // grant already consumed or expired is spent, so the request opens again
+    // as pending, as a new generation, for a person to decide. A request now
+    // asked by another session or card is a new generation too, so an answer
+    // the board gave to the old asker cannot land on the new one. A denial is
+    // left as it is: it holds until someone grants the request. Every other
+    // transition (grant, deny, consume) also bumps the generation, so an
+    // answer is only ever valid for the version the person saw.
+    // (SET expressions and the WHERE read the row as it was before this update.)
+    const spent = `(airlock_approvals.consumed_at IS NOT NULL
+      OR (airlock_approvals.expires_at IS NOT NULL AND airlock_approvals.expires_at <= :now))`;
+    const usable = `(airlock_approvals.granted_at IS NOT NULL AND NOT ${spent})`;
+    this.database.prepare(
+      `INSERT INTO airlock_approvals (key, rule, summary, capabilities, project_id, item_id, session_id, launch_id, requested_at, generation)
+       VALUES (:key, :rule, :summary, :caps, :project, :item, :session, :launch, :requested, 1)
+       ON CONFLICT(key) DO UPDATE SET
+         rule = excluded.rule, summary = excluded.summary, capabilities = excluded.capabilities,
+         project_id = excluded.project_id, item_id = excluded.item_id, session_id = excluded.session_id,
+         launch_id = excluded.launch_id, requested_at = excluded.requested_at,
+         generation = CASE WHEN ${spent}
+             OR airlock_approvals.session_id IS NOT excluded.session_id
+             OR airlock_approvals.item_id IS NOT excluded.item_id
+             OR airlock_approvals.launch_id IS NOT excluded.launch_id
+           THEN airlock_approvals.generation + 1 ELSE airlock_approvals.generation END,
+         granted_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.granted_at END,
+         granted_by = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.granted_by END,
+         authority = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.authority END,
+         expires_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.expires_at END,
+         consumed_at = CASE WHEN ${spent} THEN NULL ELSE airlock_approvals.consumed_at END
+       WHERE NOT ${usable}`
+    ).run({
+      key: req.key, rule: req.rule, summary: req.summary, caps: JSON.stringify(req.capabilities ?? []),
+      project: req.projectId ?? null, item: req.itemId ?? null,
+      session: req.sessionId ?? null, launch: req.launch ?? null, requested: req.requestedAt, now,
+    });
+    return (await this.getAirlockApproval(req.key))!;
+  }
+
+  async getAirlockApproval(key: string): Promise<AirlockApprovalRecord | null> {
+    const row = this.database.prepare('SELECT * FROM airlock_approvals WHERE key = ?').get(key) as any;
+    return row ? this.rowToAirlockApproval(row) : null;
+  }
+
+  /**
+   * BUG 9ff092e9: an Airlock dataset row that asked for an approval, kept until a
+   * person answers it, so the label joins it after a restart. Under the hub (scope)
+   * it was sent to. Bounded: the newest rows per key, and links older than the
+   * longest an approval waits are dropped as new ones are made.
+   */
+  async airlockDatasetLinkApproval(
+    key: string, scope: string, rowId: string, at: string = new Date().toISOString(), maxTotal: number = AIRLOCK_APPROVAL_LINK_MAX_TOTAL,
+  ): Promise<void> {
+    const cutoff = new Date(Date.parse(at) - AIRLOCK_APPROVAL_LINK_MAX_AGE_MS).toISOString();
+    // One transaction: one write to disk per link, not one per statement (Windows CI took 137s).
+    this.database.exec('BEGIN');
+    try {
+      this.database.prepare('DELETE FROM airlock_dataset_approval_rows WHERE linked_at < ?').run(cutoff);
+      this.database.prepare(
+        'INSERT OR IGNORE INTO airlock_dataset_approval_rows (approval_key, scope, row_id, linked_at) VALUES (?, ?, ?, ?)',
+      ).run(key, scope, rowId, at);
+      this.database.prepare(
+        `DELETE FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ? AND row_id NOT IN (
+           SELECT row_id FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ?
+           ORDER BY linked_at DESC, rowid DESC LIMIT ${AIRLOCK_APPROVAL_LINK_MAX_ROWS})`,
+      ).run(key, scope, key, scope);
+      // And across every key: however many approvals an agent asks for, the oldest links go first.
+      // Only the overflow is touched, oldest first by the linked_at index: not a re-sort per insert.
+      const { n } = this.database.prepare('SELECT COUNT(*) AS n FROM airlock_dataset_approval_rows').get() as { n: number };
+      if (n > maxTotal) {
+        this.database.prepare(
+          `DELETE FROM airlock_dataset_approval_rows WHERE rowid IN (
+             SELECT rowid FROM airlock_dataset_approval_rows ORDER BY linked_at, rowid LIMIT ?)`,
+        ).run(n - maxTotal);
+      }
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  /** The rows linked to an approval under this hub, oldest first. The links stay until dropped, after the labels are sent. */
+  async airlockDatasetApprovalRows(key: string, scope: string): Promise<string[]> {
+    const rows = this.database.prepare(
+      'SELECT row_id FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ? ORDER BY linked_at, rowid',
+    ).all(key, scope) as Array<{ row_id: string }>;
+    return rows.map(r => r.row_id);
+  }
+
+  /** A person answered: the decision kept on the links until their labels are sent, so a crash replays them. */
+  async airlockDatasetMarkApprovalAnswered(key: string, scope: string, decision: string): Promise<void> {
+    this.database.prepare('UPDATE airlock_dataset_approval_rows SET decision = ? WHERE approval_key = ? AND scope = ?').run(decision, key, scope);
+  }
+
+  /** Answered approvals whose labels were not all sent (a crash, a failed send), under this hub. */
+  async airlockDatasetAnsweredApprovalLinks(scope: string): Promise<Array<{ key: string; rowId: string; decision: string }>> {
+    const rows = this.database.prepare(
+      'SELECT approval_key, row_id, decision FROM airlock_dataset_approval_rows WHERE scope = ? AND decision IS NOT NULL ORDER BY linked_at, rowid',
+    ).all(scope) as Array<{ approval_key: string; row_id: string; decision: string }>;
+    return rows.map(r => ({ key: r.approval_key, rowId: r.row_id, decision: r.decision }));
+  }
+
+  /** The approval's links gone: an answer labels its rows once (BUG 9ff092e9). */
+  async airlockDatasetDropApprovalLinks(key: string, scope: string): Promise<void> {
+    this.database.prepare('DELETE FROM airlock_dataset_approval_rows WHERE approval_key = ? AND scope = ?').run(key, scope);
+  }
+
+  async listAirlockApprovals(query: { pending?: boolean } = {}): Promise<AirlockApprovalRecord[]> {
+    const sql = query.pending
+      ? 'SELECT * FROM airlock_approvals WHERE granted_at IS NULL AND denied_at IS NULL ORDER BY requested_at DESC'
+      : 'SELECT * FROM airlock_approvals ORDER BY requested_at DESC';
+    return (this.database.prepare(sql).all() as any[]).map((r) => this.rowToAirlockApproval(r));
+  }
+
+  /** The row after a conditional answer: changed, already so (unchanged), or refused. */
+  private async answered(key: string, changed: boolean, alreadySo: (row: AirlockApprovalRecord) => boolean): Promise<AirlockApprovalTransition | null> {
+    const row = await this.getAirlockApproval(key);
+    if (!row) return null;
+    return { ...row, transition: changed ? 'changed' : alreadySo(row) ? 'unchanged' : 'refused' };
+  }
+
+  async grantAirlockApproval(
+    key: string,
+    grant: { grantedBy: string; authority: string; expiresAt?: string | null; generation?: number },
+  ): Promise<AirlockApprovalTransition | null> {
+    // Only a request nobody has granted (pending, or denied) of the generation
+    // the person answered: a replay never renews a grant or revives a used one.
+    const gen = grant.generation ?? null;
+    const result = this.database.prepare(
+      `UPDATE airlock_approvals SET granted_at = :at, granted_by = :by, authority = :authority, expires_at = :expires,
+         consumed_at = NULL, denied_at = NULL, denied_by = NULL, generation = generation + 1
+       WHERE key = :key AND granted_at IS NULL AND consumed_at IS NULL AND (:gen IS NULL OR generation = :gen)`
+    ).run({ at: new Date().toISOString(), by: grant.grantedBy, authority: grant.authority, expires: grant.expiresAt ?? null, key, gen });
+    return this.answered(key, Number(result.changes ?? 0) > 0,
+      (r) => !!r.grantedAt && !r.consumedAt && (gen === null || r.generation === gen));
+  }
+
+  async denyAirlockApproval(key: string, denial: { deniedBy: string; generation?: number }, now: string = new Date().toISOString()): Promise<AirlockApprovalTransition | null> {
+    // A request not yet used: pending, or granted and not spent. The grant goes with it.
+    const gen = denial.generation ?? null;
+    const result = this.database.prepare(
+      `UPDATE airlock_approvals SET denied_at = :now, denied_by = :by,
+         granted_at = NULL, granted_by = NULL, authority = NULL, expires_at = NULL, consumed_at = NULL,
+         generation = generation + 1
+       WHERE key = :key AND denied_at IS NULL AND consumed_at IS NULL AND (:gen IS NULL OR generation = :gen)`
+    ).run({ now, by: denial.deniedBy, key, gen });
+    return this.answered(key, Number(result.changes ?? 0) > 0,
+      (r) => !!r.deniedAt && (gen === null || r.generation === gen));
+  }
+
+  async consumeAirlockApproval(key: string, now: string = new Date().toISOString()): Promise<boolean> {
+    // One statement, so two callers racing for the same grant cannot both consume it.
+    const result = this.database.prepare(
+      `UPDATE airlock_approvals SET consumed_at = ?, generation = generation + 1
+       WHERE key = ? AND granted_at IS NOT NULL AND consumed_at IS NULL
+         AND (expires_at IS NULL OR expires_at > ?)`
+    ).run(now, key, now);
+    return Number(result.changes ?? 0) > 0;
+  }
+
+  async consumeAirlockApprovals(keys: string[], scope: AirlockGrantScope, now: string = new Date().toISOString()): Promise<boolean> {
+    // One transaction: every grant the call needs is consumed, or none is.
+    const db = this.database;
+    const consume = db.prepare(
+      `UPDATE airlock_approvals SET consumed_at = :now, generation = generation + 1
+       WHERE key = :key AND granted_at IS NOT NULL AND consumed_at IS NULL AND denied_at IS NULL
+         AND (expires_at IS NULL OR expires_at > :now)
+         AND session_id IS :session AND item_id IS :item AND launch_id IS :launch`
+    );
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const key of new Set(keys)) {
+        const r = consume.run({ now, key, session: scope.sessionId ?? null, item: scope.itemId ?? null, launch: scope.launch ?? null });
+        if (Number(r.changes ?? 0) === 0) { db.exec('ROLLBACK'); return false; }
+      }
+      db.exec('COMMIT');
+      return true;
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  // ── Airlock learning (GH-294, TEL-3) ───────────────────────────────────────
+  // One row per observed host, apart from the capped decision log so a
+  // proposal is not limited to the last few thousand verdicts. Hits are kept
+  // by source because the proxy's word and the agent's are not worth the same.
+  //
+  // Two budgets, each forgetting the row RECEIVED longest ago (received_at,
+  // the server's clock - never a date a caller reported): rows with proxy
+  // evidence, and agent-only rows. Agent-reported traffic (tool calls, an
+  // import), which the agent can invent, can therefore never evict a row the
+  // sandbox proxy vouched for.
+
+  /** Agent-only hosts kept (no proxy evidence). */
+  static readonly AIRLOCK_LEARNED_HOST_CAP = 5000;
+  /** Hosts with proxy evidence kept, apart from the agent-only ones. */
+  static readonly AIRLOCK_LEARNED_PROXY_HOST_CAP = 5000;
+
+  private createAirlockLearningTable(): void {
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS airlock_learned_hosts (
+        host TEXT PRIMARY KEY,
+        tool_hits INTEGER NOT NULL DEFAULT 0,
+        proxy_hits INTEGER NOT NULL DEFAULT 0,
+        import_hits INTEGER NOT NULL DEFAULT 0,
+        first_seen TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        received_at TEXT NOT NULL DEFAULT '',
+        clients TEXT NOT NULL DEFAULT '[]',
+        cards TEXT NOT NULL DEFAULT '[]',
+        tool_upload_hits INTEGER NOT NULL DEFAULT 0,
+        import_upload_hits INTEGER NOT NULL DEFAULT 0,
+        context TEXT
+      );
+    `);
+    const columns = (this.database.prepare('PRAGMA table_info(airlock_learned_hosts)').all() as { name: string }[]).map((c) => c.name);
+    if (!columns.includes('received_at')) this.database.exec("ALTER TABLE airlock_learned_hosts ADD COLUMN received_at TEXT NOT NULL DEFAULT ''");
+    // How often a host was sent data (2026-11-02): a table from before reads as none.
+    if (!columns.includes('tool_upload_hits')) this.database.exec('ALTER TABLE airlock_learned_hosts ADD COLUMN tool_upload_hits INTEGER NOT NULL DEFAULT 0');
+    if (!columns.includes('import_upload_hits')) this.database.exec('ALTER TABLE airlock_learned_hosts ADD COLUMN import_upload_hits INTEGER NOT NULL DEFAULT 0');
+    // What the latest import knew of a host (2026-11-02), as JSON: a table from before reads as none.
+    if (!columns.includes('context')) this.database.exec('ALTER TABLE airlock_learned_hosts ADD COLUMN context TEXT');
+    this.database.exec('DROP INDEX IF EXISTS idx_airlock_learned_hosts_last_seen');
+    this.database.exec('CREATE INDEX IF NOT EXISTS idx_airlock_learned_hosts_received ON airlock_learned_hosts(received_at)');
+  }
+
+  private rowToAirlockLearnedHost(r: any): AirlockLearnedHost {
+    const list = (text: unknown): string[] => {
+      try {
+        const v = JSON.parse(String(text));
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+      } catch { return []; }
+    };
+    // Written from a cleaned context; read back through the same cleaning.
+    let context: AirlockHostContext | null = null;
+    try { context = r.context ? sanitizeHostContext(JSON.parse(String(r.context))) : null; } catch { context = null; }
+    return {
+      host: r.host,
+      hits: { tool: Number(r.tool_hits), proxy: Number(r.proxy_hits), import: Number(r.import_hits) },
+      uploads: { tool: Number(r.tool_upload_hits ?? 0), proxy: 0, import: Number(r.import_upload_hits ?? 0) },
+      firstSeen: r.first_seen,
+      lastSeen: r.last_seen,
+      receivedAt: r.received_at || r.last_seen,
+      clients: list(r.clients),
+      cards: list(r.cards),
+      ...(context ? { context } : {}),
+    };
+  }
+
+  async recordAirlockHostObservations(observations: AirlockHostObservation[]): Promise<void> {
+    if (!observations.length) return;
+    const db = this.database;
+    const read = db.prepare('SELECT * FROM airlock_learned_hosts WHERE host = ?');
+    const write = db.prepare(
+      `INSERT INTO airlock_learned_hosts (host, tool_hits, proxy_hits, import_hits, first_seen, last_seen, received_at, clients, cards,
+         tool_upload_hits, import_upload_hits, context)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(host) DO UPDATE SET
+         tool_hits = excluded.tool_hits, proxy_hits = excluded.proxy_hits, import_hits = excluded.import_hits,
+         first_seen = excluded.first_seen, last_seen = excluded.last_seen, received_at = excluded.received_at,
+         clients = excluded.clients, cards = excluded.cards,
+         tool_upload_hits = excluded.tool_upload_hits, import_upload_hits = excluded.import_upload_hits, context = excluded.context`
+    );
+    // One transaction: each row is read and rewritten with nothing in between.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const o of observations) {
+        const current = read.get(o.host) as any;
+        const row = mergeHostObservation(current ? this.rowToAirlockLearnedHost(current) : null, o);
+        write.run(row.host, row.hits.tool, row.hits.proxy, row.hits.import, row.firstSeen, row.lastSeen, row.receivedAt,
+          JSON.stringify(row.clients), JSON.stringify(row.cards), row.uploads.tool, row.uploads.import, row.context ? JSON.stringify(row.context) : null);
+      }
+      // Each budget on its own: an agent-only row never pushes out a proxy row.
+      const prune = (where: string, cap: number) => db.prepare(
+        `DELETE FROM airlock_learned_hosts WHERE host IN (
+           SELECT host FROM airlock_learned_hosts WHERE ${where} ORDER BY received_at DESC, host LIMIT -1 OFFSET ?)`
+      ).run(cap);
+      prune('proxy_hits = 0', SQLiteStorageProvider.AIRLOCK_LEARNED_HOST_CAP);
+      prune('proxy_hits > 0', SQLiteStorageProvider.AIRLOCK_LEARNED_PROXY_HOST_CAP);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  async listAirlockLearnedHosts(): Promise<AirlockLearnedHost[]> {
+    const rows = this.database.prepare('SELECT * FROM airlock_learned_hosts ORDER BY received_at DESC, host').all() as any[];
+    return rows.map((r) => this.rowToAirlockLearnedHost(r));
+  }
+
+  /** SX-1: the cards an Airlock sandbox touched. A table of its own, so no item write can clear one. */
+  private createAirlockCoverageTable(): void {
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS airlock_covered_items (
+        item_id TEXT PRIMARY KEY,
+        since TEXT NOT NULL
+      );
+    `);
+  }
+
+  /** Ids per IN (...) query: well under SQLite's bound-parameter limit. */
+  static readonly AIRLOCK_COVERAGE_BATCH = 500;
+
+  async markAirlockCovered(itemIds: string[], since: string): Promise<void> {
+    const ids = [...new Set(itemIds.filter((id) => typeof id === 'string' && id))];
+    if (!ids.length) return;
+    const insert = this.database.prepare('INSERT OR IGNORE INTO airlock_covered_items (item_id, since) VALUES (?, ?)');
+    this.database.exec('BEGIN');
+    try {
+      for (const id of ids) insert.run(id, since);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  async airlockCoveredAmong(itemIds: string[]): Promise<string[]> {
+    const ids = [...new Set(itemIds)];
+    const found: string[] = [];
+    for (let i = 0; i < ids.length; i += SQLiteStorageProvider.AIRLOCK_COVERAGE_BATCH) {
+      const batch = ids.slice(i, i + SQLiteStorageProvider.AIRLOCK_COVERAGE_BATCH);
+      const rows = this.database
+        .prepare(`SELECT item_id FROM airlock_covered_items WHERE item_id IN (${batch.map(() => '?').join(',')})`)
+        .all(...batch) as { item_id: string }[];
+      found.push(...rows.map((r) => r.item_id));
+    }
+    return found;
+  }
+
+  async airlockCoveredSince(itemId: string): Promise<string | null> {
+    const row = this.database.prepare('SELECT since FROM airlock_covered_items WHERE item_id = ?').get(itemId) as { since: string } | undefined;
+    return row?.since ?? null;
   }
 }

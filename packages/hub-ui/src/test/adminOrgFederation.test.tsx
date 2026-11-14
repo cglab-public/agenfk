@@ -38,6 +38,11 @@ const routeData: Record<string, unknown> = {
   '/healthz': { ok: true, version: '1.1.19' },
   '/v1/admin/federation': { bound: false, outboxDepth: 0 },
   '/v1/admin/child-hubs': CHILD_HUBS,
+  // What the admin overview reads when a test lands on /admin.
+  '/v1/admin/users': [],
+  '/v1/admin/installations': [],
+  '/v1/admin/api-keys': [],
+  '/v1/admin/auth-config': { passwordEnabled: true, googleEnabled: false, entraEnabled: false },
 };
 
 const renderAt = (path: string) => {
@@ -55,6 +60,14 @@ const renderAt = (path: string) => {
 
 beforeEach(() => { get.mockReset(); (api.post as unknown as ReturnType<typeof vi.fn>).mockReset(); });
 afterEach(() => { cleanup(); get.mockReset(); });
+
+describe('Admin landing', () => {
+  it('opens on the overview, not the sign-in form', async () => {
+    renderAt('/admin');
+    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /sign-in providers/i })).toBeNull();
+  });
+});
 
 describe('Admin → Organization', () => {
   it('carries the org identity, the parent hub and the child hubs on one page', async () => {

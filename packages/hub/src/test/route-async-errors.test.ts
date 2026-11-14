@@ -1,9 +1,9 @@
 // A DB error must FAIL the request, not hang it (BUG 5d98dd55).
 //
-// The hub runs express 4, which does not route a rejected promise to the error
-// middleware. An `async (req, res) => { ... }` handler that throws therefore
-// sends no response at all: the client waits for its own timeout, the dashboard
-// spins forever, and nothing reaches the hub error log.
+// Under express 4 a rejected promise never reached the error middleware, so an
+// `async (req, res) => { ... }` handler that threw sent no response at all: the
+// client waited for its own timeout and nothing reached the hub error log. The
+// hub now runs express 5; these pin the outcome whichever version is installed.
 //
 // Every test here forces the SAME failure — the database rejects — and asserts
 // the endpoint answers 500. Note the short per-request deadline: without it a

@@ -1,0 +1,173 @@
+/**
+ * @file 1049ce52 — a card leaves the backlog only from a tree in sync with its remote.
+ *
+ * A session built a card in a checkout 25 commits behind origin: the Clean
+ * Start pull is a rule, and a resumed card skipped it. The `tree-in-sync`
+ * check (the `backlog` role's) fetches the tree's upstream itself and refuses
+ * a tree that is behind it or has diverged from it. Ahead is fine (unpushed
+ * work), no remote is fine, and an unreachable remote only warns: offline
+ * work is never stranded.
+ */
+import { removeTestDb, testDbPath } from './helpers/testDb';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import request from 'supertest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+vi.mock('axios', () => {
+  const mockAxios = vi.fn() as any;
+  mockAxios.get = vi.fn();
+  mockAxios.post = vi.fn();
+  mockAxios.create = vi.fn(() => mockAxios);
+  return { default: mockAxios };
+});
+
+const TEST_DB = testDbPath('tree-in-sync-test-db.sqlite');
+process.env.AGENFK_DB_PATH = TEST_DB;
+if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { echoRepo, A } from './helpers/echoRepo';
+import { gitSync, writeFiles } from './helpers/gitFixture';
+
+let __server: import('http').Server;
+const agent = () => request(__server);
+const dirs: string[] = [];
+beforeAll(async () => { await initStorage(); __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+});
+
+const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
+const tmp = (p: string) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), p)); dirs.push(d); return d; };
+const id = (dir: string) => { gitSync(dir, 'config', 'user.email', 't@t'); gitSync(dir, 'config', 'user.name', 't'); };
+/** `echo f > f && git add f && git commit -qm f`. */
+const commitFile = (dir: string, f: string) => { writeFiles(dir, { [f]: `${f}\n` }); gitSync(dir, 'add', f); gitSync(dir, 'commit', '-qm', f); };
+
+/** A bare origin, the card's clone of it, and a colleague's clone that can push ahead of it. */
+function remoteSetup() {
+  const origin = tmp('agenfk-sync-origin-');
+  gitSync(origin, 'init', '-q', '--bare', '-b', 'main');
+  const work = tmp('agenfk-sync-work-');
+  gitSync(work, 'clone', '-q', origin, '.');
+  id(work);
+  writeFiles(work, { a: 'a\n' });
+  gitSync(work, 'add', '.');
+  gitSync(work, 'commit', '-qm', 'one');
+  gitSync(work, 'push', '-q', '-u', 'origin', 'main');
+  const other = tmp('agenfk-sync-other-');
+  gitSync(other, 'clone', '-q', origin, '.');
+  id(other);
+  const pushFromOther = (f: string) => { gitSync(other, 'pull', '-q', '--ff-only'); commitFile(other, f); gitSync(other, 'push', '-q'); };
+  const commitHere = (f: string) => commitFile(work, f);
+  return { origin, work, pushFromOther, commitHere };
+}
+
+let seq = 0;
+const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
+async function card(root: string, todo: Record<string, unknown> = { role: 'backlog' }) {
+  const f = await agent().post('/flows').send({ name: `sync-${++seq}`, steps: [s('TODO', 0, { isAnchor: true, ...todo }), s('WORK', 1), s('DONE', 2, { isAnchor: true })] });
+  expect(f.status, JSON.stringify(f.body)).toBe(201);
+  const p = await agent().post('/projects').send({ name: `sync-${++seq}` });
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: root, verifyCommand: 'exit 0' } as never);
+  const c = await agent().post('/items').send({ type: 'TASK', title: `sync-${++seq}`, projectId: p.body.id });
+  return c.body.id as string;
+}
+const validate = (cid: string) => agent().post(`/items/${cid}/validate`).set(internal()).send({ evidence: 'ok' });
+const verdict = (res: any) => (res.body.checks ?? []).find((c: any) => c.id === 'tree-in-sync')
+  ?? undefined;
+const recorded = async (cid: string) => ((await agent().get(`/items/${cid}`)).body.lastChecks?.results ?? []).find((c: any) => c.id === 'tree-in-sync');
+
+describe('1049ce52: tree-in-sync', () => {
+  it('passes a tree in sync with its upstream', async () => {
+    const r = remoteSetup();
+    const cid = await card(r.work);
+    const res = await validate(cid);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await recorded(cid)).toMatchObject({ outcome: 'pass' });
+  });
+
+  it('fetches by itself, and refuses a tree behind its upstream, naming the count and the fix', async () => {
+    const r = remoteSetup();
+    r.pushFromOther('b');
+    r.pushFromOther('c');
+    // The card's clone has NOT fetched: only a check that fetches can know.
+    const cid = await card(r.work);
+    const res = await validate(cid);
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    const v = verdict(res);
+    expect(v).toMatchObject({ outcome: 'fail', blocking: true });
+    expect(v.detail).toMatch(/2 commits? behind/);
+    expect(v.detail).toContain('git pull --ff-only');
+  });
+
+  it('passes a tree only ahead of its upstream: unpushed work is fine', async () => {
+    const r = remoteSetup();
+    r.commitHere('local');
+    const cid = await card(r.work);
+    const res = await validate(cid);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await recorded(cid)).detail).toMatch(/1 commit ahead/);
+  });
+
+  it('refuses a tree that has diverged from its upstream', async () => {
+    const r = remoteSetup();
+    r.pushFromOther('theirs');
+    r.commitHere('mine');
+    const cid = await card(r.work);
+    const res = await validate(cid);
+    expect(res.status).toBe(422);
+    expect(verdict(res)).toMatchObject({ outcome: 'fail', blocking: true });
+    expect(verdict(res).detail).toMatch(/diverged/);
+  });
+
+  it('passes a tree with no remote at all: nothing to be in sync with', async () => {
+    const solo = echoRepo(A, 'agenfk-sync-solo-');
+    dirs.push(solo);
+    const cid = await card(solo);
+    const res = await validate(cid);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await recorded(cid)).detail).toMatch(/no upstream|no remote/);
+  });
+
+  it('refuses a fresh branch with no upstream that sits behind the remote default branch: a stale base (review)', async () => {
+    const r = remoteSetup();
+    r.pushFromOther('b');
+    // A card branch cut locally from the (stale) HEAD: it tracks nothing.
+    gitSync(r.work, 'checkout', '-q', '-b', 'feat/card-1');
+    const cid = await card(r.work);
+    const res = await validate(cid);
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(verdict(res).detail).toMatch(/tracks no remote branch and sits 1 commit behind origin\/main/);
+  });
+
+  it('does not judge the base of a branch with no upstream that has its own commits', async () => {
+    const r = remoteSetup();
+    r.pushFromOther('b');
+    gitSync(r.work, 'checkout', '-q', '-b', 'feat/card-2');
+    r.commitHere('mine');
+    const cid = await card(r.work);
+    const res = await validate(cid);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await recorded(cid)).detail).toMatch(/of its own/);
+  });
+
+  it('runs in the background: a fetch never holds the request (review)', async () => {
+    const r = remoteSetup();
+    const cid = await card(r.work);
+    const v = await agent().post(`/items/${cid}/validate`).set(internal()).send({ evidence: 'ok', async: true });
+    expect(v.status, JSON.stringify(v.body)).toBe(202);
+  });
+
+  it('only warns when the remote cannot be reached: offline work is not stranded', async () => {
+    const r = remoteSetup();
+    gitSync(r.work, 'remote', 'set-url', 'origin', '/nonexistent/agenfk-remote.git');
+    const cid = await card(r.work);
+    const res = await validate(cid);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await recorded(cid)).toMatchObject({ outcome: 'unavailable', blocking: false });
+  });
+});

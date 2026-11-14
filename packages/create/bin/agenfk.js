@@ -7,6 +7,42 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+// The tar command for the tar this machine will run (GitHub #208) - the rule
+// of bin/tar-flags.mjs, copied, because this published package is a single
+// file. The bsdtar Windows ships (System32\tar.exe, what cmd and PowerShell
+// find) takes `C:\...` as it is and rejects --force-local. GNU tar (Git
+// Bash's) reads `C:` as a remote host, so it needs --force-local, and it
+// unescapes backslashes in -C (`...\Temp\tf-x` becomes a TAB), so it gets
+// forward slashes. Off Windows the command is what it always was.
+function isGnuTar(versionText) {
+  return /\bGNU tar\b/.test(String(versionText || ''));
+}
+function tarExtractCommand(platform, versionText, archive, dir) {
+  if (platform === 'win32' && isGnuTar(versionText)) {
+    const fwd = (p) => p.replace(/\\/g, '/');
+    return `tar --force-local -xzf "${fwd(archive)}" -C "${fwd(dir)}"`;
+  }
+  return `tar -xzf "${archive}" -C "${dir}"`;
+}
+let tarVersion;
+function tarVersionText() {
+  if (process.platform !== 'win32') return '';
+  if (tarVersion === undefined) {
+    try {
+      tarVersion = execSync('tar --version', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    } catch {
+      tarVersion = '';
+    }
+  }
+  return tarVersion;
+}
+
+// Required rather than executed (its spec reads the rule above): run nothing.
+if (require.main !== module) {
+  module.exports = { isGnuTar, tarExtractCommand };
+  return;
+}
+
 const REPO_URL = 'https://github.com/cglab-public/agenfk.git';
 const INSTALL_DIR = path.join(os.homedir(), '.agenfk-system');
 
@@ -29,7 +65,7 @@ ${RESET}`);
 console.log(`${BLUE}=== AgEnFK Installer ===${RESET}\n`);
 
 // Check git is available
-const gitCheck = spawnSync('git', ['--version'], { encoding: 'utf8' });
+const gitCheck = spawnSync('git', ['--version'], { encoding: 'utf8', windowsHide: true });
 if (gitCheck.status !== 0) {
   console.error('Error: git is required but not found. Please install git and try again.');
   process.exit(1);
@@ -38,29 +74,77 @@ if (gitCheck.status !== 0) {
 const shouldRebuild = process.argv.includes('--rebuild');
 const REPO_NAME = 'cglab-public/agenfk';
 
-// Fetch latest release tag — curl (no auth) first, gh CLI as fallback
+// The stable release to install (BUG 4bd98e16). GitHub's /releases/latest and
+// `gh release view` pick by DATE and include hub image releases (`hub-v*`)
+// published without --prerelease, so either is only one candidate beside the
+// release list; the newest framework stable by VERSION wins. Same rule as the
+// CLI's newestChannelRelease and bin/version-utils.mjs's newestChannelTag -
+// copied, because this published package is a single file.
+function parseSemver(v) {
+  const m = String(v || '').trim().replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+  return m ? { core: [+m[1], +m[2], +m[3]], pre: m[4] ? m[4].split('.') : [] } : null;
+}
+function compareSemver(a, b) {
+  const pa = parseSemver(a), pb = parseSemver(b);
+  for (let i = 0; i < 3; i += 1) if (pa.core[i] !== pb.core[i]) return pa.core[i] - pb.core[i];
+  if (!pa.pre.length || !pb.pre.length) return pb.pre.length - pa.pre.length;
+  for (let i = 0; i < Math.max(pa.pre.length, pb.pre.length); i += 1) {
+    const x = pa.pre[i], y = pb.pre[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    if (x === y) continue;
+    const xn = /^\d+$/.test(x), yn = /^\d+$/.test(y);
+    if (xn && yn) return Number(x) - Number(y);
+    if (xn !== yn) return xn ? -1 : 1;
+    return x.localeCompare(y);
+  }
+  return 0;
+}
+function newestStableTag(tags) {
+  const stable = tags.filter((t) => t && !/^hub-v/i.test(t) && parseSemver(t) && parseSemver(t).pre.length === 0);
+  return stable.sort((a, b) => compareSemver(b, a))[0] || null;
+}
 function fetchLatestTag(repo) {
-  try {
-    const json = execSync(
-      `curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`,
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-    );
-    const tag = JSON.parse(json).tag_name;
-    if (tag) return tag;
-  } catch {}
-  // Fallback: gh CLI
-  return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
+  // GitHub's own answer first, the list best-effort (the CLI's order): a list
+  // that fails never throws away a good /releases/latest. maxBuffer: the
+  // 100-release list grows with every release's notes; the default is 1 MB.
+  const run = (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024, windowsHide: true });
+  const curlJson = (url) => JSON.parse(run(`curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`));
+  const viaApi = () => {
+    const tags = [];
+    try { tags.push(curlJson(`https://api.github.com/repos/${repo}/releases/latest`).tag_name); } catch { /* the list decides */ }
+    try {
+      const list = curlJson(`https://api.github.com/repos/${repo}/releases?per_page=100`);
+      for (const r of Array.isArray(list) ? list : []) if (r && !r.prerelease) tags.push(r.tag_name);
+    } catch { /* latest decides */ }
+    return newestStableTag(tags);
+  };
+  const viaGh = () => {
+    const tags = [];
+    try { tags.push(run(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`).trim()); } catch { /* the list decides */ }
+    try {
+      const rows = JSON.parse(run(`gh release list --repo ${repo} --limit 100 --exclude-drafts --json tagName,isPrerelease`) || '[]');
+      for (const r of rows) if (r && !r.isPrerelease) tags.push(r.tagName);
+    } catch { /* the viewed tag decides */ }
+    return newestStableTag(tags);
+  };
+  const tag = viaApi() || viaGh();
+  if (!tag) {
+    throw new Error(`Could not resolve a stable framework release for ${repo}: `
+      + 'the GitHub API and gh both failed, or the repo lists only hub releases.');
+  }
+  return tag;
 }
 
 // Download release asset — direct curl URL (no auth) first, gh CLI as fallback
 function downloadAsset(repo, tag, pattern, outputPath) {
   const url = `https://github.com/${repo}/releases/download/${tag}/${pattern}`;
   try {
-    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit' });
+    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
     return;
   } catch {}
   // Fallback: gh CLI
-  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
+  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
 }
 
 // Archive kept alive until install.mjs has run. `tar -xzf` deletes nothing, so
@@ -88,13 +172,13 @@ if (fs.existsSync(INSTALL_DIR)) {
 
   if (isGitRepo) {
     console.log('Pulling latest changes...');
-    execSync('git pull', { cwd: INSTALL_DIR, stdio: 'inherit' });
+    execSync('git pull', { cwd: INSTALL_DIR, stdio: 'inherit', windowsHide: true });
   } else if (!shouldRebuild) {
     console.log(`${GREEN}Updating pre-built binary from GitHub...${RESET}`);
     try {
       const latestTag = fetchLatestTag(REPO_NAME);
       downloadAsset(REPO_NAME, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
-      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
+      execSync(tarExtractCommand(process.platform, tarVersionText(), path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'), INSTALL_DIR), { stdio: 'inherit', windowsHide: true });
       distTarball = path.join(INSTALL_DIR, 'agenfk-dist.tar.gz');
     } catch (e) {
       console.error(`Failed to update pre-built binary: ${e.message}`);
@@ -112,17 +196,17 @@ if (fs.existsSync(INSTALL_DIR)) {
     try {
       const latestTag = fetchLatestTag(REPO_NAME);
       downloadAsset(REPO_NAME, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
-      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
+      execSync(tarExtractCommand(process.platform, tarVersionText(), path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'), INSTALL_DIR), { stdio: 'inherit', windowsHide: true });
       fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
     } catch (e) {
       try { fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')); } catch { /* not there */ }
       console.error(`Failed to download pre-built binary: ${e.message}`);
       console.log(`${BLUE}Falling back to git clone...${RESET}`);
-      execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+      execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true, windowsHide: true });
     }
   } else {
     console.log(`Cloning AgEnFK to ${INSTALL_DIR} ...`);
-    execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+    execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true, windowsHide: true });
   }
 }
 
@@ -135,6 +219,7 @@ try {
     // Path via env, never interpolated into the command string: a filesystem
     // path is not shell-safe (see scripts/install.mjs).
     env: { ...process.env, ...(tarballEnv ? { AGENFK_DIST_TARBALL: tarballEnv } : {}) },
+    windowsHide: true,
   });
 } finally {
   if (distTarball) { try { fs.unlinkSync(distTarball); } catch { /* already gone */ } }

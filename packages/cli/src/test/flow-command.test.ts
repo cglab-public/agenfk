@@ -41,9 +41,6 @@ vi.mock('child_process', () => ({
   spawnSync: vi.fn(),
   default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
 }));
-vi.mock('figlet', () => ({
-  default: { textSync: vi.fn().mockReturnValue('AgEnFK') },
-}));
 
 // Mock inquirer
 const mockInquirerPrompt = vi.fn();

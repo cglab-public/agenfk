@@ -3,10 +3,22 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flows-active-scopes-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -18,10 +30,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 const sampleDef = (name: string) => ({
   name,
@@ -34,7 +42,7 @@ const sampleDef = (name: string) => ({
 });
 
 async function seedFlow(app: any, cookie: string, name: string): Promise<string> {
-  const r = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+  const r = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
     .send({ definition: sampleDef(name) });
   return r.body.id;
 }
@@ -42,7 +50,7 @@ async function seedFlow(app: any, cookie: string, name: string): Promise<string>
 async function assign(app: any, cookie: string, scope: string, targetId: string | null, flowId: string | null) {
   const body: any = { scope, flowId };
   if (targetId !== null) body.targetId = targetId;
-  return supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie).send(body);
+  return supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie).send(body);
 }
 
 describe('GET /v1/flows/active — multi-scope resolution', () => {
@@ -64,6 +72,8 @@ describe('GET /v1/flows/active — multi-scope resolution', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     cookie = await loginAs(app, 'admin@x', 'longenough1');
@@ -84,7 +94,7 @@ describe('GET /v1/flows/active — multi-scope resolution', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -93,7 +103,7 @@ describe('GET /v1/flows/active — multi-scope resolution', () => {
     const orgFlow = await seedFlow(app, cookie, 'Org Flow');
     await assign(app, cookie, 'org', null, orgFlow);
 
-    const r = await supertest(app).get('/v1/flows/active').set('Authorization', `Bearer ${tokenNoInstall}`);
+    const r = await supertest(__server).get('/v1/flows/active').set('Authorization', `Bearer ${tokenNoInstall}`);
     expect(r.status).toBe(200);
     expect(r.body.flow.id).toBe(orgFlow);
     expect(r.body.scope).toBe('org');
@@ -106,12 +116,12 @@ describe('GET /v1/flows/active — multi-scope resolution', () => {
     await assign(app, cookie, 'org', null, orgFlow);
     await assign(app, cookie, 'project', 'project-1', projFlow);
 
-    const matched = await supertest(app).get('/v1/flows/active?projectId=project-1').set('Authorization', `Bearer ${tokenNoInstall}`);
+    const matched = await supertest(__server).get('/v1/flows/active?projectId=project-1').set('Authorization', `Bearer ${tokenNoInstall}`);
     expect(matched.body.flow.id).toBe(projFlow);
     expect(matched.body.scope).toBe('project');
     expect(matched.body.targetId).toBe('project-1');
 
-    const unmatched = await supertest(app).get('/v1/flows/active?projectId=project-2').set('Authorization', `Bearer ${tokenNoInstall}`);
+    const unmatched = await supertest(__server).get('/v1/flows/active?projectId=project-2').set('Authorization', `Bearer ${tokenNoInstall}`);
     expect(unmatched.body.flow.id).toBe(orgFlow);
     expect(unmatched.body.scope).toBe('org');
   });
@@ -124,7 +134,7 @@ describe('GET /v1/flows/active — multi-scope resolution', () => {
     await assign(app, cookie, 'project', 'project-1', projFlow);
     await assign(app, cookie, 'installation', 'install-1', instFlow);
 
-    const r = await supertest(app).get('/v1/flows/active?projectId=project-1').set('Authorization', `Bearer ${tokenInstall1}`);
+    const r = await supertest(__server).get('/v1/flows/active?projectId=project-1').set('Authorization', `Bearer ${tokenInstall1}`);
     expect(r.body.flow.id).toBe(instFlow);
     expect(r.body.scope).toBe('installation');
     expect(r.body.targetId).toBe('install-1');
@@ -136,7 +146,7 @@ describe('GET /v1/flows/active — multi-scope resolution', () => {
     await assign(app, cookie, 'org', null, orgFlow);
     await assign(app, cookie, 'project', 'project-1', projFlow);
 
-    const r = await supertest(app).get('/v1/flows/active?projectId=project-1').set('Authorization', `Bearer ${tokenInstall2}`);
+    const r = await supertest(__server).get('/v1/flows/active?projectId=project-1').set('Authorization', `Bearer ${tokenInstall2}`);
     expect(r.body.flow.id).toBe(projFlow);
     expect(r.body.scope).toBe('project');
   });
@@ -146,18 +156,18 @@ describe('GET /v1/flows/active — multi-scope resolution', () => {
     const projFlow = await seedFlow(app, cookie, 'Proj');
     await assign(app, cookie, 'project', 'p1', projFlow);
 
-    const first = await supertest(app).get('/v1/flows/active?projectId=p1').set('Authorization', `Bearer ${tokenNoInstall}`);
+    const first = await supertest(__server).get('/v1/flows/active?projectId=p1').set('Authorization', `Bearer ${tokenNoInstall}`);
     const projEtag = first.headers.etag;
     expect(projEtag).toContain(':project:p1');
 
     // Same scope+version → 304
-    const cached = await supertest(app).get('/v1/flows/active?projectId=p1')
+    const cached = await supertest(__server).get('/v1/flows/active?projectId=p1')
       .set('Authorization', `Bearer ${tokenNoInstall}`).set('If-None-Match', projEtag);
     expect(cached.status).toBe(304);
 
     // Switch to org-fallback (no projectId) — different scope, different ETag
     await assign(app, cookie, 'org', null, orgFlow);
-    const orgResp = await supertest(app).get('/v1/flows/active')
+    const orgResp = await supertest(__server).get('/v1/flows/active')
       .set('Authorization', `Bearer ${tokenNoInstall}`).set('If-None-Match', projEtag);
     expect(orgResp.status).toBe(200);
     expect(orgResp.headers.etag).toContain(':org:');
@@ -165,7 +175,7 @@ describe('GET /v1/flows/active — multi-scope resolution', () => {
   });
 
   it('returns { flow: null } when no matching assignment exists at any scope', async () => {
-    const r = await supertest(app).get('/v1/flows/active?projectId=anything').set('Authorization', `Bearer ${tokenNoInstall}`);
+    const r = await supertest(__server).get('/v1/flows/active?projectId=anything').set('Authorization', `Bearer ${tokenNoInstall}`);
     expect(r.status).toBe(200);
     expect(r.body).toEqual({ flow: null });
   });
@@ -177,7 +187,7 @@ describe('GET /v1/flows/active — multi-scope resolution', () => {
     await assign(app, cookie, 'installation', 'install-1', instFlow);
 
     // tokenNoInstall has NULL installation_id — installation overrides should NOT match.
-    const r = await supertest(app).get('/v1/flows/active').set('Authorization', `Bearer ${tokenNoInstall}`);
+    const r = await supertest(__server).get('/v1/flows/active').set('Authorization', `Bearer ${tokenNoInstall}`);
     expect(r.body.flow.id).toBe(orgFlow);
     expect(r.body.scope).toBe('org');
   });

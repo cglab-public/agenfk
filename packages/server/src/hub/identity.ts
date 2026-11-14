@@ -11,6 +11,7 @@ function readGitConfig(cwd: string, key: string): string | null {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 1500,
+      windowsHide: true,
     }).trim();
     return out || null;
   } catch {

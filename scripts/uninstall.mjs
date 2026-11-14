@@ -3,17 +3,23 @@ import { existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import readline from 'readline';
-import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import {
     HOOK_VARIANTS,
+    OPENCODE_PLUGIN_VARIANTS,
+    hookBinFilenames,
     stripAgenfkHookEntries,
     resolveConfirmation,
     summarizeResults,
   isAgenfkOwnedEntry,
   isAgenfkOwnedFile,
   isAgenfkOwnedArtifact,
+  isAgenfkHomeRuntimeEntry,
+  topLevelEntryWithin,
+  isAgenfkCliWrapper,
+  SYSTEM_DIR_DATA_ENTRY,
 } from './uninstall-helpers.mjs';
+import { runTool } from './client-cli.mjs';
 
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
@@ -23,10 +29,6 @@ const NC = '\x1b[0m';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
-
-function getCliCommand(name) {
-    return os.platform() === 'win32' ? `${name}.cmd` : name;
-}
 
 function getCursorMcpPath() {
     if (os.platform() === 'win32') {
@@ -109,6 +111,9 @@ async function run() {
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
     const rulesScopeArg = process.argv.find(arg => arg.startsWith('--rules-scope='))?.split('=')[1];
     const rulesOnly = process.argv.includes('--rules-only');
+    // #214: the user's data (database, backups, hub enrolment) is kept unless
+    // this is passed.
+    const purgeData = process.argv.includes('--purge-data');
     const projectDir = rulesOnly ? process.cwd() : rootDir;
 
     // Hoisted to function scope so every step can use it. Previously declared
@@ -151,12 +156,15 @@ async function run() {
     }
 
     // Read rulesScope from config to know where rules were installed
+    // (and dbPath, so the board database is kept wherever it lives — #214)
     let rulesScope = rulesScopeArg || '';
+    let configuredDbPath = '';
     const agenfkConfigPath = path.join(os.homedir(), '.agenfk', 'config.json');
-    if (!rulesScope && existsSync(agenfkConfigPath)) {
+    if (existsSync(agenfkConfigPath)) {
         try {
             const cfg = JSON.parse(await fs.readFile(agenfkConfigPath, 'utf8'));
-            if (cfg.rulesScope) rulesScope = cfg.rulesScope;
+            if (!rulesScope && cfg.rulesScope) rulesScope = cfg.rulesScope;
+            if (typeof cfg.dbPath === 'string') configuredDbPath = cfg.dbPath;
         } catch {}
     }
     if (!rulesScope) rulesScope = 'global';
@@ -170,7 +178,7 @@ async function run() {
     if (!onlyPlatform) {
         console.log(`${YELLOW}This will remove:${NC}`);
         console.log("  - Slash commands from Claude Code, Opencode, and Gemini CLI");
-        console.log("  - Opencode skill + plugins (gatekeeper, mcp-enforcer, pr-hook)");
+        console.log("  - Opencode skill + plugins (gatekeeper, mcp-enforcer, pr-hook, airlock)");
         console.log("  - MCP server config from Claude Code, Opencode, Cursor, Codex, and Gemini CLI");
         console.log("  - Cursor workflow rules (agenfk.mdc) + afterShellExecution hook");
         console.log("  - Codex workflow rules (~/.codex/AGENTS.md) + PostToolUse hook");
@@ -178,7 +186,16 @@ async function run() {
         console.log("  - AgenFK workflow rules from ~/.claude/CLAUDE.md");
         console.log("  - AgenFK Pre/PostToolUse hooks from ~/.claude/settings.json");
         console.log("  - Hook scripts (gatekeeper, mcp-enforcer, pr-hook) from ~/.local/bin");
-        console.log("  - ~/.agenfk (config + verify token) and ~/.agenfk-system (the framework files)");
+        if (purgeData) {
+            console.log(`  - ${RED}--purge-data: ~/.agenfk and ~/.agenfk-system entirely, INCLUDING your data —${NC}`);
+            console.log(`    ${RED}the board database, every backup, the hub enrolment (hub.json) and installation-id${NC}`);
+        } else {
+            console.log("  - ~/.agenfk-system (the framework files) and the runtime files in ~/.agenfk");
+            console.log("");
+            console.log(`${GREEN}Kept:${NC} your data — the board database, backups, hub enrolment (hub.json),`);
+            console.log("  installation-id and config.json — so a reinstall picks up where you left off.");
+            console.log(`  To delete it as well, re-run with ${YELLOW}--purge-data${NC}.`);
+        }
         console.log("");
     }
 
@@ -324,10 +341,16 @@ async function run() {
     // 4. CLI symlink + all hook scripts in ~/.local/bin (#88 Bug 2: was gatekeeper-only)
     await step('~/.local/bin scripts (agenfk CLI + hooks)', !onlyPlatform, async () => {
         console.log(`${GREEN}[4] Removing agenfk CLI symlink and hook scripts from ~/.local/bin...${NC}`);
-        const suffix = os.platform() === 'win32' ? '.cmd' : '';
         let removed = false;
-        for (const name of ['agenfk', ...HOOK_VARIANTS]) {
-            const dest = path.join(localBinDir, `${name}${suffix}`);
+        // On Windows that is the .cmd shims AND the extensionless sh wrappers (#192).
+        for (const name of hookBinFilenames(os.platform())) {
+            const dest = path.join(localBinDir, name);
+            // #215: on Windows the extensionless `agenfk` goes only if it is our wrapper.
+            if (os.platform() === 'win32' && name === 'agenfk' && existsSync(dest)) {
+                let content = '';
+                try { content = await fs.readFile(dest, 'utf8'); } catch { /* a directory, or unreadable: not ours */ }
+                if (!isAgenfkCliWrapper(content)) continue;
+            }
             if (await rmIfExists(dest)) {
                 console.log(`  Removed: ${dest}`);
                 removed = true;
@@ -339,10 +362,9 @@ async function run() {
     // 5. MCP config — Claude Code
     await step('Claude Code MCP config', shouldRun('claude'), async () => {
         console.log(`${GREEN}[5] Removing Claude Code MCP config...${NC}`);
-        const claudeCmd = getCliCommand('claude');
-        const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' });
+        const claudeCheck = runTool('claude', ['--version'], { stdio: 'ignore' });
         if (claudeCheck.status === 0) {
-            spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
+            runTool('claude', ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
             console.log("  Removed: agenfk MCP from Claude Code");
             return true;
         }
@@ -367,12 +389,14 @@ async function run() {
         return false;
     });
 
-    // 6a. Opencode plugins (gatekeeper / mcp-enforcer / pr-hook) — #88 Bug 3
+    // 6a. Opencode plugins (gatekeeper / mcp-enforcer / pr-hook / airlock) — #88 Bug 3
     await step('Opencode plugins', shouldRun('opencode'), async () => {
         console.log(`${GREEN}[6a] Removing Opencode plugins...${NC}`);
         const pluginsDir = path.join(os.homedir(), '.config', 'opencode', 'plugins');
         let removed = false;
-        for (const variant of HOOK_VARIANTS) {
+        // Every plugin the installer writes (the airlock plugin has no Claude hook),
+        // plus the hook names an older installer may have left there.
+        for (const variant of new Set([...OPENCODE_PLUGIN_VARIANTS, ...HOOK_VARIANTS])) {
             const dest = path.join(pluginsDir, `${variant}.mjs`);
             if (await rmIfExists(dest)) {
                 console.log(`  Removed: ${dest}`);
@@ -415,10 +439,9 @@ async function run() {
     // 6c. MCP config — Codex
     await step('Codex MCP config', shouldRun('codex'), async () => {
         console.log(`${GREEN}[6c] Removing Codex MCP config...${NC}`);
-        const codexCmd = getCliCommand('codex');
-        const codexCheck = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' });
+        const codexCheck = runTool('codex', ['--version'], { stdio: 'ignore' });
         if (codexCheck.status === 0) {
-            spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
+            runTool('codex', ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
             console.log("  Removed: agenfk MCP from Codex");
             return true;
         }
@@ -429,10 +452,9 @@ async function run() {
     // 6d. MCP config — Gemini CLI
     await step('Gemini CLI MCP config', shouldRun('gemini'), async () => {
         console.log(`${GREEN}[6d] Removing Gemini CLI MCP config...${NC}`);
-        const geminiCmd = getCliCommand('gemini');
-        const geminiCheck = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' });
+        const geminiCheck = runTool('gemini', ['--version'], { stdio: 'ignore' });
         if (geminiCheck.status === 0) {
-            spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit' });
+            runTool('gemini', ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit' });
             console.log("  Removed: agenfk MCP from Gemini CLI");
             return true;
         }
@@ -532,11 +554,24 @@ async function run() {
         return;
     }
 
-    // 9. ~/.agenfk data dir (config.json + verify-token) — #88 Bug 3 (was token-only)
+    // 9. ~/.agenfk — #88 Bug 3 removed the whole directory, which took the
+    // user's data with it (#214). By default only the runtime entries go;
+    // --purge-data removes the directory as before.
     await step('~/.agenfk data dir', !onlyPlatform, async () => {
-        console.log(`${GREEN}[9] Removing ~/.agenfk data dir...${NC}`);
-        const removed = await rmIfExists(path.join(os.homedir(), '.agenfk'));
-        if (removed) console.log(`  Removed: ${path.join(os.homedir(), '.agenfk')}`);
+        const agenfkHome = path.join(os.homedir(), '.agenfk');
+        if (purgeData) {
+            console.log(`${GREEN}[9] Removing ~/.agenfk, data included (--purge-data)...${NC}`);
+            const removed = await rmIfExists(agenfkHome);
+            if (removed) console.log(`  Removed: ${agenfkHome}`);
+            return removed;
+        }
+        console.log(`${GREEN}[9] Removing runtime files from ~/.agenfk (your data is kept)...${NC}`);
+        let removed = false;
+        const entries = existsSync(agenfkHome) ? await fs.readdir(agenfkHome) : [];
+        for (const entry of entries.filter(isAgenfkHomeRuntimeEntry)) {
+            removed = (await rmIfExists(path.join(agenfkHome, entry))) || removed;
+        }
+        if (existsSync(agenfkHome)) console.log(`  Kept: ${agenfkHome}`);
         return removed;
     });
 
@@ -545,7 +580,7 @@ async function run() {
     await step('Claude settings.json hooks', shouldRun('claude'), async () => {
         console.log(`${GREEN}[10] Removing Pre/PostToolUse hooks from ~/.claude/settings.json...${NC}`);
         const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-        const changed = await stripHooksFromJsonFile(settingsPath, ['hooks.PreToolUse', 'hooks.PostToolUse']);
+        const changed = await stripHooksFromJsonFile(settingsPath, ['hooks.PreToolUse', 'hooks.PostToolUse', 'hooks.SessionEnd', 'hooks.Stop']);
         if (changed) console.log(`  Removed AgenFK hooks from ${settingsPath}`);
         return changed;
     });
@@ -556,7 +591,8 @@ async function run() {
         const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json');
         // Strip both the valid nested location (CGLAB-12) and the legacy top-level
         // key that pre-fix installs wrote, so either schema on disk is cleaned.
-        let changed = await stripHooksFromJsonFile(codexHooksPath, ['hooks.PostToolUse', 'PostToolUse']);
+        // GH-356: and the Airlock PreToolUse hook.
+        let changed = await stripHooksFromJsonFile(codexHooksPath, ['hooks.PostToolUse', 'PostToolUse', 'hooks.PreToolUse']);
         // The legacy top-level `PostToolUse` key is itself invalid Codex schema and
         // crashes Codex on startup. If stripping the AgenFK entry emptied it (the
         // common case — our old installer was the only writer), remove the key
@@ -598,9 +634,60 @@ async function run() {
             console.log("");
             console.log(`${RED}Removing ~/.agenfk-system...${NC}`);
             const systemDir = path.join(os.homedir(), '.agenfk-system');
-            const removed = await rmIfExists(systemDir);
-            if (removed) console.log(`  Removed: ${systemDir}`);
-            return removed;
+            // Never enumerate through a link: readdir follows it, and the loop
+            // below would delete inside its target (a developer's checkout).
+            // Removing the link alone is what a whole-directory rm always did -
+            // unless the board database is reached through it: unlinking would
+            // leave config.json's dbPath dangling, and the next install would
+            // open an empty board in a fresh directory there.
+            let systemStat = null;
+            try { systemStat = await fs.lstat(systemDir); } catch {}
+            if (!systemStat) return false;
+            if (systemStat.isSymbolicLink()) {
+                const dbThroughLink = !purgeData && (
+                    existsSync(path.join(systemDir, SYSTEM_DIR_DATA_ENTRY)) ||
+                    (configuredDbPath && topLevelEntryWithin(systemDir, path.resolve(configuredDbPath), path) !== null));
+                if (dbThroughLink) {
+                    console.log(`  Kept the link ${systemDir}: your board database is reached through it. Its target was not touched.`);
+                    return false;
+                }
+                await fs.unlink(systemDir);
+                console.log(`  Removed the link ${systemDir}; its target was not touched`);
+                return true;
+            }
+            // A default npx install keeps the board database in here (#214):
+            // in .agenfk/, or wherever config.json's dbPath points. Remove the
+            // framework around it; keep it unless --purge-data. Each candidate
+            // is checked as written and as resolved, so a symlinked database
+            // directory keeps its target too.
+            const keep = new Set();
+            if (!purgeData) {
+                const realSystemDir = await fs.realpath(systemDir);
+                for (const candidate of [path.join(systemDir, SYSTEM_DIR_DATA_ENTRY), configuredDbPath].filter(Boolean)) {
+                    const literal = topLevelEntryWithin(systemDir, path.resolve(candidate), path);
+                    if (literal && existsSync(path.join(systemDir, literal))) keep.add(literal);
+                    let real = null;
+                    try { real = await fs.realpath(candidate); } catch {}
+                    const resolved = real && topLevelEntryWithin(realSystemDir, real, path);
+                    if (resolved) keep.add(resolved);
+                }
+            }
+            if (keep.size === 0) {
+                const removed = await rmIfExists(systemDir);
+                if (removed) console.log(`  Removed: ${systemDir}`);
+                return removed;
+            }
+            // A database file kept at the top level keeps its SQLite sidecars:
+            // in WAL mode the -wal file holds committed transactions.
+            for (const entry of [...keep]) {
+                for (const suffix of ['-wal', '-shm', '-journal']) keep.add(`${entry}${suffix}`);
+            }
+            for (const entry of await fs.readdir(systemDir)) {
+                if (keep.has(entry)) continue;
+                await fs.rm(path.join(systemDir, entry), { recursive: true, force: true });
+            }
+            console.log(`  Removed the framework files; kept your board database in ${[...keep].filter(e => existsSync(path.join(systemDir, e))).map(e => path.join(systemDir, e)).join(', ')}`);
+            return true;
         });
         finish(`${GREEN}AgenFK uninstalled. Restart your AI editor to complete the removal.${NC}`);
     } else {

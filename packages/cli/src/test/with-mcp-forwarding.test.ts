@@ -31,15 +31,14 @@ vi.mock('fs', () => ({
   existsSync: mockExistsSync,
   readFileSync: mockReadFileSync,
   writeFileSync: vi.fn(),
-  mkdirSync: vi.fn(),
-  default: { existsSync: mockExistsSync, readFileSync: mockReadFileSync, writeFileSync: vi.fn(), mkdirSync: vi.fn() },
+  mkdirSync: vi.fn(), chmodSync: vi.fn(), renameSync: vi.fn(), unlinkSync: vi.fn(),
+  default: { existsSync: mockExistsSync, readFileSync: mockReadFileSync, writeFileSync: vi.fn(), mkdirSync: vi.fn(), chmodSync: vi.fn(), renameSync: vi.fn(), unlinkSync: vi.fn() },
 }));
 vi.mock('axios');
 vi.mock('child_process', () => ({
   execSync: vi.fn(), spawn: vi.fn(), spawnSync: mockSpawnSync,
   default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: mockSpawnSync },
 }));
-vi.mock('figlet', () => ({ default: { textSync: vi.fn().mockReturnValue('AgEnFK') } }));
 
 import { program } from '../index';
 

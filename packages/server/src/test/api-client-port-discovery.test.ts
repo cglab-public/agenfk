@@ -69,7 +69,7 @@ describe('MCP api client port discovery', () => {
     await serverA.close();
     await serverB.close();
     vi.mocked(os.homedir).mockRestore();
-    try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
   });
 
   beforeEach(() => {

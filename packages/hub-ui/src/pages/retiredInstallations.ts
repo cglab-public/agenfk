@@ -50,7 +50,7 @@ export function countRetired(rows: RetirableRowLike[]): number {
 export function retireConfirmMessage(installationId: string): string {
   return (
     `Retire ${installationId}? Its API keys are revoked permanently and any pending ` +
-    `upgrade or repoint work for it is cancelled, so campaign boards can finish. ` +
+    `upgrade or address-change work for it is cancelled, so it stops holding those up. ` +
     `Historical events and metrics are kept — they belong to the person, not the machine. ` +
     `Hiding it is reversible; the revoked keys are not, so the machine would have to re-join.`
   );

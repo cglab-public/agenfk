@@ -28,6 +28,7 @@
  * Same server message feeds the CLI (`agenfk verify`) and MCP
  * `validate_progress`, so fixing it here fixes both clients.
  */
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -42,7 +43,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./verify-diagnostics-test-db.sqlite');
+const TEST_DB = testDbPath('verify-diagnostics-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
@@ -54,13 +55,14 @@ const LOG_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-verifytest-'));
 setVerifyLogRootForTests(LOG_ROOT);
 
 // Import AFTER the env var so storage lands in the test DB.
-import { app, initStorage, VERIFY_TOKEN, getVerifyLogRoot, setVerifyLogRootForTests } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, getVerifyLogRoot, setVerifyLogRootForTests, storage } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 /** Item log dir for one item, under the temp root. */
 const itemLogDir = (itemId: string) => path.join(getVerifyLogRoot(), itemId);
 const dbLogsDir = () => path.join(path.dirname(TEST_DB), 'logs');
 
-const rmrf = (p: string) => { if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true }); };
+const rmrf = (p: string) => { if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); };
 /** Empty the log root without deleting the root itself (other tests hold it). */
 const clearLogRoot = () => {
   const root = getVerifyLogRoot();
@@ -70,8 +72,9 @@ const clearLogRoot = () => {
 
 const setupItem = async (name: string) => {
   const p = (await request(app).post('/projects').send({ name })).body;
+  await bindRoleLessDefaultFlow(storage, p.id);
   const item = (await request(app).post('/items').send({ type: 'TASK', title: name, projectId: p.id })).body;
-  await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+  await storage.updateItem(item.id, { status: 'IN_PROGRESS' } as any);
   return { p, item };
 };
 
@@ -83,15 +86,12 @@ const FAILING_NOISE =
   `node -e "for (let i=1;i<=60;i++) console.log('noise line ' + i); console.log('THE_REAL_LAST_LINE'); process.exit(1)"`;
 
 beforeAll(async () => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
 });
 
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
   rmrf(LOG_ROOT);
   // process.env is process-global and vitest reuses workers: leaving this set
   // would redirect a sibling test file that expects the default root.
@@ -127,9 +127,12 @@ describe('POST /items/:id/validate — failure diagnostics (BUG b233143b)', () =
       .send({ command: 'this-binary-does-not-exist-agenfk' });
 
     expect(res.status).toBe(422);
-    // 127 is "command not found" from the shell. Reported as itself, so a broken
-    // PATH or a missing script is not misread as a red test suite.
-    expect(res.body.message).toMatch(/exit code\D*127/);
+    // 127 is "command not found" from sh. Reported as itself, so a broken PATH or
+    // a missing script is not misread as a red test suite. cmd.exe answers 1, a
+    // red suite's code, so there the report names the command it could not find (#208).
+    expect(res.body.message).toMatch(process.platform === 'win32'
+      ? /exit code 1\b.*this-binary-does-not-exist-agenfk.*not found/
+      : /exit code\D*127/);
   });
 
   it('names the runtime cap when the command was killed, not a plain failure', async () => {
@@ -390,7 +393,9 @@ describe('POST /items/:id/validate — review findings (BUG b233143b)', () => {
     expect(elapsed).toBeLessThan(6000);
   }, 25000);
 
-  it('names the signal when the command dies by one, instead of "exit code null"', async () => {
+  // POSIX signals and sh's `exec`: Windows has neither - a process there ends
+  // with an exit code, which the other tests here cover (#208).
+  it.skipIf(process.platform === 'win32')('names the signal when the command dies by one, instead of "exit code null"', async () => {
     if (!VERIFY_TOKEN) return;
     // An OOM kill is ordinary on a constrained machine. "exit code null" is the
     // least informative thing this line could produce.
@@ -472,8 +477,9 @@ describe('DELETE /projects/:id — purges verify logs with the project (BUG b233
   it('removes the item log directories that the hard delete would otherwise orphan', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PurgeProject' })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'x', projectId: p.id })).body;
-    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(item.id, { status: 'IN_PROGRESS' } as any);
 
     await request(app)
       .post(`/items/${item.id}/validate`)

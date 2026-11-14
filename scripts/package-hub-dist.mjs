@@ -35,6 +35,7 @@ async function run() {
     const include = [
         'package.json',
         'package-lock.json',
+        'LICENSE',
         'packages/core/package.json',
         'packages/core/dist/',
         'packages/hub/package.json',

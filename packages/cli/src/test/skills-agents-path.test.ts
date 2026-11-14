@@ -19,6 +19,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { runInstall, runUninstall, makeHome, cleanupHome, type RunResult } from './helpers/runInstaller';
+import { withSkillName } from '../../../../scripts/install-helpers.mjs';
 
 describe('install.mjs — installs skills + commands to the expected dirs', () => {
   let r: RunResult;
@@ -69,5 +70,25 @@ describe('uninstall.mjs — removes ~/.agents/skills/agenfk*', () => {
       ? readdirSync(uninstall.p('.agents', 'skills')).filter((n) => n.startsWith('agenfk'))
       : [];
     expect(remaining).toHaveLength(0);
+  });
+});
+
+// The installed file above carries the checkout's line ending: CRLF on a Windows
+// checkout (core.autocrlf), LF elsewhere. Both are pinned here on every OS.
+describe('withSkillName — the name injection, in either line ending', () => {
+  it('injects the name after an LF opening fence', () => {
+    expect(withSkillName('---\ndescription: x\n---\nbody\n', 'agenfk'))
+      .toBe('---\nname: agenfk\ndescription: x\n---\nbody\n');
+  });
+
+  it('injects the name after a CRLF opening fence, in CRLF', () => {
+    expect(withSkillName('---\r\ndescription: x\r\n---\r\nbody\r\n', 'agenfk'))
+      .toBe('---\r\nname: agenfk\r\ndescription: x\r\n---\r\nbody\r\n');
+  });
+
+  it('leaves a file that already has a name, or has no frontmatter, as it is', () => {
+    const named = '---\r\nname: other\r\n---\r\n';
+    expect(withSkillName(named, 'agenfk')).toBe(named);
+    expect(withSkillName('# no frontmatter\n', 'agenfk')).toBe('# no frontmatter\n');
   });
 });

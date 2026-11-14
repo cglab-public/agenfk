@@ -9,25 +9,102 @@
 
 // Every hook variant the installer writes. Used both for bin removal and for
 // filtering hook entries out of every client's settings/hooks file.
-export const HOOK_VARIANTS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook'];
+export const HOOK_VARIANTS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook'];
 
 // Bin filenames the installer drops into ~/.local/bin. The `agenfk` CLI symlink
-// plus all three hook variants. On Windows each is a `.cmd` shim.
+// plus all three hook variants. On Windows each is a `.cmd` shim, and each also
+// has an extensionless `#!/bin/sh` wrapper: the hooks' is what Claude Code's Git
+// Bash hook command points at (issue #192), the CLI's is what Git Bash runs as
+// `agenfk` (install.mjs writes it under MinGW; #215 - it used to be left behind).
 export function hookBinFilenames(platform) {
-  const suffix = platform === 'win32' ? '.cmd' : '';
-  return ['agenfk', ...HOOK_VARIANTS].map((n) => `${n}${suffix}`);
+  if (platform === 'win32') {
+    return [
+      ...['agenfk', ...HOOK_VARIANTS].map((n) => `${n}.cmd`),
+      'agenfk',
+      ...HOOK_VARIANTS,
+    ];
+  }
+  return ['agenfk', ...HOOK_VARIANTS];
 }
+
+// What a default uninstall removes from ~/.agenfk (#214). Everything else in
+// that directory is the user's data — the database, backup/, hub.json (hub
+// enrolment), installation-id, config.json (which carries dbPath, so a
+// reinstall finds the board again), the hub deadletter, stored tokens — and
+// is kept unless --purge-data is passed. Listing what goes rather than what
+// stays is deliberate: a state file added later is kept by default instead of
+// silently deleted.
+export const AGENFK_HOME_RUNTIME_ENTRIES = [
+  'verify-token',
+  'server-port',
+  'active-work',
+  'active-work.json',
+  'claude-runs.json',
+  'upgrade-tier-cache.json',
+  'bin',
+  // The release commands' gatekeeper bypass: honoured for five minutes, so a
+  // quick reinstall would otherwise come back with enforcement off.
+  'skip-gatekeeper',
+];
+
+// True for an entry of ~/.agenfk that a default uninstall removes: the list
+// above, plus the run hook's write-then-rename temp file (claude-runs.json.<pid>)
+// that an interrupted hook leaves behind.
+export function isAgenfkHomeRuntimeEntry(name) {
+  return AGENFK_HOME_RUNTIME_ENTRIES.includes(name) || /^claude-runs\.json\.\d+$/.test(name);
+}
+
+// The first path segment of `target` below `root`, or null when `target` is
+// not inside `root`. Used to keep the ~/.agenfk-system entry that holds the
+// board database when the rest of that directory is removed.
+export function topLevelEntryWithin(root, target, pathMod) {
+  const rel = pathMod.relative(root, target);
+  // `..` exactly or `..<sep>…` is outside; a name like `..boards` is inside.
+  if (!rel || rel === '..' || rel.startsWith(`..${pathMod.sep}`) || pathMod.isAbsolute(rel)) return null;
+  return rel.split(pathMod.sep)[0];
+}
+
+// The directory under ~/.agenfk-system that holds the board database on a
+// default npx install (install.mjs: dbPath = <rootDir>/.agenfk/db.sqlite).
+// A default uninstall removes the framework around it and keeps it.
+export const SYSTEM_DIR_DATA_ENTRY = '.agenfk';
+
+// The Windows extensionless `agenfk` is ours only when it is the wrapper
+// install.mjs writes under MinGW: `#!/bin/sh` then `node "<...>/agenfk.js" "$@"`.
+// A non-MinGW install never writes one, so a file of that name there may be the
+// user's own and is left alone (#215 review).
+export function isAgenfkCliWrapper(content) {
+  return /^#!\/bin\/sh\r?\nnode "[^"]*agenfk\.js" "\$@"\s*$/.test(String(content));
+}
+
+// Not every hook has an Opencode plugin. The installer copies one only where a
+// `bin/<name>-opencode.mjs` source exists, and agenfk-run-hook has none — it is
+// a Claude Code PostToolUse hook. Deriving this list from HOOK_VARIANTS made the
+// uninstaller claim a plugin that is never written; harmless at runtime, because
+// removal is a no-op, but it is an assertion about the installed state and it
+// was false. The test cross-checks this against bin/*-opencode.mjs, so adding a
+// plugin without adding it here fails rather than silently leaking on uninstall.
+export const OPENCODE_PLUGIN_VARIANTS = [
+  'agenfk-gatekeeper',
+  'agenfk-mcp-enforcer',
+  'agenfk-pr-hook',
+  'agenfk-airlock',
+];
 
 // Opencode plugin filenames the installer copies into ~/.config/opencode/plugins.
 export function opencodePluginFilenames() {
-  return HOOK_VARIANTS.map((n) => `${n}.mjs`);
+  return OPENCODE_PLUGIN_VARIANTS.map((n) => `${n}.mjs`);
 }
 
 // True if a single hook entry (from any client's hook array) references an AgenFK
 // hook script. JSON.stringify mirrors how the installer itself matches entries.
+// GH-356: Codex's Airlock PreToolUse hook is AgEnFK's too. It is not a HOOK_VARIANT: those are the
+// hooks registered in Claude Code's settings, and a sandboxed claude gets this one from the launcher.
+export const AIRLOCK_HOOK_MARKER = 'agenfk-airlock-hook';
+
 export function isAgenfkHookEntry(entry) {
   const json = JSON.stringify(entry);
-  return HOOK_VARIANTS.some((marker) => json.includes(marker));
+  return [...HOOK_VARIANTS, AIRLOCK_HOOK_MARKER].some((marker) => json.includes(marker));
 }
 
 // Remove every AgenFK hook entry from a client hook array, returning a new array.

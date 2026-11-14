@@ -7,6 +7,17 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-connect-test-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 const cleanup = () => {
@@ -30,22 +41,24 @@ describe('hub plug-and-play onboarding', () => {
       defaultOrgId: 'org',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookie = login.headers['set-cookie']?.[0] ?? '';
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   describe('device-code login', () => {
     it('start returns a deviceCode + userCode + verificationUri (no auth needed)', async () => {
-      const r = await supertest(app).post('/hub/device/start').send({});
+      const r = await supertest(__server).post('/hub/device/start').send({});
       expect(r.status).toBe(200);
       expect(typeof r.body.deviceCode).toBe('string');
       expect(r.body.deviceCode.length).toBeGreaterThan(20);
@@ -58,27 +71,27 @@ describe('hub plug-and-play onboarding', () => {
     });
 
     it('poll returns pending for an unapproved code', async () => {
-      const start = await supertest(app).post('/hub/device/start').send({});
-      const r = await supertest(app).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
+      const start = await supertest(__server).post('/hub/device/start').send({});
+      const r = await supertest(__server).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
       expect(r.status).toBe(200);
       expect(r.body.status).toBe('pending');
     });
 
     it('approve requires session', async () => {
-      const start = await supertest(app).post('/hub/device/start').send({});
-      const r = await supertest(app).post('/hub/device/approve').send({ userCode: start.body.userCode });
+      const start = await supertest(__server).post('/hub/device/start').send({});
+      const r = await supertest(__server).post('/hub/device/approve').send({ userCode: start.body.userCode });
       expect(r.status).toBe(401);
     });
 
     it('approve binds the orgId, then poll returns the installation token', async () => {
-      const start = await supertest(app).post('/hub/device/start').send({});
-      const approve = await supertest(app)
+      const start = await supertest(__server).post('/hub/device/start').send({});
+      const approve = await supertest(__server)
         .post('/hub/device/approve')
         .set('Cookie', cookie)
         .send({ userCode: start.body.userCode });
       expect(approve.status).toBe(200);
 
-      const poll = await supertest(app).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
+      const poll = await supertest(__server).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
       expect(poll.status).toBe(200);
       expect(poll.body.status).toBe('approved');
       expect(typeof poll.body.token).toBe('string');
@@ -87,7 +100,7 @@ describe('hub plug-and-play onboarding', () => {
     });
 
     it('approve with an unknown userCode returns 404', async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/hub/device/approve')
         .set('Cookie', cookie)
         .send({ userCode: 'ZZZZ-ZZZZ' });
@@ -95,7 +108,7 @@ describe('hub plug-and-play onboarding', () => {
     });
 
     it('poll with an unknown deviceCode returns 404', async () => {
-      const r = await supertest(app).post('/hub/device/poll').send({ deviceCode: 'nope' });
+      const r = await supertest(__server).post('/hub/device/poll').send({ deviceCode: 'nope' });
       expect(r.status).toBe(404);
     });
   });
@@ -120,12 +133,12 @@ describe('hub plug-and-play onboarding', () => {
     });
 
     it('create requires admin session', async () => {
-      const r = await supertest(app).post('/hub/invite/create').send({});
+      const r = await supertest(__server).post('/hub/invite/create').send({});
       expect(r.status).toBe(401);
     });
 
     it('admin creates an invite with a join command and signed token', async () => {
-      const r = await supertest(app).post('/hub/invite/create').set('Cookie', cookie).send({});
+      const r = await supertest(__server).post('/hub/invite/create').set('Cookie', cookie).send({});
       expect(r.status).toBe(200);
       expect(typeof r.body.inviteToken).toBe('string');
       expect(r.body.inviteToken.length).toBeGreaterThan(40);
@@ -135,11 +148,11 @@ describe('hub plug-and-play onboarding', () => {
     });
 
     it('joinCommand embeds the public hub URL so receivers do not need AGENFK_HUB_URL', async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/hub/invite/create')
         .set('Cookie', cookie)
         .set('x-forwarded-proto', 'https')
-        .set('x-forwarded-host', 'hub.example.com')
+        .set('Host', 'hub.example.com')
         .send({});
       expect(r.status).toBe(200);
       expect(typeof r.body.hubUrl).toBe('string');
@@ -149,8 +162,8 @@ describe('hub plug-and-play onboarding', () => {
     });
 
     it('redeem trades a valid invite for an installation token', async () => {
-      const created = await supertest(app).post('/hub/invite/create').set('Cookie', cookie).send({});
-      const r = await supertest(app).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });
+      const created = await supertest(__server).post('/hub/invite/create').set('Cookie', cookie).send({});
+      const r = await supertest(__server).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });
       expect(r.status).toBe(200);
       expect(r.body.orgId).toBe('org');
       expect(typeof r.body.token).toBe('string');
@@ -158,23 +171,23 @@ describe('hub plug-and-play onboarding', () => {
     });
 
     it('redeem rejects a re-used invite (single-use)', async () => {
-      const created = await supertest(app).post('/hub/invite/create').set('Cookie', cookie).send({});
-      const first = await supertest(app).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });
+      const created = await supertest(__server).post('/hub/invite/create').set('Cookie', cookie).send({});
+      const first = await supertest(__server).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });
       expect(first.status).toBe(200);
-      const second = await supertest(app).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });
+      const second = await supertest(__server).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });
       expect(second.status).toBe(400);
     });
 
     it('redeem rejects an obviously-tampered invite token', async () => {
-      const created = await supertest(app).post('/hub/invite/create').set('Cookie', cookie).send({});
+      const created = await supertest(__server).post('/hub/invite/create').set('Cookie', cookie).send({});
       const tampered = created.body.inviteToken.slice(0, -4) + 'AAAA';
-      const r = await supertest(app).post('/hub/invite/redeem').send({ inviteToken: tampered });
+      const r = await supertest(__server).post('/hub/invite/redeem').send({ inviteToken: tampered });
       expect(r.status).toBe(400);
     });
 
     it('redeem persists installation identity onto the issued api_key', async () => {
-      const created = await supertest(app).post('/hub/invite/create').set('Cookie', cookie).send({});
-      const r = await supertest(app).post('/hub/invite/redeem').send({
+      const created = await supertest(__server).post('/hub/invite/create').set('Cookie', cookie).send({});
+      const r = await supertest(__server).post('/hub/invite/redeem').send({
         inviteToken: created.body.inviteToken,
         installation: {
           installationId: 'inst-magic-1',
@@ -186,7 +199,7 @@ describe('hub plug-and-play onboarding', () => {
       expect(r.status).toBe(200);
 
       // Admin endpoint must surface the bound installation alongside the key.
-      const list = await supertest(app).get('/v1/admin/api-keys').set('Cookie', cookie);
+      const list = await supertest(__server).get('/v1/admin/api-keys').set('Cookie', cookie);
       expect(list.status).toBe(200);
       const inviteRow = (list.body as any[]).find(k => (k.label ?? '').startsWith('invite'));
       expect(inviteRow).toBeTruthy();
@@ -198,11 +211,11 @@ describe('hub plug-and-play onboarding', () => {
     });
 
     it('redeem still works without an installation body (back-compat)', async () => {
-      const created = await supertest(app).post('/hub/invite/create').set('Cookie', cookie).send({});
-      const r = await supertest(app).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });
+      const created = await supertest(__server).post('/hub/invite/create').set('Cookie', cookie).send({});
+      const r = await supertest(__server).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });
       expect(r.status).toBe(200);
 
-      const list = await supertest(app).get('/v1/admin/api-keys').set('Cookie', cookie);
+      const list = await supertest(__server).get('/v1/admin/api-keys').set('Cookie', cookie);
       const inviteRow = (list.body as any[]).find(k => (k.label ?? '').startsWith('invite'));
       expect(inviteRow).toBeTruthy();
       expect(inviteRow.installationId).toBeNull();

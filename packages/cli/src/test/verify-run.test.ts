@@ -90,3 +90,54 @@ describe('followValidateRun', () => {
 // deadline — is fully exercised behaviourally by the followValidateRun tests
 // above (see "has no overall deadline — hundreds of polls are fine"). The greps
 // were removed in the behaviour-based-testing conversion (CGLAB-16).
+
+/*
+ * cc5e4943 (CGLAB-434): a quick run must not wait out a 1.5s poll. The 2.0
+ * lineage simulation measured every background verify at >= 1.6s - a 0.6s
+ * suite, or nothing run at all - because the loop slept 1500ms between polls.
+ * It now polls fast first and backs off to the old interval, which stays the
+ * cap for long runs and for retries after a poll error.
+ */
+describe('followValidateRun: poll fast first, back off to the interval (cc5e4943)', () => {
+  const recordSleeps = () => {
+    const slept: number[] = [];
+    return { slept, sleep: async (ms: number) => { slept.push(ms); } };
+  };
+  const running = (n: number): RunSnapshot[] => Array.from({ length: n }, () => ({ status: 'running' as const, output: '' }));
+
+  it('by default waits 100ms, then doubles up to 1500ms while the run is running', async () => {
+    const { slept, sleep } = recordSleeps();
+    const poll = seq([...running(7), { status: 'passed', output: '' }]);
+    await followValidateRun({ poll, onOutput: () => {}, sleep });
+    expect(slept).toEqual([100, 200, 400, 800, 1500, 1500, 1500]);
+  });
+
+  it('a run that finishes at once is answered after one short wait, not a 1.5s one', async () => {
+    const { slept, sleep } = recordSleeps();
+    const poll = seq([{ status: 'running', output: '' }, { status: 'passed', output: 'ok' }]);
+    const res = await followValidateRun({ poll, onOutput: () => {}, sleep });
+    expect(res.status).toBe('passed');
+    expect(slept).toEqual([100]);
+  });
+
+  it('a given intervalMs is the cap the backoff stops at', async () => {
+    const { slept, sleep } = recordSleeps();
+    const poll = seq([...running(4), { status: 'passed', output: '' }]);
+    await followValidateRun({ poll, onOutput: () => {}, intervalMs: 300, sleep });
+    expect(slept).toEqual([100, 200, 300, 300]);
+  });
+
+  it('an error mid-run waits the full interval, then the backoff carries on where it was', async () => {
+    const { slept, sleep } = recordSleeps();
+    const poll = seq([{ status: 'running', output: '' }, new Error('ECONNRESET'), { status: 'running', output: '' }, { status: 'running', output: '' }, { status: 'passed', output: '' }]);
+    await followValidateRun({ poll, onOutput: () => {}, sleep });
+    expect(slept).toEqual([100, 1500, 200, 400]);
+  });
+
+  it('a poll error waits the full interval before retrying', async () => {
+    const { slept, sleep } = recordSleeps();
+    const poll = seq([new Error('ECONNRESET'), new Error('ECONNRESET'), { status: 'passed', output: '' }]);
+    await followValidateRun({ poll, onOutput: () => {}, sleep });
+    expect(slept).toEqual([1500, 1500]);
+  });
+});

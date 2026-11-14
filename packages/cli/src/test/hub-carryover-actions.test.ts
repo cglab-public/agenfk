@@ -55,6 +55,20 @@ const VERIFY_TOKEN = path.join(AGENFK_DIR, 'verify-token');
 const DEADLETTER = path.join(AGENFK_DIR, 'hub-deadletter.jsonl');
 const AUDIT = path.join(AGENFK_DIR, 'hub-audit.jsonl');
 
+/**
+ * Make the audit append fail for real. POSIX: a directory the user cannot
+ * write. Windows ignores those bits (#208) but refuses to write a read-only file.
+ */
+function blockAuditWrites(): () => void {
+  if (process.platform !== 'win32') {
+    fs.chmodSync(AGENFK_DIR, 0o500);
+    return () => fs.chmodSync(AGENFK_DIR, 0o700);
+  }
+  if (!fs.existsSync(AUDIT)) fs.writeFileSync(AUDIT, '');
+  fs.chmodSync(AUDIT, 0o444);
+  return () => fs.chmodSync(AUDIT, 0o600);
+}
+
 const CURRENT = { url: 'https://hub.acme.com', token: 'tok-acme', orgId: 'acme' };
 
 function seed(opts: { config?: boolean; token?: boolean } = {}): void {
@@ -164,7 +178,8 @@ describe('agenfk hub carry-over (actions)', () => {
     expect(line).toMatchObject({ from: 'old-corp', to: 'acme', rewritten: 3 });
     expect(typeof line.at).toBe('string');
     expect(typeof line.osUser).toBe('string');
-    expect(fs.statSync(AUDIT).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX mode bits (#208): the owner-only check is a POSIX one.
+    if (process.platform !== 'win32') expect(fs.statSync(AUDIT).mode & 0o777).toBe(0o600);
     const out = logSpy.mock.calls.flat().join(' ');
     expect(out).toMatch(/3 queued event\(s\)/);
     expect(out).toMatch(/Time range : 2026-01-01T00:00:00Z \.\. 2026-01-09T00:00:00Z/);
@@ -237,16 +252,16 @@ describe('agenfk hub carry-over (actions)', () => {
   it('SHOUTS when the rewrite succeeded but the audit write fails, and exits 1', async () => {
     statusWith({ 'old-corp': OLD_CORP_SUMMARY });
     mockPost.mockResolvedValue({ status: 200, data: { ok: true, rewritten: 3 } });
-    fs.chmodSync(AGENFK_DIR, 0o500); // audit append now hits EACCES for real
+    const restore = blockAuditWrites(); // the audit append now fails for real
     try {
       await expect(run(program, ['hub', 'carry-over', '--from', 'old-corp', '--to', 'acme', '--yes'])).rejects.toThrow('exit 1');
       const err = errSpy.mock.calls.flat().join(' ');
       expect(err).toMatch(/REWRITE SUCCEEDED \(3 event\(s\)\) BUT THE AUDIT LINE FAILED TO WRITE/);
-      expect(err).toMatch(/EACCES|permission/i);
+      expect(err).toMatch(/EACCES|EPERM|permission/i);
       expect(err).toMatch(/Append it manually to .+hub-audit\.jsonl/);
       expect(mockPost).toHaveBeenCalledTimes(1);
     } finally {
-      fs.chmodSync(AGENFK_DIR, 0o700);
+      restore();
     }
   });
 
@@ -399,7 +414,8 @@ describe('agenfk hub deadletter (actions)', () => {
     await run(program, ['hub', 'deadletter', 'discard', '--org', 'old-corp']);
     const left = fs.readFileSync(DEADLETTER, 'utf8').trim().split('\n').map(l => JSON.parse(l));
     expect(left.map(e => e.eventId)).toEqual(['c']);
-    expect(fs.statSync(DEADLETTER).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX mode bits (#208): the owner-only check is a POSIX one.
+    if (process.platform !== 'win32') expect(fs.statSync(DEADLETTER).mode & 0o777).toBe(0o600);
     expect(logSpy.mock.calls.flat().join(' ')).toMatch(/Discarded 2 deadlettered entries; 1 remain/);
   });
 

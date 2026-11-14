@@ -35,7 +35,7 @@ describe('release packaging — excludes macOS metadata', () => {
     createTarball({ cwd: dir, outFile: 'out.tar.gz', include: ['commands/'] });
   });
 
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  afterAll(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
   it('includes the real payload', () => {
     expect(tarEntryNames(out).some((n) => n.endsWith('commands/agenfk.md'))).toBe(true);
@@ -78,7 +78,7 @@ describe('release packaging — excludes macOS metadata', () => {
         expect(existsSync(tgz)).toBe(true);
         expect(appleDoubleEntries(tgz)).toEqual([]);
       } finally {
-        rmSync(xattrDir, { recursive: true, force: true });
+        rmSync(xattrDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     }
   );

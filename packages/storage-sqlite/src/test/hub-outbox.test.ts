@@ -127,4 +127,47 @@ describe('SQLiteStorageProvider hub_outbox', () => {
       expect(JSON.parse(storage.hubOutboxPeek()[0].payload).orgId).toBe('staging');
     });
   });
+
+  // #223: `agenfk hub deadletter requeue` puts preserved events back with
+  // their ORIGINAL id and occurred-at, all or nothing.
+  describe('hubOutboxAppendMany', () => {
+    it('inserts every row with its own id and occurred_at, and returns the inserted count', () => {
+      const n = storage.hubOutboxAppendMany([
+        { eventId: 'b', occurredAt: '2026-10-07T10:00:00.000Z', payload: '{"eventId":"b"}' },
+        { eventId: 'a', occurredAt: '2026-10-06T22:37:09.924Z', payload: '{"eventId":"a"}' },
+      ]);
+      expect(n).toBe(2);
+      const rows = storage.hubOutboxPeek();
+      expect(rows.map(r => [r.event_id, r.occurred_at, r.payload])).toEqual([
+        ['a', '2026-10-06T22:37:09.924Z', '{"eventId":"a"}'],
+        ['b', '2026-10-07T10:00:00.000Z', '{"eventId":"b"}'],
+      ]);
+    });
+
+    it('ignores rows already queued (INSERT OR IGNORE) and does not count them', () => {
+      storage.hubOutboxAppend('a', '2026-10-06T00:00:00Z', '{"v":1}');
+      const n = storage.hubOutboxAppendMany([
+        { eventId: 'a', occurredAt: '2026-10-06T00:00:00Z', payload: '{"v":2}' },
+        { eventId: 'c', occurredAt: '2026-10-06T00:00:01Z', payload: '{"v":3}' },
+      ]);
+      expect(n).toBe(1);
+      expect(storage.hubOutboxCount()).toBe(2);
+      expect(JSON.parse(storage.hubOutboxPeek()[0].payload).v).toBe(1);
+    });
+
+    it('returns 0 for an empty list', () => {
+      expect(storage.hubOutboxAppendMany([])).toBe(0);
+      expect(storage.hubOutboxCount()).toBe(0);
+    });
+
+    it('is all or nothing: a failing row rolls back the rows before it', () => {
+      expect(() => storage.hubOutboxAppendMany([
+        { eventId: 'ok-1', occurredAt: '2026-10-06T00:00:00Z', payload: '{}' },
+        // Not bindable as a SQLite parameter: the INSERT itself throws. (A null
+        // would not do: OR IGNORE also swallows NOT NULL violations.)
+        { eventId: 'bad', occurredAt: '2026-10-06T00:00:01Z', payload: { not: 'a string' } as unknown as string },
+      ])).toThrow();
+      expect(storage.hubOutboxCount()).toBe(0);
+    });
+  });
 });

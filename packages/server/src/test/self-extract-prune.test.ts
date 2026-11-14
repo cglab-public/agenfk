@@ -13,10 +13,11 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, rmSync, symlinkSync, cpSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, cpSync, readFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { defaultSelfExtract } from '../hub/upgradeSync';
+import { fakeBin, hostTar } from '../../../cli/src/test/helpers/fakeBin';
 
 let work: string;
 let binDir: string;
@@ -35,25 +36,24 @@ beforeAll(() => {
   mkdirSync(path.join(stage, 'bin'), { recursive: true });
   cpSync(path.join(__dirname, '../../../../bin/sync-install-dir.mjs'), path.join(stage, 'bin', 'sync-install-dir.mjs'));
   tarball = path.join(work, 'dist.tar.gz');
-  spawnSync('tar', ['-czf', tarball, '-C', stage, 'commands', 'bin'], { encoding: 'utf8' });
+  spawnSync(hostTar(), ['-czf', tarball, '-C', stage, 'commands', 'bin'], { encoding: 'utf8' });
 
   // Offline PATH: real tar/gzip, a curl that copies the local archive, and an
-  // npm that records that it was invoked instead of installing anything.
-  binDir = path.join(work, 'bin');
-  mkdirSync(binDir, { recursive: true });
-  for (const tool of ['tar', 'gzip', 'cp', 'sh']) {
-    const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
-    if (found) symlinkSync(found, path.join(binDir, tool));
-  }
-  writeFileSync(path.join(binDir, 'curl'),
-    `#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) shift; out="$1";; esac; shift; done\n` +
-    `cp ${JSON.stringify(tarball)} "$out"\n`, 'utf8');
-  chmodSync(path.join(binDir, 'curl'), 0o755);
-  writeFileSync(path.join(binDir, 'npm'), `#!/bin/sh\necho "$@" > "$PWD/.npm-was-called"\n`, 'utf8');
-  chmodSync(path.join(binDir, 'npm'), 0o755);
+  // npm that records that it was invoked instead of installing anything. The
+  // stubs are node scripts behind a launcher, so cmd.exe finds them too
+  // (`npm.cmd` on Windows, which is what self-extract runs there).
+  binDir = fakeBin(path.join(work, 'bin'), {
+    tools: ['tar', 'gzip'],
+    stubs: {
+      curl: `const args = process.argv.slice(2);
+require('fs').copyFileSync(${JSON.stringify(tarball)}, args[args.indexOf('-o') + 1]);
+`,
+      npm: `require('fs').writeFileSync('.npm-was-called', process.argv.slice(2).join(' ') + '\\n');`,
+    },
+  }).dir;
 });
 
-afterAll(() => rmSync(work, { recursive: true, force: true }));
+afterAll(() => rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 function makeRoot(label: string, withGit: boolean): string {
   const root = path.join(work, label);
@@ -90,6 +90,12 @@ describe('self-extract on a normal install root', () => {
   it('installs dependencies, which makes the recovery complete (BUG bbe794bc)', () => {
     expect(existsSync(path.join(root, '.npm-was-called'))).toBe(true);
   });
+
+  // GH-281: replaces a regex over upgradeSync.ts's source. A full `npm ci` would
+  // pull devDependencies onto an install root; production-only is the contract.
+  it('installs production dependencies only: npm ci --omit=dev', () => {
+    expect(readFileSync(path.join(root, '.npm-was-called'), 'utf8').trim()).toMatch(/^ci\b.*--omit=dev\b/);
+  });
 });
 
 describe('self-extract on a developer working tree', () => {
@@ -101,12 +107,21 @@ describe('self-extract on a developer working tree', () => {
     expect(existsSync(path.join(root, 'commands', 'agenfk-dropped.md'))).toBe(true);
   });
 
-  it('STILL installs dependencies — skipping the prune must not skip the install', () => {
-    // The regression: an early return here skipped npm ci and reported success.
-    expect(existsSync(path.join(root, '.npm-was-called'))).toBe(true);
+  /*
+   * 658ef023 changed this deliberately: a forced recovery over a developer's
+   * checkout overwrote its tracked files and dist with the published build,
+   * and `npm ci --omit=dev` stripped its devDependencies. It is refused now.
+   * These two used to pin the opposite - that it installed and reported
+   * success - so they are renamed to what they now hold, not repointed.
+   * The concern behind the old ones (BUG bbe794bc: an early return that
+   * skipped npm ci yet said ok) still holds: the refusal does not say ok.
+   */
+  it('does not install dependencies either: npm ci --omit=dev would strip its devDependencies', () => {
+    expect(existsSync(path.join(root, '.npm-was-called'))).toBe(false);
   });
 
-  it('still reports success', () => {
-    expect(result).toEqual({ ok: true });
+  it('reports the refusal, never a success', () => {
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toMatch(/development checkout/);
   });
 });

@@ -17,7 +17,7 @@ import { resolveModelForReport, resolveFromOptions } from '../harnessModel';
 
 let home: string;
 beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-prm-')); });
-afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 function piSession(cwd: string, modelId: string) {
   const dir = path.join(home, '.pi', 'agent', 'sessions', 's');

@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 /**
  * macOS metadata that must never enter a release archive.
@@ -28,15 +28,22 @@ export const EXCLUDED_PATTERNS = ['._*', '.DS_Store'];
  * @param {string[]} opts.include paths to include, relative to cwd
  */
 export function createTarball({ cwd, outFile, include }) {
-    const excludes = EXCLUDED_PATTERNS.map((p) => `--exclude='${p}'`).join(' ');
     // --no-xattrs drops the LIBARCHIVE.xattr.* / SCHILY.xattr.* PAX headers that
     // bsdtar attaches for `com.apple.provenance`. They are inert payload here,
     // and GNU tar prints "Ignoring unknown extended header keyword" for every
     // one of them on extraction — one warning per file, on every Linux install.
-    // Supported by both bsdtar (macOS) and GNU tar (CI).
-    execSync(`tar --no-xattrs ${excludes} -czf ${outFile} ${include.join(' ')}`, {
+    // Supported by both bsdtar (macOS, Windows) and GNU tar (CI).
+    //
+    // An argument list, not a shell line (#208): `--exclude='._*'` relied on sh
+    // to strip the quotes, and cmd.exe hands them to tar as part of the pattern.
+    // Directories without their trailing slash: Windows' own bsdtar (3.8.8)
+    // fails on `commands/` ("Couldn't visit directory") and archives `commands`;
+    // every tar reads the two alike, so the members are the same.
+    const paths = include.map((p) => p.replace(/[\\/]+$/, '') || p);
+    execFileSync('tar', ['--no-xattrs', ...EXCLUDED_PATTERNS.map((p) => `--exclude=${p}`), '-czf', outFile, ...paths], {
         cwd,
         stdio: 'inherit',
         env: { ...process.env, COPYFILE_DISABLE: '1' },
+        windowsHide: true,
     });
 }

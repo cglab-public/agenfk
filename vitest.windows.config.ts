@@ -2,16 +2,16 @@ import { defineConfig } from 'vitest/config';
 import { sharedResolve, sharedTest } from './scripts/vitest-shared-config.mjs';
 
 /**
- * The curated, platform-sensitive subset the Windows CI job runs (issue #201).
+ * The curated, platform-sensitive subset (issue #201): `npm run test:windows`.
  *
- * Deliberately NOT the whole suite: server/hub/cli assume POSIX in many places
- * and are slow. This keeps the job light and parallel to the Linux one, and
+ * CI no longer runs it: since #208 the whole suite passes on Windows and the
+ * `windows-full` job runs all of it, sharded. This subset stays as the QUICK
+ * local check on a Windows box, where the full suite can take over an hour. It
  * targets what only Windows can break — paths, accents/spaces in the user
  * profile, child processes, installer/hook scripts, CRLF.
  *
  * Convention: a spec named `*.xplat.test.ts` is cross-platform by contract. It
- * runs here AND in the normal Linux `npm test`, so one test validates every OS.
- * Widen this list package by package as specs are ported — never skip silently.
+ * runs here AND in the normal `npm test` on every OS.
  */
 export const WINDOWS_INCLUDE = [
   // Cross-platform by contract (also part of the regular run).
@@ -29,18 +29,12 @@ export const WINDOWS_INCLUDE = [
 ];
 
 /**
- * Real Windows gaps this job found on its first run. They are listed, not
- * hidden: each is a bug to fix (then delete the line), not a test to bless.
- *  - install-prunes-against-tarball: install.mjs symlinks node.exe, which is an
- *    EPERM without admin / Developer Mode.
- *  - install-cli-only-default: hook bins are not installed where the spec
- *    expects on Windows (see #192), and the installer dirties a tracked repo
- *    file (scripts/start-services.mjs) instead of writing only under HOME.
+ * Real Windows gaps, listed rather than hidden: each is a bug to fix (then
+ * delete the line), not a test to bless. Empty since #208 - the two it held
+ * (install-prunes-against-tarball: the node.exe symlink EPERM; install-cli-
+ * only-default: #192 hook bins) pass on Windows now.
  */
-export const WINDOWS_KNOWN_GAPS = [
-  'packages/cli/src/test/install-prunes-against-tarball.test.ts',
-  'packages/cli/src/test/install-cli-only-default.test.ts',
-];
+export const WINDOWS_KNOWN_GAPS: string[] = [];
 
 const base = sharedTest({ include: WINDOWS_INCLUDE });
 

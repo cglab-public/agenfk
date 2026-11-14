@@ -122,3 +122,26 @@ describe('getActiveFlow', () => {
     expect(result).toBe(DEFAULT_FLOW);
   });
 });
+
+describe('getActiveFlow and disabledChecks (CGLAB-428)', () => {
+  const steps = [
+    { id: 'a', name: 'TODO', label: 'TODO', order: 0, isAnchor: true },
+    { id: 'b', name: 'WORK', label: 'WORK', order: 1, role: 'coding' as const, disabledChecks: ['suite-green'] },
+    { id: 'c', name: 'DONE', label: 'DONE', order: 2, isAnchor: true },
+  ];
+  const row = (source: 'hub' | 'local' | undefined): Flow => ({ id: 'f', name: 'f', steps, createdAt: new Date(), updatedAt: new Date(), ...(source ? { source } : {}) }) as Flow;
+
+  it("keeps a hub flow's disabled checks", () => {
+    expect(getActiveFlow('f', [row('hub')]).steps[1].disabledChecks).toEqual(['suite-green']);
+  });
+
+  it('ignores them on a flow that did not come from the hub, without touching the stored row', () => {
+    for (const source of ['local', undefined] as const) {
+      const stored = row(source);
+      const active = getActiveFlow('f', [stored]);
+      expect(active.steps[1]).not.toHaveProperty('disabledChecks');
+      expect(active.steps[1].role).toBe('coding');
+      expect(stored.steps[1].disabledChecks).toEqual(['suite-green']);
+    }
+  });
+});

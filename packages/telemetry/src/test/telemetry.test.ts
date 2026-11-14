@@ -313,10 +313,10 @@ describe('lazy home-path getters (item 9c297075)', () => {
   it('all three getters track homedir changes between calls (no import-time freeze)', () => {
     vi.mocked(os.homedir).mockReturnValue('/tmp/agenfk-a');
     try {
-      expect(configPath()).toBe('/tmp/agenfk-a/.agenfk/config.json');
+      expect(configPath()).toBe(path.join('/tmp/agenfk-a', '.agenfk', 'config.json'));
       vi.mocked(os.homedir).mockReturnValue('/tmp/agenfk-b');
-      expect(hubConfigFile()).toBe('/tmp/agenfk-b/.agenfk/hub.json');
-      expect(installationIdPath()).toBe('/tmp/agenfk-b/.agenfk/installation-id');
+      expect(hubConfigFile()).toBe(path.join('/tmp/agenfk-b', '.agenfk', 'hub.json'));
+      expect(installationIdPath()).toBe(path.join('/tmp/agenfk-b', '.agenfk', 'installation-id'));
     } finally {
       vi.mocked(os.homedir).mockRestore();
     }

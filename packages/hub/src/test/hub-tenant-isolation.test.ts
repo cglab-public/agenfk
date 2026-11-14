@@ -26,6 +26,17 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-tenant-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -48,18 +59,20 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
       dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
-    adminCookie = (await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' }))
+    adminCookie = (await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' }))
       .headers['set-cookie']?.[0] ?? '';
-    viewerCookie = (await supertest(app).post('/auth/login').send({ email: 'view@x', password: 'longenough1' }))
+    viewerCookie = (await supertest(__server).post('/auth/login').send({ email: 'view@x', password: 'longenough1' }))
       .headers['set-cookie']?.[0] ?? '';
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -68,7 +81,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
 
   describe('device approval is an admin action', () => {
     const startDevice = () =>
-      supertest(app).post('/hub/device/start').send({
+      supertest(__server).post('/hub/device/start').send({
         installation: { installationId: 'inst-new', osUser: 'dev', gitName: 'Dev', gitEmail: 'dev@cglab.com' },
       });
 
@@ -79,7 +92,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
       const started = await startDevice();
       expect(started.status).toBe(200);
 
-      const approved = await supertest(app).post('/hub/device/approve')
+      const approved = await supertest(__server).post('/hub/device/approve')
         .set('Cookie', viewerCookie).send({ userCode: started.body.userCode });
 
       expect(approved.status).toBe(403);
@@ -87,7 +100,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
 
     it('issues no api key when a viewer tries', async () => {
       const started = await startDevice();
-      await supertest(app).post('/hub/device/approve')
+      await supertest(__server).post('/hub/device/approve')
         .set('Cookie', viewerCookie).send({ userCode: started.body.userCode });
 
       const keys = await ctx.db.all('SELECT token_hash FROM api_keys WHERE org_id = ?', ['org-a']);
@@ -96,7 +109,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
 
     it('leaves the code unapproved, so it cannot be redeemed afterwards', async () => {
       const started = await startDevice();
-      await supertest(app).post('/hub/device/approve')
+      await supertest(__server).post('/hub/device/approve')
         .set('Cookie', viewerCookie).send({ userCode: started.body.userCode });
 
       const row = await ctx.db.get(
@@ -107,7 +120,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
 
     it('still lets an admin approve, which is the supported path', async () => {
       const started = await startDevice();
-      const approved = await supertest(app).post('/hub/device/approve')
+      const approved = await supertest(__server).post('/hub/device/approve')
         .set('Cookie', adminCookie).send({ userCode: started.body.userCode });
 
       expect(approved.status).toBe(200);
@@ -133,7 +146,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
 
       // %25 is how a wildcard actually arrives: a bare '%' is a malformed
       // escape Express rejects before the handler, so it proves nothing.
-      const r = await supertest(app).delete('/v1/admin/api-keys/%25')
+      const r = await supertest(__server).delete('/v1/admin/api-keys/%25')
         .set('Cookie', adminCookie);
 
       expect(r.status).toBe(400);
@@ -142,7 +155,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
 
     it('does not treat an underscore as a single-character wildcard either', async () => {
       await seedKeys();
-      const r = await supertest(app).delete('/v1/admin/api-keys/_')
+      const r = await supertest(__server).delete('/v1/admin/api-keys/_')
         .set('Cookie', adminCookie);
       expect(r.status).toBe(400);
       expect(await liveCount()).toBe(3);
@@ -159,7 +172,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
         `INSERT INTO api_keys (token_hash, org_id, label) VALUES ('abcdef0022', 'org-a', 'two')`,
       );
 
-      const r = await supertest(app).delete('/v1/admin/api-keys/abcdef00')
+      const r = await supertest(__server).delete('/v1/admin/api-keys/abcdef00')
         .set('Cookie', adminCookie);
 
       expect(r.status).toBe(409);
@@ -173,7 +186,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
       );
       const prefix = (rows[0] as any).token_hash.slice(0, 12);
 
-      const r = await supertest(app).delete(`/v1/admin/api-keys/${prefix}`)
+      const r = await supertest(__server).delete(`/v1/admin/api-keys/${prefix}`)
         .set('Cookie', adminCookie);
 
       expect(r.status).toBe(200);
@@ -205,7 +218,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
     };
 
     const postAs = (token: string, event: any) =>
-      supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events: [event] });
+      supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events: [event] });
 
     const baseEvent = (over: any = {}) => ({
       eventId: 'e-' + Math.random().toString(36).slice(2),
@@ -289,7 +302,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
     it('ingests events from a machine whose key is bound to it', async () => {
       const bound = await issueApiKey(ctx.db, 'org-a', 'onboarded', { installationId: 'moving-inst' });
 
-      const r = await supertest(app).post('/v1/events')
+      const r = await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${bound}`).send({ events: [moveEvent('moved-1')] });
 
       expect(r.body.ingested).toBe(1);
@@ -301,7 +314,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
     it('repoints the installation to the org that onboarded it', async () => {
       const bound = await issueApiKey(ctx.db, 'org-a', 'onboarded', { installationId: 'moving-inst' });
 
-      await supertest(app).post('/v1/events')
+      await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${bound}`).send({ events: [moveEvent('moved-2')] });
 
       const row = await ctx.db.get('SELECT org_id FROM installations WHERE id = ?', ['moving-inst']);
@@ -318,7 +331,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
       // The attack case: no admin approved this machine into this org.
       const orgWide = await issueApiKey(ctx.db, 'org-a', 'org-wide');
 
-      const r = await supertest(app).post('/v1/events')
+      const r = await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${orgWide}`).send({ events: [moveEvent('attack-1')] });
 
       expect(r.body.ingested).toBe(0);
@@ -348,7 +361,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
          VALUES ('d1', 'other-inst', 'pending')`,
       );
 
-      await supertest(app).post('/v1/events').set('Authorization', `Bearer ${orgWide}`).send({
+      await supertest(__server).post('/v1/events').set('Authorization', `Bearer ${orgWide}`).send({
         events: [{
           eventId: 'forge-1', installationId: 'other-inst', orgId: 'org-a',
           occurredAt: '2026-08-21T10:00:00Z',
@@ -380,7 +393,7 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
       );
       const bound = await issueApiKey(ctx.db, 'org-a', 'bound', { installationId: 'mine' });
 
-      await supertest(app).post('/v1/events').set('Authorization', `Bearer ${bound}`).send({
+      await supertest(__server).post('/v1/events').set('Authorization', `Bearer ${bound}`).send({
         events: [{
           eventId: 'own-1', installationId: 'mine', orgId: 'org-a',
           occurredAt: '2026-08-21T10:00:00Z',

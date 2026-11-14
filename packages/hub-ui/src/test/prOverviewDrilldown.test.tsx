@@ -167,6 +167,33 @@ describe('PrOverviewPage drill-down modal (CGLAB-131)', () => {
     })).toBeNull();
   });
 
+  it('shows each PR’s open time in local time, with UTC on hover (story 12753604)', async () => {
+    const dialog = await openModal();
+    const t = [...dialog.querySelectorAll('time')].find(x => x.getAttribute('dateTime') === '2026-08-13T16:50:18.000Z');
+    expect(t).toBeDefined();
+    expect(t).toHaveAttribute('title', '2026-08-13 16:50:18 UTC');
+    expect(t!.textContent).not.toMatch(/UTC/);
+  });
+
+  it('says why a PR has no link, without hover (story f17f36a5)', async () => {
+    const dialog = await openModal();
+    const row203 = Array.from(dialog.querySelectorAll('li')).find(li => li.textContent?.includes('#203'))!;
+    expect(within(row203).getByText(/no GitHub link/)).toHaveClass('sr-only');
+    const row202 = Array.from(dialog.querySelectorAll('li')).find(li => li.textContent?.includes('#202'))!;
+    expect(within(row202).queryByText(/no GitHub link/)).toBeNull();
+  });
+
+  it('labels heatmap weekdays with one letter, so 11px fits a 10px column (story 7073be87)', async () => {
+    renderPage();
+    const days = await screen.findAllByTestId('heatmap-day');
+    for (const d of days) {
+      const weekday = d.querySelector('span')!.textContent!;
+      expect(weekday).toHaveLength(1);
+      // The full day stays in the column's name.
+      expect(d.getAttribute('aria-label')!.length).toBeGreaterThan(1);
+    }
+  });
+
   it('opens from a non-zero cell and lists that developer’s PRs for that day', async () => {
     const dialog = await openModal();
     const scope = within(dialog);
@@ -211,18 +238,17 @@ describe('PrOverviewPage drill-down modal (CGLAB-131)', () => {
     const badge = (label: string) =>
       Array.from(scope.getAllByText(label)).find(el => (el as HTMLElement).style.background) as HTMLElement;
 
-    // XS: near-white fill #dbf7f0 → dark ink, NOT white.
+    // Each step writes with its own ink token on its own fill token; the token
+    // test checks the pair passes AA in every theme (CGLAB-434).
     const xs = badge('XS');
     expect(xs).toBeTruthy();
-    expect(xs.style.background).toContain('219, 247, 240'); // #dbf7f0
-    expect(xs.style.color).not.toContain('255, 255, 255');
-    expect(xs.style.color).toContain('0, 15, 59'); // #000f3b
+    expect(xs.style.background).toBe('var(--size-1)');
+    expect(xs.style.color).toBe('var(--on-size-1)');
 
-    // L: dark fill #056f71 → white.
     const l = badge('L');
     expect(l).toBeTruthy();
-    expect(l.style.background).toContain('5, 111, 113'); // #056f71
-    expect(l.style.color).toContain('255, 255, 255');
+    expect(l.style.background).toBe('var(--size-4)');
+    expect(l.style.color).toBe('var(--on-size-4)');
   });
 
   // CGLAB-184: on a parent hub, (repo, prNumber) is no longer unique — two

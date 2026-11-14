@@ -83,7 +83,7 @@ describe('agenfk hub repoint', () => {
 
   afterAll(() => {
     vi.mocked(os.homedir).mockRestore();
-    try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* */ }
+    try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* */ }
   });
 
   it('refuses when no existing hub.json — directs user to login/join', async () => {
@@ -141,7 +141,8 @@ describe('agenfk hub repoint', () => {
     });
     // mode 0600 preserved (same convention as login/join).
     const stat = fs.statSync(HUB_CONFIG);
-    expect(stat.mode & 0o777).toBe(0o600);
+    // Windows has no POSIX mode bits (#208): the owner-only check is a POSIX one.
+    if (process.platform !== 'win32') expect(stat.mode & 0o777).toBe(0o600);
 
     // Outbox rewrite hit the internal endpoint with verify token + body.
     expect(mockPost).toHaveBeenCalledWith(

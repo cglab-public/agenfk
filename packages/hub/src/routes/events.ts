@@ -1,8 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { SEMVER_TAG_RE } from '../util/semver.js';
 import { forwardEvents } from '../services/federation/forwarding.js';
+import { recomputeBackdatedDays, utcDayOf } from '../rollup.js';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
+import { upsertInstallation } from '../services/installations.js';
+import { recordAirlockApplied, recordAirlockDecision, recordAirlockRefused, reportTimeOf } from '../services/airlock.js';
+import { recordAirlockLearningProposal } from '../services/airlockLearning.js';
+import { isAirlockDatasetEvent, recordAirlockDataset } from '../services/airlockDataset.js';
 import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
@@ -12,21 +17,17 @@ import { isOnboardingKeyLabel } from '../util/keyLabel.js';
 
 
 /**
- * The hostname this request actually arrived on. Behind a proxy the real name
- * is in X-Forwarded-Host; req.headers.host is the internal one. Same precedence
- * as publicHubUrl in routes/connect.ts.
+ * The hostname this request actually arrived on: the Host header, which the
+ * proxy preserves. X-Forwarded-Host is NOT read - the production ALB never sets
+ * it, so every hop in it, first or last, was written by the client, and a
+ * repoint report could name the target host without having reached it.
  */
 function requestHost(req: Request): string | null {
-  // X-Forwarded-Host is client-controlled unless a proxy overwrites it, and a
-  // proxy APPENDS — so the leftmost element is whatever the caller supplied and
-  // the rightmost is the last hop that actually handled the request. Taking [0]
-  // would trust exactly the attacker-chosen value.
-  const fwdRaw = req.headers['x-forwarded-host'] as string | undefined;
-  const hops = fwdRaw ? fwdRaw.split(',').map(h => h.trim()).filter(Boolean) : [];
-  const host = (hops.length ? hops[hops.length - 1] : undefined)
-    || (req.headers.host as string | undefined)
-    || null;
-  return host ? host.split(':')[0].toLowerCase() : null;
+  const host = (req.headers.host as string | undefined) || null;
+  if (!host) return null;
+  // Parsed, not split on ':' - an IPv6 literal ("[::1]:4000") is all colons.
+  // Same normalisation as the campaign's allowed_host (URL.hostname).
+  try { return new URL(`http://${host}`).hostname.toLowerCase(); } catch { return null; }
 }
 
 export { sanitizeRemoteUrl } from '../util/remoteUrl.js';
@@ -42,7 +43,7 @@ import { asyncRoute } from '../util/asyncRoute.js';
  * Backward compatible: the legacy counters are unchanged and this field is
  * purely additive; old spokes ignore it.
  */
-export type EventRejectionReason = 'invalid' | 'org_mismatch' | 'foreign_installation' | 'hidden_user';
+export type EventRejectionReason = 'invalid' | 'org_mismatch' | 'foreign_installation' | 'hidden_user' | 'future_dated';
 export interface EventRejection {
   /** Best-effort: null when the event had no usable eventId (often why it is invalid). */
   eventId: string | null;
@@ -113,23 +114,15 @@ const INSERT_EVENT_SQL = `
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
-const UPSERT_INSTALLATION_SQL = `
-  INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(id) DO UPDATE SET
-    last_seen = excluded.last_seen,
-    os_user = COALESCE(excluded.os_user, installations.os_user),
-    git_name = COALESCE(excluded.git_name, installations.git_name),
-    git_email = COALESCE(excluded.git_email, installations.git_email)
-  WHERE installations.org_id = excluded.org_id
-`;
-
 export function eventsRouter(ctx: HubServerContext): Router {
   const router = Router();
   const requireKey = requireApiKey(ctx.db);
 
   router.get('/ping', requireKey, (req: Request, res: Response) => {
-    res.json({ ok: true, orgId: req.hubApiKey!.orgId });
+    // installationId: the machine a bound key belongs to (null for an org-wide
+    // key). `agenfk hub deadletter requeue` checks it before resending (#223):
+    // a bound key refuses every event from any other installation.
+    res.json({ ok: true, orgId: req.hubApiKey!.orgId, installationId: req.hubApiKey!.installationId ?? null });
   });
 
   // Fleet poll endpoint (Story 2 of EPIC 541c12b3 — remote upgrade).
@@ -236,6 +229,15 @@ export function eventsRouter(ctx: HubServerContext): Router {
     // forwardEvents is a no-op and nothing is queued.
     const forwardable: Array<Record<string, unknown>> = [];
     const rejections: EventRejection[] = [];
+    // Airlock decisions stored in this batch, projected after the transaction.
+    const airlockDecisions: Array<{ e: HubEvent; userKey: string }> = [];
+    // Airlock learning proposals stored in this batch (TEL-3), projected after it too.
+    const airlockProposals: HubEvent[] = [];
+    // Airlock dataset rows and labels in this batch (DS-2), kept after it - or dropped.
+    const airlockDataset: Array<{ e: HubEvent; userKey: string }> = [];
+    // Days of the events actually stored (not skipped, not refused), for the
+    // backdated rollup repair after the transaction (#223).
+    const ingestedDays = new Set<string>();
     // Best-effort eventId for events that fail isValidEvent: they may lack it
     // entirely, which is often the very reason they are invalid.
     const eventIdOf = (ev: any): string | null =>
@@ -333,11 +335,21 @@ export function eventsRouter(ctx: HubServerContext): Router {
         if (e.orgId !== orgId) { rejected++; rejections.push({ eventId: e.eventId, reason: 'org_mismatch' }); continue; }
         if (keyInstallation && e.installationId !== keyInstallation) { rejected++; rejections.push({ eventId: e.eventId, reason: 'foreign_installation' }); continue; }
         if (foreignInstalls.has(e.installationId)) { rejected++; rejections.push({ eventId: e.eventId, reason: 'foreign_installation' }); continue; }
+        // An Airlock report is ordered by its own time (HUB-2): one dated further ahead of
+        // this hub's clock than the allowed skew would freeze every later report out.
+        if ((e.type === 'airlock.policy-applied' || e.type === 'airlock.policy-refused') && !reportTimeOf(e.occurredAt)) {
+          const reason = Number.isFinite(Date.parse(e.occurredAt)) ? 'future_dated' : 'invalid';
+          rejected++; rejections.push({ eventId: e.eventId, reason }); continue;
+        }
         if (e.type === 'tokens.logged') { skipped++; continue; }
         // Resolve BEFORE the hidden check: hiding applies to the person, so a
         // merged-away key must not be a hole in the rule.
         const userKey = resolveAliasKey(userKeyFor(e.actor, e.installationId), aliasMap);
         if (hiddenUserKeys.has(userKey)) { hiddenDropped++; rejections.push({ eventId: e.eventId, reason: 'hidden_user' }); continue; }
+        // The Airlock dataset (DS-2): kept in its own bounded table while the org's
+        // switch is on, after the transaction - never stored as an event, never
+        // forwarded to a parent hub. Accepted either way, so the outbox lets it go.
+        if (isAirlockDatasetEvent(e.type)) { airlockDataset.push({ e, userKey }); ingested++; continue; }
         // The installation row has to follow the identity too. The upsert below
         // COALESCEs the reported git_email over whatever is stored, so a machine
         // still configured with a merged-away address used to overwrite the
@@ -394,10 +406,11 @@ export function eventsRouter(ctx: HubServerContext): Router {
         // local insert ignored is not news for the parent either.
         forwardable.push({ ...e, userKey });
         ingested++;
-        await ctx.db.run(UPSERT_INSTALLATION_SQL, [
-          e.installationId, e.orgId, now, now,
-          e.actor.osUser ?? null, e.actor.gitName ?? null, e.actor.gitEmail ?? null,
-        ]);
+        ingestedDays.add(utcDayOf(e.occurredAt));
+        await upsertInstallation(ctx.db, e.orgId, {
+          installationId: e.installationId,
+          osUser: e.actor.osUser, gitName: e.actor.gitName, gitEmail: e.actor.gitEmail,
+        }, now);
 
         // Repoint campaign reports (CGLAB-66) transition the matching target.
         //
@@ -459,6 +472,22 @@ export function eventsRouter(ctx: HubServerContext): Router {
             }
           }
         }
+
+        // Airlock (GH-294, HUB-2): which hub policy revision this installation
+        // applies, and a hub policy it refused. Like the fleet reports below, only
+        // a key bound to the machine may speak for it: an org-wide key could
+        // otherwise mark every installation up to date.
+        if (keyInstallation && e.type === 'airlock.policy-applied') {
+          await recordAirlockApplied(ctx.db, orgId, e.installationId, e.payload, e.occurredAt);
+        } else if (keyInstallation && e.type === 'airlock.policy-refused') {
+          await recordAirlockRefused(ctx.db, orgId, e.installationId, e.payload, e.occurredAt);
+        }
+        // A denial or an alert (HUB-1) is also kept for the admin's recent-denials
+        // list, once the events are committed (below). Any key the event was
+        // accepted from: it is a report like the event itself, not state
+        // another installation's standing depends on.
+        if (e.type === 'airlock.decision') airlockDecisions.push({ e, userKey });
+        if (e.type === 'airlock.learning-proposal') airlockProposals.push(e);
 
         // Fleet upgrade events transition the matching directive_target.
         // Identified by directiveId in the payload + the event's installation_id.
@@ -546,6 +575,53 @@ export function eventsRouter(ctx: HubServerContext): Router {
         + `${keyInstallation ? ` (installation ${keyInstallation})` : ' (org-wide key)'}.`,
       );
     }
+    // The recent-denials list (HUB-1), after the transaction and outside it, one
+    // row at a time: a row that cannot be written - whatever the reason - is
+    // skipped and logged, and never fails or rolls back the events themselves.
+    // A savepoint would keep it atomic with its event, but pg-mem, which the
+    // suite runs Postgres on, cannot parse one.
+    for (const { e, userKey } of airlockDecisions) {
+      try {
+        await recordAirlockDecision(ctx.db, orgId, e, userKey, e.payload);
+      } catch (err) {
+        // The id is the sender's: JSON-escaped and cut, and an argument, never the format string.
+        console.warn('[AIRLOCK] stored event %s but could not list it as a denial: %s', JSON.stringify(String(e.eventId).slice(0, 200)), (err as Error).message);
+      }
+    }
+    // Learning proposals (TEL-3) for Admin -> Airlock, the same way: after the
+    // transaction, one event at a time, a failure skipped and logged.
+    for (const e of airlockProposals) {
+      try {
+        await recordAirlockLearningProposal(ctx.db, orgId, e, e.payload);
+      } catch (err) {
+        console.warn('[AIRLOCK] stored event %s but could not list its proposed hosts: %s', JSON.stringify(String(e.eventId).slice(0, 200)), (err as Error).message);
+      }
+    }
+
+    // The Airlock dataset (DS-2), after the transaction too, but a failure is not
+    // swallowed: those rows exist nowhere else, so the batch is answered 503 (below,
+    // once every other side effect has run) and the installation sends it again.
+    // Events already stored are ignored on the resend; dataset rows are too.
+    let datasetFailed = false;
+    try {
+      await recordAirlockDataset(ctx.db, orgId, airlockDataset);
+    } catch (err) {
+      datasetFailed = true;
+      console.warn('[AIRLOCK] could not keep %d dataset row(s), asking for the batch again: %s', airlockDataset.length, (err as Error).message);
+    }
+
+    // Roll up the past days this batch stored (#223). The timer only rolls up
+    // from the latest rolled-up day forward, so an event dated before it — an
+    // outbox catching up after days offline, or a deadletter requeue resending
+    // refused events with their original occurredAt — would count in totals and
+    // the PR overview but never in the per-day series. After the transaction:
+    // the events are stored either way, and a failure here only warns.
+    try {
+      await recomputeBackdatedDays(ctx.db, orgId, ingestedDays);
+    } catch (err) {
+      console.warn('[ROLLUP] stored backdated events but could not roll up their days:', (err as Error).message);
+    }
+
     // Federation (CGLAB-184). Deliberately AFTER the ingest transaction and
     // outside it: queueing for the parent is a side effect of having stored an
     // event, never a condition of storing it.
@@ -571,6 +647,10 @@ export function eventsRouter(ctx: HubServerContext): Router {
       await selfBindUnboundKey(ctx, orgId, req.hubApiKey!.tokenHash, seenInstallations);
     }
 
+    if (datasetFailed) {
+      res.status(503).json({ error: 'The hub could not keep this batch\'s Airlock dataset rows; send it again.' });
+      return;
+    }
     res.json({ ingested, skipped, rejected, hiddenDropped, installationId: installationFromHeader, rejections });
   }));
 

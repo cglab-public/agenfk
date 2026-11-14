@@ -9,7 +9,7 @@
 // reverting an older merge after a newer one touched the same rows must report
 // that it moved nothing rather than silently claiming success.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -17,6 +17,17 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-unmerge-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -42,10 +53,10 @@ describe('reverting an identity merge', () => {
     );
 
   const merge = (from: string, to: string) =>
-    supertest(app).post('/v1/admin/user-keys/merge').set('Cookie', cookieAdmin).send({ from, to });
+    supertest(__server).post('/v1/admin/user-keys/merge').set('Cookie', cookieAdmin).send({ from, to });
 
   const revert = (id: string, cookie = cookieAdmin) =>
-    supertest(app).post(`/v1/admin/user-keys/merges/${encodeURIComponent(id)}/revert`).set('Cookie', cookie);
+    supertest(__server).post(`/v1/admin/user-keys/merges/${encodeURIComponent(id)}/revert`).set('Cookie', cookie);
 
   const keyOf = async (eventId: string) =>
     (await ctx.db.get('SELECT user_key FROM events WHERE event_id = ?', [eventId]))?.user_key;
@@ -54,7 +65,7 @@ describe('reverting an identity merge', () => {
     ctx.db.get('SELECT events_count FROM rollups_daily WHERE org_id = ? AND user_key = ? AND day = ?',
       ['org-a', userKey, day]);
 
-  const merges = () => supertest(app).get('/v1/admin/user-keys/merges').set('Cookie', cookieAdmin);
+  const merges = () => supertest(__server).get('/v1/admin/user-keys/merges').set('Cookie', cookieAdmin);
 
   beforeEach(async () => {
     cleanup();
@@ -62,23 +73,25 @@ describe('reverting an identity merge', () => {
       dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
-    cookieAdmin = (await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
-    cookieView = (await supertest(app).post('/auth/login').send({ email: 'view@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+    cookieAdmin = (await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+    cookieView = (await supertest(__server).post('/auth/login').send({ email: 'view@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   describe('authz', () => {
     it('rejects unauthenticated and non-admin', async () => {
-      expect((await supertest(app).post('/v1/admin/user-keys/merges/x/revert')).status).toBe(401);
+      expect((await supertest(__server).post('/v1/admin/user-keys/merges/x/revert')).status).toBe(401);
       expect((await revert('x', cookieView)).status).toBe(403);
     });
   });
@@ -187,20 +200,56 @@ describe('reverting an identity merge', () => {
   });
 
   describe('LIFO semantics', () => {
-    it('reports that nothing moved when a newer merge has since claimed the events', async () => {
+    // It used to answer 200 with eventsRestored 0 AND mark the merge reverted,
+    // which used it up: once the newer merge was reverted the events landed
+    // back on this merge's target and could never be moved further.
+    it('refuses to revert out of order, and leaves the merge revertable', async () => {
       await event('e1', 'a');
       const first = await merge('a', 'b');
       const second = await merge('b', 'c');
       expect(await keyOf('e1')).toBe('c');
 
       const r = await revert(first.body.mergeId);
+      expect(r.status).toBe(409);
+      expect(String(r.body.error ?? '')).toMatch(/newer merge/i);
+      expect(await keyOf('e1')).toBe('c');
 
-      // Honest zero rather than a silent success: the rows now belong to the
-      // later merge, and reverting out of order would corrupt the chain.
+      // Newest first, then the refused one goes through.
+      expect((await revert(second.body.mergeId)).status).toBe(200);
+      const again = await revert(first.body.mergeId);
+      expect(again.status).toBe(200);
+      expect(again.body.eventsRestored).toBe(1);
+      expect(await keyOf('e1')).toBe('a');
+    });
+
+    // The check runs before the transaction. A merge landing in between used
+    // to leave this one marked reverted with nothing moved; the transaction
+    // now rolls back instead.
+    it('refuses, and stays revertable, when a newer merge lands between the check and the revert', async () => {
+      await event('e1', 'a');
+      const first = await merge('a', 'b');
+      await merge('b', 'c');
+      const realGet = ctx.db.get.bind(ctx.db);
+      const spy = vi.spyOn(ctx.db, 'get').mockImplementation(async (sql: any, params?: any) => {
+        // The pre-check sees the events still on target, as it would have a moment earlier.
+        if (typeof sql === 'string' && sql.includes('AS on_target')) return { journaled: 1, on_target: 1 };
+        return realGet(sql, params);
+      });
+      try {
+        const r = await revert(first.body.mergeId);
+        expect(r.status).toBe(409);
+      } finally {
+        spy.mockRestore();
+      }
+      const row = await ctx.db.get('SELECT reverted_at FROM user_key_merges WHERE id = ?', [first.body.mergeId]);
+      expect((row as any).reverted_at).toBeNull();
+    });
+
+    it('still reverts a merge that moved no events', async () => {
+      const m = await merge('ghost', 'real@acme.com');
+      const r = await revert(m.body.mergeId);
       expect(r.status).toBe(200);
       expect(r.body.eventsRestored).toBe(0);
-      expect(String(r.body.note ?? '')).toMatch(/newer|later|superseded/i);
-      expect(await keyOf('e1')).toBe('c');
     });
 
     it('unwinds a chain correctly in reverse order', async () => {

@@ -4,6 +4,7 @@ import { api } from '../api';
 import { Rocket, AlertTriangle, X, ExternalLink, ArrowUpCircle, Loader2, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { isNewerVersion } from '../versionCompare';
 
 const stripAnsi = (str: string) =>
   str.replace(/\x1B\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1B[()][AB012]/g, '');
@@ -25,23 +26,10 @@ type UpdateState =
   | { phase: 'success'; output: string }
   | { phase: 'error'; output: string };
 
-const isNewerVersion = (latest: string, current: string): boolean => {
-  if (!latest || !current) return false;
-  
-  const clean = (v: string) => v.replace(/^v/, '').split('-')[0].split('.').map(Number);
-  const l = clean(latest);
-  const c = clean(current);
-  
-  for (let i = 0; i < Math.max(l.length, c.length); i++) {
-    const lv = l[i] || 0;
-    const cv = c[i] || 0;
-    if (lv > cv) return true;
-    /* v8 ignore start */
-    if (lv < cv) return false;
-  }
-  return false;
-  /* v8 ignore stop */
-};
+// Moved out of this file rather than copied beside the settings screen's own
+// row. Two comparators agreeing until they do not shows up as this rocket
+// lighting the corner while Settings says "You're up to date".
+
 
 export const ReleaseReminder: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -186,17 +174,17 @@ export const ReleaseReminder: React.FC = () => {
         onClick={() => setIsModalOpen(true)}
         className={`relative p-2 rounded-lg border shadow-sm transition-all hover:scale-105 ${
           isMandatory
-            ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40'
+            ? 'bg-status-danger-bg text-status-danger-text border-status-danger-text/40 hover:border-status-danger-text'
             : isRecommended
-            ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600 dark:text-yellow-400 border-yellow-200 dark:border-yellow-800 hover:bg-yellow-100 dark:hover:bg-yellow-900/40'
-            : 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
+            ? 'bg-status-warn-bg text-status-warn-text border-status-warn-text/40 hover:border-status-warn-text'
+            : 'bg-status-ok-bg text-status-ok-text border-status-ok-text/40 hover:border-status-ok-text'
         }`}
         title={isMandatory ? `Mandatory upgrade required: v${release.version}` : `New release available: v${release.version}`}
       >
         {isMandatory ? <AlertTriangle size={18} /> : <Rocket size={18} />}
         <span className="absolute -top-1 -right-1 flex h-3 w-3">
-          <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isMandatory ? 'bg-red-400' : isRecommended ? 'bg-yellow-400' : 'bg-emerald-400'}`}></span>
-          <span className={`relative inline-flex rounded-full h-3 w-3 ${isMandatory ? 'bg-red-500' : isRecommended ? 'bg-yellow-500' : 'bg-emerald-500'}`}></span>
+          <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isMandatory ? 'bg-status-danger-text' : isRecommended ? 'bg-status-warn-text' : 'bg-status-ok-text'}`}></span>
+          <span className={`relative inline-flex rounded-full h-3 w-3 ${isMandatory ? 'bg-status-danger-text' : isRecommended ? 'bg-status-warn-text' : 'bg-status-ok-text'}`}></span>
         </span>
       </button>
 
@@ -206,16 +194,16 @@ export const ReleaseReminder: React.FC = () => {
           onClick={!isUpdating ? handleClose : undefined}
         >
           <div
-            className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg mx-4 max-h-[85vh] flex flex-col overflow-hidden"
+            className="bg-surface rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg mx-4 max-h-[85vh] flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
               <div className="flex items-center gap-3">
-                <div className={`p-2 rounded-lg ${isMandatory ? 'bg-red-50 dark:bg-red-900/20' : isRecommended ? 'bg-yellow-50 dark:bg-yellow-900/20' : 'bg-emerald-50 dark:bg-emerald-900/20'}`}>
+                <div className={`p-2 rounded-lg ${isMandatory ? 'bg-status-danger-bg' : isRecommended ? 'bg-status-warn-bg' : 'bg-status-ok-bg'}`}>
                   {isMandatory
-                    ? <AlertTriangle size={20} className="text-red-600 dark:text-red-400" />
-                    : <Rocket size={20} className={isRecommended ? 'text-yellow-600 dark:text-yellow-400' : 'text-emerald-600 dark:text-emerald-400'} />
+                    ? <AlertTriangle size={20} className="text-status-danger-text" />
+                    : <Rocket size={20} className={isRecommended ? 'text-status-warn-text' : 'text-status-ok-text'} />
                   }
                 </div>
                 <div>
@@ -230,7 +218,7 @@ export const ReleaseReminder: React.FC = () => {
                   <p className="text-xs text-slate-500 dark:text-slate-400">
                     <span className="font-mono bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">v{release.currentVersion}</span>
                     <span className="mx-2">&rarr;</span>
-                    <span className="font-mono bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 rounded font-bold">v{release.version}</span>
+                    <span className="font-mono bg-status-ok-bg text-status-ok-text px-1.5 py-0.5 rounded font-bold">v{release.version}</span>
                   </p>
                 </div>
               </div>
@@ -249,13 +237,13 @@ export const ReleaseReminder: React.FC = () => {
               /* Terminal output view */
               <div className="flex-1 flex flex-col overflow-hidden p-4 gap-3">
                 <div className="flex items-center gap-2 text-xs font-medium">
-                  {updateState.phase === 'running' && <Loader2 size={14} className="animate-spin text-blue-500" />}
-                  {updateState.phase === 'success' && <CheckCircle size={14} className="text-emerald-500" />}
-                  {updateState.phase === 'error' && <XCircle size={14} className="text-red-500" />}
+                  {updateState.phase === 'running' && <Loader2 size={14} className="animate-spin text-status-info-text" />}
+                  {updateState.phase === 'success' && <CheckCircle size={14} className="text-status-ok-text" />}
+                  {updateState.phase === 'error' && <XCircle size={14} className="text-status-danger-text" />}
                   <span className={
-                    updateState.phase === 'running' ? 'text-blue-600 dark:text-blue-400' :
-                    updateState.phase === 'success' ? 'text-emerald-600 dark:text-emerald-400' :
-                    'text-red-600 dark:text-red-400'
+                    updateState.phase === 'running' ? 'text-status-info-text' :
+                    updateState.phase === 'success' ? 'text-status-ok-text' :
+                    'text-status-danger-text'
                   }>
                     {updateState.phase === 'running' ? 'Running update...' :
                      updateState.phase === 'success' ? 'Update successful' :
@@ -269,7 +257,7 @@ export const ReleaseReminder: React.FC = () => {
                   {terminalOutput || (isUpdating ? 'Starting...' : '')}
                 </pre>
                 {updateState.phase === 'success' && (
-                  <div className="flex items-center gap-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg text-xs text-emerald-700 dark:text-emerald-300">
+                  <div className="flex items-center gap-2 p-3 bg-status-ok-bg border border-status-ok-text/40 rounded-lg text-xs text-status-ok-text">
                     <RefreshCw size={14} className="shrink-0 animate-spin" />
                     <span>Restarting server and reloading in <strong>{countdown}s</strong>...</span>
                   </div>
@@ -287,7 +275,7 @@ export const ReleaseReminder: React.FC = () => {
                   </div>
                 )}
                 <div className="flex-1 overflow-y-auto px-6 py-4">
-                  <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-slate-800 dark:prose-headings:text-slate-200 prose-p:text-slate-600 dark:prose-p:text-slate-400 prose-li:text-slate-600 dark:prose-li:text-slate-400 prose-code:text-accent-text prose-code:bg-slate-100 dark:prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs">
+                  <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-slate-800 dark:prose-headings:text-slate-200 prose-p:text-slate-600 dark:prose-p:text-slate-400 prose-li:text-slate-600 dark:prose-li:text-slate-400 prose-code:text-accent-ink prose-code:bg-slate-100 dark:prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {release.body || 'No release notes available.'}
                     </ReactMarkdown>
@@ -304,7 +292,7 @@ export const ReleaseReminder: React.FC = () => {
                   <span className="text-xs text-slate-400">Reloading automatically...</span>
                   <button
                     onClick={() => window.location.reload()}
-                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-sm transition-all active:scale-95"
+                    className="flex items-center gap-2 bg-brand text-navy hover:opacity-90 px-4 py-2 rounded-lg font-semibold text-sm shadow-sm transition-all active:scale-95"
                   >
                     <RefreshCw size={16} />
                     Reload now
@@ -323,7 +311,7 @@ export const ReleaseReminder: React.FC = () => {
                     href={release.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-accent-text font-medium transition-colors"
+                    className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-accent-ink font-medium transition-colors"
                   >
                     <ExternalLink size={14} />
                     Manual install
@@ -350,18 +338,16 @@ export const ReleaseReminder: React.FC = () => {
                       href={release.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-accent-text font-medium transition-colors"
+                      className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-accent-ink font-medium transition-colors"
                     >
                       <ExternalLink size={14} />
                       View on GitHub
                     </a>
                     <button
                       onClick={handleUpdateNow}
-                      className={`flex items-center gap-2 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-sm transition-all active:scale-95 ${
-                        isMandatory
-                          ? 'bg-red-600 hover:bg-red-700'
-                          : 'bg-emerald-600 hover:bg-emerald-700'
-                      }`}
+                      // The primary action in both tiers: urgency is carried by the badge and
+                      // the header, and a danger tint would read as destructive.
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-sm shadow-sm transition-all active:scale-95 bg-brand text-navy hover:opacity-90"
                     >
                       <ArrowUpCircle size={16} />
                       {isMandatory ? 'Upgrade Now (Required)' : 'Update Now'}

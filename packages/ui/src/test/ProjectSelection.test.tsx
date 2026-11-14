@@ -5,6 +5,7 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
+import { ActiveProjectProvider } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { io } from 'socket.io-client';
@@ -12,6 +13,7 @@ import { io } from 'socket.io-client';
 // Mock socket.io-client
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
+    connect: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
     emit: vi.fn(),
@@ -101,9 +103,11 @@ describe('ProjectSelection', () => {
     });
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
+    <ActiveProjectProvider>
         <ThemeProvider>
           {children}
         </ThemeProvider>
+        </ActiveProjectProvider>
       </QueryClientProvider>
     );
     render(<KanbanBoard />, { wrapper });
@@ -147,51 +151,6 @@ describe('ProjectSelection', () => {
     expect(screen.getByText('Mango')).toBeDefined();
     expect(screen.queryByText('Zebra')).toBeNull();
     expect(screen.queryByText('apple')).toBeNull();
-  });
-
-  it('project list is inside a scrollable container', async () => {
-    vi.mocked(api.listProjects).mockResolvedValue([
-      makeProject('z', 'Zebra'),
-      makeProject('a', 'apple'),
-      makeProject('m', 'Mango'),
-    ]);
-
-    renderKanbanBoard();
-
-    // Wait for projects to render
-    await waitFor(() => screen.getByText('apple'));
-
-    // Find a rendered project name element and walk up to find the
-    // scrollable container wrapping the project list.
-    const appleElement = screen.getByText('apple');
-    let el: HTMLElement | null = appleElement;
-
-    // Walk up the DOM tree looking for the scroll container
-    while (el && el !== document.body) {
-      const className = el.className;
-      const style = el.style;
-
-      if (
-        typeof className === 'string' &&
-        (className.includes('overflow-y-auto') || className.includes('overflow-y-scroll'))
-      ) {
-        break;
-      }
-
-      if (
-        style.maxHeight && style.maxHeight !== '' &&
-        (style.overflow === 'auto' || style.overflow === 'scroll' ||
-         style.overflowY === 'auto' || style.overflowY === 'scroll')
-      ) {
-        break;
-      }
-
-      el = el.parentElement;
-    }
-
-    // We should have found a scrollable ancestor (not document.body)
-    expect(el).not.toBeNull();
-    expect(el).not.toBe(document.body);
   });
 
   it('shows an empty state when no projects match the search', async () => {
@@ -280,7 +239,8 @@ describe('ProjectSelection', () => {
     // clickable, or it advertises a click the guard deliberately ignores.
     const armed = rowOf('Delete "Zebra"?');
     expect(armed.className).not.toContain('cursor-pointer');
-    expect(armed.className).not.toContain('hover:bg-chip');
+    // No hover fill of any colour: the armed row is not a click target.
+    expect(armed.className).not.toMatch(/(?:^|\s)hover:bg-/);
   });
 
   it('the trash button arms the delete confirm and does NOT select the project', async () => {

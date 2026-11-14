@@ -21,7 +21,7 @@ If already on `main`, continue to Step 2.
 **Step 2 — Commit local changes**
 Check for local changes using `git status`. If there are unstaged or uncommitted changes:
 - Ask the user for a commit message (or offer to generate one).
-- **Cross-project guard**: If you generate or suggest a message that references a task ID (e.g. `[<uuid>]`), first run `agenfk get <taskId> --json` (MCP: `get_item`) and verify its `projectId` matches `.agenfk/project.json`. If it does not match, omit the task reference and use a generic summary instead. Never embed a foreign task ID in a commit message.
+- **Cross-project guard**: If you generate or suggest a message that references a task ID (e.g. `[<uuid>]`), first run `agenfk get <taskId> --json` (MCP: `get_item`) and verify its `projectId` matches the id `agenfk current-project` prints. If it does not match, omit the task reference and use a generic summary instead. Never embed a foreign task ID in a commit message.
 - Run `git add . && git commit -m "<message>"` and show the output.
 
 **Step 3 — GitHub Release (optional)**
@@ -57,14 +57,24 @@ If YES:
 - Ask for a release title (default: same as tag).
 - Offer to auto-generate release notes from git log: run `git log $(git describe --tags --abbrev=0)..HEAD --oneline` and summarise the commits as bullet points.
   - **STRICT SCOPE**: Only include changes that appear in the `git log` output above. Do NOT carry forward items from previous release notes, from other projects, or from your conversation context. Each release note must map 1-to-1 to a commit in the log range.
-  - **Cross-project guard**: If a commit message contains a task ID in brackets (e.g. `[1a18154d-...]`), verify it belongs to the current project by checking `.agenfk/project.json`. If the project ID does not match, omit the task reference from the release note and note it as a possible mislabelled commit.
+  - **Cross-project guard**: If a commit message contains a task ID in brackets (e.g. `[1a18154d-...]`), verify it belongs to the current project by checking the id `agenfk current-project` prints. If the project ID does not match, omit the task reference from the release note and note it as a possible mislabelled commit.
 - Confirm the notes with the user, allow edits.
 - **Package Distributable**: Run `node scripts/package-dist.mjs` and verify `agenfk-dist.tar.gz` exists. Then verify it carries no macOS metadata — **do not use `tar -tzf`**, which on macOS silently merges AppleDouble entries into their parent and reports a clean archive (this is how CGLAB-94 shipped in every release from v1.1.13 to v1.1.16-beta.4):
   ```bash
   node -e "const{gunzipSync}=require('zlib'),{readFileSync}=require('fs');const b=gunzipSync(readFileSync('agenfk-dist.tar.gz'));let o=0,n=[];while(o+512<=b.length){const f=b.subarray(o,o+100),i=f.indexOf(0),m=f.subarray(0,i===-1?100:i).toString();if(!m){o+=512;continue}n.push(m);o+=512+Math.ceil((parseInt(b.subarray(o+124,o+136).toString('ascii').replace(/\0.*$/,'').trim(),8)||0)/512)*512}const bad=n.filter(x=>(x.replace(/\/$/,'').split('/').pop()||'').startsWith('._')||x.endsWith('.DS_Store'));console.log(bad.length?'DIRTY: '+bad.length+' macOS metadata entries':'CLEAN: '+n.length+' members');process.exit(bad.length?1:0)"
   ```
   Abort the release if it reports `DIRTY`.
-- **Tag & Push**: Run `git tag <tag>` to create the tag locally on the version-bump commit, then run `git push origin HEAD --tags` to push both the commit and the tag to the remote.
+- **Suite gate (#249)**: Before tagging, run the full suite on the version-bump commit you are about to tag: `npm test`. Read BOTH vitest summary lines (`Test Files` and `Tests`): an import-time throw fails a file with 0 failed tests, so the `Tests` line alone can read green. The run must exit 0 (vitest exits non-zero on an unhandled error even when both lines read green) and neither line may report a failure. Otherwise **STOP**: do not tag, do not push, do not create the release; report the failing files to the user. Say in your final report that the gate ran and what it printed. CI is not a substitute here - the bump commit has no CI run until it is pushed.
+- **Build the Airlock image first (CGLAB-696)**: every `agenfk airlock` launch of this version pulls `ghcr.io/<owner>/agenfk-airlock-base:<version>`, so it must exist before the release does. Push the version-bump commit alone (`git push origin HEAD`), then build the image from it and wait for it:
+  ```bash
+  SHA=$(git rev-parse HEAD); BRANCH=$(git branch --show-current)
+  gh workflow run airlock-image.yml --ref "$BRANCH" -f version=<version>
+  sleep 10   # the run takes a moment to be listed
+  RUN=$(gh run list --workflow airlock-image.yml --branch "$BRANCH" --event workflow_dispatch --limit 5 --json databaseId,headSha --jq "map(select(.headSha == \"$SHA\"))[0].databaseId")
+  gh run watch "$RUN" --exit-status
+  ```
+  `RUN` must be non-empty (a run built from exactly `$SHA`). If the run fails, **STOP**: do not tag, do not create the release; report the failed run's URL. The tag pushed next runs the image workflow again, which finds this commit's image for both platforms and skips.
+- **Tag & Push**: Run `git tag <tag>` to create the tag locally on the version-bump commit, then run `git push origin <tag>` to push the tag (the commit went out with the image build). Push only that one tag, never `--tags`: GitHub starts no workflows for a push of more than three tags, and this tag starts the desktop installer build (`desktop-release.yml`, CGLAB-621).
 - **Create Release**: Run `gh release create <tag> agenfk-dist.tar.gz --title "<title>" --notes "<notes">`.
 - Show the release URL returned by `gh`.
 

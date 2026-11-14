@@ -5,8 +5,11 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { compareSemver } from './version-utils.mjs';
+import { compareSemver, newestChannelTag } from './version-utils.mjs';
 import { pruneInstallDir, pruneInstallDirAgainstManifest } from './sync-install-dir.mjs';
+import { copyTree } from './copy-tree.mjs';
+import { forceLocalFlag, tarPath } from './tar-flags.mjs';
+import { requestedGitRef, releaseTagForRef, releaseTagForVersion } from './requested-ref.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -18,24 +21,13 @@ const BLUE   = '\x1b[34m';
 const YELLOW = '\x1b[33m';
 const RESET  = '\x1b[0m';
 
-console.log(`${CYAN}
-                     ______           ______   _  __
-     /\\             |  ____|         |  ____| | |/ /
-    /  \\      __ _  | |__     _ __   | |__    | ' /
-   / /\\ \\    / _\` | |  __|   | '_ \\  |  __|   |  <
-  / ____ \\  | (_| | | |____  | | | | | |      | . \\
- /_/    \\_\\  \\__, | |______| |_| |_| |_|      |_|\\_\\
-              __/ |
-             |___/
-${RESET}`);
-
-console.log(`${BLUE}=== AgEnFK Installer ===${RESET}\n`);
-
 // Determine whether we're running from the npx cache or a real clone.
 // A real clone has a .git directory; the npx cache does not.
 const isNpxCache = !fs.existsSync(path.join(REPO_ROOT, '.git'));
 const shouldRebuild = process.argv.includes('--rebuild');
 const isBeta = process.argv.includes('--beta');
+// install.mjs is quiet by default; --debuglog brings back its step-by-step log.
+const debuglog = process.argv.includes('--debuglog');
 // MCP is opt-in (CLI-only by default): forward --with-mcp / --no-mcp to install.mjs.
 const withMcp = process.argv.includes('--with-mcp');
 const noMcp = process.argv.includes('--no-mcp');
@@ -57,33 +49,22 @@ if (hasGit && !forceInstall) {
   process.exit(1);
 }
 
-// On MSYS2 / Git-for-Windows (MinGW), Node.js reports process.platform === 'win32' but
-// the bundled tar is an MSYS2 binary that understands POSIX paths (/c/Users/...).
-// Converting Win32 paths to POSIX form avoids the "C: treated as remote hostname" error
-// even when --force-local is not supported or not respected by the installed tar version.
-const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX ||
-  (process.platform === 'win32' && process.env.SHELL?.includes('bash')));
-
-// Convert a Win32 drive path to an MSYS2 POSIX path (/c/Users/...) so that
-// MSYS2 tar never sees a bare "C:" that it might interpret as a remote hostname.
-function toPosixPath(p) {
-  if (isMinGW && /^[a-zA-Z]:/.test(p)) {
-    return '/' + p[0].toLowerCase() + p.slice(2).replace(/\\/g, '/');
-  }
-  return p;
-}
-
-// On Windows, BSD tar treats "C:" as a remote hostname; --force-local disables that.
-// On MinGW we also convert paths to POSIX form as a belt-and-suspenders measure.
+// On Windows, GNU tar (Git Bash's) treats "C:" as a remote hostname; --force-local
+// disables that. The bsdtar Windows ships needs no such flag and rejects it, so
+// it is passed only to GNU tar (GitHub #208, see tar-flags.mjs). Every path a tar
+// command gets goes through tarPath() for the same reason: GNU tar on Windows
+// unescapes backslashes, so it gets C:/... from any shell; bsdtar the native path.
 // Refuse macOS metadata on the way IN. This is the path that actually polluted
 // users: every published release up to v1.1.16-beta.4 was ~half AppleDouble
 // (`._*`) entries, and this extraction lands the tarball straight into the
-// install dir — after the filtered cpSync above, so that filter never sees it.
+// install dir — after the filtered copyTree above, so that filter never sees it.
 // Excluding here makes the outcome independent of any later sweep.
 // (CGLAB-94 / issue #163)
-const tarExcludes = "--exclude='._*' --exclude='.DS_Store'";
+// Double quotes, not single: cmd.exe keeps single quotes as part of the word, so
+// on Windows the pattern was `'._*'` and excluded nothing. sh treats both alike.
+const tarExcludes = '--exclude="._*" --exclude=".DS_Store"';
 const tarFlags = process.platform === 'win32'
-  ? `--force-local ${tarExcludes} -xzf`
+  ? `${forceLocalFlag()}${tarExcludes} -xzf`
   : `${tarExcludes} -xzf`;
 
 // compareSemver gates the redownload-on-update downgrade guard. It is imported
@@ -100,41 +81,87 @@ function readLocalVersion(installDir) {
   } catch { return null; }
 }
 
-// Fetch latest release tag — curl (no auth) first, gh CLI as fallback.
-// When beta=true, fetches all recent releases and picks the most recently published
-// (including pre-releases), mirroring the behaviour of `agenfk upgrade --beta`.
+// The release a channel installs - curl (no auth) first, gh CLI as fallback.
+// BUG 4bd98e16: both used to pick by DATE with no hub-tag filter (`--beta` the
+// newest release of any kind, its gh fallback `--limit 1` of any kind), so a hub
+// image release or a hotfix on an older line could be installed as the
+// framework. Now the CLI's rule (newestChannelTag): never hub-v*, the channel's
+// newest by version. GitHub's /releases/latest (and `gh release view`) is
+// date-chosen, so for stable it is only one candidate beside the list.
 function fetchLatestTag(repo, beta = false) {
-  try {
-    const url = beta
-      ? `https://api.github.com/repos/${repo}/releases?per_page=20`
-      : `https://api.github.com/repos/${repo}/releases/latest`;
-    const json = execSync(
-      `curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`,
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-    );
-    const data = JSON.parse(json);
-    const tag = beta
-      ? (Array.isArray(data) ? data.sort((a, b) => new Date(b.published_at) - new Date(a.published_at))[0]?.tag_name : null)
-      : data.tag_name;
-    if (tag) return tag;
-  } catch {}
-  // Fallback: gh CLI
-  if (beta) {
-    return execSync(`gh release list --repo ${repo} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, { encoding: 'utf8' }).trim();
+  // Same order as the CLI's: GitHub's own answer first, the list best-effort,
+  // so a list that fails (rate limit, a page past maxBuffer) never throws away
+  // a good /releases/latest. maxBuffer: the 100-release list is ~0.6 MB today
+  // and grows with every release's notes; execSync's default is 1 MB.
+  const run = (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024, windowsHide: true });
+  const curlJson = (url) => JSON.parse(run(`curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`));
+  // --beta INCLUDES stable: once 2.0.0 ships, 2.0.0-beta.23 is not the newest
+  // thing a beta user should get (the CLI's resolveReleaseTag does the same).
+  const pick = (refs) => {
+    const stable = newestChannelTag(refs, false);
+    if (!beta) return stable;
+    const pre = newestChannelTag(refs, true);
+    if (pre && stable) return compareSemver(stable, pre) > 0 ? stable : pre;
+    return pre || stable;
+  };
+
+  // Each source says whether its LIST answered: for --beta, GitHub's latest
+  // alone is only ever a stable, so it is not an answer while the other source
+  // could still list the newer beta.
+  const viaApi = () => {
+    const refs = [];
+    let listed = false;
+    try {
+      const latest = curlJson(`https://api.github.com/repos/${repo}/releases/latest`)?.tag_name;
+      if (latest) refs.push({ tag: latest, prerelease: false, publishedAt: 0 });
+    } catch { /* the list alone decides */ }
+    try {
+      const list = curlJson(`https://api.github.com/repos/${repo}/releases?per_page=100`);
+      for (const r of Array.isArray(list) ? list : []) {
+        refs.push({ tag: r?.tag_name, prerelease: !!r?.prerelease, publishedAt: Date.parse(r?.published_at) || 0 });
+      }
+      listed = Array.isArray(list);
+    } catch { /* latest alone decides */ }
+    return { tag: pick(refs), listed };
+  };
+  const viaGh = () => {
+    const refs = [];
+    let listed = false;
+    try {
+      const viewed = run(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`).trim();
+      if (viewed) refs.push({ tag: viewed, prerelease: false, publishedAt: 0 });
+    } catch { /* the list alone decides */ }
+    try {
+      const rows = JSON.parse(run(`gh release list --repo ${repo} --limit 100 --exclude-drafts --json tagName,isPrerelease,createdAt`) || '[]');
+      for (const r of rows) refs.push({ tag: r?.tagName, prerelease: !!r?.isPrerelease, publishedAt: Date.parse(r?.createdAt) || 0 });
+      listed = Array.isArray(rows);
+    } catch { /* the viewed tag alone decides */ }
+    return { tag: pick(refs), listed };
+  };
+
+  const api = viaApi();
+  if (api.tag && (api.listed || !beta)) return api.tag;
+  const gh = viaGh();
+  if (gh.tag && (gh.listed || !beta)) return gh.tag;
+  // Neither listed: a stable from either latest is the best that is known.
+  const tag = api.tag || gh.tag;
+  if (!tag) {
+    throw new Error(`Could not resolve a ${beta ? 'pre-release or stable' : 'stable'} framework release for ${repo}: `
+      + 'the GitHub API and gh both failed, or the repo lists only hub releases.');
   }
-  return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
+  return tag;
 }
 
 // Run the setup script, surfacing a clean failure instead of letting the success
-// banner print on a partial/failed install (issue #86 #3). execSync throws on a
+// summary print on a partial/failed install (issue #86 #3). execSync throws on a
 // non-zero exit; we translate that into an explicit error + non-zero exit code.
 function runInstaller(cwd) {
   try {
-    execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}${withMcp ? ' --with-mcp' : ''}${noMcp ? ' --no-mcp' : ''}`, { cwd, stdio: 'inherit' });
+    execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}${withMcp ? ' --with-mcp' : ''}${noMcp ? ' --no-mcp' : ''}${debuglog ? ' --debuglog' : ''}`, { cwd, stdio: 'inherit', windowsHide: true });
   } catch {
     console.error(`\n${YELLOW}❌ AgEnFK installation failed — the setup step did not complete.${RESET}`);
-    console.error(`${YELLOW}   See the output above for the failing step, then re-run:${RESET}`);
-    console.error(`${YELLOW}     npx -p github:cglab-public/agenfk agenfk${RESET}\n`);
+    console.error(`${YELLOW}   Re-run with --debuglog to see every step:${RESET}`);
+    console.error(`${YELLOW}     npx -p github:cglab-public/agenfk agenfk --debuglog${RESET}\n`);
     process.exit(1);
   }
 }
@@ -143,11 +170,11 @@ function runInstaller(cwd) {
 function downloadAsset(repo, tag, pattern, outputPath) {
   const url = `https://github.com/${repo}/releases/download/${tag}/${pattern}`;
   try {
-    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit' });
+    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
     return;
   } catch {}
   // Fallback: gh CLI
-  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
+  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
 }
 
 
@@ -157,26 +184,11 @@ function downloadAsset(repo, tag, pattern, outputPath) {
 // garbage skills in every agent session (CGLAB-94 / issue #163).
 const isMacMetadata = (name) => name.startsWith('._') || name === '.DS_Store';
 const copyFilter = (src) => !isMacMetadata(path.basename(src));
-// Say what was pruned, and say what could not be — an upgrade that reports
-// clean while the leak persists is the failure mode this whole fix exists for.
+// Say what could not be pruned — an upgrade that reports clean while the leak
+// persists is the failure mode this whole fix exists for. What WAS pruned is
+// routine, and no longer listed file by file (e04dac92).
 function reportPrune({ removed, failed }) {
-  for (const rel of removed) console.log(`  Pruned (no longer shipped): ${rel}`);
   for (const f of failed) console.log(`${YELLOW}  Could not prune ${f.path}: ${f.reason}${RESET}`);
-}
-
-// Fallback path for Node builds without fs.cpSync: `cp -r` can't filter, so
-// remove the artifacts after the fact.
-function sweepMacMetadata(dir) {
-  if (!fs.existsSync(dir)) return;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'node_modules' || entry.name === '.git') continue;
-    const full = path.join(dir, entry.name);
-    if (isMacMetadata(entry.name)) {
-      try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* ignore */ }
-    } else if (entry.isDirectory()) {
-      sweepMacMetadata(full);
-    }
-  }
 }
 
 if (isNpxCache) {
@@ -196,35 +208,50 @@ if (isNpxCache) {
   // download-failure case, which is how that path was missed.)
   let skipSourcePrune = false;
 
+  // #216: a pinned ref (`npx github:cglab-public/agenfk#<tag>`) gets ITS
+  // release's dist, fetched BEFORE anything is copied: once the pinned source
+  // is over the install dir, a failed download would leave it on another
+  // release's dist - the mix this exists to prevent. So a pin that cannot be
+  // fetched stops here, with the install untouched.
+  const pinnedRef = shouldRebuild ? null : requestedGitRef(REPO_ROOT, fs, path);
+  let pinnedTag = null;
+  let pinnedArchive = null;
+  if (pinnedRef) {
+    pinnedTag = releaseTagForRef(pinnedRef, readLocalVersion(REPO_ROOT));
+    pinnedArchive = path.join(os.tmpdir(), `agenfk-dist-${process.pid}-${Date.now()}.tar.gz`);
+    try {
+      if (!pinnedTag) throw new Error('it is neither a release tag nor a tree that declares a release version');
+      downloadAsset('cglab-public/agenfk', pinnedTag, 'agenfk-dist.tar.gz', pinnedArchive);
+      // Read it through once, too: a truncated or corrupt archive must also
+      // fail here, before the pinned source goes in, not at extraction.
+      const listFlags = process.platform === 'win32' ? `${forceLocalFlag()}-tzf` : '-tzf';
+      execSync(`tar ${listFlags} "${tarPath(pinnedArchive)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    } catch (e) {
+      try { fs.unlinkSync(pinnedArchive); } catch { /* never written */ }
+      console.error(`${YELLOW}❌ Could not fetch the release for the requested ref ${JSON.stringify(pinnedRef)}${pinnedTag ? ` (${pinnedTag})` : ''}: ${e.message}${RESET}`);
+      console.error(`${YELLOW}   Nothing was changed${isUpdate ? ` in ${INSTALL_DIR}` : ''}. Pin a published release tag, or run without a ref to install the latest.${RESET}`);
+      process.exit(1);
+    }
+  }
+
   if (isUpdate) {
     console.log(`${GREEN}Updating AgEnFK at ${INSTALL_DIR}...${RESET}`);
     // Copy the new files over the existing install AND prune what this version
     // no longer ships. A bare overlay left deleted files behind forever, and
     // install.mjs re-installed them into every client's global config — that is
     // how the repo-private /agenfk-release command kept coming back.
-    if (fs.cpSync) {
-      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true, filter: copyFilter });
-    } else {
-      execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(INSTALL_DIR)}/`, { stdio: 'inherit', shell: true });
-      sweepMacMetadata(INSTALL_DIR);
-    }
+    copyTree(REPO_ROOT, INSTALL_DIR, { filter: copyFilter });
   } else {
     console.log(`${GREEN}Installing AgEnFK to ${INSTALL_DIR}...${RESET}`);
-    if (fs.cpSync) {
-      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true, filter: copyFilter });
-    } else {
-      execSync(`cp -r ${JSON.stringify(REPO_ROOT)} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
-      sweepMacMetadata(INSTALL_DIR);
-    }
+    copyTree(REPO_ROOT, INSTALL_DIR, { filter: copyFilter });
   }
 
   const distMissing = !fs.existsSync(path.join(INSTALL_DIR, 'packages/cli/dist')) || !fs.existsSync(path.join(INSTALL_DIR, 'packages/server/dist'));
   // Always download on update (to replace stale binaries); on fresh install only if dist missing
   if (!shouldRebuild && (isUpdate || distMissing)) {
     const REPO = 'cglab-public/agenfk';
-    console.log(`${GREEN}Downloading pre-built binary from GitHub...${RESET}`);
     try {
-      const latestTag = fetchLatestTag(REPO, isBeta);
+      const latestTag = pinnedTag || fetchLatestTag(REPO, isBeta);
       // Downgrade guard: refuse to extract a tag whose version is older than
       // the existing install. Without this, `npx github:cglab-public/agenfk`
       // (no --beta) on a beta install resolves to the latest *stable* tag,
@@ -232,7 +259,8 @@ if (isNpxCache) {
       // reverts the install. (Bug 28635f38.)
       const localVersion = installedVersion;
       const remoteVersion = String(latestTag || '').replace(/^v/, '');
-      if (localVersion && remoteVersion && compareSemver(remoteVersion, localVersion) < 0) {
+      // Not for a pin: the user named that version, and its source is already in.
+      if (!pinnedTag && localVersion && remoteVersion && compareSemver(remoteVersion, localVersion) < 0) {
         console.log(`${YELLOW}Skip: refusing to downgrade — local install is on a newer version (${localVersion}) than the resolved tag (${remoteVersion}). Pass --beta to track prereleases.${RESET}`);
         // And skip the prune entirely. The install dir is deliberately left on a
         // NEWER ref than either the resolved tag or REPO_ROOT (the npx git ref,
@@ -243,8 +271,14 @@ if (isNpxCache) {
       } else {
         const archive = path.join(INSTALL_DIR, 'agenfk-dist.tar.gz');
         try {
-        downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', archive);
-        execSync(`tar ${tarFlags} "${toPosixPath(archive)}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: 'inherit' });
+        if (pinnedArchive) {
+          // Fetched up front (above); copy, not rename: tmp may be another volume.
+          fs.copyFileSync(pinnedArchive, archive);
+          fs.unlinkSync(pinnedArchive);
+        } else {
+          downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', archive);
+        }
+        execSync(`tar ${tarFlags} "${tarPath(archive)}" -C "${tarPath(INSTALL_DIR)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
         // Prune against the ARCHIVE, not against REPO_ROOT. REPO_ROOT is the
         // npx git ref (the default branch); the tarball is fetchLatestTag,
         // which is a DIFFERENT ref — betas are cut from release/vX.Y.Z-beta.N
@@ -253,8 +287,8 @@ if (isNpxCache) {
         // ships. The archive is the last writer here, so it is the authority.
         try {
           if (isUpdate) {
-            const listFlags = process.platform === 'win32' ? '--force-local -tzf' : '-tzf';
-            const listing = execSync(`tar ${listFlags} "${toPosixPath(archive)}"`, { encoding: 'utf8' })
+            const listFlags = process.platform === 'win32' ? `${forceLocalFlag()}-tzf` : '-tzf';
+            const listing = execSync(`tar ${listFlags} "${tarPath(archive)}"`, { encoding: 'utf8', windowsHide: true })
               .split('\n').filter(Boolean);
             reportPrune(pruneInstallDirAgainstManifest(INSTALL_DIR, listing));
             prunedAgainstArchive = true;
@@ -275,6 +309,14 @@ if (isNpxCache) {
         }
       }
     } catch (e) {
+      if (pinnedTag) {
+        // The archive was fetched and read before the copy, so this is rarer
+        // (a full disk, say) - but the pinned source is already in, and the
+        // fallback below would finish the install on another release's dist.
+        console.error(`${YELLOW}❌ Could not install ${pinnedTag}'s pre-built binary: ${e.message}${RESET}`);
+        console.error(`${YELLOW}   ${INSTALL_DIR} now holds ${pinnedTag}'s source without its binaries. Re-run the same command to finish.${RESET}`);
+        process.exit(1);
+      }
       console.error(`Failed to download pre-built binary: ${e.message}`);
       console.log(`${BLUE}Falling back to source-based installation...${RESET}`);
       // And do NOT prune. The existing install is on the tag the user already
@@ -287,6 +329,9 @@ if (isNpxCache) {
       skipSourcePrune = true;
     }
   }
+
+  // A pinned archive the block above did not consume (no download was due).
+  if (pinnedArchive) { try { fs.unlinkSync(pinnedArchive); } catch { /* consumed */ } }
 
   // Only when the npx cache genuinely IS the last writer for PRUNED_DIRS —
   // i.e. --rebuild, where no archive was ever fetched. Every path where the
@@ -306,20 +351,20 @@ if (isNpxCache) {
     }
   }
 
-  console.log(`\n${GREEN}Running setup from ${INSTALL_DIR}...${RESET}\n`);
   runInstaller(INSTALL_DIR);
 } else {
   // Running from a real git clone — install in place
-  console.log(`${GREEN}Running install from ${REPO_ROOT}...${RESET}\n`);
+  console.log(`${GREEN}Installing AgEnFK in place at ${REPO_ROOT}...${RESET}`);
 
   const distMissing = !fs.existsSync(path.join(REPO_ROOT, 'packages/cli/dist')) || !fs.existsSync(path.join(REPO_ROOT, 'packages/server/dist'));
   if (!shouldRebuild && distMissing) {
     const REPO = 'cglab-public/agenfk';
-    console.log(`${GREEN}Downloading pre-built binary from GitHub...${RESET}`);
     try {
-      const latestTag = fetchLatestTag(REPO, isBeta);
+      // #216: this clone's own release, not whatever is newest - the dist must
+      // match the source it lands in.
+      const latestTag = releaseTagForVersion(readLocalVersion(REPO_ROOT)) || fetchLatestTag(REPO, isBeta);
       downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
-      execSync(`tar ${tarFlags} "${toPosixPath(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(REPO_ROOT)}"`, { stdio: 'inherit' });
+      execSync(`tar ${tarFlags} "${tarPath(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'))}" -C "${tarPath(REPO_ROOT)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
       fs.unlinkSync(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
     } catch (e) {
       console.error(`Failed to download pre-built binary: ${e.message}`);
@@ -330,11 +375,4 @@ if (isNpxCache) {
   runInstaller(REPO_ROOT);
 }
 
-// Reached only when the setup script above exited 0 (runInstaller exits non-zero on
-// failure). The PATH / "source <rc>" guidance is printed conditionally by install.mjs
-// itself — it knows whether an rc file was actually modified — so we don't repeat a
-// (potentially misleading) source hint here (issue #86 #3/#4).
-if (process.platform !== 'win32') {
-  console.log(`\n${GREEN}✅ AgEnFK installation complete!${RESET}`);
-  console.log(`\n${CYAN}  Once 'agenfk' is on your PATH, start services with: agenfk up${RESET}\n`);
-}
+// install.mjs prints the closing summary (and the PATH hint, when one is needed).

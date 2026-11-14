@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
+import { DIST_INCLUDE } from '../../../../scripts/dist-manifest.mjs';
 
 const ROOT = path.resolve(__dirname, '../../../..');
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), 'utf8');
@@ -88,7 +89,8 @@ describe('.github/workflows/hub-image.yml — hub-v* releases only the hub', () 
 
 describe('global releases still include the hub (framework tarball unchanged)', () => {
   it('scripts/package-dist.mjs keeps shipping hub + hub-ui', () => {
-    const include = parseIncludeList(read('scripts/package-dist.mjs'));
+    // The framework list lives in scripts/dist-manifest.mjs since #232.
+    const include: string[] = DIST_INCLUDE;
     for (const entry of [
       'packages/hub/package.json',
       'packages/hub/dist/',

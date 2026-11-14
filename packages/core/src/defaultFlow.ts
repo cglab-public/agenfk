@@ -1,6 +1,8 @@
 import { Flow, FlowStep } from "./types.js";
 
-// Built-in default flow steps.
+// Built-in default flow steps. Roles (CGLAB-381) bring each step's checks: an
+// up-to-date tree leaving TODO (1049ce52), suite-green leaving IN_PROGRESS and TEST, an independent review leaving
+// REVIEW, and the project's verify command on the way to DONE.
 // BLOCKED, PAUSED, IDEAS, ARCHIVED, TRASHED are platform-level statuses — NOT flow steps.
 // They are always reachable from any step, hardcoded in the server transition layer.
 const DEFAULT_STEPS: FlowStep[] = [
@@ -10,9 +12,12 @@ const DEFAULT_STEPS: FlowStep[] = [
     label: "To Do",
     order: 0,
     isAnchor: true,
+    // 1049ce52: work starts from a tree in sync with its remote.
+    role: "backlog",
   },
   {
     id: "default-in-progress",
+    role: "coding",
     name: "IN_PROGRESS",
     label: "In Progress",
     order: 1,
@@ -21,6 +26,7 @@ const DEFAULT_STEPS: FlowStep[] = [
   },
   {
     id: "default-review",
+    role: "review",
     name: "REVIEW",
     label: "Review",
     order: 2,
@@ -29,14 +35,16 @@ const DEFAULT_STEPS: FlowStep[] = [
   },
   {
     id: "default-test",
+    role: "testing",
     name: "TEST",
     label: "Test",
     order: 3,
     exitCriteria:
-      "The project's full test suite passes, and the new behaviour is covered by tests that fail if the change is reverted. Report the actual numbers rather than 'tests pass'. Compare the test names before and after your work and confirm none was deleted, renamed away, skipped or had its assertions weakened — a green suite with fewer tests than you started with is a regression, not a pass.",
+      "The new behaviour is covered by tests that fail if the change is reverted, and the project's full suite passes. Leaving this step runs the project's verify command for you (the verify that brought the card here says so, and `agenfk verify <id> --plan` shows the command), so do not run the whole suite yourself first: run only the tests you are working on, then verify. If that command does not run the tests (a build-only command, say), run them yourself. verify records its own run's results on the card; your evidence names the tests you added or changed and the actual numbers of the ones you ran, rather than 'tests pass'. Compare the test names before and after your work and confirm none was deleted, renamed away, skipped or had its assertions weakened — a green suite with fewer tests than you started with is a regression, not a pass.",
   },
   {
     id: "default-done",
+    role: "closing",
     name: "DONE",
     label: "Done",
     order: 4,
@@ -62,5 +70,15 @@ export function getActiveFlow(flowId: string | undefined, flows: Flow[]): Flow {
     return DEFAULT_FLOW;
   }
   const found = flows.find((f) => f.id === flowId);
-  return found ?? DEFAULT_FLOW;
+  return found ? withoutForeignDisabledChecks(found) : DEFAULT_FLOW;
+}
+
+/**
+ * CGLAB-428: switching a check off is the org hub's call. The write paths only
+ * let the hub sync store `disabledChecks`; a row that carries it anyway and did
+ * not come from the hub is read as if it did not, so its checks all run.
+ */
+function withoutForeignDisabledChecks(flow: Flow): Flow {
+  if (flow.source === 'hub' || !flow.steps.some(s => s.disabledChecks !== undefined)) return flow;
+  return { ...flow, steps: flow.steps.map(({ disabledChecks: _dropped, ...s }) => s as FlowStep) };
 }

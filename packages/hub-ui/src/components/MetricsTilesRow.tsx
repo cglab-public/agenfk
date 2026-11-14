@@ -1,4 +1,5 @@
-import { Activity, CheckCircle2, XCircle, Inbox, GitPullRequest } from 'lucide-react';
+import { StatTile } from './ui';
+import { checkPassRate } from '../checkPassRate';
 
 export interface MetricsTotals {
   events: number;
@@ -8,31 +9,85 @@ export interface MetricsTotals {
   prsOpened: number;
 }
 
-function Tile({ label, value, icon, tone }: { label: string; value: number; icon: React.ReactNode; tone: string }) {
-  return (
-    <div className="bg-card-glass backdrop-blur border border-border-soft rounded-xl px-5 py-4 hover:border-border-brand hover:shadow-glow transition-all">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-ink-tertiary">{label}</span>
-        <span className={`w-7 h-7 rounded-lg flex items-center justify-center ${tone}`}>{icon}</span>
-      </div>
-      <div
-        className="mt-2 text-xl xl:text-2xl font-extrabold tabular-nums text-ink truncate"
-        title={value.toLocaleString()}
-      >
-        {value.toLocaleString()}
-      </div>
-    </div>
+interface MetricsCounts { events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened?: number }
+
+/**
+ * The tiles' numbers from a /v1/metrics answer: its live `totals`, counted on
+ * the per-person rows' rules (exact period start, each item closed once), so
+ * the tiles agree with the rows (BUG 72c309df). Adding up the rollup series
+ * would not: it counts UTC days, and an item once per day it closed. A hub
+ * that predates `totals` (a rolling deploy) still gets the series' sum
+ * rather than zeros.
+ */
+export function tileTotals(data: { series?: MetricsCounts[]; totals?: MetricsCounts } | undefined): MetricsTotals {
+  const rows = data?.totals ? [data.totals] : (data?.series ?? []);
+  return rows.reduce(
+    (a, r) => ({
+      events: a.events + r.events_count,
+      closed: a.closed + r.items_closed,
+      passes: a.passes + r.validate_passes,
+      fails: a.fails + r.validate_fails,
+      prsOpened: a.prsOpened + (r.prs_opened ?? 0),
+    }),
+    { events: 0, closed: 0, passes: 0, fails: 0, prsOpened: 0 },
   );
 }
 
-export function MetricsTilesRow({ totals }: { totals: MetricsTotals }) {
+/** The event types each tile counts; an empty list means every type. */
+const TILE_TYPES = {
+  events: [] as string[],
+  closed: ['item.closed'],
+  rate: ['validate.passed', 'validate.failed'],
+  prs: ['pr.opened'],
+};
+
+const TILE_ACTION: Record<keyof typeof TILE_TYPES, string> = {
+  events: 'Show every event type below',
+  closed: 'Show only item closed events below',
+  rate: 'Show only check events below',
+  prs: 'Show only PR opened events below',
+};
+
+const sameTypes = (sel: Set<string>, types: string[]) => sel.size === types.length && types.every(t => sel.has(t));
+
+/**
+ * The headline numbers. Each swatch is the timeline colour of the same event
+ * type (chartColours.ts), so a tile and its series read as one thing.
+ *
+ * With `onFilterTypes`, each tile is also a filter: clicking it sets the Event
+ * type selection to what it counts (shown pressed while that is the selection)
+ * and clicking it again clears the selection. The totals themselves ignore the
+ * event-type filter, so clicking changes the views below, never the tiles.
+ */
+export function MetricsTilesRow({ totals, selectedTypes, onFilterTypes }: {
+  totals: MetricsTotals;
+  selectedTypes?: Set<string>;
+  onFilterTypes?: (types: string[]) => void;
+}) {
+  const filter = (key: keyof typeof TILE_TYPES) => {
+    if (!onFilterTypes || !selectedTypes) return {};
+    const pressed = sameTypes(selectedTypes, TILE_TYPES[key]);
+    // "All types" pressed has nothing to release: it stays a button, locked.
+    const locked = pressed && TILE_TYPES[key].length === 0;
+    return { pressed, locked, description: locked ? 'Showing every event type' : TILE_ACTION[key], onClick: () => onFilterTypes(pressed ? [] : TILE_TYPES[key]) };
+  };
+  // One rate rather than two raw counts: "128 failed" means nothing without
+  // the passes beside it. No checks at all is a dash, not 0%.
+  const pct = checkPassRate(totals.passes, totals.fails);
+  const checks = totals.passes + totals.fails;
+  const rate = pct === null ? '—' : `${pct}%`;
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-      <Tile label="Events"     value={totals.events}     icon={<Activity className="w-4 h-4 text-brand" />}        tone="bg-chip" />
-      <Tile label="Closed"     value={totals.closed}     icon={<Inbox className="w-4 h-4 text-accent-text" />}     tone="bg-chip" />
-      <Tile label="Validate ✓" value={totals.passes}     icon={<CheckCircle2 className="w-4 h-4 text-brand" />}    tone="bg-chip" />
-      <Tile label="Validate ✗" value={totals.fails}      icon={<XCircle className="w-4 h-4 text-danger-muted" />}  tone="bg-danger-muted/10" />
-      <Tile label="PRs"        value={totals.prsOpened}  icon={<GitPullRequest className="w-4 h-4 text-accent-text" />} tone="bg-chip" />
+    // Only a row of filters is a group; plain numbers are just numbers.
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3" {...(onFilterTypes && selectedTypes ? { role: 'group', 'aria-label': 'Filter by event type' } : {})}>
+      <StatTile label="Events" value={totals.events} {...filter('events')} />
+      <StatTile label="Items closed" value={totals.closed} series={1} {...filter('closed')} />
+      <StatTile
+        label="Check pass rate"
+        value={rate}
+        hint={checks === 0 ? 'no checks ran' : `${totals.passes.toLocaleString()} passed · ${totals.fails.toLocaleString()} failed`}
+        {...filter('rate')}
+      />
+      <StatTile label="PRs opened" value={totals.prsOpened} series={4} {...filter('prs')} />
     </div>
   );
 }

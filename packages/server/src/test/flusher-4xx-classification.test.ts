@@ -26,6 +26,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
+import { removeTestDb } from './helpers/testDb';
 import { Flusher } from '../hub/flusher';
 
 const HUB_CONFIG = { url: 'http://hub.test', token: 't', orgId: 'acme' };
@@ -76,12 +77,9 @@ describe('Flusher failure classification and recovery', () => {
     await storage.init({ path: dbPath });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
-    for (const suffix of ['', '-shm', '-wal']) {
-      const f = `${dbPath}${suffix}`;
-      if (fs.existsSync(f)) fs.unlinkSync(f);
-    }
+    await removeTestDb(dbPath, () => storage.shutdown());
   });
 
   function queue(n: number, orgId = 'acme') {
@@ -313,10 +311,7 @@ describe('Flusher failure classification and recovery', () => {
         await attempts(flusher, 8);
 
         expect(flusher.getStatus().halted, `body ${JSON.stringify(data)} must not halt`).toBe(false);
-        for (const suffix of ['', '-shm', '-wal']) {
-          const f = `${localPath}${suffix}`;
-          if (fs.existsSync(f)) fs.unlinkSync(f);
-        }
+        await removeTestDb(localPath, () => localStore.shutdown());
       }
     });
   });

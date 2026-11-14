@@ -3,6 +3,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 
 /**
  * Resolve the AgEnFK API base URL.
@@ -71,14 +72,20 @@ function normalizePath(p) {
     return p;
 }
 
-// Walk up from filePath looking for .agenfk/project.json
+// A project's .agenfk holds project.json (shared settings) or local.json (this
+// machine's id, CGLAB-625) - either marks it, since project.json is optional.
+function marksProject(dir) {
+    return fs.existsSync(path.join(dir, '.agenfk', 'project.json')) || fs.existsSync(path.join(dir, '.agenfk', 'local.json'));
+}
+
+// Walk up from filePath looking for a project marker
 function isInsideAgenFKProject(filePath) {
     if (!filePath) return false;
     const normalized = normalizePath(filePath);
     let dir = path.isAbsolute(normalized) ? path.dirname(normalized) : path.dirname(path.resolve(normalized));
     const root = path.parse(dir).root;
     while (dir !== root) {
-        if (fs.existsSync(path.join(dir, '.agenfk', 'project.json'))) return true;
+        if (marksProject(dir)) return true;
         dir = path.dirname(dir);
     }
     return false;
@@ -144,7 +151,7 @@ async function main() {
     const hasInProgress = await checkInProgress();
 
     if (!hasInProgress) {
-        const toolName = toolIntent?.tool || 'unknown tool';
+        const toolName = toolIntent?.tool_name || toolIntent?.tool || 'unknown tool';
         const reason = `AgenFK WORKFLOW VIOLATION: No task is actively being worked on while attempting to use ${toolName}.\n\nBefore modifying files you must have a task in an active coding step (e.g. IN_PROGRESS, create_unit_tests, or your flow's first working step).\n\n  1. Create a task:  agenfk create item --type TASK --title "<title>"\n  2. Start it:       agenfk verify <id>  (advances from TODO to the coding step)\n\nThen retry your change.`;
 
         process.stdout.write(JSON.stringify({
@@ -160,8 +167,15 @@ async function main() {
 // tests import resolveApiUrl without triggering the enforcement logic).
 const isMain = (() => {
     try {
-        const url = new URL(import.meta.url);
-        return process.argv[1] && url.pathname === process.argv[1];
+        if (!process.argv[1]) return false;
+        // Compare real filesystem paths, not `new URL(import.meta.url).pathname`:
+        // on Windows the URL pathname is `/C:/...` while argv[1] is `C:\...`, so
+        // a string compare never matched and the hook silently never ran.
+        const self = fs.realpathSync(fileURLToPath(import.meta.url));
+        const entry = fs.realpathSync(path.resolve(process.argv[1]));
+        return process.platform === 'win32'
+            ? self.toLowerCase() === entry.toLowerCase()
+            : self === entry;
     } catch { return false; }
 })();
 if (isMain) {

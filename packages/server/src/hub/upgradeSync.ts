@@ -10,8 +10,8 @@
 //     process), reconcile by comparing the running version against the
 //     directive's intent and emit the appropriate outcome.
 //
-// `startUpgradeSync` wires both of the above into the polling timer used by
-// the live server.
+// The live server runs the reconciler as the hub loop's `upgrade` channel
+// (hubSync.ts, GH-346).
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -67,13 +67,91 @@ const DIST_REPO = 'cglab-public/agenfk';
 const DIST_ASSET = 'agenfk-dist.tar.gz';
 
 /** Exported for the test; nothing else outside this module should call it. */
+/**
+ * A developer's working tree, not an installed copy (658ef023): it holds .git.
+ * Except ~/.agenfk-system, which IS a clone in real installs - the carve-out
+ * install.mjs step 1a and the CLI's `agenfk upgrade` make too.
+ */
+function isDevCheckout(root: string): boolean {
+  if (!fs.existsSync(path.join(root, '.git'))) return false;
+  // Same directory by (dev, inode), not by spelling: a symlinked ~/.agenfk-system, or a path cased
+  // differently on APFS, is still that install (Codex review of 658ef023).
+  // BigInt, so distinct 64-bit inodes cannot round to one value; an inode of 0 is no identity, and
+  // never proves the two the same - in doubt, it is a checkout (Codex review of 658ef023).
+  try {
+    const here = fs.statSync(root, { bigint: true });
+    const install = fs.statSync(path.join(os.homedir(), '.agenfk-system'), { bigint: true });
+    if (!here.ino || !install.ino) return true;
+    return !(here.dev === install.dev && here.ino === install.ino);
+  } catch {
+    return true;
+  }
+}
+
+/** The part of bin/tar-flags.mjs the self-extract uses. */
+export interface TarRule {
+  needsForceLocal(platform: string, versionText: string): boolean;
+  tarPathFor(p: string, platform: string, versionText: string): string;
+  tarVersionText(): string;
+}
+
+/**
+ * The self-extract's tar commands (GitHub #208). GNU tar on Windows (Git
+ * Bash's) reads `C:` as a remote host and unescapes backslashes, so it gets
+ * --force-local and C:/ paths; the bsdtar Windows ships takes native paths and
+ * rejects the flag. With no rule (an install root older than bin/tar-flags.mjs)
+ * the commands are the ones it always ran, as they are off Windows.
+ */
+export function selfExtractTarCommands(rule: TarRule | null, platform: string, versionText: string, archive: string, root: string): { extract: string; list: string } {
+  const flag = rule?.needsForceLocal(platform, versionText) ? '--force-local ' : '';
+  const p = (x: string) => (rule ? rule.tarPathFor(x, platform, versionText) : x);
+  return {
+    extract: `tar ${flag}-xzf "${p(archive)}" -C "${p(root)}"`,
+    list: `tar ${flag}-tzf "${p(archive)}"`,
+  };
+}
+
+/**
+ * The install root's bin/tar-flags.mjs, or null when it has none (or one
+ * without the functions used here). Exported so a spec pins that the real
+ * module loads: a wrong path or a renamed export would otherwise fall back to
+ * the old commands without a word.
+ */
+export async function loadTarRule(installRoot: string): Promise<TarRule | null> {
+  try {
+    const mod = await import(pathToFileURL(path.join(installRoot, 'bin', 'tar-flags.mjs')).href) as Partial<TarRule>;
+    const complete = typeof mod.needsForceLocal === 'function'
+      && typeof mod.tarPathFor === 'function'
+      && typeof mod.tarVersionText === 'function';
+    return complete ? mod as TarRule : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function defaultSelfExtract(input: { installRoot: string; targetVersion: string }): Promise<{ ok: true } | { ok: false; error: string }> {
+  /*
+   * Never over a development checkout (658ef023): the overlay would rewrite
+   * its tracked files and dist with the published build, and `npm ci
+   * --omit=dev` would remove its devDependencies. It used to skip only the
+   * prune there and go on writing. Refused before anything runs.
+   */
+  if (isDevCheckout(input.installRoot)) {
+    return {
+      ok: false,
+      error: `${input.installRoot} is a development checkout (a git repository): a forced recovery would overwrite its tracked files and dist with the published build. Update it as a checkout (git pull, npm run build, agenfk restart).`,
+    };
+  }
   const tag = `v${stripV(input.targetVersion)}`;
   const url = `https://github.com/${DIST_REPO}/releases/download/${tag}/${DIST_ASSET}`;
   const tmpFile = path.join(os.tmpdir(), `agenfk-self-heal-${Date.now()}.tar.gz`);
   try {
-    execSync(`curl -fsSL -o "${tmpFile}" "${url}"`, { stdio: 'pipe' });
-    execSync(`tar -xzf "${tmpFile}" -C "${input.installRoot}"`, { stdio: 'pipe' });
+    execSync(`curl -fsSL -o "${tmpFile}" "${url}"`, { stdio: 'pipe', windowsHide: true });
+    // The flags and paths follow the tar on PATH (GitHub #208), by the rule the
+    // install root ships in bin/tar-flags.mjs - loaded like sync-install-dir.mjs below.
+    const tarRule = await loadTarRule(input.installRoot);
+    const tar = selfExtractTarCommands(tarRule, process.platform, tarRule ? tarRule.tarVersionText() : '', tmpFile, input.installRoot);
+    execSync(tar.extract, { stdio: 'pipe', windowsHide: true });
     // `tar -xzf` is an overlay that deletes nothing, so files this version
     // dropped survive in the install root — and the next install.mjs run from
     // any route then treats them as shipped and re-installs them into every
@@ -87,29 +165,12 @@ export async function defaultSelfExtract(input: { installRoot: string; targetVer
         pruneInstallDirAgainstManifest: (dir: string, paths: string[]) =>
           { removed: string[]; failed: { path: string; reason: string }[] };
       };
-      // A distributed tarball never contains .git, so its presence means a
-      // developer's working tree — pruning that against a release archive would
-      // delete in-flight work. Mirrors install.mjs step 1a, including its
-      // carve-out: ~/.agenfk-system is ITSELF a clone whenever packages/create
-      // took its --rebuild or download-failure fallback, and those are real
-      // user installs that must still be pruned.
-      //
-      // This only skips the PRUNE. It must never return: `npm ci` below is what
-      // makes a forced recovery a complete install (BUG bbe794bc), and
-      // returning here skipped it while reporting ok:true — a false success on
-      // a server that can then boot with a missing module.
-      const installDir = path.join(os.homedir(), '.agenfk-system');
-      const isDevTree = fs.existsSync(path.join(input.installRoot, '.git'))
-        && path.resolve(input.installRoot) !== path.resolve(installDir);
-      if (isDevTree) {
-        console.log('[self-extract] prune skipped (dev checkout detected: .git present)');
-      } else {
-        const listing = execSync(`tar -tzf "${tmpFile}"`, { encoding: 'utf8' })
-          .split('\n').map((l) => l.trim()).filter(Boolean);
-        const { removed, failed } = pruneInstallDirAgainstManifest(input.installRoot, listing);
-        for (const rel of removed) console.log(`[self-extract] pruned (no longer shipped): ${rel}`);
-        for (const f of failed) console.warn(`[self-extract] could not prune ${f.path}: ${f.reason}`);
-      }
+      // A development checkout never gets here (refused above), so the prune always runs.
+      const listing = execSync(tar.list, { encoding: 'utf8', windowsHide: true })
+        .split('\n').map((l) => l.trim()).filter(Boolean);
+      const { removed, failed } = pruneInstallDirAgainstManifest(input.installRoot, listing);
+      for (const rel of removed) console.log(`[self-extract] pruned (no longer shipped): ${rel}`);
+      for (const f of failed) console.warn(`[self-extract] could not prune ${f.path}: ${f.reason}`);
     } catch (e: any) {
       // Best-effort — a failed prune must not fail a recovery — but NOT silent.
       // A missing module, a corrupt archive or an EPERM all used to look like a
@@ -125,7 +186,7 @@ export async function defaultSelfExtract(input: { installRoot: string; targetVer
     // fails (e.g. offline), we surface it as a failure rather than a false
     // success.
     const npmCmd = (os.platform() === 'win32') ? 'npm.cmd' : 'npm';
-    execSync(`${npmCmd} ci --omit=dev --ignore-scripts`, { cwd: input.installRoot, stdio: 'pipe' });
+    execSync(`${npmCmd} ci --omit=dev --ignore-scripts`, { cwd: input.installRoot, stdio: 'pipe', windowsHide: true });
     return { ok: true };
   } catch (e: any) {
     const msg = e?.stderr?.toString?.()?.trim() || e?.message || String(e);
@@ -147,6 +208,7 @@ function defaultRestartServer(installRoot: string): void {
       cwd: installRoot,
       detached: true,
       stdio: 'ignore',
+      windowsHide: true,
     });
     child.on('error', () => { /* best effort — operator can restart manually */ });
     child.unref();
@@ -441,6 +503,10 @@ export async function reconcileUpgradeDirective(args: ReconcileArgs): Promise<vo
 }
 
 export async function replayPendingUpgradeOutcome(args: ReplayArgs): Promise<void> {
+  // This process is still running that upgrade (a repoint or reload restarted the
+  // hub subsystems mid-upgrade): its outcome is not a leftover, and the marker is
+  // what a boot replay needs if the upgrade ends by restarting this server.
+  if (inflight) return;
   const state: UpgradeState | null = readUpgradeState(args.dbDir);
   if (!state) return;
   if (state.outcome !== 'started') return;
@@ -467,40 +533,4 @@ export async function replayPendingUpgradeOutcome(args: ReplayArgs): Promise<voi
     });
   }
   clearUpgradeState(args.dbDir);
-}
-
-// ── Live polling timer (used at server boot) ────────────────────────────────
-const DEFAULT_INTERVAL_MS = 60_000;
-
-export interface UpgradeSyncHandle { stop: () => void }
-
-export interface StartUpgradeSyncArgs extends Omit<ReconcileArgs, never> {
-  intervalMs?: number;
-}
-
-export function startUpgradeSync(args: StartUpgradeSyncArgs): UpgradeSyncHandle {
-  let stopped = false;
-  let timer: NodeJS.Timeout | null = null;
-  const interval = args.intervalMs ?? DEFAULT_INTERVAL_MS;
-
-  const tick = async () => {
-    if (stopped) return;
-    try {
-      await reconcileUpgradeDirective(args);
-    } catch (e) {
-      console.error('[HUB_UPGRADE_SYNC] tick failed:', (e as Error).message);
-    }
-    if (!stopped) timer = setTimeout(tick, interval);
-  };
-
-  // Defer first tick by 2s so boot-time replay (which runs before this) gets
-  // its events into the outbox first.
-  timer = setTimeout(tick, 2_000);
-
-  return {
-    stop: () => {
-      stopped = true;
-      if (timer) { clearTimeout(timer); timer = null; }
-    },
-  };
 }

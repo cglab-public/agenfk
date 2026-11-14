@@ -17,6 +17,17 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-model-meta-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 const cleanup = () => {
@@ -36,21 +47,23 @@ describe('admin model_meta', () => {
     const out = await createHubApp({
       dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org',
     });
-    app = out.app; ctx = out.ctx;
+    app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0); ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookie = login.headers['set-cookie']?.[0] ?? '';
   });
 
   afterEach(async () => {
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
-  const get = (url: string) => supertest(app).get(url).set('Cookie', cookie);
-  const put = (url: string, body: any) => supertest(app).put(url).set('Cookie', cookie).send(body);
-  const del = (url: string) => supertest(app).delete(url).set('Cookie', cookie);
+  const get = (url: string) => supertest(__server).get(url).set('Cookie', cookie);
+  const put = (url: string, body: any) => supertest(__server).put(url).set('Cookie', cookie).send(body);
+  const del = (url: string) => supertest(__server).delete(url).set('Cookie', cookie);
 
   describe('automatic seeding', () => {
     it('seeds the table on first read without any admin action', async () => {
@@ -167,7 +180,7 @@ describe('admin model_meta', () => {
     });
 
     it('requires an admin session', async () => {
-      const r = await supertest(app).put('/v1/admin/models/meta').send({
+      const r = await supertest(__server).put('/v1/admin/models/meta').send({
         model: 'x', provider: 'X', licenseClass: 'commercial', license: 'MIT',
       });
       expect([401, 403]).toContain(r.status);
@@ -222,7 +235,7 @@ describe('admin model_meta', () => {
     };
 
     it('returns provider/licenseClass on byModel from the seeded table', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
         .send({ events: [prEvent('glm-5.2')] });
 
@@ -233,7 +246,7 @@ describe('admin model_meta', () => {
     });
 
     it('reflects an admin edit on the next dashboard load', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
         .send({ events: [prEvent('glm-5.2')] });
 
@@ -247,7 +260,7 @@ describe('admin model_meta', () => {
     });
 
     it('marks an unknown model unclassified rather than guessing', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
         .send({ events: [prEvent('totally-unknown-model-9000')] });
 
@@ -256,7 +269,7 @@ describe('admin model_meta', () => {
     });
 
     it('classifies a router-prefixed id by its artifact, not the reseller', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
         .send({ events: [prEvent('@cf/zai-org/glm-5.2')] });
 
@@ -266,7 +279,7 @@ describe('admin model_meta', () => {
     });
 
     it('never classifies a harness name as a model', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
         .send({ events: [prEvent('claude-code')] });
 
@@ -283,10 +296,10 @@ describe('admin model_meta', () => {
      * data problem rather than a join bug.
      */
     it('attaches provider to a model reached through a mapping', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
         .send({ events: [prEvent('deepseek/deepseek-v4-pro-0813')] });
-      await supertest(app).post('/v1/admin/models/mappings').set('Cookie', cookie)
+      await supertest(__server).post('/v1/admin/models/mappings').set('Cookie', cookie)
         .send({ aliasModel: 'deepseek/deepseek-v4-pro-0813', canonicalModel: 'deepseek-v4-pro-0813' });
 
       const row = await byModel('deepseek-v4-pro-0813');
@@ -295,17 +308,17 @@ describe('admin model_meta', () => {
     });
 
     it('attaches metadata through a router-prefixed alias the seed matches by prefix', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
         .send({ events: [prEvent('@cf/zai-org/glm-5.2')] });
-      await supertest(app).post('/v1/admin/models/mappings').set('Cookie', cookie)
+      await supertest(__server).post('/v1/admin/models/mappings').set('Cookie', cookie)
         .send({ aliasModel: '@cf/zai-org/glm-5.2', canonicalModel: 'glm-5.2' });
       const row = await byModel('glm-5.2');
       expect(row?.provider).toBe('Z.ai');
     });
 
     it('leaves a genuinely unknown model without provider metadata', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
         .send({ events: [prEvent('totally-new-9000')] });
       const row = await byModel('totally-new-9000');

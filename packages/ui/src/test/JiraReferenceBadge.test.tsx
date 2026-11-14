@@ -14,6 +14,7 @@ import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
+import { ActiveProjectProvider } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
@@ -68,7 +69,9 @@ vi.mock('../api', () => ({
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
-    <ThemeProvider>{children}</ThemeProvider>
+    <ActiveProjectProvider>
+      <ThemeProvider>{children}</ThemeProvider>
+    </ActiveProjectProvider>
   </QueryClientProvider>
 );
 

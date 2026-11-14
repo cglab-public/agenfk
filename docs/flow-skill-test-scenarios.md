@@ -20,7 +20,7 @@ Each scenario includes:
 
 ### Scenario CC-1: Create a basic security-review flow
 
-**Setup**: User is in a project directory with `.agenfk/project.json` present.
+**Setup**: User is in a project directory linked on this machine (`.agenfk/local.json` present).
 
 **Conversation**:
 
@@ -115,7 +115,7 @@ Agent: [Runs: agenfk flow use abc123 --project duaa8dto2g6wdyc75bvbuh]
 
 ### Scenario CC-2: Project not detected — multi-project selection
 
-**Setup**: No `.agenfk/project.json` in the working directory.
+**Setup**: The working directory is not linked on this machine (no `.agenfk/local.json`).
 
 **Conversation**:
 
@@ -123,7 +123,7 @@ Agent: [Runs: agenfk flow use abc123 --project duaa8dto2g6wdyc75bvbuh]
 User: Help me create a new flow
 
 Agent: I'll help you set up a custom workflow flow.
-       I couldn't find a .agenfk/project.json in the current directory.
+       This directory isn't linked to a project on this machine (no .agenfk/local.json).
        [Calls list_projects() via MCP]
        I found 3 projects:
          1. AgenFK Framework (duaa8dto2g6wdyc75bvbuh)
@@ -195,7 +195,7 @@ Agent: Flow creation cancelled. No changes were made.
 
 ### Scenario OC-1: Create flow with Question UI
 
-**Setup**: Project linked. OpenCode detects `.agenfk/project.json`.
+**Setup**: Project linked. OpenCode detects `.agenfk/local.json`.
 
 **Conversation** (Question UI dialogs shown as `[Q]`):
 
@@ -289,7 +289,7 @@ Agent: [agenfk-flow rule activates because trigger phrase matched]
        I'll help you create a custom workflow flow for your AgenFK project.
 
        Step 1: Let me identify your project.
-       [Reads .agenfk/project.json]
+       [Runs agenfk current-project]
        Found project: "AgenFK Framework". Is that right?
 
 User: Yes
@@ -365,7 +365,7 @@ User: /agenfk-flow
 
 Agent: Starting AgenFK Flow Manager.
 
-       [Reads .agenfk/project.json]
+       [Runs agenfk current-project]
        Project: "AgenFK Framework" (duaa8dto2g6wdyc75bvbuh). Correct?
 
 User: Yes, create a compliance-review flow
@@ -432,7 +432,7 @@ User: /agenfk-flow
 
 Agent: AgenFK Flow Manager activated.
 
-       [Reads .agenfk/project.json — found]
+       [Runs agenfk current-project — found]
        Project: "AgenFK Framework" (duaa8dto2g6wdyc75bvbuh). Is that right?
 
 User: Yes

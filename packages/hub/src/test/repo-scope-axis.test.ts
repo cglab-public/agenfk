@@ -3,10 +3,22 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-repo-scope-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -18,10 +30,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 const sampleDef = (name: string) => ({
   name,
@@ -34,7 +42,7 @@ const sampleDef = (name: string) => ({
 });
 
 async function seedFlow(app: any, cookie: string, name: string): Promise<string> {
-  const r = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+  const r = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
     .send({ definition: sampleDef(name) });
   return r.body.id;
 }
@@ -42,12 +50,12 @@ async function seedFlow(app: any, cookie: string, name: string): Promise<string>
 async function assign(app: any, cookie: string, scope: string, targetId: string | null, flowId: string | null) {
   const body: any = { scope, flowId };
   if (targetId !== null) body.targetId = targetId;
-  return supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie).send(body);
+  return supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie).send(body);
 }
 
 async function markAvailable(app: any, cookie: string, flowId: string) {
   // Org-availability is required before a flow can be selected by a client.
-  return supertest(app).put(`/v1/admin/flows/${flowId}/availability`).set('Cookie', cookie).send({ available: true });
+  return supertest(__server).put(`/v1/admin/flows/${flowId}/availability`).set('Cookie', cookie).send({ available: true });
 }
 
 async function seedEvent(db: any, orgId: string, installationId: string, remoteUrl: string, projectId = 'p-x') {
@@ -73,7 +81,9 @@ describe('repo-keyed flow axis', () => {
     const out = await createHubApp({
       dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org-a',
     });
-    app = out.app; ctx = out.ctx;
+    app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0); ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     cookie = await loginAs(app, 'admin@x', 'longenough1');
     for (const id of ['install-1', 'install-2']) {
@@ -88,7 +98,7 @@ describe('repo-keyed flow axis', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -100,7 +110,7 @@ describe('repo-keyed flow axis', () => {
       await assign(app, cookie, 'org', null, orgFlow);
       await assign(app, cookie, 'repo', CANON, repoFlow);
 
-      const r = await supertest(app).get(`/v1/flows/active?repo=${encodeURIComponent(CANON)}`)
+      const r = await supertest(__server).get(`/v1/flows/active?repo=${encodeURIComponent(CANON)}`)
         .set('Authorization', `Bearer ${tokenInstall1}`);
       expect(r.body.flow.id).toBe(repoFlow);
       expect(r.body.scope).toBe('repo');
@@ -116,7 +126,7 @@ describe('repo-keyed flow axis', () => {
         'https://GITHUB.com/Acme/Web.git/',
       ];
       for (const v of variants) {
-        const r = await supertest(app).get(`/v1/flows/active?repo=${encodeURIComponent(v)}`)
+        const r = await supertest(__server).get(`/v1/flows/active?repo=${encodeURIComponent(v)}`)
           .set('Authorization', `Bearer ${tokenInstall1}`);
         expect(r.body.flow?.id, `variant ${v}`).toBe(repoFlow);
         expect(r.body.scope).toBe('repo');
@@ -131,7 +141,7 @@ describe('repo-keyed flow axis', () => {
       await assign(app, cookie, 'project', 'p-legacy', projFlow);
       await assign(app, cookie, 'repo', CANON, repoFlow);
 
-      const r = await supertest(app).get(`/v1/flows/active?projectId=p-legacy&repo=${encodeURIComponent(CANON)}`)
+      const r = await supertest(__server).get(`/v1/flows/active?projectId=p-legacy&repo=${encodeURIComponent(CANON)}`)
         .set('Authorization', `Bearer ${tokenInstall1}`);
       expect(r.body.flow.id).toBe(repoFlow);
       expect(r.body.scope).toBe('repo');
@@ -143,7 +153,7 @@ describe('repo-keyed flow axis', () => {
       await assign(app, cookie, 'repo', CANON, repoFlow);
       await assign(app, cookie, 'installation', 'install-1', instFlow);
 
-      const r = await supertest(app).get(`/v1/flows/active?repo=${encodeURIComponent(CANON)}`)
+      const r = await supertest(__server).get(`/v1/flows/active?repo=${encodeURIComponent(CANON)}`)
         .set('Authorization', `Bearer ${tokenInstall1}`);
       expect(r.body.flow.id).toBe(instFlow);
       expect(r.body.scope).toBe('installation');
@@ -153,7 +163,7 @@ describe('repo-keyed flow axis', () => {
       const repoFlow = await seedFlow(app, cookie, 'Repo');
       await assign(app, cookie, 'repo', CANON, repoFlow);
       for (const tok of [tokenInstall1, tokenInstall2]) {
-        const r = await supertest(app).get(`/v1/flows/active?repo=${encodeURIComponent(CANON)}`)
+        const r = await supertest(__server).get(`/v1/flows/active?repo=${encodeURIComponent(CANON)}`)
           .set('Authorization', `Bearer ${tok}`);
         expect(r.body.flow.id).toBe(repoFlow);
       }
@@ -166,14 +176,14 @@ describe('repo-keyed flow axis', () => {
       await markAvailable(app, cookie, repoFlow);
       await seedEvent(ctx.db, 'org-a', 'install-1', CANON);
 
-      const sel = await supertest(app).put('/v1/flows/selection')
+      const sel = await supertest(__server).put('/v1/flows/selection')
         .set('Authorization', `Bearer ${tokenInstall1}`)
         .send({ repo: 'https://github.com/acme/web', flowId: repoFlow });
       expect(sel.status).toBe(200);
       expect(sel.body.scope).toBe('repo');
       expect(sel.body.repo).toBe(CANON);
 
-      const active = await supertest(app).get(`/v1/flows/active?repo=${encodeURIComponent(CANON)}`)
+      const active = await supertest(__server).get(`/v1/flows/active?repo=${encodeURIComponent(CANON)}`)
         .set('Authorization', `Bearer ${tokenInstall1}`);
       expect(active.body.flow.id).toBe(repoFlow);
       expect(active.body.scope).toBe('repo');
@@ -182,7 +192,7 @@ describe('repo-keyed flow axis', () => {
     it('allows selection for an unseen repo (trust on first use)', async () => {
       const repoFlow = await seedFlow(app, cookie, 'Repo');
       await markAvailable(app, cookie, repoFlow);
-      const sel = await supertest(app).put('/v1/flows/selection')
+      const sel = await supertest(__server).put('/v1/flows/selection')
         .set('Authorization', `Bearer ${tokenInstall1}`)
         .send({ repo: CANON, flowId: repoFlow });
       expect(sel.status).toBe(200);
@@ -192,7 +202,7 @@ describe('repo-keyed flow axis', () => {
       const repoFlow = await seedFlow(app, cookie, 'Repo');
       await markAvailable(app, cookie, repoFlow);
       await seedEvent(ctx.db, 'org-a', 'install-2', CANON); // only install-2 has touched it
-      const sel = await supertest(app).put('/v1/flows/selection')
+      const sel = await supertest(__server).put('/v1/flows/selection')
         .set('Authorization', `Bearer ${tokenInstall1}`)
         .send({ repo: CANON, flowId: repoFlow });
       expect(sel.status).toBe(403);
@@ -202,12 +212,12 @@ describe('repo-keyed flow axis', () => {
       const repoFlow = await seedFlow(app, cookie, 'Repo');
       await markAvailable(app, cookie, repoFlow);
       await seedEvent(ctx.db, 'org-a', 'install-1', CANON);
-      await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${tokenInstall1}`)
+      await supertest(__server).put('/v1/flows/selection').set('Authorization', `Bearer ${tokenInstall1}`)
         .send({ repo: CANON, flowId: repoFlow });
-      const clear = await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${tokenInstall1}`)
+      const clear = await supertest(__server).put('/v1/flows/selection').set('Authorization', `Bearer ${tokenInstall1}`)
         .send({ repo: CANON, flowId: null });
       expect(clear.status).toBe(200);
-      const active = await supertest(app).get(`/v1/flows/active?repo=${encodeURIComponent(CANON)}`)
+      const active = await supertest(__server).get(`/v1/flows/active?repo=${encodeURIComponent(CANON)}`)
         .set('Authorization', `Bearer ${tokenInstall1}`);
       expect(active.body.flow).toBeNull();
     });
@@ -219,7 +229,7 @@ describe('repo-keyed flow axis', () => {
       const put = await assign(app, cookie, 'repo', 'https://github.com/acme/web.git', repoFlow);
       expect(put.status).toBe(200);
 
-      const list = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookie);
+      const list = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookie);
       const repoRow = list.body.find((a: any) => a.scope === 'repo');
       expect(repoRow).toBeTruthy();
       expect(repoRow.targetId).toBe(CANON);
@@ -231,7 +241,7 @@ describe('repo-keyed flow axis', () => {
       await seedEvent(ctx.db, 'org-a', 'install-2', CANON, 'p-2'); // same repo, different local projectId
       await seedEvent(ctx.db, 'org-a', 'install-1', 'git@github.com:acme/api.git', 'p-3');
 
-      const r = await supertest(app).get('/v1/admin/projects').set('Cookie', cookie);
+      const r = await supertest(__server).get('/v1/admin/projects').set('Cookie', cookie);
       expect(r.status).toBe(200);
       const repos = r.body.map((x: any) => x.remoteUrl).sort();
       expect(repos).toEqual(['git@github.com:acme/api.git', CANON]);

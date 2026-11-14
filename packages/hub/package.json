@@ -1,6 +1,10 @@
 {
   "name": "@agenfk/hub",
-  "version": "1.1.20",
+  "version": "2.1.0-beta.17",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": "^22.13.0 || >=23.5.0"
+  },
   "description": "Corporate Hub for AgEnFK — fleet-wide metrics + timeline server",
   "main": "dist/server.js",
   "types": "dist/server.d.ts",
@@ -16,27 +20,29 @@
     "access": "public"
   },
   "scripts": {
+    "prebuild": "node ../../scripts/clean-dist.mjs",
     "build": "tsc",
     "start": "node dist/bin.js"
   },
   "dependencies": {
-    "@agenfk/core": "1.1.20",
-    "axios": "^1.20.0",
+    "@agenfk/core": "2.1.0-beta.17",
+    "axios": "^1.21.0",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
-    "express": "^4.21.2",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.2",
     "jsonwebtoken": "^9.0.2",
     "jwks-rsa": "^4.1.0",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "tldts": "^7.0.23"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
     "@types/cookie-parser": "^1.4.7",
-    "@types/express": "^4.17.21",
+    "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.23.1",
-    "pg-mem": "^3.0.14",
-    "typescript": "^5.3.3"
+    "pg-mem": "^3.0.14"
   }
 }

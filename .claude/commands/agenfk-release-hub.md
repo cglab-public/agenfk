@@ -24,5 +24,6 @@ Run `git status` and `git branch --show-current`. Hub releases are cut from `mai
 - Run `git add packages/hub/package.json package-lock.json && git commit -m "chore(hub): bump hub version to <version>"` and show the output.
 
 **Step 4 — Tag, push, release**
-- Run `git tag hub-v<version>` on the bump commit, then `git push origin HEAD --tags`.
+- **Suite gate (#249)**: run the hub's suites on the bump commit before tagging: `npx vitest run packages/hub packages/hub-ui`. Read BOTH vitest summary lines (`Test Files` and `Tests`). The run must exit 0 (vitest exits non-zero on an unhandled error even when both lines read green) and neither line may report a failure. Otherwise **STOP**: do not tag or push; report the failing files. Say in your final report that the gate ran and what it printed.
+- Run `git tag hub-v<version>` on the bump commit, then `git push origin HEAD hub-v<version>`. Push only that one tag, never `--tags`: GitHub starts no workflows for a push of more than three tags, and this tag is what starts `hub-image.yml`.
 - CI does the rest (image + GitHub Release + tarball). Report the tag and the expected release URL (`https://github.com/<owner>/<repo>/releases/tag/hub-v<version>`) to the user and stop — do not sit polling the workflow.

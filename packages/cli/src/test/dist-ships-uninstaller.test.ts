@@ -4,7 +4,7 @@
  *
  * `agenfk upgrade` only extracts agenfk-dist.tar.gz; it does NOT copy source
  * (unlike the `npx github:` path). So any script the uninstaller/installer needs
- * at runtime MUST be listed in scripts/package-dist.mjs's `include` array, or the
+ * at runtime MUST be listed in scripts/dist-manifest.mjs's DIST_INCLUDE, or the
  * old copy from the original install survives forever.
  *
  * These assert (1) the uninstaller + its helpers are shipped, and (2) closure:
@@ -13,19 +13,11 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
+// The list package-dist.mjs packs, imported rather than parsed out of its
+// source text (#232 moved it into its own module).
+import { DIST_INCLUDE } from '../../../../scripts/dist-manifest.mjs';
 
 const ROOT = path.resolve(__dirname, '../../../..');
-const packageDist = readFileSync(path.join(ROOT, 'scripts', 'package-dist.mjs'), 'utf8');
-
-// Extract the string literals inside the `const include = [ ... ]` array.
-function parseIncludeList(src: string): string[] {
-  const start = src.indexOf('const include = [');
-  expect(start).toBeGreaterThan(-1);
-  const end = src.indexOf('];', start);
-  expect(end).toBeGreaterThan(start);
-  const block = src.slice(start, end);
-  return [...block.matchAll(/['"]([^'"]+)['"]/g)].map((m) => m[1]);
-}
 
 // Local `./x.mjs` imports of a script file.
 function localMjsImports(scriptRelPath: string): string[] {
@@ -36,7 +28,7 @@ function localMjsImports(scriptRelPath: string): string[] {
 }
 
 describe('package-dist.mjs — ships the uninstaller and its helpers', () => {
-  const include = parseIncludeList(packageDist);
+  const include: string[] = DIST_INCLUDE;
 
   it('includes scripts/uninstall.mjs so `agenfk upgrade` can deliver uninstaller fixes', () => {
     expect(include).toContain('scripts/uninstall.mjs');

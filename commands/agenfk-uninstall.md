@@ -10,4 +10,6 @@ Run the uninstall script with `-y` to skip the interactive prompt:
 node ~/.agenfk-system/scripts/uninstall.mjs -y
 ```
 
+This keeps the user's data: the board database, backups, hub enrolment and config. Add `--purge-data` only when the user explicitly asks to delete their data too, and confirm with them first, because it cannot be undone.
+
 Show the output to the user. If `~/.agenfk-system` does not exist, inform the user that AgenFK does not appear to be installed.

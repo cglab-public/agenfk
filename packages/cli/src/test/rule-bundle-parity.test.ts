@@ -144,3 +144,55 @@ describe('per-client rule bundle parity', () => {
     }
   });
 });
+
+/** Everything the installer copies onto a user's machine as rules. */
+const RULE_BUNDLES = [
+  'SKILL.md',
+  'clauderules/CLAUDE.md',
+  'codexrules/AGENTS.md',
+  'cursorrules/agenfk.mdc',
+] as const;
+
+const read = (rel: string): string => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+
+/**
+ * No bundle tells an agent to declare claims (26c059f6).
+ *
+ * The mechanism is gone and `agenfk update` has no `--claims` option. A rule
+ * that still told agents to run it would send every one of them into an
+ * "unknown option" error before its first edit - and a merge from a branch
+ * that predates the removal is exactly how such a section comes back.
+ */
+describe('the bundles no longer mention claims', () => {
+  for (const b of [...new Set<string>([...RULE_BUNDLES, ...Object.keys(BUNDLES)])]) {
+    it(`${b} carries no claims rule`, () => {
+      const text = read(b);
+      expect(/--claims/.test(text), `${b} still tells agents to run --claims`).toBe(false);
+    });
+  }
+});
+
+/**
+ * NO MERGE-CONFLICT MARKER EVER SHIPS.
+ *
+ * A diff3 base marker (`||||||| <sha>`) survived a merge in three of these
+ * bundles, and the installer then wrote it into every user's live config -
+ * `~/.claude/CLAUDE.md` is loaded into EVERY Claude Code session, so the junk
+ * reached every agent on that machine, not just the one who hit the conflict.
+ *
+ * Only the BASE marker survived, which is exactly why nobody saw it: the text
+ * around it read as a plausible union of both sides, so the file never looked
+ * broken. A guard is the only thing that catches that shape.
+ */
+describe('shipped rule bundles carry no merge-conflict marker', () => {
+  // `|` is table syntax and `=` can be a setext underline, so these require the
+  // diff3 shapes specifically: seven of a kind, then a space or end of line.
+  const MARKERS: RegExp[] = [/^<{7}(?: |$)/, /^\|{7}(?: |$)/, /^={7}$/, /^>{7}(?: |$)/];
+  for (const file of Object.keys(BUNDLES)) {
+    it(`${file} is clean`, () => {
+      const text = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+      const bad = text.split('\n').filter(l => MARKERS.some(re => re.test(l)));
+      expect(bad, `merge-conflict marker(s) in ${file}: ${bad.join(' | ')}`).toEqual([]);
+    });
+  }
+});

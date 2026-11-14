@@ -12,10 +12,18 @@ If the command fails or `~/.agenfk-system` does not exist, inform the user that 
 
 **Step 2 — Run upgrade**
 
-Run:
+Pick the channel from the version Step 1 printed. A version with a prerelease
+part (`2.0.0-beta.23`) is on the beta line; anything else is on stable.
+
 ```bash
-agenfk upgrade --force
+agenfk upgrade          # stable
+agenfk upgrade --beta   # when the current version has a prerelease part
 ```
+
+Do not add `--force`: it reinstalls the same version and nothing more. If the
+CLI answers that the installed version is newer than the latest release and it
+is not downgrading, that is the result — show it and stop; never pass
+`--version` to go backwards unless the user asked for that version.
 
 The CLI handles everything automatically:
 - Downloads pre-built binaries from the latest GitHub release

@@ -9,15 +9,25 @@ import { flowsRouter } from './routes/flows.js';
 import { authRouter, setupRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { orgRenameRouter } from './routes/orgRename.js';
+import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
+import { repoSettingsAdminRouter, repoSettingsRouter } from './routes/repoSettings.js';
+import { airlockAdminRouter, airlockRouter, AIRLOCK_ADMIN_BODY_LIMIT } from './routes/airlock.js';
+import { receiptsRouter } from './routes/receipts.js';
+import { ciRouter, ciTokensAdminRouter } from './routes/ci.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
+import { installConfigAudit, mountRouter } from './services/configAuditRoutes.js';
+import { auditRouter } from './routes/audit.js';
+import { mintAdminRecoveryToken, withdrawExpiredRecoveryTokens } from './auth/adminRecovery.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { federationRouter, federationInviteRouter } from './routes/federation.js';
 import { startRollupTimer } from './rollup.js';
+import { startAirlockDatasetPruneTimer } from './services/airlockDataset.js';
 import { startFederationSync } from './services/federation/federationSync.js';
 import { migrateOsUserKeys } from './services/migrateOsUserKeys.js';
+import { migrateChildPeopleNames } from './services/migrateChildPeopleNames.js';
 import { backfillUserKeyAliases } from './services/backfillUserKeyAliases.js';
 import * as fs from 'fs';
 import * as pathMod from 'path';
@@ -163,6 +173,12 @@ export async function createHubApp(
   await db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', [config.defaultOrgId, config.defaultOrgId]);
   // Default auth_config row for the default org.
   await db.run('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)', [config.defaultOrgId]);
+  if (config.forcePasswordLogin) {
+    console.warn(
+      '[HUB] AGENFK_HUB_FORCE_PASSWORD_LOGIN=1: password sign-in is accepted even if Admin → Sign-in '
+      + 'has it switched off. Sign in, repair the sign-in settings, then unset it and restart.',
+    );
+  }
 
   // First-run admin bootstrap token. Logged once per boot (re-logged on
   // restart while setup is still pending) so the operator can paste it into
@@ -183,9 +199,42 @@ export async function createHubApp(
     console.log(banner);
   }
 
+  // Admin recovery (STORY a44f3697): a token for the admin the operator named,
+  // logged like the bootstrap token. A boot clears only expired tokens: another
+  // instance's boot must not withdraw the one being read off the log.
+  if (config.resetAdminEmail) {
+    const minted = await mintAdminRecoveryToken(db, config.defaultOrgId, config.resetAdminEmail);
+    if ('token' in minted) {
+      console.log([
+        '╔══════════════════════════════════════════════════════════════════════╗',
+        '║  AgEnFK Hub — admin recovery (AGENFK_HUB_RESET_ADMIN_EMAIL)          ║',
+        `║  For: ${minted.email.slice(0, 62).padEnd(62)} ║`,
+        '║  Open the hub at /recover and paste this token with a new password:  ║',
+        '║                                                                      ║',
+        `║      ${minted.token.padEnd(62)}  ║`,
+        '║                                                                      ║',
+        `║  Works once, until ${minted.expiresAt.padEnd(50)}║`,
+        '║  Unset AGENFK_HUB_RESET_ADMIN_EMAIL and restart once you are in.     ║',
+        '╚══════════════════════════════════════════════════════════════════════╝',
+      ].join('\n'));
+    } else {
+      console.warn(`[HUB] AGENFK_HUB_RESET_ADMIN_EMAIL is set, but ${minted.refused}: no recovery token was minted.`);
+    }
+  } else {
+    await withdrawExpiredRecoveryTokens(db);
+  }
+
   const ctx: HubServerContext = { db, config };
 
   const app = express();
+  // Which X-Forwarded-For hop is the client. Every rate limit keys on req.ip,
+  // and req.ip is only as honest as this setting: see configFromEnv.
+  app.set('trust proxy', config.trustProxy ?? DEFAULT_TRUST_PROXY);
+  // Read by publicHubUrl for every URL the hub hands out.
+  app.locals.hubPublicUrl = config.publicUrl;
+  // The Airlock admin routes take a policy, never a bulk upload: parsed under a
+  // tight limit of their own before the global parser (which then skips them).
+  app.use('/v1/admin/airlock', express.json({ limit: AIRLOCK_ADMIN_BODY_LIMIT }));
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -196,18 +245,36 @@ export async function createHubApp(
     res.json({ ok: true, service: 'agenfk-hub', version: HUB_VERSION });
   });
 
-  app.use('/v1', eventsRouter(ctx));
-  app.use('/v1', flowsRouter(ctx));
-  app.use('/auth', authRouter(ctx));
-  app.use('/auth/google', googleRouter(ctx));
-  app.use('/auth/entra', entraRouter(ctx));
-  app.use('/setup', setupRouter(ctx));
-  app.use('/v1/admin', adminRouter(ctx));
-  app.use('/v1/admin', orgRenameRouter(ctx));
-  app.use('/v1', queriesRouter(ctx));
-  app.use('/hub', connectRouter(ctx));
-  app.use('/hub/federation', federationInviteRouter(ctx));
-  app.use('/v1/federation', federationRouter(ctx));
+  // Org-wide JIRA (CGLAB-412). Ahead of the broad /v1 routers so neither the
+  // admin router's limiter nor any /v1 fallthrough sees these paths first.
+  mountRouter(app, '/v1/admin/jira', jiraAdminRouter(ctx));
+  mountRouter(app, '/v1/jira', jiraInstallationRouter(ctx));
+  // Repository settings (RFC-002): the board's admin routes and the
+  // installation's own read/claim, likewise ahead of the broad /v1 routers.
+  mountRouter(app, '/v1/admin/repos', repoSettingsAdminRouter(ctx));
+  mountRouter(app, '/v1', repoSettingsRouter(ctx));
+  mountRouter(app, '/v1/admin/airlock', airlockAdminRouter(ctx));
+  mountRouter(app, '/v1', airlockRouter(ctx));
+  mountRouter(app, '/v1', receiptsRouter(ctx));
+  mountRouter(app, '/v1/ci', ciRouter(ctx));
+  mountRouter(app, '/v1/admin/ci-tokens', ciTokensAdminRouter(ctx));
+  mountRouter(app, '/v1', eventsRouter(ctx));
+  mountRouter(app, '/v1', flowsRouter(ctx));
+  mountRouter(app, '/auth', authRouter(ctx));
+  mountRouter(app, '/auth/google', googleRouter(ctx));
+  mountRouter(app, '/auth/entra', entraRouter(ctx));
+  mountRouter(app, '/setup', setupRouter(ctx));
+  mountRouter(app, '/v1/admin', adminRouter(ctx));
+  mountRouter(app, '/v1/admin', orgRenameRouter(ctx));
+  mountRouter(app, '/v1/admin', auditRouter(ctx));
+  mountRouter(app, '/v1', queriesRouter(ctx));
+  mountRouter(app, '/hub', connectRouter(ctx));
+  mountRouter(app, '/hub/federation', federationInviteRouter(ctx));
+  mountRouter(app, '/v1/federation', federationRouter(ctx));
+  // Config audit log (STORY a89af514, BUG 91d2941d): an audit layer inside each
+  // audited route, after its guards. `config`, not its value: an org rename
+  // changes defaultOrgId at runtime.
+  installConfigAudit(app, db, config);
   // One-time rewrite of historical bare-osUser identity keys. Reported rather
   // than silent: it can SPLIT a key that two machines shared, which changes what
   // the dashboards show — deliberately, since those were never one person.
@@ -223,6 +290,11 @@ export async function createHubApp(
       );
     })
     .catch((e) => console.error('[MIGRATION] osUser key migration failed:', (e as Error).message));
+  // Names for child-hub developers forwarded before they were recorded at
+  // delivery (BUG 4159631f). Never fatal.
+  migrateChildPeopleNames(db)
+    .then((r) => { if (!r.skipped && r.named > 0) console.log(`[MIGRATION] Recorded names for ${r.named} forwarded event(s) from child hubs.`); })
+    .catch((e) => console.error('[MIGRATION] child-hub names backfill failed:', (e as Error).message));
 
   // Merges made before user_key_aliases existed carry no alias, so the guarantee
   // that a machine waking after the liveness window cannot resurrect a retired
@@ -248,19 +320,20 @@ export async function createHubApp(
     .catch((e) => console.error('[MIGRATION] alias backfill failed:', (e as Error).message));
 
   const rollupTimer = startRollupTimer(db);
+  const datasetPruneTimer = startAirlockDatasetPruneTimer(db);
   // Child-side federation (CGLAB-181). Starting it unconditionally is safe and
   // deliberate: with no parent binding every tick is a no-op, so a standalone
   // hub pays one cheap query a minute and needs no configuration to opt out.
   const stopFederation = startFederationSync({
     db, secretKey: config.secretKey, hubVersion: HUB_VERSION,
     // Which org a flow dispatched by the parent lands in: this hub's own.
-    orgId: config.defaultOrgId,
+    orgId: () => config.defaultOrgId,
     // Both undefined in production, where the worker builds its own HTTP
     // transport and ticks once a minute.
     transport: config.federationTransport as any,
     intervalMs: config.federationIntervalMs,
   });
-  ctx.stopWorkers = () => { clearInterval(rollupTimer); stopFederation(); };
+  ctx.stopWorkers = () => { clearInterval(rollupTimer); clearInterval(datasetPruneTimer); stopFederation(); };
 
   // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in
   // the released tarball that lives next to the hub package. We probe a few
@@ -333,11 +406,84 @@ export async function createHubApp(
  */
 export function hubErrorHandler(err: any, _req: Request, res: Response, _next: NextFunction): void {
   console.error('[HUB_ERROR]', err?.message ?? err);
-  if (res.headersSent) return;
+  // An audited reply whose row is still being written has been sent as far as the handler knows (BUG 915f76ed).
+  if (res.headersSent || res.locals?.auditReplyPending) return;
+  // A client error Express or body-parser raised (an undecodable %-escape in a
+  // path param, malformed JSON) keeps its 4xx; its message names no table.
+  const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
+  if (status < 500) { res.status(status).json({ error: err?.expose === false ? 'bad request' : (err?.message ?? 'bad request') }); return; }
   const body = process.env.NODE_ENV === 'production'
     ? 'internal error'
     : (err?.message ?? 'internal error');
   res.status(500).json({ error: body });
+}
+
+/**
+ * One proxy hop: an AWS ALB (production) or a single nginx/Caddy in front of
+ * the hub. The proxy APPENDS the address it saw, so trusting exactly one hop
+ * makes req.ip that address - never the part of the header the client wrote.
+ */
+const DEFAULT_TRUST_PROXY = 1;
+
+/**
+ * AGENFK_HUB_TRUST_PROXY: unset -> 1; `0`/`false` -> a hub exposed directly
+ * (X-Forwarded-For ignored); a number -> that many proxy hops; anything else ->
+ * an address/CIDR list handed to Express. `true` is REFUSED: it trusts every
+ * hop, so req.ip becomes the left-most entry - whatever the client wrote -
+ * which is exactly the spoofable behaviour this setting exists to end.
+ */
+/** More proxy hops than any real deployment has; beyond it, "trust N" is "trust every hop". */
+const MAX_TRUST_PROXY_HOPS = 5;
+
+export function parseTrustProxy(raw: string | undefined): number | string {
+  const v = raw?.trim();
+  if (!v) return DEFAULT_TRUST_PROXY;
+  if (/^(0|false|no|off)$/i.test(v)) return 0;
+  const refuse = (why: string): never => {
+    throw new Error(
+      `AGENFK_HUB_TRUST_PROXY=${v} ${why} Set the number of proxies in front of the hub (1 for an ALB or a `
+      + `single reverse proxy, 0 when exposed directly, at most ${MAX_TRUST_PROXY_HOPS}), or a comma-separated `
+      + 'list of proxy addresses, CIDRs, or loopback/linklocal/uniquelocal.',
+    );
+  };
+  if (/^\d+$/.test(v)) {
+    const hops = Number.parseInt(v, 10);
+    if (hops > MAX_TRUST_PROXY_HOPS) {
+      refuse('trusts more hops than any deployment has, which lets a client pick its own address and rate-limit bucket - the same as trusting every hop.');
+    }
+    return hops;
+  }
+  if (/^(true|yes|on)$/i.test(v)) {
+    refuse('would trust every X-Forwarded-For hop, so any client could pick its own address and rate-limit bucket.');
+  }
+  // A list goes to proxy-addr, which reads a bare number as an IPv4 integer:
+  // "1,2" would mean 0.0.0.1 and 0.0.0.2, trust nothing, and put every user
+  // behind the proxy into one rate-limit bucket without a word. Each item must
+  // look like what it claims to be.
+  const items = v.split(',').map(s => s.trim()).filter(Boolean);
+  for (const item of items) {
+    const named = /^(loopback|linklocal|uniquelocal)$/i.test(item);
+    const address = /^[0-9a-f:.]+(\/\d{1,3})?$/i.test(item) && (item.includes(':') || /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(item));
+    if (!named && !address) refuse(`contains "${item}", which is not an IP address, a CIDR, or a named range.`);
+  }
+  return items.join(', ');
+}
+
+/**
+ * AGENFK_HUB_PUBLIC_URL: the hub's canonical origin, used for the URLs it hands
+ * out. Reduced to scheme://host[:port]; unset or blank means "the origin each
+ * request arrived on". Anything that is not an http(s) URL is refused at boot -
+ * a typo here would otherwise ship broken join commands to every new machine.
+ */
+export function parsePublicUrl(raw: string | undefined): string | undefined {
+  const v = raw?.trim();
+  if (!v) return undefined;
+  let url: URL;
+  try { url = new URL(v); } catch { url = undefined as any; }
+  if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:') || !url.host) {
+    throw new Error(`AGENFK_HUB_PUBLIC_URL=${v} is not an http(s) URL. Set it to the address users and machines reach the hub on, e.g. https://hub.example.com.`);
+  }
+  return url.origin;
 }
 
 export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl?: string } {
@@ -353,6 +499,10 @@ export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl
     secretKey,
     sessionSecret,
     defaultOrgId: process.env.AGENFK_HUB_ORG_ID || 'default',
+    forcePasswordLogin: process.env.AGENFK_HUB_FORCE_PASSWORD_LOGIN === '1',
+    resetAdminEmail: process.env.AGENFK_HUB_RESET_ADMIN_EMAIL?.trim() || undefined,
+    trustProxy: parseTrustProxy(process.env.AGENFK_HUB_TRUST_PROXY),
+    publicUrl: parsePublicUrl(process.env.AGENFK_HUB_PUBLIC_URL),
     backend,
     pgUrl: process.env.AGENFK_HUB_PG_URL,
   };

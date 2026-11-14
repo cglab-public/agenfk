@@ -8,6 +8,7 @@
  * in hub_outbox — instead of grepping server.ts for resolveFlowName /
  * getInstallSource.
  */
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 
@@ -17,11 +18,24 @@ vi.hoisted(() => {
   process.env.AGENFK_HUB_ORG = process.env.AGENFK_HUB_ORG || 'test-org';
 });
 
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 import * as fs from 'fs';
-import * as path from 'path';
 
-const TEST_DB = path.resolve('./hub-flow-enrichment-test-db.sqlite');
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. The
+ * churn produced `Error: Parse Error: Expected HTTP/` — a transport failure
+ * that hands the test an empty body, so one bad socket surfaces as a confident
+ * wrong assertion in whichever test happened to be running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
+const TEST_DB = testDbPath('hub-flow-enrichment-test-db.sqlite');
 
 // recordHubEvent enqueues into hub_outbox without awaiting the HTTP response, and
 // awaits a flow-name lookup before inserting — so poll rather than read once.
@@ -40,18 +54,18 @@ async function waitForOutboxPayload(predicate: (p: any) => boolean, timeoutMs = 
 describe('hub events are enriched with flow { name, install_source }', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
   });
 
   it('a projectId-bearing event (pr.opened) carries flow.name + flow.install_source', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'FlowEnrich' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    const project = (await agent().post('/projects').send({ name: 'FlowEnrich' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
 
-    const res = await request(app).post('/prs').send({
+    const res = await agent().post('/prs').send({
       itemId: item.id, prNumber: 8801, repo: 'org/enrich',
       sizing: { epic: 0, story: 0, task: 1, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',

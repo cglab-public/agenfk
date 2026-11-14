@@ -8,7 +8,7 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 
 **Step 1 — Prepare**
 - Read the item details using `agenfk get <id> --json`.
-- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. Compare it against `agenfk current-project`; if that errors (no `.agenfk/project.json` found), create the file with `{ "projectId": "<projectId>" }`.
+- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. Compare it against `agenfk current-project`; if that errors (this directory is not linked on this machine), link it with `agenfk init --project <projectId>`: it writes the id to the git-ignored `.agenfk/local.json`. In a git worktree, link the main checkout instead (the error names it); never run `agenfk init` inside a card's worktree. Never write the id into the shared `.agenfk/project.json`.
 - **Branch verification**: If the item has a `branchName`, run `git branch --show-current` and confirm you are on it. If not, run `git checkout <branchName>` before proceeding. **Never code on the wrong branch.**
 - Read the `implementationPlan` field.
 - If the plan is missing, PAUSE and ask the user to provide one.
@@ -32,6 +32,6 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 - Run `agenfk comment <id> "IMPLEMENTATION COMPLETE: ..."` to log the final summary of code changes.
 - Run `agenfk comment <id> "Implementation complete: code and self-verification finished."` to log the step completion.
 - Run `agenfk gatekeeper --item-id <id>` — confirms authorization and reports the current step, its exit criteria, and the active flow's steps.
-- Run `agenfk verify <id> --evidence "<describe what was implemented and how it satisfies the step's exit criteria>" "<build_command>"` to advance to the next step (e.g. REVIEW). This is the formal gate — do NOT use `agenfk update --status` for forward transitions.
+- Run `agenfk verify <id> --evidence "<describe what was implemented and how it satisfies the step's exit criteria>" ["<build_command>"]` to advance to the next step (e.g. REVIEW). The command is optional — pass one only when the step's criteria call for it; a non-zero exit refuses the advance and the item stays on this step. This is the formal gate — do NOT use `agenfk update --status` for forward transitions.
 - **STOP IMMEDIATELY** after the above. Do not perform any further actions or provide a final summary. Yield back to the supervisor.
   - PR creation is the developer's responsibility — do NOT create a PR here.

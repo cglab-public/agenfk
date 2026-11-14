@@ -50,9 +50,38 @@ if (typeof window !== 'undefined' && typeof (window as Window & { localStorage?:
 }
 
 /**
+ * A HOME of this worker's own inside the run's sandbox (GH-274), before the
+ * test file imports anything that reads it: what lets the server, hub and cli
+ * files run beside each other. See the helper.
+ */
+// @ts-expect-error — plain .mjs helper
+import { pinWorkerHome } from './scripts/vitest-home-pin.mjs';
+pinWorkerHome();
+
+/**
  * Fail loudly on any socket to a non-loopback host. The rationale, and the
  * history that made it necessary, live with the guard itself.
  */
 // @ts-expect-error — plain .mjs helper, shared with the guard's own unit test
 import { installNetGuard } from './scripts/vitest-net-guard.mjs';
 installNetGuard();
+
+/**
+ * supertest binds the wildcard but dialled 127.0.0.1, so a foreign 127.0.0.1
+ * listener on the same port took the request - the wandering ECONNRESET/404
+ * flake. It now dials the loopback of the family it bound. See the helper.
+ */
+// @ts-expect-error — plain .mjs helper
+import { installSupertestLoopback } from './scripts/vitest-supertest-loopback.mjs';
+installSupertestLoopback();
+
+/**
+ * jsdom 28.1 re-registers an unmounted <style>'s sheet, and every byRole query
+ * pays for each one - xterm alone leaves ~1,580 rules per terminal. Drop the
+ * orphans after each test (after Testing Library's cleanup has unmounted). See
+ * the helper.
+ */
+// @ts-expect-error — plain .mjs helper
+import { purgeOrphanedStyleSheets } from './scripts/vitest-jsdom-stylesheets.mjs';
+import { afterEach as afterEachTest } from 'vitest';
+afterEachTest(() => { purgeOrphanedStyleSheets(); });

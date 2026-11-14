@@ -17,7 +17,7 @@
  * forms directly below.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, lstatSync } from 'fs';
 import path from 'path';
 
 const ROOT = path.resolve(__dirname, '../../../..');
@@ -32,14 +32,16 @@ const ROOT = path.resolve(__dirname, '../../../..');
 const CJS_LOAD_VITE = new RegExp(
   String.raw`(?:require\s*(?:/\*[\s\S]*?\*/)?\s*\(|import\s+[\w$]+\s*=\s*require\s*(?:/\*[\s\S]*?\*/)?\s*\()\s*(?:/\*[\s\S]*?\*/)?\s*['"]vite['"]`
 );
-const IGNORED_DIRS = new Set(['node_modules', 'dist', '.git']);
+// airlock-smolvm: the desktop's bundled smolvm and guest rootfs (git-ignored build output).
+const IGNORED_DIRS = new Set(['node_modules', 'dist', '.git', 'airlock-smolvm']);
 
 /** Collect source files (js/ts/mjs/cjs/cts/mts) under dir, skipping ignored dirs. */
 function collectSourceFiles(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
     const full = path.join(dir, entry);
-    const st = statSync(full);
+    // Links are not followed: a dangling one (a guest rootfs has them) cannot be stat'ed.
+    const st = lstatSync(full);
     if (st.isDirectory()) {
       if (!IGNORED_DIRS.has(entry)) out.push(...collectSourceFiles(full));
     } else if (/\.(js|ts|mjs|cjs|cts|mts)$/.test(entry)) {

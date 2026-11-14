@@ -1,0 +1,166 @@
+# Builds AgEnFK Desktop for macOS, Windows and Linux (CGLAB-171).
+#
+# A matrix rather than one job because the installers are platform-bound: a
+# Windows NSIS installer needs a Windows runner, and macOS signing and
+# notarization can only happen on macOS. One runner cannot produce all three.
+name: Desktop release
+
+# CGLAB-621: the build runs on the release tag itself. It used to run only on a
+# second `desktop-v*` tag, pushed by hand because the release commands never
+# did; the habit lapsed after beta.36 and beta.37 to beta.43 shipped without
+# installers while nothing failed. `v[0-9]*` matches version tags only - not
+# `hub-v*`, which has its own workflow.
+#
+# `desktop-v*` stays as the way to rebuild an EXISTING release: the manual run
+# below is offered only once this file is on the default branch (main).
+#
+# A tag pushed by a workflow using GITHUB_TOKEN does not trigger other
+# workflows: a release tagged from Actions needs RELEASE_TOKEN (a PAT). And a
+# push of more than three tags at once triggers nothing at all - push the one
+# release tag, never `--tags`.
+on:
+  push:
+    tags: ['v[0-9]*', 'desktop-v[0-9]*']
+  # Re-run for an existing release: rebuilds that tag and replaces its installers.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and attach to (e.g. v2.0.0-beta.43)'
+        required: true
+
+# One run per release at a time: a manual re-run queues behind the tag's own run
+# instead of racing it to upload the same files.
+concurrency:
+  group: desktop-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: dist:mac
+          - os: windows-latest
+            target: dist:win
+          - os: ubuntu-latest
+            target: dist:linux
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # Electron's binary IS needed here, unlike the ordinary CI job, because
+      # electron-builder packages it into the installer.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build workspace
+        run: npm run build
+
+      - name: Package
+        # --publish never: on a tag electron-builder AUTO-PUBLISHES, and the
+        # beta release already exists as a pre-release, so it dies with
+        # "existing type not compatible with publishing type". The workflow's
+        # job is artifacts, not publishing.
+        run: npm run ${{ matrix.target }} -w packages/desktop -- --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing is opt-in: without the secrets the build still produces
+          # installers, they simply warn on first launch. Failing the build
+          # instead would block every fork and every contributor.
+          #
+          # AUTO-DISCOVERY HAS TO BE OFF, and that is the half that broke every
+          # macOS release. On a runner with no certs electron-builder still
+          # finds whatever identity the image ships and tries to sign with an
+          # EMPTY password - then dies with the unhelpful "⨯ <project dir> not a
+          # file". The flag is set from the secrets so adding both cert and
+          # password turns signing back on by itself.
+          CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CERT_PFX }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
+
+      - name: Upload installers
+        # BEFORE the attach: a failed attach still leaves the files on the run
+        # to put on the release by hand.
+        uses: actions/upload-artifact@v7
+        with:
+          name: agenfk-desktop-${{ matrix.os }}
+          path: |
+            packages/desktop/release/*.dmg
+            packages/desktop/release/*.zip
+            packages/desktop/release/*.exe
+            packages/desktop/release/*.AppImage
+            packages/desktop/release/*.deb
+          if-no-files-found: error
+
+      - name: Attach installers to the release
+        # The installers go onto the existing `vX` release, never a new page:
+        # electron-builder's own publish is off (--publish never above) because
+        # it defaulted to a DRAFT and collided with the pre-release. See
+        # scripts/attach-release-assets.sh.
+        # BASH ON EVERY RUNNER, including Windows: this step uses array syntax,
+        # and the Windows default is PowerShell - where the same script fails
+        # with a syntax error the log renders as a wall of source. Git Bash
+        # ships on the windows runner.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          # nullglob: a platform builds only its OWN formats, and an unmatched
+          # glob would otherwise be passed through literally and fail the upload.
+          shopt -s nullglob
+          files=(packages/desktop/release/*.dmg packages/desktop/release/*.zip \
+                 packages/desktop/release/*.exe packages/desktop/release/*.AppImage \
+                 packages/desktop/release/*.deb)
+          bash scripts/attach-release-assets.sh "$RELEASE_TAG" "${files[@]}"
+
+  # CGLAB-565 follow-up: a tag push used to ship only the installers above —
+  # the framework dist bundle (`agenfk-dist.tar.gz`, what `agenfk upgrade`
+  # downloads first) was attached only by the manual Release workflow, so a
+  # release cut by pushing tags alone left upgrades 404ing into a slow source
+  # build. Package it here too: one runner, off the same tag, added to the
+  # same release when it lacks one.
+  dist:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Package distributable
+        run: node scripts/package-dist.mjs
+      - name: Attach dist bundle to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        # --skip-existing: the release flow attached the tarball it built and
+        # checked for macOS metadata; this only fills the gap when it did not.
+        run: bash scripts/attach-release-assets.sh --skip-existing "$RELEASE_TAG" agenfk-dist.tar.gz

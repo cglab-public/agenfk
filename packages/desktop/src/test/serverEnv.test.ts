@@ -1,0 +1,154 @@
+/**
+ * CGLAB-167 blocking finding 1: which database does the desktop app open?
+ *
+ * The server falls back to `findProjectRoot(process.cwd())` when nothing tells
+ * it otherwise. A GUI app has no meaningful cwd — launched from Finder it is
+ * "/", so that fallback resolves to /.agenfk/db.sqlite and the child dies on
+ * EPERM before it can serve a byte. The desktop process must therefore decide
+ * the path itself, using the same chain `scripts/start-services.mjs` uses, so
+ * the app and the terminal always see the same board.
+ */
+import { describe, it, expect } from 'vitest';
+import * as path from 'path';
+import { resolveDbPath, buildServerEnv } from '../main/serverEnv.js';
+import { profileFor } from '../main/platform.js';
+
+// Resolved, so it is spelled as the host spells a home (C:\home\dev on
+// Windows) and the paths the product joins under it start with it.
+const HOME = path.resolve('/home/dev');
+const CONFIG = path.join(HOME, '.agenfk', 'config.json');
+
+/** Stub filesystem: only the listed files exist, with the given contents. */
+const files = (entries: Record<string, string>) => ({
+  exists: (p: string) => Object.prototype.hasOwnProperty.call(entries, p),
+  read: (p: string) => entries[p],
+});
+
+describe('resolveDbPath', () => {
+  it('prefers an explicit AGENFK_DB_PATH over everything else', () => {
+    const chosen = resolveDbPath({
+      env: { AGENFK_DB_PATH: '/explicit/db.sqlite' },
+      homedir: HOME,
+      fs: files({ [CONFIG]: JSON.stringify({ dbPath: '/from/config.sqlite' }) }),
+    });
+    expect(chosen).toBe('/explicit/db.sqlite');
+  });
+
+  it('falls back to dbPath from ~/.agenfk/config.json — the same DB the CLI uses', () => {
+    const chosen = resolveDbPath({
+      env: {},
+      homedir: HOME,
+      fs: files({ [CONFIG]: JSON.stringify({ dbPath: '/home/dev/.agenfk-system/.agenfk/db.sqlite' }) }),
+    });
+    expect(chosen).toBe('/home/dev/.agenfk-system/.agenfk/db.sqlite');
+  });
+
+  it('defaults to the install location the CLI writes into, not just "somewhere under HOME"', () => {
+    // start-services.mjs resolves <agenfk-system-root>/.agenfk/db.sqlite. If
+    // this default drifts from that, the app and `agenfk list` quietly show
+    // two different boards — and an assertion of "starts with HOME" would not
+    // notice.
+    expect(resolveDbPath({ env: {}, homedir: HOME, fs: files({}) }))
+      .toBe(path.join(HOME, '.agenfk-system', '.agenfk', 'db.sqlite'));
+  });
+
+  it('never returns a path under the filesystem root when there is no config', () => {
+    // The exact failure: cwd "/" would make the server choose /.agenfk/db.sqlite.
+    const chosen = resolveDbPath({ env: {}, homedir: HOME, fs: files({}) });
+    expect(chosen.startsWith(HOME)).toBe(true);
+    expect(chosen).not.toBe('/.agenfk/db.sqlite');
+  });
+
+  it('always returns an absolute path, never one relative to the cwd', () => {
+    for (const fsStub of [files({}), files({ [CONFIG]: '{}' })]) {
+      expect(path.isAbsolute(resolveDbPath({ env: {}, homedir: HOME, fs: fsStub }))).toBe(true);
+    }
+  });
+
+  it('survives a malformed config instead of taking the cwd fallback', () => {
+    const chosen = resolveDbPath({
+      env: {},
+      homedir: HOME,
+      fs: files({ [CONFIG]: '{ this is not json' }),
+    });
+    expect(chosen.startsWith(HOME)).toBe(true);
+  });
+
+  it('ignores a config that exists but has no dbPath', () => {
+    const chosen = resolveDbPath({
+      env: {},
+      homedir: HOME,
+      fs: files({ [CONFIG]: JSON.stringify({ telemetry: true }) }),
+    });
+    expect(chosen.startsWith(HOME)).toBe(true);
+  });
+
+  it('ignores an empty AGENFK_DB_PATH rather than resolving to ""', () => {
+    const chosen = resolveDbPath({
+      env: { AGENFK_DB_PATH: '' },
+      homedir: HOME,
+      fs: files({ [CONFIG]: JSON.stringify({ dbPath: '/from/config.sqlite' }) }),
+    });
+    expect(chosen).toBe('/from/config.sqlite');
+  });
+});
+
+/*
+ * The server's PATH (BUG 474a8240).
+ *
+ * Settings said "The GitHub CLI is not installed" with gh in
+ * /opt/homebrew/bin: the server runs `gh` by name, and it was forked with the
+ * PATH launchd hands an app opened from the Finder - /usr/bin:/bin:/usr/sbin:/sbin.
+ */
+describe('buildServerEnv', () => {
+  const base = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: '/Users/me' };
+
+  it('puts the fresh PATH ahead of the inherited one', () => {
+    const env = buildServerEnv(base, { uiDir: '/ui', dbPath: '/db.sqlite', freshPath: '/opt/homebrew/bin:/usr/bin' }, profileFor('darwin'));
+    expect(env.PATH).toBe('/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin');
+  });
+
+  it('keeps the inherited PATH when no fresh one could be captured', () => {
+    expect(buildServerEnv(base, { uiDir: '/ui', dbPath: '/db', freshPath: null }, profileFor('darwin')).PATH).toBe(base.PATH);
+  });
+
+  it('still names the UI and the database, whatever the PATH', () => {
+    const env = buildServerEnv(base, { uiDir: '/ui', dbPath: '/db.sqlite', freshPath: '/x' }, profileFor('linux'));
+    expect(env.AGENFK_SERVE_UI).toBe('/ui');
+    expect(env.AGENFK_DB_PATH).toBe('/db.sqlite');
+    expect(env.HOME).toBe('/Users/me');
+  });
+
+  it('writes Windows\' Path, not a second PATH beside it', () => {
+    const env = buildServerEnv({ Path: 'C:\\Windows' }, { uiDir: 'C:\\ui', dbPath: 'C:\\db', freshPath: 'C:\\Program Files\\GitHub CLI' }, profileFor('win32'));
+    expect(Object.keys(env).filter(k => k.toUpperCase() === 'PATH')).toEqual(['Path']);
+    expect(env.Path).toBe('C:\\Program Files\\GitHub CLI;C:\\Windows');
+  });
+});
+
+/**
+ * ea94c023 (Airlock): the server the desktop app forks runs under Electron's
+ * utility process, so for a card an Airlock sandbox touched it must run
+ * `agenfk airlock exec` with Electron AS Node, from the helper the app ships.
+ */
+describe('buildServerEnv: the Airlock exec helper', () => {
+  const base = { PATH: '/usr/bin', HOME: '/Users/me' };
+  it('names the bundled helper and Electron as the Node to run it with', () => {
+    const env = buildServerEnv(base, { uiDir: '/ui', dbPath: '/db', freshPath: null, airlockExec: { cli: '/App/Resources/packages/airlock/dist/agenfk-airlock-exec.mjs', node: '/App/MacOS/AgEnFK' } }, profileFor('darwin'));
+    expect(env.AGENFK_AIRLOCK_EXEC_CLI).toBe('/App/Resources/packages/airlock/dist/agenfk-airlock-exec.mjs');
+    expect(env.AGENFK_AIRLOCK_EXEC_NODE).toBe('/App/MacOS/AgEnFK');
+    expect(env.AGENFK_AIRLOCK_EXEC_RUN_AS_NODE).toBe('1');
+  });
+
+  it('from a source checkout: Electron as Node, and the server finds the CLI beside it', () => {
+    const env = buildServerEnv(base, { uiDir: '/ui', dbPath: '/db', freshPath: null, airlockExec: { cli: null, node: '/electron' } }, profileFor('darwin'));
+    expect(env.AGENFK_AIRLOCK_EXEC_CLI).toBeUndefined();
+    expect(env.AGENFK_AIRLOCK_EXEC_NODE).toBe('/electron');
+    expect(env.AGENFK_AIRLOCK_EXEC_RUN_AS_NODE).toBe('1');
+  });
+
+  it('without it, nothing Airlock is set', () => {
+    const env = buildServerEnv(base, { uiDir: '/ui', dbPath: '/db', freshPath: null }, profileFor('darwin'));
+    expect(Object.keys(env).filter((k) => k.startsWith('AGENFK_AIRLOCK'))).toEqual([]);
+  });
+});

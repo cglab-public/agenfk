@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Chip, FilterHeading } from './ui/ChipRow';
 import { Check, ChevronDown, Search, X } from 'lucide-react';
 import { filterFacetOptions } from './facetSearch';
 
@@ -37,9 +38,14 @@ export function FacetMultiselect({
   disabled = false,
 }: Props) {
   const [open, setOpen] = useState(false);
+  const headingId = useId();
+  const triggerId = useId();
+  const panelId = useId();
+  const labelOf = (v: string) => (optionLabel ? optionLabel(v) : v);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -48,7 +54,12 @@ export function FacetMultiselect({
       if (!rootRef.current.contains(e.target as Node)) setOpen(false);
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      // Escape from inside the panel puts the keyboard user back where they
+      // opened it. Focus that has already left (an outside click, or Tab into
+      // another control with its own Escape) stays where it went.
+      if (rootRef.current?.contains(document.activeElement)) triggerRef.current?.focus();
     }
     document.addEventListener('mousedown', onDoc);
     document.addEventListener('keydown', onKey);
@@ -93,31 +104,14 @@ export function FacetMultiselect({
   if (visible.length <= inlineThreshold) {
     return (
       <div>
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
-          {selected.size > 0 && (
-            <button onClick={onClear} disabled={disabled} className="text-[11px] font-medium text-ink-tertiary hover:text-danger-muted disabled:opacity-50 disabled:hover:text-ink-tertiary">
-              Clear ({selected.size})
-            </button>
-          )}
-        </div>
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {visible.map((t) => {
-            const on = selected.has(t);
-            return (
-              <button
-                key={t}
-                onClick={() => onToggle(t)}
-                disabled={disabled}
-                title={t}
-                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate disabled:opacity-50 disabled:cursor-not-allowed ${on
-                  ? 'text-accent-text border-border-brand bg-chip'
-                  : 'text-ink-secondary border-border-soft hover:text-accent-text hover:border-border-brand'}`}
-              >
-                {optionLabel ? optionLabel(t) : t}
-              </button>
-            );
-          })}
+        <FilterHeading id={headingId} label={label} count={selected.size} onClear={onClear} disabled={disabled} />
+        <div role="group" aria-labelledby={headingId} className="mt-1.5 flex flex-wrap gap-1.5">
+          {visible.map((t) => (
+            <Chip key={t} on={selected.has(t)} onClick={() => onToggle(t)} mono disabled={disabled}
+              detail={labelOf(t) !== t ? t : undefined}>
+              {labelOf(t)}
+            </Chip>
+          ))}
         </div>
       </div>
     );
@@ -127,21 +121,20 @@ export function FacetMultiselect({
 
   return (
     <div ref={rootRef} className="relative">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
-        {selected.size > 0 && (
-          <button onClick={onClear} disabled={disabled} className="text-[11px] font-medium text-ink-tertiary hover:text-danger-muted disabled:opacity-50 disabled:hover:text-ink-tertiary">
-            Clear ({selected.size})
-          </button>
-        )}
-      </div>
+      <FilterHeading id={headingId} label={label} count={selected.size} onClear={onClear} disabled={disabled} />
 
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <button
+          ref={triggerRef}
+          id={triggerId}
+          type="button"
           onClick={() => setOpen((v) => !v)}
           disabled={disabled}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[11px] border text-ink-secondary border-border-soft hover:border-border-brand hover:text-accent-text transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border-soft disabled:hover:text-ink-secondary"
-          aria-haspopup="listbox"
+          // Named "<facet> <summary>": the summary alone ("All 12") said nothing
+          // about which filter this is.
+          aria-labelledby={`${headingId} ${triggerId}`}
+          aria-controls={open ? panelId : undefined}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-caption border text-ink-secondary border-border-soft hover:border-accent hover:text-accent-ink transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border-soft disabled:hover:text-ink-secondary"
           aria-expanded={open}
         >
           {selected.size === 0
@@ -157,15 +150,18 @@ export function FacetMultiselect({
         {selectedArr.map((v) => (
           <span
             key={v}
-            title={v}
-            className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full font-mono text-[11px] border text-accent-text border-border-brand bg-chip max-w-[260px]"
+            className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full font-mono text-caption border text-accent-ink border-accent bg-accent-fill max-w-[260px]"
           >
-            <span className="truncate">{optionLabel ? optionLabel(v) : v}</span>
+            {/* Wrapped, not cut off: the rest of a long value lived only in a
+                mouse-only title. The raw value behind a short label is shown
+                in the popover's row, and named here to a screen reader. */}
+            <span className="min-w-0 break-words">{labelOf(v)}</span>
+            {labelOf(v) !== v && <span className="sr-only">{v}</span>}
             <button
               onClick={() => onToggle(v)}
               disabled={disabled}
-              aria-label={`Remove ${v}`}
-              className="rounded-full hover:bg-brand/20 p-0.5 -mr-0.5 disabled:cursor-not-allowed"
+              aria-label={`Remove ${labelOf(v)}`}
+              className="rounded-full hover:bg-accent-fill p-0.5 -mr-0.5 disabled:cursor-not-allowed"
             >
               <X className="w-3 h-3" />
             </button>
@@ -174,7 +170,7 @@ export function FacetMultiselect({
       </div>
 
       {open && (
-        <div className="absolute z-20 mt-2 w-[min(420px,calc(100vw-2rem))] bg-card-glass backdrop-blur border border-border-soft rounded-xl shadow-xl overflow-hidden">
+        <div id={panelId} className="absolute z-20 mt-2 w-[min(420px,calc(100vw-2rem))] bg-card-glass backdrop-blur border border-border-soft rounded-xl shadow-xl overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-border-soft">
             <Search className="w-3.5 h-3.5 text-ink-tertiary" />
             <input
@@ -182,7 +178,8 @@ export function FacetMultiselect({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={placeholder}
-              className="flex-1 bg-transparent outline-none text-[12px] text-ink placeholder:text-ink-tertiary"
+              aria-label={`Search ${label}`}
+              className="flex-1 bg-transparent outline-none text-small text-ink placeholder:text-ink-tertiary"
             />
             {query && (
               <button
@@ -194,36 +191,46 @@ export function FacetMultiselect({
               </button>
             )}
           </div>
-          <ul role="listbox" aria-multiselectable="true" className="max-h-64 overflow-y-auto py-1">
+          {/* A group of checkboxes, named by the facet heading: each choice
+              announces its own checked state. */}
+          <div role="group" aria-labelledby={headingId} className="max-h-64 overflow-y-auto py-1">
             {filtered.length === 0 ? (
-              <li className="px-3 py-4 text-center text-[12px] text-ink-tertiary">No matches.</li>
+              <p className="px-3 py-4 text-center text-small text-ink-tertiary">No matches.</p>
             ) : (
-              filtered.map((v) => {
+              filtered.map((v, i) => {
                 const on = selected.has(v);
+                const shown = labelOf(v);
+                // Named by its label alone; the raw value under it is the
+                // checkbox's description, not part of its name.
+                const optId = `${panelId}-opt-${i}`;
                 return (
-                  <li key={v} role="option" aria-selected={on}>
-                    <button
-                      onClick={() => onToggle(v)}
-                      disabled={disabled}
-                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-mono transition-colors disabled:cursor-not-allowed ${on
-                        ? 'bg-chip text-accent-text'
-                        : 'text-ink hover:bg-chip/50'}`}
-                      title={v}
-                    >
-                      <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${on
-                        ? 'bg-brand border-brand text-navy'
-                        : 'border-border-soft'}`}>
-                        {on && <Check className="w-2.5 h-2.5" />}
-                      </span>
-                      <span className="truncate">{optionLabel ? optionLabel(v) : v}</span>
-                    </button>
-                  </li>
+                  <label
+                    key={v}
+                    // relative: the sr-only checkbox is absolutely positioned, and
+                    // must scroll with the list or a focused option stays hidden.
+                    className={`relative w-full flex items-center gap-2 px-3 py-1.5 text-left text-small font-mono transition-colors cursor-pointer has-[:disabled]:cursor-not-allowed has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:-outline-offset-2 has-[:focus-visible]:outline-accent ${on
+                      ? 'bg-accent-fill text-accent-ink'
+                      : 'text-ink hover:bg-accent-fill/50'}`}
+                  >
+                    <input type="checkbox" className="sr-only" checked={on} disabled={disabled} onChange={() => onToggle(v)}
+                      aria-labelledby={`${optId}-label`} aria-describedby={shown !== v ? `${optId}-raw` : undefined} />
+                    <span aria-hidden="true" className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${on
+                      ? 'bg-accent border-accent text-surface'
+                      : 'border-border-soft'}`}>
+                      {on && <Check className="w-2.5 h-2.5" />}
+                    </span>
+                    <span className="min-w-0 flex flex-col">
+                      <span id={`${optId}-label`} className="break-words">{shown}</span>
+                      {/* The raw value behind a short label, on screen rather than in a title. */}
+                      {shown !== v && <span id={`${optId}-raw`} className="break-all text-caption text-ink-tertiary">{v}</span>}
+                    </span>
+                  </label>
                 );
               })
             )}
-          </ul>
+          </div>
           {selected.size > 0 && (
-            <div className="flex items-center justify-between px-3 py-2 border-t border-border-soft text-[11px]">
+            <div className="flex items-center justify-between px-3 py-2 border-t border-border-soft text-caption">
               <span className="text-ink-tertiary">{selected.size} selected</span>
               <button onClick={onClear} disabled={disabled} className="font-medium text-ink-tertiary hover:text-danger-muted disabled:cursor-not-allowed disabled:opacity-50">
                 Clear all
