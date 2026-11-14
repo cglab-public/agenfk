@@ -1,6 +1,8 @@
+import * as os from 'os';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { testEnv } from '../../scripts/vitest-home-pin.mjs';
+import { resolveMaxWorkers } from '../../scripts/vitest-workers.mjs';
 
 export default defineConfig({
   plugins: [react()],
@@ -10,6 +12,14 @@ export default defineConfig({
   test: {
     // The root run's project name for the board (4ac25844).
     name: 'ui',
+    // The root run's worker count, resolved the same way. A project loaded
+    // from its own config file does not inherit the root's maxWorkers, and
+    // vitest 5 refuses projects of one sequence.groupOrder whose maxWorkers
+    // differ ("Projects "serial" and "ui" have different 'maxWorkers'").
+    // `--maxWorkers` on the command line still overrides it (vitest 5 applies
+    // CLI options over every project's own value). A standalone run from
+    // packages/ui (`npm run test:ui:coverage`) gets the same cap.
+    maxWorkers: resolveMaxWorkers({ platform: process.platform, cpus: os.availableParallelism() }),
     // HOME isolation (item 9c297075) — defense in depth: the UI specs do no
     // home fs writes today, but a future one would land in the sandbox.
     env: testEnv(),

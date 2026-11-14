@@ -58,13 +58,39 @@ describe('root vitest parallelism', () => {
   });
 
   it('leaves the worker count to --maxWorkers when one is given, for every project', async () => {
-    // A project's own maxWorkers would win over the flag: the cap lives at the root.
+    // vitest 5 resolves maxWorkers per project (the board's config file sets its own, see
+    // packages/ui/vitest.config.ts), so assert what each project actually runs with: the flag.
     // One more than the default, so the flag is told apart from the cap on any machine.
     const flag = expectedWorkers() + 1;
     const r = await resolved({ maxWorkers: flag });
     expect(r.global.maxWorkers).toBe(flag);
     for (const [name, cfg] of Object.entries(r.projects)) {
-      expect(cfg.maxWorkers, `project ${name} sets its own worker count`).toBeFalsy();
+      expect(cfg.maxWorkers, `project ${name} ignores --maxWorkers`).toBe(flag);
+    }
+  });
+
+  it('gives every project the same worker count without a flag, as vitest 5 requires', async () => {
+    // Projects of one sequence.groupOrder with different maxWorkers stop the run before any test.
+    const r = await resolved();
+    for (const [name, cfg] of Object.entries(r.projects)) {
+      expect(cfg.maxWorkers, `project ${name} runs on its own worker count`).toBe(expectedWorkers());
+    }
+  });
+
+  it('collects each test file in exactly one project', async () => {
+    // vitest 5 merges the root test block into the inline projects and concatenates arrays:
+    // a root `include` made `parallel` and `serial` both collect every file, so the suite ran twice.
+    const v = await createVitest('test', { watch: false });
+    try {
+      const counts = new Map<string, string[]>();
+      for (const spec of await v.globTestSpecifications()) {
+        counts.set(spec.moduleId, [...(counts.get(spec.moduleId) ?? []), spec.project.name]);
+      }
+      const twice = [...counts].filter(([, projects]) => projects.length > 1);
+      expect(counts.size).toBeGreaterThan(0);
+      expect(twice, 'files collected by more than one project').toEqual([]);
+    } finally {
+      await v.close();
     }
   });
 

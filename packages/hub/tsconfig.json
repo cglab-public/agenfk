@@ -10,14 +10,8 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "rootDir": "./src"
+    "resolveJsonModule": true
   },
-  "include": [
-    "src/**/*"
-  ],
-  "exclude": [
-    "**/*.test.ts",
-    "src/test/**"
-  ]
+  "include": ["src/**/*"],
+  "exclude": ["**/*.test.ts", "src/test/**"]
 }

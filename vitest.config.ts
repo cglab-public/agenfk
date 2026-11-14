@@ -47,10 +47,20 @@ const SERIAL_INCLUDE = [
   'packages/cli/src/test/**/*.{test,spec}.{ts,tsx}',
 ];
 
+/*
+ * The root `test` block holds ONLY the run-wide options, never a project's.
+ *
+ * vitest 5 merges this block into every inline project below (they have no
+ * `extends: false`), and arrays concatenate: a root `include` of both lists
+ * made `parallel` and `serial` each collect every file, so the whole non-board
+ * suite ran twice, once per project. A root `define` or `setupFiles` would
+ * leak the same way (a root `__AGENFK_VERSION__: 'test'` broke airlock-exec's
+ * version check). Each project brings its own `sharedTest(...)`; the board
+ * brings its own config file. core's vitestParallelism.test.ts guards both.
+ */
+const { coverage } = sharedTest();
+
 export default defineConfig({
-  define: {
-    __AGENFK_VERSION__: JSON.stringify('test'),
-  },
   resolve: sharedResolve,
   test: {
     // NOTE the fileParallelism here. This root-level block is what vitest uses
@@ -60,7 +70,11 @@ export default defineConfig({
     // anyway. Leaving it permissive lets each project decide; a project that
     // must run one file at a time says `fileParallelism: false` itself (none
     // does since GH-274).
-    ...sharedTest({ include: [...PARALLEL_INCLUDE, ...SERIAL_INCLUDE], fileParallelism: true }),
+    fileParallelism: true,
+    // Never concurrent within a file, run-wide (see scripts/vitest-shared-config.mjs).
+    sequence: { concurrent: false },
+    // Coverage is run-wide in vitest: only the root's settings apply.
+    coverage,
     /*
      * The worker count, not vitest's all-but-one: scripts/vitest-workers.mjs.
      *
@@ -83,9 +97,10 @@ export default defineConfig({
      *   |      6     | 277.0 s  |   (the win32 rule at 14 CPUs)
      *   |      8     | 284.0 s  |
      *
-     * Set here, at the root, so `--maxWorkers` on the command line still
-     * overrides it for every project; a project's own value would win over the
-     * flag.
+     * Set here, at the root: the inline projects inherit it. The board's own
+     * config file resolves the same value, because vitest 5 refuses projects
+     * of one sequence.groupOrder whose maxWorkers differ. `--maxWorkers` on the
+     * command line overrides it for every project.
      */
     maxWorkers: resolveMaxWorkers({ platform: process.platform, cpus: os.availableParallelism() }),
     projects: [
@@ -114,6 +129,7 @@ export default defineConfig({
       // fail in the hundreds. It used to run only from `cd packages/ui`, so the
       // project's verify command and test report - every agenfk gate's view of
       // the suite - never saw a board spec, and a card could break one and pass.
+      // It resolves the same maxWorkers as the root itself (see that file).
       'packages/ui/vitest.config.ts',
     ],
   },

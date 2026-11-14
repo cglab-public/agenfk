@@ -93,6 +93,12 @@ describe.each(tscEmittingPackages())('dist-layout: package %s', name => {
     expect(tsconfig.compilerOptions?.types ?? []).toContain('node');
   });
 
+  // Without its own @types/node the package compiles against whichever version npm hoists to the
+  // root, which any unrelated peer can move (vitest 5 lifted it to 26, which drops path.PlatformPath).
+  it(`${name}: package.json declares its own @types/node`, () => {
+    expect({ ...pkg.dependencies, ...pkg.devDependencies }).toHaveProperty(['@types/node']);
+  });
+
   if (NODE_TYPED.includes(name)) {
 
     // Every main/types/bin target under dist/ must come from a same-path source file.

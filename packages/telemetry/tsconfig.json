@@ -9,14 +9,8 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "rootDir": "./src"
+    "forceConsistentCasingInFileNames": true
   },
-  "include": [
-    "src/**/*"
-  ],
-  "exclude": [
-    "**/*.test.ts",
-    "src/test/**"
-  ]
+  "include": ["src/**/*"],
+  "exclude": ["**/*.test.ts", "src/test/**"]
 }

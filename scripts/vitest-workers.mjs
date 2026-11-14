@@ -2,8 +2,10 @@
  * How many vitest workers the root config runs (GH-274, #313).
  *
  * A pure function of the platform and the CPU count, so the rule can be tested
- * without faking `os`. vitest.config.ts calls it at the ROOT `test` block, so
- * `--maxWorkers` on the command line still overrides it for every project.
+ * without faking `os`. vitest.config.ts calls it at the ROOT `test` block (the
+ * inline projects inherit it) and packages/ui/vitest.config.ts calls it for the
+ * board, since vitest 5 refuses projects of one groupOrder with different
+ * maxWorkers. `--maxWorkers` on the command line overrides it for every project.
  *
  * POSIX: a quarter of the CPUs, at least 2. Measured on an 18-CPU Linux machine,
  * where a server/hub/cli worker is several CPUs' load (it spawns git and node
