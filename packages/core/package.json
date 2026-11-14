@@ -12,6 +12,6 @@
   "author": "",
   "license": "Apache-2.0",
   "devDependencies": {
-    "@types/node": "^20.11.16"
+    "@types/node": "^22.13.0"
   }
 }

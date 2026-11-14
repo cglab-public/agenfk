@@ -33,6 +33,11 @@ updates:
       # Minor/patch bumps still flow; a new major is a deliberate migration.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
+      # @types/node follows the lowest Node the repo supports (root engines,
+      # CI's 22.x), not the newest Node. Newer types would let code call APIs a
+      # supported Node does not have (#317).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       # Runtime dependencies move on their own so a risky bump is never bundled
       # with tooling churn and can be reverted alone.
