@@ -30,7 +30,7 @@
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "express": "^5.3.0",
-    "express-rate-limit": "^8.7.2",
+    "express-rate-limit": "^8.7.3",
     "jsonwebtoken": "^9.0.2",
     "jwks-rsa": "^4.1.0",
     "pg": "^8.23.1",
@@ -41,7 +41,7 @@
     "@types/cookie-parser": "^1.4.7",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.7",
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.13.0",
     "@types/pg": "^8.23.1",
     "pg-mem": "^3.0.14"
   }
