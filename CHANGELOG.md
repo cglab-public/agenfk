@@ -4,6 +4,8 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.18] — 2026-11-15
+
 **Fixes** (#371)
 
 - **`agenfk airlock claude` (and every other agent) starts in the sandbox again.** The session's `setsid` returned
