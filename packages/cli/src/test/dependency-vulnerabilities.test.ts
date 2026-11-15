@@ -47,6 +47,8 @@ const RUNTIME: Advisory[] = [
   { name: 'katex', vulnerable: '<0.18.2', safe: '0.18.2' },
   { name: 'fflate', vulnerable: '>=0.4.0 <0.4.9', safe: '0.4.9' },
   { name: 'postcss-selector-parser', vulnerable: '<6.1.5', safe: '6.1.5' },
+  // Transitive via @modelcontextprotocol/sdk (Dependabot #145, #147; issue #379).
+  { name: '@hono/node-server', vulnerable: '<2.1.6', safe: '2.1.6' },
 ];
 
 // Dev and build tooling (Story 3, card 663fb16b).
@@ -136,6 +138,12 @@ const ADVISORY_AFFECTED: { name: string; version: string; advisory: string }[] =
   { name: 'hono', version: '2.0.0', advisory: '< 4.13.5' },
   { name: 'hono', version: '3.8.0', advisory: '>= 3.8.0, < 4.12.34' },
   { name: 'hono', version: '4.13.10', advisory: '>= 4.12.4, < 4.13.11' },
+  { name: '@hono/node-server', version: '1.0.0', advisory: '< 1.19.18' },
+  { name: '@hono/node-server', version: '1.19.17', advisory: '< 1.19.18' },
+  { name: '@hono/node-server', version: '1.19.10', advisory: '>= 1.19.10, < 2.1.3' },
+  { name: '@hono/node-server', version: '2.1.2', advisory: '>= 1.19.10, < 2.1.3' },
+  { name: '@hono/node-server', version: '2.0.0', advisory: '>= 2.0.0, < 2.1.6' },
+  { name: '@hono/node-server', version: '2.1.5', advisory: '>= 2.0.0, < 2.1.6' },
   { name: 'ip-address', version: '9.0.5', advisory: '<= 10.7.3' },
   { name: 'ip-address', version: '10.7.3', advisory: '<= 10.7.3' },
   { name: 'fast-uri', version: '3.0.0', advisory: '>= 3.0.0, < 3.1.9' },
