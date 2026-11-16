@@ -235,10 +235,6 @@ function Command({ children }: { children: React.ReactNode }): React.ReactElemen
 }
 
 /**
- * Which gadgets the cockpit under the terminal tabs shows (INFRA-425). A view
- * choice for this screen, kept in this browser like the sidebar's own.
- */
-/**
  * Why the AWS profile may lag, and the lines that fix it. Shown as a note,
  * not applied: they go in the person's own rc file, which this app does not
  * edit.
@@ -261,6 +257,10 @@ function CockpitShellNote(): React.ReactElement {
   );
 }
 
+/**
+ * Which gadgets the cockpit under the terminal tabs shows (INFRA-425). A view
+ * choice for this screen, kept in this browser like the sidebar's own.
+ */
 function CockpitRow(): React.ReactElement {
   const [toggles, setToggles] = React.useState(() => readCockpitToggles());
   const names: Readonly<Record<CockpitGadgetId, string>> = {

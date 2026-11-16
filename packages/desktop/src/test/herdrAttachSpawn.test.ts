@@ -68,6 +68,27 @@ describe('what actually runs', () => {
   });
 });
 
+/* ── what the cockpit is told about it ─────────────────────────────────── */
+
+describe('the cockpit context of an attach', () => {
+  it('has no directory and no environment of its own to scan', async () => {
+    /*
+     * The process carrying the attach's marker is the herdr client, started
+     * with this app's environment. Scanning it would show the app's AWS
+     * profile and kube context as if they were the attached pane's.
+     */
+    const r = makeRegistry();
+    const { sessionId } = await attach(r);
+    expect(r.describe(sessionId, 1)).toMatchObject({ cwd: null, tmux: true });
+  });
+
+  it('marks every terminal with its session id, which the cockpit finds it by', async () => {
+    const r = makeRegistry();
+    const { sessionId } = await r.spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
+    expect(spawned[0].env.AGENFK_SESSION).toBe(sessionId);
+  });
+});
+
 /* ── the four things an attach must not do ─────────────────────────────── */
 
 describe('an attach resolves no worktree', () => {

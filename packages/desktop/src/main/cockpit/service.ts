@@ -26,7 +26,10 @@ export interface CockpitContext {
   readonly agentId: string;
   readonly agentSessionId?: string;
   readonly wsl: WslTarget | null;
-  /** Under tmux every pane shares one server's environment: no AWS by scan. */
+  /**
+   * No environment of its own to scan: under tmux every pane shares one
+   * server's, and a herdr attach carries this app's. No AWS by scan.
+   */
   readonly tmux: boolean;
   /** When the terminal opened, so a resumed conversation's file can be told apart. */
   readonly spawnedAt: number;
@@ -152,7 +155,9 @@ export class CockpitService {
     const probing = this.deps.probe(ctx, this.probeArgs(marker, ctx)).catch(() => '').then(out => {
       const parsed = parseCockpitProbe(out);
       if (parsed.cwd && !this.ended.has(marker)) this.physical.set(marker, parsed.cwd);
-      return parsed;
+      // With no directory of its own the probe ran in $HOME, whose git and
+      // Terraform state belong to no pane the person is watching.
+      return ctx.cwd ? parsed : { ...parsed, git: null, tf: null };
     });
     const [probed, usage] = await Promise.all([
       probing,
@@ -174,7 +179,13 @@ export class CockpitService {
   /** One transcript read per terminal, bounded in time; the last answer while one is running. */
   private usageOnce(marker: string, ctx: CockpitContext): Promise<UsageSnapshot | null> {
     if (this.reading.has(marker)) return Promise.resolve(this.lastUsage.get(marker) ?? null);
-    const work = this.usage(marker, ctx).catch(() => null).then(u => {
+    const work = this.usage(marker, ctx).catch(() => {
+      // A failed read (EIO over \\wsl.localhost, a file removed under a live
+      // session) must not pin the path: the next poll looks for it again.
+      this.trackers.delete(marker);
+      this.sinceRecheck.delete(marker);
+      return null;
+    }).then(u => {
       if (!this.ended.has(marker)) this.lastUsage.set(marker, u);
       return u;
     }).finally(() => this.reading.delete(marker));

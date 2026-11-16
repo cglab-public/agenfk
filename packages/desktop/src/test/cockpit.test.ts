@@ -305,6 +305,23 @@ describe('a terminal\'s cockpit, joined', () => {
     expect(last).toBeCloseTo(10, 6);
   });
 
+  it('looks for the transcript again after a read of the pinned one fails', async () => {
+    // One failed stat used to pin the path for good: every later poll threw on
+    // the same file, and the ctx and cost gadgets stayed blank.
+    fs.mkdirSync(projectDir(), { recursive: true });
+    const guess = path.join(projectDir(), 'guess.jsonl');
+    fs.writeFileSync(guess, `${claudeLine('g1', { output_tokens: 500_000 })}\n`);
+    const svc = service(async () => '');
+    const c = ctx({ agentSessionId: 'mine', resumed: true });
+    expect((await svc.snapshot('sess-e', c)).usage?.cost).toBeCloseTo(10, 6);
+    fs.rmSync(guess);
+    fs.writeFileSync(path.join(projectDir(), 'next.jsonl'), `${claudeLine('n1', { output_tokens: 1_000_000 })}\n`);
+    clock += 11_000;
+    expect((await svc.snapshot('sess-e', c)).usage).toBeNull();
+    clock += 11_000;
+    expect((await svc.snapshot('sess-e', c)).usage?.cost).toBeCloseTo(20, 6);
+  });
+
   it('runs one transcript read at a time, so a slow read is never counted twice', async () => {
     fs.mkdirSync(projectDir(), { recursive: true });
     fs.writeFileSync(path.join(projectDir(), 'conv-1.jsonl'), `${claudeLine('m1', { output_tokens: 1_000_000 })}\n`);
@@ -380,6 +397,16 @@ describe('a terminal\'s cockpit, joined', () => {
     await svc.snapshot('b', ctx({ agentId: 'shell', tmux: true }));
     await svc.snapshot('c', ctx({ agentId: 'shell' }));
     expect(seen).toEqual([['a', 'reported', 'cglab-stg', '/k'], ['b', 'none', '-', '-'], ['c', 'scan', '-', '-']]);
+  });
+
+  it('shows no git or Terraform for a terminal with no directory of its own', async () => {
+    // A herdr attach or a plain shell: the probe ran in $HOME, which is not
+    // the pane the person is watching. AWS and kube still come from the probe.
+    const out = 'git=main\t1\t0\t0\ntf=prod\naws=cglab-stg\t\treported\n';
+    const snap = await service(async () => out).snapshot('h', ctx({ agentId: 'herdr', cwd: null }));
+    expect(snap).toMatchObject({ git: null, tf: null, aws: { profile: 'cglab-stg' } });
+    const owned = await service(async () => out).snapshot('o', ctx({ agentId: 'shell' }));
+    expect(owned).toMatchObject({ git: { branch: 'main' }, tf: 'prod' });
   });
 
   it('marks the cost a lower bound when only the tail of a huge transcript was read', async () => {
