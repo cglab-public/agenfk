@@ -246,6 +246,11 @@ describe('the environment that crosses into WSL', () => {
     expect(env.WSLENV?.split(':')).toEqual(expect.arrayContaining(['TERM/u', 'COLORTERM/u', 'TERM_PROGRAM/u']));
   });
 
+  it('forwards the terminal marker, which the cockpit finds the shell by inside the distro', () => {
+    const env = withWslEnv({ TERM: 'xterm-256color', AGENFK_SESSION: 'pty-1' });
+    expect(env.WSLENV?.split(':')).toContain('AGENFK_SESSION/u');
+  });
+
   it('keeps whatever WSLENV already carried', () => {
     const env = withWslEnv({ WSLENV: 'USERPROFILE/p', TERM: 'xterm-256color' });
     expect(env.WSLENV?.split(':')).toContain('USERPROFILE/p');
