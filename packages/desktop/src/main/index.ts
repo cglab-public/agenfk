@@ -239,7 +239,7 @@ const cockpitService = new CockpitService({
     }
     if (runningOn === 'win32') { resolve(''); return; }
     execFile('/bin/sh', ['-c', COCKPIT_PROBE_SCRIPT, 'cockpit', ...args],
-      { encoding: 'utf8', timeout: 5000, cwd: ctx.cwd ?? os.homedir() }, done);
+      { encoding: 'utf8', timeout: 5000, windowsHide: true, cwd: ctx.cwd ?? os.homedir() }, done);
   }),
   home: async ctx => {
     if (!ctx.wsl) return os.homedir();
