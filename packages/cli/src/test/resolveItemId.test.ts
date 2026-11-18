@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveItemIdPrefix, AMBIGUOUS_CANDIDATES_SHOWN } from '../resolveItemId';
+import { resolveItemIdPrefix, AMBIGUOUS_CANDIDATES_SHOWN, isItemIdPrefix } from '../resolveItemId';
 
 const items = [
   { id: '2cab541e-d262-4241-a0fa-104b894ffb98' },
@@ -42,5 +42,20 @@ describe('resolving an item id prefix', () => {
 
   it('says so when nothing matches', () => {
     expect(resolveItemIdPrefix(items, 'deadbeef')).toMatchObject({ ok: false });
+  });
+});
+describe('which values are looked up as an item id prefix', () => {
+  it('a short hex-and-dash value is a prefix to resolve', () => {
+    expect(isItemIdPrefix('2cab541')).toBe(true);
+    expect(isItemIdPrefix('2CAB541E-d262')).toBe(true);
+  });
+
+  it('a full id is not: it goes straight to the exact-match route', () => {
+    expect(isItemIdPrefix('2cab541e-d262-4241-a0fa-104b894ffb98')).toBe(false);
+  });
+
+  it('a value no UUID can start with is not: nothing to look up', () => {
+    expect(isItemIdPrefix('item-1')).toBe(false);
+    expect(isItemIdPrefix('')).toBe(false);
   });
 });

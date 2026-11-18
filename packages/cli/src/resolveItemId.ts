@@ -21,6 +21,18 @@ export function resolveItemIdPrefix<T extends { id: string; title?: string }>(
   return { ok: true, id: found[0].id };
 }
 
+/*
+ * Item ids are UUIDs, so only a value made of hex digits and dashes can be the
+ * prefix of one. Anything else (`item-1`, a full id, a legacy non-UUID id) is
+ * sent as-is: the per-item routes match the EXACT id, so passing it through can
+ * never land on a different item - it either is the item or the server 404s.
+ * Fetching the whole item list for it would only add a round trip that cannot
+ * match anything.
+ */
+export function isItemIdPrefix(id: string): boolean {
+  return id.length < 36 && /^[0-9a-f-]+$/i.test(id);
+}
+
 /** How many candidates an ambiguous prefix lists before it summarises the rest. */
 export const AMBIGUOUS_CANDIDATES_SHOWN = 10;
 

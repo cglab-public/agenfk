@@ -5,7 +5,7 @@ import axios from 'axios';
 import { readProjectFile, unreadableFileCommand, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets, VERIFY_COMMAND_FLAG, SETUP_COMMAND_FLAG } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { recordActiveWork, gatekeeperSessionId } from './activeWork.js';
-import { resolveItemIdPrefix } from './resolveItemId.js';
+import { resolveItemIdPrefix, isItemIdPrefix } from './resolveItemId.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
@@ -52,9 +52,11 @@ function structuredOutput(data: unknown): string {
  * is taken as-is, a unique prefix becomes the full id. An unknown or ambiguous
  * prefix prints why - the ambiguous one with its candidates - and exits 1, so
  * the command sends nothing that names an item. Returns null in that case.
+ * A value that cannot be a UUID prefix goes straight through without the list
+ * lookup (isItemIdPrefix): the per-item routes match it exactly.
  */
 async function resolveItemIdOrExit(id: string): Promise<string | null> {
-  if (id.length >= 36) return id;
+  if (!isItemIdPrefix(id)) return id;
   const { data: allItems } = await axios.get(`${API_URL}/items`);
   const resolved = resolveItemIdPrefix(allItems, id);
   if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); return null; }

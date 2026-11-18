@@ -15,7 +15,8 @@ All notable changes to AgEnFK are documented here.
   `review record|brief` and `tokens --item` accept the 8-character id the board and `list` print.** They sent the
   value straight to routes that match the exact id, so a short id answered "Item not found" (and `tokens --item`
   returned nothing). They now resolve it like `get`; an ambiguous or unknown prefix exits 1 with the candidates
-  listed, before any request that names the item.
+  listed, before any request that names the item. A value no UUID can start with (anything but hex digits and
+  dashes) skips the list lookup and goes to the exact-match route as given.
 
 ## [2.1.0-beta.18] — 2026-11-15
 
