@@ -10,13 +10,32 @@
  *
  * Pure: the caller fetches the list. Returns the full id, or why it could not.
  */
-export function resolveItemIdPrefix<T extends { id: string }>(
+export function resolveItemIdPrefix<T extends { id: string; title?: string }>(
   items: readonly T[],
   id: string,
 ): { ok: true; id: string } | { ok: false; error: string } {
   if (id.length >= 36) return { ok: true, id };
   const found = items.filter(i => i.id.startsWith(id));
   if (found.length === 0) return { ok: false, error: `No item found starting with ${id}` };
-  if (found.length > 1) return { ok: false, error: `Ambiguous ID ${id}, matches multiple items` };
+  if (found.length > 1) return { ok: false, error: ambiguousError(id, found) };
   return { ok: true, id: found[0].id };
+}
+
+/** How many candidates an ambiguous prefix lists before it summarises the rest. */
+export const AMBIGUOUS_CANDIDATES_SHOWN = 10;
+
+/*
+ * The candidates are listed so the caller can pick the full id instead of
+ * guessing a longer prefix - and so `delete`/`move`, which used to act on the
+ * first match, show which cards they refused to touch.
+ */
+function ambiguousError(id: string, found: readonly { id: string; title?: string }[]): string {
+  const shown = found.slice(0, AMBIGUOUS_CANDIDATES_SHOWN)
+    .map(i => `  ${i.id}${i.title ? `  ${i.title}` : ''}`);
+  const more = found.length - shown.length;
+  return [
+    `Ambiguous ID ${id}, matches multiple items (${found.length}); pass a longer prefix or the full id:`,
+    ...shown,
+    ...(more > 0 ? [`  ... and ${more} more`] : []),
+  ].join('\n');
 }
