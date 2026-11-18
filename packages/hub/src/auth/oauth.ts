@@ -192,7 +192,8 @@ export const JIT_MEMBER_ROLE = 'viewer';
  * Create the member for a first SSO sign-in that found no row, when the org's
  * join mode is auto and the caller has already applied every gate (tenant,
  * Workspace domain, allowlist, app role). Bound to the identity from the start,
- * so the row is never matched by email again.
+ * so the row is never matched by email again, and marked as created by a
+ * sign-in, so the callers keep holding it to the gate that let it in.
  *
  * Two callbacks for the same new identity can race: the email is unique, so
  * the second insert fails and that sign-in gets the row the first one made,
@@ -208,7 +209,7 @@ export async function createSsoMember(
   const id = randomUUID();
   try {
     await db.run(
-      'INSERT INTO users (id, org_id, email, name, password_hash, provider, provider_subject, role, active) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1)',
+      "INSERT INTO users (id, org_id, email, name, password_hash, provider, provider_subject, role, active, join_source) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, 'jit')",
       [id, orgId, identity.email, name, identity.provider, identity.subject, JIT_MEMBER_ROLE],
     );
   } catch (e) {

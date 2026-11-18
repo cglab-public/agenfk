@@ -104,7 +104,9 @@ const SCHEMA_SQLITE = `
     role TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_login_at TEXT
+    last_login_at TEXT,
+    -- 'jit' when a first SSO sign-in created the row; NULL when an admin did.
+    join_source TEXT
   );
 
   CREATE TABLE IF NOT EXISTS device_codes (
@@ -1176,6 +1178,9 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   // A hub that already holds such a pair keeps working without the index.
   try { raw.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users(lower(email))'); }
   catch (e: any) { console.warn(`[HUB] users: emails that differ only in case exist, case-insensitive uniqueness not enforced (${e?.message ?? e})`); }
+  // users.join_source: how the row came to be, so a member a first sign-in
+  // created keeps answering to the app role (INFRA-463, phase 1a).
+  if (!new Set(userCols.map(c => c.name)).has('join_source')) raw.exec("ALTER TABLE users ADD COLUMN join_source TEXT");
 
   // flow_assignments multi-scope migration. Pre-existing tables had PK
   // (org_id, scope). New PK is (org_id, scope, target_id). SQLite can't

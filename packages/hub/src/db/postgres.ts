@@ -95,7 +95,9 @@ const SCHEMA_PG = `
     role TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_login_at TIMESTAMPTZ
+    last_login_at TIMESTAMPTZ,
+    -- 'jit' when a first SSO sign-in created the row; NULL when an admin did.
+    join_source TEXT
   );
 
   CREATE TABLE IF NOT EXISTS device_codes (
@@ -978,6 +980,11 @@ export async function migrateIdentityCodingColumns(adapter: Pick<HubDb, 'all' | 
 
 async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec(SCHEMA_PG);
+  await migrate(adapter);
+}
+
+/** What a start does after the schema: the changes a database made by an older build still needs. */
+async function migrate(adapter: HubDb): Promise<void> {
   await adapter.exec("DELETE FROM events WHERE type = 'tokens.logged'");
   await adapter.exec("DELETE FROM rollups_daily");
   // Backfill columns on pre-existing event tables. Use information_schema so
@@ -1195,6 +1202,13 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   // Case-insensitive email uniqueness, as in db/sqlite.ts.
   try { await adapter.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users (lower(email))'); }
   catch (e: any) { console.warn(`[HUB] users: emails that differ only in case exist, case-insensitive uniqueness not enforced (${e?.message ?? e})`); }
+  // users.join_source, as in db/sqlite.ts.
+  const userCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='users'"
+  );
+  if (!new Set(userCols.map(c => c.column_name)).has('join_source')) {
+    await adapter.exec("ALTER TABLE users ADD COLUMN join_source TEXT");
+  }
 
   // flows.org_available — org-available flag.
   const flowCols = await adapter.all<{ column_name: string }>(
@@ -1257,6 +1271,16 @@ export async function openPgDb(connectionString: string): Promise<HubDb> {
  */
 export function __createPgAdapterForTest(pool: unknown): HubDb {
   return new PgAdapter({ pool: pool as Pool });
+}
+
+/**
+ * Test-only: run the migrations again on an open database, as a restart does
+ * on a hub that already has its tables. CREATE TABLE IF NOT EXISTS never adds
+ * a column there; only this path shows whether an ALTER does. The schema
+ * itself is left out because pg-mem cannot run it a second time.
+ */
+export async function __migrateForTest(adapter: HubDb): Promise<void> {
+  await migrate(adapter);
 }
 
 export async function openPgMemDb(): Promise<HubDb> {

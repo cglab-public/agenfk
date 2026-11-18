@@ -222,6 +222,81 @@ describe('Entra sign-in with join mode auto', () => {
   });
 });
 
+/**
+ * The tenant, the Workspace domain and the allowlist are read on every
+ * sign-in. The app role was read once, when the member was created: a person
+ * removed from the group, on an app whose assignment is switched off, kept
+ * signing in (QA run 20261104, card 00aaf82f).
+ */
+describe('the app role on later Entra sign-ins', () => {
+  const withoutRole = { ...member, roles: undefined };
+  const hasSession = (r: any) => !!r.headers['set-cookie']?.some((c: string) => c.startsWith('agenfk_hub_session='));
+
+  it('refuses a member the Hub created once the token stops carrying the role, and changes nothing', async () => {
+    await enableEntra();
+    expect(signedIn(await entraSignIn(member))).toBe(true);
+    const before = await ctx.db.all<any>('SELECT * FROM users');
+    const r = await entraSignIn(withoutRole);
+    expect(r.status).toBe(403);
+    expect(r.body.error).toMatch(/app role/i);
+    expect(hasSession(r)).toBe(false);
+    expect(await ctx.db.all<any>('SELECT * FROM users')).toEqual(before);
+  });
+
+  it('refuses the same way for another role, or the role in another case', async () => {
+    await enableEntra();
+    expect(signedIn(await entraSignIn(member))).toBe(true);
+    for (const roles of [['Other.Role'], ['agenfk.member'], ROLE]) {
+      const r = await entraSignIn({ ...member, roles });
+      expect(r.status).toBe(403);
+      expect(r.body.error).toMatch(/app role/i);
+    }
+  });
+
+  it('signs the same member in again when the role is back', async () => {
+    await enableEntra();
+    expect(signedIn(await entraSignIn(member))).toBe(true);
+    expect((await entraSignIn(withoutRole)).status).toBe(403);
+    expect(signedIn(await entraSignIn(member))).toBe(true);
+    expect(await ctx.db.all<any>('SELECT id FROM users')).toHaveLength(1);
+  });
+
+  it('keeps the gate for members already created after automatic join is switched off', async () => {
+    await enableEntra();
+    expect(signedIn(await entraSignIn(member))).toBe(true);
+    await enableEntra({ joinMode: 'off' });
+    expect((await entraSignIn(withoutRole)).status).toBe(403);
+    expect(signedIn(await entraSignIn(member))).toBe(true);
+  });
+
+  it('checks nothing once no role is stored', async () => {
+    await enableEntra();
+    expect(signedIn(await entraSignIn(member))).toBe(true);
+    await enableEntra({ joinMode: 'off', role: null });
+    expect(signedIn(await entraSignIn(withoutRole))).toBe(true);
+  });
+
+  it('keeps signing in a member an admin invited, with or without the role', async () => {
+    await enableEntra();
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)',
+      ['u-pre', 'org', 'new@acme.com', null, 'password', 'admin'],
+    );
+    expect(signedIn(await entraSignIn(withoutRole))).toBe(true);
+    expect(signedIn(await entraSignIn(withoutRole))).toBe(true);
+    expect(signedIn(await entraSignIn(member))).toBe(true);
+  });
+
+  it('still tells a deactivated member that the account is deactivated', async () => {
+    await enableEntra();
+    expect(signedIn(await entraSignIn(member))).toBe(true);
+    await ctx.db.run("UPDATE users SET active = 0 WHERE email = 'new@acme.com'");
+    const r = await entraSignIn(withoutRole);
+    expect(r.status).toBe(403);
+    expect(r.body.error).toMatch(/deactivated/i);
+  });
+});
+
 describe('Google sign-in with join mode auto', () => {
   const person = { sub: 'g-new', email: 'new@acme.com', email_verified: true, name: 'New Person', hd: 'acme.com' };
 

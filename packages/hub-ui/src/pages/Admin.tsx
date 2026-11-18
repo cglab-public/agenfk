@@ -181,7 +181,7 @@ export function AdminAuth() {
           <Field label="Required app role" className="sm:col-span-2">
             <input className={`${inputCls} font-mono`} placeholder="AgEnFK.Member" value={c.entra.requiredRole ?? ''} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, requiredRole: e.target.value } })} />
           </Field>
-          <p className="sm:col-span-2 text-small text-ink-tertiary">The value of the app role assigned to the group that may join. With automatic join, a token without it creates nobody.</p>
+          <p className="sm:col-span-2 text-small text-ink-tertiary">The value of the app role assigned to the group that may join. With automatic join, a token without it creates nobody, and a member created that way needs it on every sign-in.</p>
         </div>
         )}
       </section>

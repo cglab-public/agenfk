@@ -10,7 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { HubDb } from '../db/types';
 import { openSqliteDb } from '../db/sqlite';
-import { openPgMemDb } from '../db/postgres';
+import { openPgMemDb, __migrateForTest } from '../db/postgres';
 import { createSsoMember } from '../auth/oauth';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-jit-create-member-${process.pid}.sqlite`);
@@ -43,6 +43,15 @@ function backendSuite(name: string, open: () => Promise<HubDb>) {
       expect((second as any).user.id).toBe((first as any).user.id);
       expect(await db.all<any>('SELECT id FROM users')).toHaveLength(1);
       expect(await db.all<any>("SELECT id FROM config_audit WHERE action = 'user.jit_create'")).toHaveLength(1);
+    });
+
+    it('records on the row that a first sign-in created it, which an invited row never carries', async () => {
+      await createSsoMember(db, 'org', person);
+      await db.run("INSERT INTO users (id, org_id, email, provider, role) VALUES ('u-inv', 'org', 'invited@acme.com', 'password', 'viewer')");
+      expect(await db.all<any>('SELECT email, join_source FROM users ORDER BY email')).toEqual([
+        { email: 'invited@acme.com', join_source: null },
+        { email: 'new@acme.com', join_source: 'jit' },
+      ]);
     });
 
     it('refuses another identity that races for the same email', async () => {
@@ -90,5 +99,29 @@ describe('case-insensitive email index on an existing hub', () => {
     const reopened = await openSqliteDb(TEST_DB);
     expect(await reopened.all<any>('SELECT id FROM users')).toHaveLength(2);
     await reopened.close();
+  });
+});
+
+describe('users.join_source on an existing hub', () => {
+  afterEach(cleanup);
+
+  it('is added to a database made before it, and the rows already there read as invited', async () => {
+    cleanup();
+    const db = await openSqliteDb(TEST_DB);
+    await db.run('ALTER TABLE users DROP COLUMN join_source');
+    await db.run("INSERT INTO users (id, org_id, email, provider, provider_subject, role) VALUES ('u1', 'org', 'old@acme.com', 'entra', 'oid-old', 'viewer')");
+    await db.close();
+    const reopened = await openSqliteDb(TEST_DB);
+    expect(await reopened.all<any>('SELECT id, join_source FROM users')).toEqual([{ id: 'u1', join_source: null }]);
+    await reopened.close();
+  });
+
+  it('is added on Postgres too, when the hub starts again on a database made before it', async () => {
+    const db = await openPgMemDb();
+    await db.run('ALTER TABLE users DROP COLUMN join_source');
+    await db.run("INSERT INTO users (id, org_id, email, provider, provider_subject, role) VALUES ('u1', 'org', 'old@acme.com', 'entra', 'oid-old', 'viewer')");
+    await __migrateForTest(db);
+    expect(await db.all<any>('SELECT id, join_source FROM users')).toEqual([{ id: 'u1', join_source: null }]);
+    await db.close();
   });
 });

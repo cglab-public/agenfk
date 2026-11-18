@@ -51,6 +51,9 @@ interface DiscoveryDoc {
   issuer: string;
 }
 
+/** The refusal for a first join, and for a later sign-in of a member a first join created. */
+const MISSING_APP_ROLE = "This Microsoft account does not carry the hub's app role; ask your admin to add you to the group assigned to the AgEnFK app";
+
 const discoveryCache = new Map<string, { doc: DiscoveryDoc; jwks: JwksClient; fetchedAt: number }>();
 const DISCOVERY_TTL_MS = 60 * 60 * 1000;
 
@@ -180,20 +183,27 @@ export function entraRouter(ctx: HubServerContext): Router {
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
     const identity = { provider: 'entra' as const, subject, email, name };
+    // The group assigned to the enterprise app is the gate; the app role it
+    // carries proves the assignment was enforced.
+    const roles = Array.isArray(claims.roles) ? claims.roles : [];
+    const carriesRole = !!cfg.entra_required_role && roles.includes(cfg.entra_required_role);
+
     let found = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, identity, req.ip ?? null);
     if (!('user' in found) && found.refused === 'not-invited' && cfg.join_mode === 'auto') {
-      // The group assigned to the enterprise app is the gate; the app role it
-      // carries proves the assignment was enforced. Without a stored role the
-      // Hub creates nobody, whatever the join mode says.
-      const roles = Array.isArray(claims.roles) ? claims.roles : [];
-      if (!cfg.entra_required_role || !roles.includes(cfg.entra_required_role)) {
-        return res.status(403).json({ error: "This Microsoft account does not carry the hub's app role; ask your admin to add you to the group assigned to the AgEnFK app" });
-      }
+      // Without a stored role the Hub creates nobody, whatever the join mode says.
+      if (!carriesRole) return res.status(403).json({ error: MISSING_APP_ROLE });
       found = await createSsoMember(ctx.db, ctx.config.defaultOrgId, identity, req.ip ?? null);
     }
     if (!('user' in found)) return res.status(403).json({ error: ssoRefusal(found) });
     const { user } = found;
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
+    // The role let this member in, so it is read on every sign-in, like the
+    // tenant and the allowlist: leaving the group ends access here even when
+    // the app's assignment requirement is switched off. A member an admin
+    // invited was never admitted by the role and is not held to it.
+    if (user.join_source === 'jit' && cfg.entra_required_role && !carriesRole) {
+      return res.status(403).json({ error: MISSING_APP_ROLE });
+    }
     await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);
     res.redirect('/');
   }));
