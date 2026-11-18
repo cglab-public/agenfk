@@ -2177,6 +2177,10 @@ program
   .option('--git-diff <diff>', 'Captured git diff to restore context')
   .action(async (id, options) => {
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(id);
+      if (!resolvedId) return;
+      id = resolvedId;
       const payload: Record<string, unknown> = {
         summary: options.summary,
         resumeInstructions: options.resumeInstructions,
@@ -4116,7 +4120,12 @@ program
   .action(async (options) => {
     try {
       const params: Record<string, string | number> = {};
-      if (options.item) params.itemId = options.item;
+      if (options.item) {
+        // The token-events store filters by the EXACT item id: resolve a short one like `get`.
+        const itemId = await resolveItemIdOrExit(options.item);
+        if (!itemId) return;
+        params.itemId = itemId;
+      }
       if (options.project) params.projectId = options.project;
       if (options.client) params.client = options.client;
       if (options.since) params.since = options.since;
@@ -4457,6 +4466,10 @@ reviewCmd
     }
     const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(id);
+      if (!resolvedId) return;
+      id = resolvedId;
       const { data } = await axios.post(`${API_URL}/items/${id}/review-records`,
         { transcript: options.transcript, range: options.range ?? 'auto', findings, ...(options.lens ? { lenses: options.lens } : {}) },
         { headers: { 'x-agenfk-internal': verifyToken } });
@@ -4485,6 +4498,10 @@ reviewCmd
   .option('--json', 'Print the whole brief as JSON')
   .action(async (id, options) => {
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(id);
+      if (!resolvedId) return;
+      id = resolvedId;
       const { data } = await axios.get(`${API_URL}/items/${id}/review-brief`);
       console.log(options.json ? JSON.stringify(data, null, 2) : data.text);
     } catch (e: any) {
@@ -4723,6 +4740,10 @@ branchCmd
   .option('--name <name>', 'Branch name to use verbatim (no prefix is added or stripped; surrounding whitespace is trimmed)')
   .action(async (itemId, options) => {
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(itemId);
+      if (!resolvedId) return;
+      itemId = resolvedId;
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       if (item.parentId) {
         console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
@@ -4843,6 +4864,10 @@ worktreeCmd
   .option('--root <path>', 'Directory that holds all worktrees (default: ~/.agenfk/worktrees)')
   .action(async (itemId, options) => {
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(itemId);
+      if (!resolvedId) return;
+      itemId = resolvedId;
       const { data } = await axios.post(`${API_URL}/items/${itemId}/worktree`, {
         root: options.root,
       });
@@ -4860,6 +4885,10 @@ worktreeCmd
   .description("Show the item's worktree and whether its directory is still there")
   .action(async (itemId) => {
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(itemId);
+      if (!resolvedId) return;
+      itemId = resolvedId;
       const { data } = await axios.get(`${API_URL}/items/${itemId}/worktree`);
       // 686fdbf6: a tree the card chose is where it runs, whatever it carries.
       if (data.chosen) {
@@ -4885,6 +4914,10 @@ worktreeCmd
   .description("Remove the item's worktree directory (the branch and its commits are kept)")
   .action(async (itemId) => {
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(itemId);
+      if (!resolvedId) return;
+      itemId = resolvedId;
       const { data } = await axios.delete(`${API_URL}/items/${itemId}/worktree`);
       console.log(data.removed
         ? chalk.green(`✅ Worktree removed for [${itemId.substring(0, 8)}]. The branch and its commits are untouched.`)
@@ -4900,6 +4933,10 @@ branchCmd
   .description('Push the item\'s tracked branch to remote (no-op if no remote configured)')
   .action(async (itemId) => {
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(itemId);
+      if (!resolvedId) return;
+      itemId = resolvedId;
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       if (!item.branchName) {
         console.error(chalk.yellow(`⚠ No branch linked to item [${itemId.substring(0, 8)}]. Run 'agenfk branch create' first.`));
@@ -4931,6 +4968,10 @@ branchCmd
   .description('Show the branch linked to an item and whether it has been pushed to remote')
   .action(async (itemId) => {
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(itemId);
+      if (!resolvedId) return;
+      itemId = resolvedId;
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       if (!item.branchName) {
         console.log(chalk.yellow(`No branch linked to item [${itemId.substring(0, 8)}].`));
@@ -4957,6 +4998,10 @@ branchCmd
   .description('Link an existing local git branch to an item')
   .action(async (itemId, branchName) => {
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(itemId);
+      if (!resolvedId) return;
+      itemId = resolvedId;
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       if (item.parentId) {
         console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
@@ -5056,6 +5101,10 @@ prCmd
       process.exit(1);
     }
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(itemId);
+      if (!resolvedId) return;
+      itemId = resolvedId;
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       if (item.parentId) {
         console.error(chalk.red(`❌ PRs are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
@@ -5155,6 +5204,10 @@ prCmd
       process.exit(1);
     }
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(itemId);
+      if (!resolvedId) return;
+      itemId = resolvedId;
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       if (!item.prNumber && !item.prUrl) {
         console.log(chalk.yellow(`No PR linked to item [${itemId.substring(0, 8)}]. Run 'agenfk pr create' first.`));
@@ -5193,6 +5246,10 @@ prCmd
       process.exit(1);
     }
     try {
+      // Resolve a short id like `get`: the per-item routes match the EXACT id.
+      const resolvedId = await resolveItemIdOrExit(itemId);
+      if (!resolvedId) return;
+      itemId = resolvedId;
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       if (!item.prNumber && !item.prUrl) {
         console.log(chalk.yellow(`No PR linked to item [${itemId.substring(0, 8)}]. Run 'agenfk pr create' first.`));
