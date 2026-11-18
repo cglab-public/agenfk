@@ -28,6 +28,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execFileSync, spawnSync } from 'child_process';
 import { hubConfigPath } from '../hub/hubClient';
 import { defaultDeadletterPath } from '../hub/flusher';
 import { agenfkDir } from '@agenfk/telemetry';
@@ -151,6 +152,29 @@ describe('home isolation (item 9c297075)', () => {
 describe('the launching environment', () => {
   it('does not let AGENFK_SERVE_UI through', () => {
     expect(process.env.AGENFK_SERVE_UI || '').toBe('');
+  });
+
+  // A shell that exports XDG_CONFIG_HOME as an absolute path kept it pointing
+  // at the machine's ~/.config after HOME moved: git then read the developer's
+  // own ignore and config, and a global '.agenfk/' rule failed 7 tests there.
+  it("keeps XDG_CONFIG_HOME inside this worker's HOME, wherever the shell pointed it", () => {
+    expect(process.env.XDG_CONFIG_HOME).toBe(path.join(process.env.HOME!, '.config'));
+  });
+
+  it('lets git read no configuration or ignore rule from the machine home', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-git-pin-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repo });
+      const origins = execFileSync('git', ['config', '--show-origin', '--list'], { cwd: repo, encoding: 'utf8' });
+      // The repo's own .git/config is fine even where the temp dir sits under the real home.
+      const fromOutside = origins.split('\n').filter(l => !l.includes(path.join(repo, '.git')));
+      expect(fromOutside.filter(l => REAL_HOME && l.includes(REAL_HOME))).toEqual([]);
+      // check-ignore exits 1 for "not ignored": nothing outside this repo may ignore it.
+      const r = spawnSync('git', ['check-ignore', '-q', '--no-index', '.agenfk/local.json'], { cwd: repo });
+      expect(r.status).toBe(1);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it('spells the temp dir and the sandbox HOME in full, as git and realpath report them (#208)', () => {

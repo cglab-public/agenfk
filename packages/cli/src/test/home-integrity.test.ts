@@ -227,11 +227,13 @@ describe('vitest worker HOME (scripts/vitest-home-pin.mjs)', () => {
     const { pinWorkerHome } = await load();
     const run = runSandbox();
     try {
-      const env: Record<string, string | undefined> = { HOME: run, USERPROFILE: run, AGENFK_TEST_RUN_HOME: run, VITEST_POOL_ID: '5', AGENFK_SPAWN_PIN: '1' };
+      const xdg = path.join(run, '.config');
+      const env: Record<string, string | undefined> = { HOME: run, USERPROFILE: run, XDG_CONFIG_HOME: xdg, AGENFK_TEST_RUN_HOME: run, VITEST_POOL_ID: '5', AGENFK_SPAWN_PIN: '1' };
       // HOME would say one directory and os.homedir() another: worse than sharing the run's.
       expect(pinWorkerHome(env, () => run)).toBe(false);
       expect(env.HOME).toBe(run);
       expect(env.USERPROFILE).toBe(run);
+      expect(env.XDG_CONFIG_HOME).toBe(xdg);
       expect(env.AGENFK_TEST_DB_DIR).toBeUndefined();
     } finally {
       fs.rmSync(run, { recursive: true, force: true });
