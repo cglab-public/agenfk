@@ -86,12 +86,17 @@ describe('users', () => {
   });
 
   it('two accounts differing only in case: the exact one is used, an inexact one is refused', async () => {
-    await supertest(hub.server).post('/v1/admin/users/invite').set('Cookie', hub.cookie).send({ email: 'Alice@x', role: 'viewer' });
-    await supertest(hub.server).post('/v1/admin/users/invite').set('Cookie', hub.cookie).send({ email: 'alice@x', role: 'viewer' });
+    // The hub now refuses a second account that differs only in case; a hub
+    // that already held such a pair opens without that index and keeps them.
+    expect((await board('post', '/v1/admin/users/invite').send({ email: 'Alice@x', role: 'viewer' })).status).toBe(201);
+    expect((await board('post', '/v1/admin/users/invite').send({ email: 'alice@x', role: 'viewer' })).status).toBe(409);
+    await hub.ctx.db.run('DROP INDEX idx_users_email_lower');
+    const legacyRow = (id: string) => hub.ctx.db.run("INSERT INTO users (id, org_id, email, provider, role) VALUES (?, 'org', 'alice@x', 'password', 'viewer')", [id]);
+    await legacyRow('legacy-lower-1');
     await hub.run(['hub', 'admin', 'users', 'delete', 'alice@x', '--yes']);
     expect(await userRow('alice@x')).toBeUndefined();
     expect(await userRow('Alice@x')).toBeTruthy();
-    await supertest(hub.server).post('/v1/admin/users/invite').set('Cookie', hub.cookie).send({ email: 'alice@x', role: 'viewer' });
+    await legacyRow('legacy-lower-2');
     hub.clear();
     await expect(hub.run(['hub', 'admin', 'users', 'delete', 'ALICE@X', '--yes'])).rejects.toThrow(/exit 1/);
     expect(hub.err()).toMatch(/differ only in case/);
@@ -190,7 +195,9 @@ describe('sign-in', () => {
       'hub', 'admin', 'sign-in', 'set', '--entra-tenant-id', tenant, '--entra-client-id', 'ecid', '--entra-client-secret-stdin',
     ]));
     const cfg = (await board('get', '/v1/admin/auth-config')).body;
-    expect(cfg.entra).toEqual({ tenantId: tenant, clientId: 'ecid', clientSecretSet: true });
+    // The CLI sets no app role: a partial save leaves it as it was, unset.
+    expect(cfg.entra).toEqual({ tenantId: tenant, clientId: 'ecid', clientSecretSet: true, requiredRole: null });
+    expect(cfg.joinMode).toBe('off');
   });
 
   it('passes the hub\'s refusal of a tenant that names no single tenant, and changes nothing', async () => {

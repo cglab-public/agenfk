@@ -571,11 +571,24 @@ const PROVIDER_BADGE: Record<string, string> = {
   entra:    'bg-canvas text-ink-secondary border-border-soft',
 };
 
+/** What deleting a user does to their sign-in, under the hub's join mode (undefined while unknown). */
+function deleteConsequence(joinMode: 'off' | 'auto' | undefined): string {
+  const permanence = 'The account cannot be undone or restored. Their history on the dashboards stays.';
+  if (joinMode === 'off') return `They can no longer sign in. ${permanence}`;
+  if (joinMode === 'auto') return `Automatic join is on: if they still pass the Sign-in checks, their next Google or Entra sign-in creates a new account. To keep them out, deactivate them instead. ${permanence}`;
+  return permanence;
+}
+
 export function AdminUsers() {
   const qc = useQueryClient();
   const { confirm, dialog } = useConfirm();
   const users = useQuery<UserRow[]>({ queryKey: ['admin-users'], queryFn: async () => (await api.get('/v1/admin/users')).data });
   const me = useQuery<{ userId: string }>({ queryKey: ['auth-me'], queryFn: async () => (await api.get('/auth/me')).data });
+  // Under automatic join, neither leaving someone uninvited nor deleting them
+  // keeps them out. Until the mode is known the page promises neither way.
+  const authCfg = useQuery<AuthConfig>({ queryKey: ['auth-config'], queryFn: async () => (await api.get('/v1/admin/auth-config')).data });
+  // A hub that reports no join mode predates it, and such a hub creates nobody.
+  const joinMode = authCfg.data ? (authCfg.data.joinMode ?? 'off') : undefined;
   const invite = useMutation({
     mutationFn: (body: any) => api.post('/v1/admin/users/invite', body),
     onSuccess: () => {
@@ -610,7 +623,11 @@ export function AdminUsers() {
       <section className={`${cardCls} max-w-form`}>
         <header>
           <h3 className="text-body font-semibold text-ink">Invite user</h3>
-          <p className="mt-0.5 text-small text-ink-tertiary">Only invited users can sign in — SSO does not auto-create accounts. Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.</p>
+          <p className="mt-0.5 text-small text-ink-tertiary">
+            {joinMode === 'off' && <>Only invited users can sign in — SSO does not auto-create accounts. </>}
+            {joinMode === 'auto' && <>Automatic join is on: a first Google or Entra sign-in that passes the Sign-in checks creates a viewer. Invite people who need admin, a password, or access before they sign in. </>}
+            Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.
+          </p>
         </header>
         <form
           className="mt-4 grid sm:grid-cols-12 gap-3"
@@ -749,7 +766,7 @@ export function AdminUsers() {
                         onClick={async () => {
                           if (await confirm({
                             title: `Delete ${u.email}?`,
-                            body: 'They can no longer sign in, and the account cannot be undone or restored. Their history on the dashboards stays.',
+                            body: deleteConsequence(joinMode),
                             confirmLabel: 'Delete user',
                           })) remove.mutate(u.id);
                         }}
