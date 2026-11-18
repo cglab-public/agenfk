@@ -4,6 +4,20 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+**Fixes**
+
+- **`agenfk delete` and `agenfk move` refuse an ambiguous id prefix instead of acting on its first match.** A short
+  id that started more than one item's id deleted (or moved, with all its children) whichever came first in the list.
+  Both now fail with exit 1, list the matching items and change nothing, like `get` and `update`. A prefix nothing
+  starts with now also exits 1 (it printed an error and exited 0). Every command that resolves a short id through
+  the shared resolver (`run start`, `run list --item`) lists the candidates of an ambiguous prefix too.
+- **`pause-work`, `worktree create|status|remove`, `branch create|push|status|link`, `pr create|status|check`,
+  `review record|brief` and `tokens --item` accept the 8-character id the board and `list` print.** They sent the
+  value straight to routes that match the exact id, so a short id answered "Item not found" (and `tokens --item`
+  returned nothing). They now resolve it like `get`; an ambiguous or unknown prefix exits 1 with the candidates
+  listed, before any request that names the item. A value no UUID can start with (anything but hex digits and
+  dashes) skips the list lookup and goes to the exact-match route as given.
+
 ## [2.1.0-beta.18] — 2026-11-15
 
 **Fixes** (#371)
