@@ -1230,3 +1230,34 @@ describe('PG parity: receipts store (RFC-002)', () => {
     expect((await fx.db.all<any[]>('SELECT * FROM receipts', []))[0].card_id).toBe('card-1');
   });
 });
+
+describe('PG parity: card usage (GH-389)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  // Postgres hands occurred_at back as a Date and JSON numerics as strings in
+  // places SQLite does not: the route must return the same shape on both.
+  it('GET /v1/usage/cards lists closed cards with their usage, latest close per card', async () => {
+    const total = (input: number) => ({ turns: 1, input, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0.5, unpricedTurns: 0 });
+    const closed = (eventId: string, itemId: string, at: string, input: number) => ({
+      eventId, installationId: 'inst-1', orgId: 'org', occurredAt: at, type: 'item.closed', itemId, itemType: 'TASK', itemTitle: `T-${itemId}`,
+      actor: { osUser: 'alice', gitName: 'A', gitEmail: 'alice@acme.com' }, projectId: 'p1',
+      payload: { toStatus: 'DONE', usage: { byModel: [], total: total(input), byStep: [], cards: 1 } },
+    });
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+      closed('u1', 'c1', '2026-11-19T10:00:00.000Z', 1),
+      closed('u2', 'c1', '2026-11-19T12:00:00.000Z', 2),
+      closed('u3', 'c2', '2026-11-19T11:00:00.000Z', 3),
+    ] });
+    expect(r.status).toBe(200);
+
+    const res = await supertest(fx.app).get('/v1/usage/cards?from=2026-11-01').set('Cookie', fx.cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body.cards.map((c: any) => [c.item_id, c.closed_at, c.usage.total.input, c.usage.total.costUsd])).toEqual([
+      ['c1', '2026-11-19T12:00:00.000Z', 2, 0.5],
+      ['c2', '2026-11-19T11:00:00.000Z', 3, 0.5],
+    ]);
+  });
+});

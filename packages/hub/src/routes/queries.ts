@@ -69,6 +69,9 @@ interface EventFilters {
   to: string | null;
 }
 
+/** At most this many closes are read per request; the reply says when it hit it. */
+const USAGE_CARDS_LIMIT = 5000;
+
 function readEventFilters(req: Request): EventFilters {
   return {
     users: parseList(req, 'users'),
@@ -382,6 +385,46 @@ export function queriesRouter(ctx: HubServerContext): Router {
       // Present while a full page came back: there may be more.
       nextBefore: rows.length === limit && last ? `${lastAt}|${last.event_id}` : undefined,
     });
+  }));
+
+  /**
+   * GH-389: closed cards with their token usage, newest close first. Usage
+   * reaches the hub only on workflow events - a card's whole usage rides its
+   * item.closed (payload.usage) - so this reads those, the latest close per
+   * card (a card reopened and closed again counts once, as it last closed).
+   * A close from a version that sent no usage has usage null: unmeasured,
+   * which is not zero. Same filters as the board's other reads, except types.
+   */
+  router.get('/usage/cards', guard, asyncRoute(async (req: Request, res: Response) => {
+    const f = { ...readEventFilters(req), types: ['item.closed'] };
+    const { where, params } = applyEventFilters(req.session!.orgId, f);
+    const rows = await ctx.db.all<any>(
+      `SELECT event_id, occurred_at, item_id, item_type, item_title, external_id, remote_url, user_key, payload
+         FROM events WHERE ${where.join(' AND ')} AND item_id IS NOT NULL
+        ORDER BY occurred_at DESC, event_id DESC
+        LIMIT ?`,
+      [...params, USAGE_CARDS_LIMIT],
+    );
+    const seen = new Set<string>();
+    const cards = [];
+    for (const r of rows) {
+      if (seen.has(r.item_id)) continue;
+      seen.add(r.item_id);
+      let usage: unknown = null;
+      try { usage = JSON.parse(r.payload)?.payload?.usage ?? null; } catch { /* unreadable: unmeasured */ }
+      cards.push({
+        item_id: r.item_id,
+        item_type: r.item_type ?? null,
+        item_title: r.item_title ?? null,
+        external_id: r.external_id ?? null,
+        remote_url: r.remote_url ?? null,
+        user_key: r.user_key ?? null,
+        // Postgres returns a Date, SQLite the stored text: one shape out.
+        closed_at: new Date(r.occurred_at).toISOString(),
+        usage,
+      });
+    }
+    res.json({ cards, truncated: rows.length === USAGE_CARDS_LIMIT });
   }));
 
   router.get('/metrics', guard, asyncRoute(async (req: Request, res: Response) => {
