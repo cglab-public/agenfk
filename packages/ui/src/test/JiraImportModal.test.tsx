@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { guardTokens } from './helpers/tokenGuard';
+import { paintedTypes } from './helpers/typeGrammar';
 
 
 vi.mock('../api', () => ({
@@ -116,6 +117,27 @@ describe('JiraImportModal', () => {
     expect((screen.getByTestId('type-select-PROJ-2') as HTMLSelectElement).value).toBe('STORY');
     expect((screen.getByTestId('type-select-PROJ-3') as HTMLSelectElement).value).toBe('BUG');
     expect((screen.getByTestId('type-select-PROJ-4') as HTMLSelectElement).value).toBe('TASK');
+  });
+
+  it("paints each issue's type square from the grammar, and repaints it when the type changes", async () => {
+    vi.mocked(api.listJiraProjects).mockResolvedValue(PROJECTS);
+    vi.mocked(api.listJiraIssues).mockResolvedValue(ISSUES);
+    render(
+      <JiraImportModal open={true} onClose={() => {}} projectId="proj-1" />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(await screen.findByTestId('project-item-PROJ'));
+    await screen.findByTestId('issue-list');
+
+    const painted = (key: string) => paintedTypes(screen.getByTestId(`issue-item-${key}`));
+    expect(painted('PROJ-1')).toEqual(['EPIC']);
+    expect(painted('PROJ-2')).toEqual(['STORY']);
+    expect(painted('PROJ-3')).toEqual(['BUG']);
+    expect(painted('PROJ-4')).toEqual(['TASK']);
+
+    fireEvent.click(screen.getByTestId('issue-item-PROJ-4').querySelector('input[type="checkbox"]')!);
+    fireEvent.change(screen.getByTestId('type-select-PROJ-4'), { target: { value: 'BUG' } });
+    expect(painted('PROJ-4')).toEqual(['BUG']);
   });
 
   it('allows changing issue type before import', async () => {

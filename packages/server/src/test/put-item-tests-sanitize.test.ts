@@ -7,9 +7,6 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -18,7 +15,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -32,9 +29,8 @@ afterAll(async () => {
 
 let seq = 0;
 async function project() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-tests-sanitize-'));
+  const dir = echoRepo(A, 'agenfk-tests-sanitize-');
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `sanitize-${++seq}` });
   await storage.updateProject(p.body.id, { projectRoot: dir, verifyCommand: 'exit 0' } as never);
   return p.body.id as string;
@@ -64,25 +60,15 @@ describe('PUT /items/:id tests', () => {
 });
 
 describe('sibling propagation over a stored malformed test record', () => {
-  it('a null in a DONE sibling\'s tests does not make another sibling\'s final verify 500', async () => {
+  it('a null in a DONE sibling\'s tests, or a tests value that is not a list, does not make another sibling\'s final verify 500', async () => {
     const projectId = await project();
     const parent = (await agent().post('/items').send({ type: 'STORY', title: `p-${++seq}`, projectId })).body.id;
-    const done = await task(projectId, { parentId: parent });
+    const withNull = await task(projectId, { parentId: parent });
+    const withObject = await task(projectId, { parentId: parent });
     const next = await task(projectId, { parentId: parent });
     // Stored directly: records written before the PUT sanitised them.
-    await storage.updateItem(done, { status: 'DONE', tests: [null] } as any);
-    await storage.updateItem(next, { status: 'TEST' } as any);
-    const res = await agent().post(`/items/${next}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'done' });
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect((await agent().get(`/items/${next}`)).body.status).toBe('DONE');
-  });
-
-  it('a stored tests value that is not a list (an object) does not make another sibling\'s final verify 500', async () => {
-    const projectId = await project();
-    const parent = (await agent().post('/items').send({ type: 'STORY', title: `p-${++seq}`, projectId })).body.id;
-    const done = await task(projectId, { parentId: parent });
-    const next = await task(projectId, { parentId: parent });
-    await storage.updateItem(done, { status: 'DONE', tests: {} } as any);
+    await storage.updateItem(withNull, { status: 'DONE', tests: [null] } as any);
+    await storage.updateItem(withObject, { status: 'DONE', tests: {} } as any);
     await storage.updateItem(next, { status: 'TEST' } as any);
     const res = await agent().post(`/items/${next}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'done' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -91,17 +77,17 @@ describe('sibling propagation over a stored malformed test record', () => {
 });
 
 describe('a card whose own stored tests are malformed', () => {
-  for (const [label, stored] of [['[null]', [null]], ['an object', {}]] as const) {
-    it(`with ${label}: verify lands DONE and stamps the new green with its commit`, async () => {
+  it('with [null] or an object: verify lands DONE and stamps the new green with its commit', async () => {
+    for (const [label, stored] of [['[null]', [null]], ['an object', {}]] as const) {
       const id = await task(await project());
       await storage.updateItem(id, { status: 'TEST', tests: stored } as any);
       const res = await agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'done' });
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.status, `${label}: ${JSON.stringify(res.body)}`).toBe(200);
       const after = (await agent().get(`/items/${id}`)).body;
-      expect(after.status).toBe('DONE');
+      expect(after.status, label).toBe('DONE');
       const green = after.tests.filter((t: any) => t && t.status === 'PASSED');
-      expect(green).toHaveLength(1);
-      expect(green[0].commit).toMatch(/^[0-9a-f]{40}$/);
-    });
-  }
+      expect(green, label).toHaveLength(1);
+      expect(green[0].commit, label).toMatch(/^[0-9a-f]{40}$/);
+    }
+  });
 });

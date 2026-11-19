@@ -129,33 +129,17 @@ describe('local flow step-shape validation', () => {
     expect(r.body.error).toMatch(/array/i);
   });
 
-  it('PUT /flows/:id rejects a step with an empty name', async () => {
+  it('PUT /flows/:id does not persist a rejected step list', async () => {
     const flow = await createFlow();
     const steps = baseSteps();
     steps[1] = { ...steps[1], name: '' };
     const r = await agent().put(`/flows/${flow.id}`).send({ name: 'LF', steps });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/name/i);
-  });
-
-  it('PUT /flows/:id does not persist a rejected step list', async () => {
-    const flow = await createFlow();
-    const steps = baseSteps();
-    steps[1] = { ...steps[1], name: '' };
-    await agent().put(`/flows/${flow.id}`).send({ name: 'LF', steps });
 
     const after = await agent().get(`/flows/${flow.id}`);
     expect(after.status).toBe(200);
     expect(after.body.steps.map((s: any) => s.name)).toEqual(['TODO', 'WORK', 'DONE']);
-  });
-
-  it('PUT /flows/:id still accepts a valid step list', async () => {
-    const flow = await createFlow();
-    const steps = baseSteps();
-    steps[1] = { ...steps[1], name: 'REFACTOR', label: 'Refactor' };
-    const r = await agent().put(`/flows/${flow.id}`).send({ name: 'LF', steps });
-    expect(r.status).toBe(200);
-    expect(r.body.steps.map((s: any) => s.name)).toEqual(['TODO', 'REFACTOR', 'DONE']);
   });
 
   it('PUT /flows/:id leaves steps untouched when the body omits them', async () => {

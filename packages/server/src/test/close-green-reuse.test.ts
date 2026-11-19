@@ -19,7 +19,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -34,7 +33,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, stampCloseGreen } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A, IGNORE_REPORT } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -48,7 +48,6 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
@@ -61,8 +60,8 @@ const s = (name: string, order: number, extra: Record<string, unknown> = {}) => 
 async function setup(sleepMs = 0, exitCode = 0) {
   const f = await agent().post('/flows').send({ name: `cg-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = tmp('agenfk-cg-repo-');
-  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one');
+  const repo = echoRepo({ ...IGNORE_REPORT, ...A }, 'agenfk-cg-repo-');
+  dirs.push(repo);
   const runs = path.join(tmp('agenfk-cg-runs-'), 'runs');
   const runner = path.join(path.dirname(runs), 'runner.js');
   fs.writeFileSync(runner, `require('fs').appendFileSync(${JSON.stringify(runs)}, 'run\\n');
@@ -82,7 +81,7 @@ setTimeout(() => {
 }
 
 const capture = (id: string) => agent().post(`/items/${id}/step-records/capture`).set(internal()).send({});
-const commitAll = (repo: string, msg: string) => git(repo, `git add -A && git commit -qm ${msg} && git rev-parse HEAD`);
+const commitAll = (repo: string, msg: string) => { gitSync(repo, 'add', '-A'); gitSync(repo, 'commit', '-qm', msg); return gitSync(repo, 'rev-parse', 'HEAD'); };
 
 describe('e99b5015 (1): the close green becomes the next card\'s baseline', () => {
   it('a capture on the dirty tree, then a close that leaves it clean: the next card reuses it, no suite runs', async () => {
@@ -95,7 +94,7 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     expect(t.count()).toBe(1);
 
     const sha = commitAll(t.repo, 'close');
-    const stamped = await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'));
+    const stamped = await stampCloseGreen(a, t.repo, gitSync(t.repo, 'rev-parse', 'HEAD'));
     expect(stamped).toMatchObject({ head: sha, clean: true, available: true, exitCode: 0 });
     expect(stamped.reusedFrom).toBeUndefined();
 
@@ -112,9 +111,9 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     const a = await t.card();
     fs.writeFileSync(path.join(t.repo, 'feature.js'), 'module.exports = 1;\n');
     expect((await capture(a)).status).toBe(200);
-    git(t.repo, 'git add feature.js && git commit -qm close');
+    gitSync(t.repo, 'add', 'feature.js'); gitSync(t.repo, 'commit', '-qm', 'close');
     fs.writeFileSync(path.join(t.repo, 'leftover.js'), 'x\n');
-    expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
+    expect(await stampCloseGreen(a, t.repo, gitSync(t.repo, 'rev-parse', 'HEAD'))).toBeNull();
   });
 
   it('no stamp when a file the capture ran on was left out of the commit: same files on disk, not in the commit', async () => {
@@ -123,8 +122,8 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     fs.writeFileSync(path.join(t.repo, 'feature.js'), 'module.exports = 1;\n');
     fs.writeFileSync(path.join(t.repo, 'helper.js'), 'module.exports = 2;\n');
     expect((await capture(a)).status).toBe(200);
-    git(t.repo, 'git add feature.js && git commit -qm close');
-    expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
+    gitSync(t.repo, 'add', 'feature.js'); gitSync(t.repo, 'commit', '-qm', 'close');
+    expect(await stampCloseGreen(a, t.repo, gitSync(t.repo, 'rev-parse', 'HEAD'))).toBeNull();
   });
 
   it('no stamp when the commit holds other content than the capture ran on', async () => {
@@ -134,7 +133,7 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     expect((await capture(a)).status).toBe(200);
     fs.writeFileSync(path.join(t.repo, 'feature.js'), 'module.exports = 2;\n');
     commitAll(t.repo, 'close');
-    expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
+    expect(await stampCloseGreen(a, t.repo, gitSync(t.repo, 'rev-parse', 'HEAD'))).toBeNull();
   });
 
   it('no stamp when another agent\'s work landed in the same commit: the green never covered it', async () => {
@@ -144,7 +143,7 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     expect((await capture(a)).status).toBe(200);
     fs.writeFileSync(path.join(t.repo, 'theirs.js'), 'other agent\n');
     commitAll(t.repo, 'theirs-and-close');
-    expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
+    expect(await stampCloseGreen(a, t.repo, gitSync(t.repo, 'rev-parse', 'HEAD'))).toBeNull();
     const b = await t.card();
     expect((await capture(b)).status).toBe(200);
     expect(t.count()).toBe(2);
@@ -158,7 +157,7 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     const card: any = await storage.getItem(a);
     await storage.updateItem(a, { stepRecords: card.stepRecords.map((r: any) => ({ ...r, exitCode: 1 })) } as any);
     commitAll(t.repo, 'close');
-    expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
+    expect(await stampCloseGreen(a, t.repo, gitSync(t.repo, 'rev-parse', 'HEAD'))).toBeNull();
   });
 
   // de5e5a03 (review of 6caae168, 10a): exit 0 is not green when the report records a failure (001aed1e missed this site).
@@ -170,7 +169,7 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     const card: any = await storage.getItem(a);
     await storage.updateItem(a, { stepRecords: card.stepRecords.map((r: any) => ({ ...r, exitCode: 0, tests: r.tests.map((x: any) => ({ ...x, status: 'failed' })) })) } as any);
     commitAll(t.repo, 'close');
-    expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
+    expect(await stampCloseGreen(a, t.repo, gitSync(t.repo, 'rev-parse', 'HEAD'))).toBeNull();
   });
 
   it('the stamp enters the green index, so a project already indexed finds it', async () => {
@@ -192,7 +191,7 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     const t = await setup();
     const a = await t.card();
     expect((await capture(a)).body.clean).toBe(true);
-    expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
+    expect(await stampCloseGreen(a, t.repo, gitSync(t.repo, 'rev-parse', 'HEAD'))).toBeNull();
   });
 
   it('no stamp when the last run on this content was red, even after an earlier green on it', async () => {
@@ -204,7 +203,7 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     const green = card.stepRecords[card.stepRecords.length - 1];
     await storage.updateItem(a, { stepRecords: [...card.stepRecords, { ...green, at: new Date(Date.now() + 1000).toISOString(), exitCode: 1 }] } as any);
     commitAll(t.repo, 'close');
-    expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
+    expect(await stampCloseGreen(a, t.repo, gitSync(t.repo, 'rev-parse', 'HEAD'))).toBeNull();
   });
 
   // No exec bit on Windows: chmod changes nothing git sees there (core.filemode=false) (#208).
@@ -215,7 +214,7 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     expect((await capture(a)).status).toBe(200);
     fs.chmodSync(path.join(t.repo, 'run.sh'), 0o755);
     commitAll(t.repo, 'close');
-    expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
+    expect(await stampCloseGreen(a, t.repo, gitSync(t.repo, 'rev-parse', 'HEAD'))).toBeNull();
   });
 
   it('no stamp when HEAD is not the commit the close stamped: another agent committed in between', async () => {
@@ -224,7 +223,7 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     fs.writeFileSync(path.join(t.repo, 'feature.js'), 'module.exports = 1;\n');
     expect((await capture(a)).status).toBe(200);
     const closed = commitAll(t.repo, 'close');
-    git(t.repo, 'git commit -q --allow-empty -m theirs');
+    gitSync(t.repo, 'commit', '-q', '--allow-empty', '-m', 'theirs');
     expect(await stampCloseGreen(a, t.repo, closed)).toBeNull();
   });
 });

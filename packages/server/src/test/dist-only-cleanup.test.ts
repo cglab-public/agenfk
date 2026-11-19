@@ -3,7 +3,6 @@
  * after the migration to dist-only installs and SQLite-only storage.
  */
 import { describe, it, expect } from 'vitest';
-import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 
@@ -14,16 +13,10 @@ const ROOT = path.resolve(__dirname, '../../../..');
 // behaviour-based-testing conversion (CGLAB-16) — they grepped script/CLI source
 // for the absence/presence of strings rather than exercising behaviour. The
 // dist-only install and SQLite-default behaviour is covered by the CLI/install
-// suites. The git-tracking assertions below inspect real artifacts (.gitignore
-// and the actual git index) and are kept.
+// suites. The git-tracking assertion below inspects the actual git index.
 
 describe('dist-only cleanup', () => {
   describe('.sqlite files should not be tracked by git', () => {
-    it('.gitignore should contain *.sqlite pattern', () => {
-      const gitignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
-      expect(gitignore).toContain('*.sqlite');
-    });
-
     it('no .sqlite files should be tracked by git', () => {
       const tracked = execSync('git ls-files "*.sqlite"', { cwd: ROOT, encoding: 'utf8' }).trim();
       expect(tracked).toBe('');

@@ -13,7 +13,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -22,7 +21,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, IGNORE_REPORT } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -65,9 +64,8 @@ const FLOW = () => [
 async function cardOnWork() {
   const f = await agent().post('/flows').send({ name: `abr-${++seq}`, steps: FLOW() });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = tmp('agenfk-abr-repo-');
-  fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass keeps working\npass old behaviour\n');
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
+  const repo = echoRepo({ 'a.test.js': 'pass keeps working\npass old behaviour\n', ...IGNORE_REPORT }, 'agenfk-abr-repo-');
+  dirs.push(repo);
   const runner = path.join(tmp('agenfk-abr-tools-'), 'runner.js');
   fs.writeFileSync(runner, RUNNER);
   const p = await agent().post('/projects').send({ name: `abr-${++seq}` });
@@ -86,13 +84,6 @@ async function cardOnWork() {
 const result = (body: any, id: string) => (body.checks ?? []).find((c: any) => c.id === id);
 
 describe('authoredTests stored by reference, judged in a real verify', () => {
-  it('is stored as a reference to its capture, not a copy of the names', async () => {
-    const t = await cardOnWork();
-    const rec = ((await storage.getItem(t.id)) as any).stepRecords.find((r: any) => r.name === 'authoredTests');
-    expect(rec.value).toEqual({ fromCapture: true, excluded: [] });
-    expect(rec.tests.map((x: any) => x.name)).toEqual(['a.test.js > keeps working', 'a.test.js > old behaviour', 'a.test.js > new behaviour']);
-  });
-
   it('still holds a card that deletes a test that existed before the tests were written', async () => {
     const t = await cardOnWork();
     t.write('pass keeps working\npass new behaviour\n');
@@ -104,8 +95,11 @@ describe('authoredTests stored by reference, judged in a real verify', () => {
     expect(c.detail).toMatch(/old behaviour/);
   });
 
-  it('lets a card through that kept every test', async () => {
+  it('is stored as a reference to its capture, not a copy of the names, and lets a card through that kept every test', async () => {
     const t = await cardOnWork();
+    const rec = ((await storage.getItem(t.id)) as any).stepRecords.find((r: any) => r.name === 'authoredTests');
+    expect(rec.value).toEqual({ fromCapture: true, excluded: [] });
+    expect(rec.tests.map((x: any) => x.name)).toEqual(['a.test.js > keeps working', 'a.test.js > old behaviour', 'a.test.js > new behaviour']);
     t.write('pass keeps working\npass old behaviour\npass new behaviour\n');
     const r = await t.validate();
     expect(r.status, JSON.stringify(r.body)).toBe(200);

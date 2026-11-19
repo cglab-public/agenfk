@@ -173,13 +173,14 @@ describe('KanbanBoard back navigation out of a drill-down', () => {
     });
 
     it('does nothing when clicked at the top of the board', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
       render(<KanbanBoard />, { wrapper });
       await screen.findByText('Epic One');
       const handlerErrors = collectHandlerErrors();
 
       fireEvent.click(breadcrumbButton(/Top Level/));
 
-      await new Promise(r => setTimeout(r, 500));
+      await act(async () => { vi.advanceTimersByTime(500); });
       handlerErrors.stop();
       expect(handlerErrors.errors).toEqual([]);
       expect(highlighted()).toEqual([]);
@@ -281,6 +282,7 @@ describe('KanbanBoard back navigation out of a drill-down', () => {
 
   describe('pending scrolls', () => {
     it('scroll only to the latest of two quick navigations', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
       // Epic One and Other Epic both sit on the top level, so a scroll still
       // queued for the first would visibly yank the board after the second.
       render(<KanbanBoard />, { wrapper });
@@ -290,12 +292,13 @@ describe('KanbanBoard back navigation out of a drill-down', () => {
       fireEvent.submit(input.closest('form')!);
       fireEvent.click(await screen.findByTitle('Next match'));
 
-      await new Promise(r => setTimeout(r, 500));
+      await act(async () => { vi.advanceTimersByTime(500); });
       expect(scrolled).toHaveLength(1);
       expect(highlighted()).toEqual([scrolled[0]]);
     });
 
     it('do not fire once the board has unmounted', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
       const first = render(<KanbanBoard />, { wrapper });
       await drillInto('Epic One');
       fireEvent.click(await screen.findByRole('button', { name: /^Back to All Items$/ }));
@@ -305,7 +308,7 @@ describe('KanbanBoard back navigation out of a drill-down', () => {
       // one must not land on it.
       render(<KanbanBoard />, { wrapper });
       await screen.findByText('Epic One');
-      await new Promise(r => setTimeout(r, 500));
+      await act(async () => { vi.advanceTimersByTime(500); });
       expect(scrolled).toEqual([]);
     });
   });
@@ -327,6 +330,7 @@ describe('KanbanBoard back navigation out of a drill-down', () => {
     });
 
     it('does nothing when the crumb is the level already shown', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
       render(<KanbanBoard />, { wrapper });
       await drillInto('Epic One');
       await screen.findByText('Story Two');
@@ -336,7 +340,7 @@ describe('KanbanBoard back navigation out of a drill-down', () => {
       fireEvent.click(breadcrumbButton(/Epic One/));
 
       // Give any highlight/scroll timer the chance to fire before asserting none did.
-      await new Promise(r => setTimeout(r, 500));
+      await act(async () => { vi.advanceTimersByTime(500); });
       handlerErrors.stop();
       expect(handlerErrors.errors).toEqual([]);
       expect(highlighted()).toEqual([]);

@@ -26,9 +26,6 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -45,7 +42,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 // Import AFTER the env var so storage lands in the test DB.
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -89,6 +86,16 @@ const commentsOf = async (id: string): Promise<Array<{ author: string; content: 
   (await agent().get(`/items/${id}`)).body.comments ?? [];
 const validate = (id: string, body: Record<string, unknown>) =>
   agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'done', ...body });
+
+/** One commit of a.txt; tests clone it from the per-worker template (#311). */
+const buildOneCommit: GitTemplateBuild = (d) => {
+  gitSync(d, 'init', '-q');
+  gitSync(d, 'config', 'user.email', 't@t');
+  gitSync(d, 'config', 'user.name', 't');
+  writeFiles(d, { 'a.txt': 'one' });
+  gitSync(d, 'add', '.');
+  gitSync(d, 'commit', '-qm', 'one');
+};
 
 async function waitForRun(runId: string, timeoutMs = 15000) {
   const start = Date.now();
@@ -263,12 +270,9 @@ describe('CGLAB-378: the server owns the verify command on command-required step
     });
 
     it('refuses a forged sibling green end to end: a red project command stays red', async () => {
-      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sovc-'));
+      const repo = cloneGitTemplate('server-owned-verify-command:one-commit', buildOneCommit, 'agenfk-sovc-');
       try {
-        execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: repo, shell: posixShell() });
-        fs.writeFileSync(path.join(repo, 'a.txt'), 'one');
-        execSync('git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
-        const sha = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf8' }).trim();
+        const sha = gitSync(repo, 'rev-parse', 'HEAD');
         const p = (await agent().post('/projects').send({ name: `sovc-forge-${++seq}` })).body.id;
         await storage.updateProject(p, { projectRoot: repo, verifyCommand: 'exit 1' } as never);
         const parent = (await agent().post('/items').send({ type: 'STORY', title: 'p', projectId: p })).body.id;
@@ -289,11 +293,8 @@ describe('CGLAB-378: the server owns the verify command on command-required step
     });
 
     it('names the command in the propagation comment', async () => {
-      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sovc-'));
+      const repo = cloneGitTemplate('server-owned-verify-command:one-commit', buildOneCommit, 'agenfk-sovc-');
       try {
-        execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: repo, shell: posixShell() });
-        fs.writeFileSync(path.join(repo, 'a.txt'), 'one');
-        execSync('git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
         const p = (await agent().post('/projects').send({ name: `sovc-prop-${++seq}` })).body.id;
         await storage.updateProject(p, { projectRoot: repo, verifyCommand: 'exit 0' } as never);
         const parent = (await agent().post('/items').send({ type: 'STORY', title: 'p', projectId: p })).body.id;

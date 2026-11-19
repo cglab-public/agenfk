@@ -12,6 +12,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import React from 'react';
 import { CardPicker, orderForPicker, filterForPicker } from '../components/CardPicker';
 import type { AgEnFKItem } from '../types';
+import { paintedTypes } from './helpers/typeGrammar';
 
 afterEach(cleanup);
 
@@ -446,6 +447,14 @@ describe('CardPicker — reading the list, and the door under it', () => {
     // fan out and which is a bug to fix.
     for (const id of ['a', 'b', 'c']) {
       expect(await screen.findByTestId(`picker-row-type-${id}`)).toBeDefined();
+    }
+  });
+
+  it("paints each row's square in that card's own type, from the grammar", async () => {
+    open();
+    const expected = { a: 'TASK', b: 'BUG', c: 'EPIC' } as const;
+    for (const [id, type] of Object.entries(expected)) {
+      expect(paintedTypes(await screen.findByTestId(`picker-row-type-${id}`)), id).toEqual([type]);
     }
   });
 

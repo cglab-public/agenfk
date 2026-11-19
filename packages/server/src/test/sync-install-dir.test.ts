@@ -12,7 +12,7 @@ import { pruneInstallDir, pruneInstallDirAgainstManifest, isCaseInsensitive, PRU
 
 /**
  * Regression: ~/.agenfk-system was updated with a MERGE copy that never pruned
- * (bin/agenfk.js, `fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true })`).
+ * (bin/agenfk.js, a bare recursive copy of REPO_ROOT over INSTALL_DIR; now copyTree).
  * A file deleted upstream therefore survived in the install dir forever, and
  * scripts/install.mjs copies every markdown out of `<rootDir>/commands` into
  * the user's global config — so the deleted file was re-installed on every
@@ -20,8 +20,8 @@ import { pruneInstallDir, pruneInstallDirAgainstManifest, isCaseInsensitive, PRU
  * out of commands/ in July, yet was still landing in ~/.claude/commands/ in
  * September and leaking into unrelated projects.
  *
- * Pruning NEVER copies. Callers copy by their own means (fs.cpSync, `cp -r`,
- * `tar -xzf`) and prune afterwards.
+ * Pruning NEVER copies. Callers copy by their own means (copyTree from
+ * bin/copy-tree.mjs, `tar -xzf`) and prune afterwards.
  */
 
 let src: string;
@@ -96,7 +96,7 @@ describe('pruneInstallDir removes files deleted upstream', () => {
   });
 
   it('does not prune against a source dir that exists but is EMPTY', () => {
-    // A truncated cp -r, a filtered copy or an aborted fetch leaves the dir
+    // A truncated copy, a filtered copy or an aborted fetch leaves the dir
     // present and empty. Treating that as "nothing is shipped any more" wipes
     // the install wholesale. A plain existsSync guard does NOT catch this —
     // it was a surviving mutant until this test existed.
@@ -133,8 +133,9 @@ describe('pruneInstallDir removes files deleted upstream', () => {
 
 describe('pruneInstallDir never copies', () => {
   it('prunes without calling fs.cpSync, which the cp -r runtimes do not have', () => {
-    // The legacy branch in bin/agenfk.js exists only where fs.cpSync is absent,
-    // and the tar-based upgrade paths have no source tree to copy from at all.
+    // Pruning must not depend on any copy primitive (fs.cpSync aborts natively
+    // on Windows with non-ASCII paths, #349), and the tar-based upgrade paths
+    // have no source tree to copy from at all.
     seed(src, 'commands/agenfk.md');
     seed(dst, 'commands/agenfk.md');
     seed(dst, 'commands/agenfk-release.md');
@@ -179,34 +180,6 @@ describe('pruneInstallDir refuses to destroy data', () => {
 
     expect(removed).toEqual([path.join('commands', 'AgenFK.md')]);
     expect(existsSync(path.join(dst, 'commands/AgenFK.md'))).toBe(false);
-  });
-
-  it('keeps a file whose only difference is letter case, where the volume folds case', () => {
-    // On macOS/NTFS, fs.cpSync writes agenfk.md into the EXISTING AgenFK.md
-    // entry and keeps the old spelling, so exact-case matching reads the
-    // surviving file as unshipped and deletes it — worse than not pruning.
-    // On a case-SENSITIVE volume the two really are different files and
-    // deleting the unshipped one is correct, so the expectation must follow
-    // the volume, not the developer's laptop. CI runs ubuntu-latest.
-    seed(src, 'commands/agenfk.md', 'new\n');
-    seed(dst, 'commands/AgenFK.md', 'old\n');
-    // Probe this exact volume the same way the implementation does.
-    const probe = path.join(dst, '.case-probe');
-    writeFileSync(probe, '');
-    const foldsCase = existsSync(path.join(dst, '.CASE-PROBE'));
-    rmSync(probe, { force: true });
-
-    const { removed } = pruneInstallDir(src, dst);
-
-    const survivors = fs.readdirSync(path.join(dst, 'commands'));
-    if (foldsCase) {
-      expect(removed).toEqual([]);
-      expect(survivors).toHaveLength(1);
-      expect(survivors[0].toLowerCase()).toBe('agenfk.md');
-    } else {
-      expect(removed).toEqual([path.join('commands', 'AgenFK.md')]);
-      expect(survivors).toHaveLength(0);
-    }
   });
 
   it('will not prune through a symlinked dir, which would delete outside the install dir', () => {

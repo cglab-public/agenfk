@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 import { SessionPayload } from '../types.js';
 import { DB } from '../db.js';
+import { bearerOf, findAdminCliToken, isAdminCliToken } from './adminCliToken.js';
 
 export const SESSION_COOKIE = 'agenfk_hub_session';
 export const SESSION_TTL_HOURS = 12;
@@ -72,14 +73,15 @@ export function clearSessionCookie(res: Response): void {
 export const SESSION_USER_SQL = 'SELECT role, active, org_id, session_epoch FROM users WHERE id = ?';
 
 export function requireSession(secret: string, db: DB) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const token = req.cookies?.[SESSION_COOKIE];
-    if (!token) { res.status(401).json({ error: 'Not signed in' }); return; }
-    const session = verifySession(token, secret);
-    if (!session) { res.status(401).json({ error: 'Session expired or invalid' }); return; }
+  // Named, so a route walk can tell which routes a signed-in person reaches
+  // (boardRoutesOf, which the admin CLI's parity guard reads).
+  return function hubSessionGuard(req: Request, res: Response, next: NextFunction): void {
     // This promise is not returned to express, so nothing forwards its
     // rejection: catch it here, or a DB error leaves the request unanswered.
-    db.get<{ role: SessionPayload['role']; active: number; org_id: string; session_epoch: number }>(SESSION_USER_SQL, [session.userId]).then((user) => {
+    resolveSession(req, secret, db).then(async (found) => {
+      if ('error' in found) { res.status(401).json({ error: found.error }); return; }
+      const session = found.session;
+      const user = await db.get<{ role: SessionPayload['role']; active: number; org_id: string; session_epoch: number }>(SESSION_USER_SQL, [session.userId]);
       // A throw in here would otherwise escape as an unhandled rejection
       // (downstream handlers are covered by express's own try/catch).
       try {
@@ -89,7 +91,7 @@ export function requireSession(secret: string, db: DB) {
         }
         // A password reset bumps session_epoch, ending any stolen session. A cookie
         // without an epoch claim counts as 0, which the migration already invalidated.
-        if (Number(user.session_epoch) !== Number(session.epoch ?? 0)) {
+        if (session.via !== 'cli' && Number(user.session_epoch) !== Number(session.epoch ?? 0)) {
           res.status(401).json({ error: 'Session no longer valid; sign in again' });
           return;
         }
@@ -98,13 +100,35 @@ export function requireSession(secret: string, db: DB) {
       } catch (err) {
         next(err instanceof Error ? err : new Error(String(err)));
       }
-    }, (err: unknown) => next(err instanceof Error ? err : new Error(String(err))));
+    }).catch((err: unknown) => next(err instanceof Error ? err : new Error(String(err))));
   };
+}
+
+/**
+ * Who a request says it is: the board's cookie, else the admin CLI's bearer
+ * token (CGLAB-702). Either only NAMES the user; the guard then reads their
+ * row. A cookie wins when both are sent. Any other bearer (an installation's
+ * API key, a CI token) is not a session and is refused here, as before.
+ */
+async function resolveSession(req: Request, secret: string, db: DB): Promise<{ session: SessionPayload } | { error: string }> {
+  const token = req.cookies?.[SESSION_COOKIE];
+  if (token) {
+    const session = verifySession(token, secret);
+    return session ? { session: { ...session, via: 'board' } } : { error: 'Session expired or invalid' };
+  }
+  const bearer = bearerOf(req.headers.authorization);
+  if (bearer && isAdminCliToken(bearer)) {
+    const row = await findAdminCliToken(db, bearer);
+    if (!row) return { error: 'Admin CLI session expired or revoked; run `agenfk hub admin login`' };
+    // The role here is a placeholder: the guard replaces it from the user's row.
+    return { session: { userId: row.userId, orgId: row.orgId, role: 'viewer', via: 'cli', cliTokenId: row.id } };
+  }
+  return { error: 'Not signed in' };
 }
 
 export function requireAdmin(secret: string, db: DB) {
   const baseGuard = requireSession(secret, db);
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return function hubAdminGuard(req: Request, res: Response, next: NextFunction): void {
     baseGuard(req, res, (err?: any) => {
       if (err) return next(err);
       if (req.session?.role !== 'admin') { res.status(403).json({ error: 'Admin role required' }); return; }

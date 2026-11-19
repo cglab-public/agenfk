@@ -10,7 +10,7 @@
  * found" — which is why src/test/buildConfig.test.ts asserts they agree.
  *
  * No native modules today: storage uses Node's built-in `node:sqlite` and
- * Electron 40 ships Node 24.15, so all three platforms build from one source
+ * Electron 42 ships Node 24, so all three platforms build from one source
  * tree with no `electron-rebuild`. That changes the day `node-pty` lands
  * (CGLAB-169) — it is native, and each platform and Electron ABI needs its own
  * compile.
@@ -41,6 +41,10 @@ const serverResources = [
   { from: '../core/package.json', to: 'packages/core/package.json' },
   { from: '../storage-sqlite/package.json', to: 'packages/storage-sqlite/package.json' },
   { from: '../telemetry/package.json', to: 'packages/telemetry/package.json' },
+  // ea94c023, CGLAB-696: the Airlock exec helper and its egress decider (scripts/bundle-airlock.mjs),
+  { from: 'build/airlock', to: 'packages/airlock' },
+  // and the pinned smolvm of the artifact's own OS and architecture, beside them.
+  { from: 'build/airlock-smolvm/${os}-${arch}', to: 'packages/airlock/smolvm' },
 ];
 
 /**

@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AskAgenfk, seedCommand } from '../components/AskAgenfk';
 import { api } from '../api';
 import * as bridge from '../components/agentBridge';
+import { paintedTypes } from './helpers/typeGrammar';
 
 // `vi.mock` is hoisted above every top-level binding, so the fakes have to be
 // created inside the factory and read back afterwards.
@@ -158,6 +159,13 @@ describe('reviewing the answer', () => {
     await reviewWith();
     expect(screen.getByTestId('ask-row-e1').style.marginLeft).toBe('0px');
     expect(screen.getByTestId('ask-row-t1').style.marginLeft).toBe('36px');
+  });
+
+  it("paints each proposed row's square in its own type, from the grammar", async () => {
+    await reviewWith();
+    expect(paintedTypes(screen.getByTestId('ask-row-e1'))).toEqual(['EPIC']);
+    expect(paintedTypes(screen.getByTestId('ask-row-s1'))).toEqual(['STORY']);
+    expect(paintedTypes(screen.getByTestId('ask-row-t1'))).toEqual(['TASK']);
   });
 
   it('puts an issue on the row it belongs to', async () => {

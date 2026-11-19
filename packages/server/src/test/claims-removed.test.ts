@@ -16,9 +16,7 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -27,7 +25,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -38,11 +37,9 @@ afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
-const sh = (cmd: string, cwd: string) => execSync(cmd, { cwd, shell: posixShell(), encoding: 'utf8' }).trim();
 function repo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-claims-gone-'));
+  const dir = echoRepo(A, 'agenfk-claims-gone-');
   dirs.push(dir);
-  sh('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', dir);
   return dir;
 }
 let seq = 0;
@@ -90,7 +87,7 @@ describe('closing a card with files staged outside an old claim', () => {
     const { projectId, dir } = await project();
     const id = await card(projectId, 'WORK', { claims: ['mine.txt'] });
     fs.writeFileSync(path.join(dir, 'mine.txt'), 'm'); fs.writeFileSync(path.join(dir, 'other.txt'), 'o');
-    sh('git add mine.txt other.txt', dir);
+    gitSync(dir, 'add', 'mine.txt', 'other.txt');
     const res = await validate(id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.message ?? '').not.toMatch(/claim/i);
@@ -103,10 +100,10 @@ describe('a step that commits on leave', () => {
     const { projectId, dir } = await project({ autoCommit: true, requireCommit: true });
     const id = await card(projectId, 'PLAN', { claims: ['mine.txt'] });
     fs.writeFileSync(path.join(dir, 'mine.txt'), 'm'); fs.writeFileSync(path.join(dir, 'other.txt'), 'o');
-    sh('git add mine.txt other.txt', dir);
+    gitSync(dir, 'add', 'mine.txt', 'other.txt');
     const res = await validate(id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(sh('git show --name-only --format= HEAD', dir).split('\n').sort()).toEqual(['mine.txt', 'other.txt']);
+    expect(gitSync(dir, 'show', '--name-only', '--format=', 'HEAD').split('\n').sort()).toEqual(['mine.txt', 'other.txt']);
     expect(res.body.message ?? '').not.toMatch(/claim/i);
     expect(await statusOf(id)).toBe('WORK');
   });

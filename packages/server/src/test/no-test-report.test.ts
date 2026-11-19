@@ -14,7 +14,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -30,7 +29,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { suggestTestReport } from '../testReportHint';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A, IGNORE_REPORT } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -54,10 +53,8 @@ async function setup(verifyCommand: string, gitignore = '.agenfk/\n') {
     s('WORK', 2), s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-'));
+  const repo = echoRepo({ '.gitignore': gitignore, ...A }, 'agenfk-ntr-');
   dirs.push(repo);
-  fs.writeFileSync(path.join(repo, '.gitignore'), gitignore);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `ntr-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `ntr-${++seq}`, projectId: p.body.id });
@@ -67,7 +64,7 @@ async function setup(verifyCommand: string, gitignore = '.agenfk/\n') {
 const validate = (id: string) => agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok' });
 
 describe('5a8d22e6: the refusal says NO_TEST_REPORT once, with the command that fixes it', () => {
-  it('names the error, and gives a ready command built from the real project id and verify command', async () => {
+  it('names the error once, and gives a ready command built from the real project id and verify command, telling the agent to set it and verify again', async () => {
     // A stand-in that names vitest without running a suite here: the capture still runs it.
     const t = await setup('echo vitest run');
     const res = await validate(t.id);
@@ -75,18 +72,10 @@ describe('5a8d22e6: the refusal says NO_TEST_REPORT once, with the command that 
     expect(res.body.error).toBe('NO_TEST_REPORT');
     expect(res.body.fix).toBe(`agenfk update-project ${t.pid} --test-report-format vitest-json --test-report-command "echo vitest run --reporter=default --reporter=json --outputFile.json=.agenfk/test-report.json" --test-report-path .agenfk/test-report.json`);
     expect(res.body.message).toContain(res.body.fix);
-  });
-
-  it('says it once: no check repeats the placeholder hint', async () => {
-    const t = await setup('echo vitest run');
-    const res = await validate(t.id);
+    // Said once: no check repeats the placeholder hint.
     expect(res.body.message.split('NO_TEST_REPORT').length - 1).toBe(1);
     expect(res.body.message).not.toContain('agenfk update-project <id>');
-  });
-
-  it('tells the agent to set it and verify again, not to ask a person for an override', async () => {
-    const t = await setup('echo vitest run');
-    const res = await validate(t.id);
+    // The fix is the agent's: set it and verify again, not ask a person for an override.
     expect(res.body.message).toMatch(/run the same agenfk verify again/i);
   });
 
@@ -118,10 +107,8 @@ describe('5a8d22e6 review: held where the fix still works', () => {
     const f = await agent().post('/flows').send({ name: `ntr-in-${++seq}`, steps: [
       s('START', 0, { isAnchor: true }), s('PLAN', 1), s('TESTS', 2, { checks: [check] }), s('END', 3, { isAnchor: true }),
     ] });
-    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-in-'));
+    const repo = echoRepo({ ...IGNORE_REPORT, ...A }, 'agenfk-ntr-in-');
     dirs.push(repo);
-    fs.writeFileSync(path.join(repo, '.gitignore'), 'report.xml\n');
-    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
     const p = await agent().post('/projects').send({ name: `ntr-in-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'echo vitest run' } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `ntr-in-${++seq}`, projectId: p.body.id });
@@ -165,9 +152,8 @@ describe('5a8d22e6 review: held where the fix still works', () => {
     const f = await agent().post('/flows').send({ name: `ntr-own-${++seq}`, steps: [
       s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('TESTS', 2, { checks: [{ id: 'new-tests-exist' }] }), s('END', 3, { isAnchor: true }),
     ] });
-    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-own-'));
+    const repo = echoRepo(A, 'agenfk-ntr-own-');
     dirs.push(repo);
-    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
     const runs = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-runs-')), 'runs');
     dirs.push(path.dirname(runs));
     const p = await agent().post('/projects').send({ name: `ntr-own-${++seq}` });

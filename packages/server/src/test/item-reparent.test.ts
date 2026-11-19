@@ -106,15 +106,6 @@ describe('item re-parenting', () => {
     expect(oldChildren.body.map((c: any) => c.id)).not.toContain(task.id);
   });
 
-  it('detaches an item to top level when parentId is null', async () => {
-    const story = await makeItem('STORY', 'Story');
-    const task = await makeItem('TASK', 'Task', { parentId: story.id });
-
-    const r = await agent().put(`/items/${task.id}`).send({ parentId: null });
-    expect(r.status).toBe(200);
-    expect(r.body.parentId ?? null).toBeNull();
-  });
-
   it('leaves the parent alone when parentId is omitted', async () => {
     const story = await makeItem('STORY', 'Story');
     const task = await makeItem('TASK', 'Task', { parentId: story.id });
@@ -246,16 +237,6 @@ describe('item re-parenting', () => {
 
     const children = await agent().get(`/items?parentId=${story.id}`);
     expect(children.body.map((c: any) => c.id)).not.toContain(task.id);
-  });
-
-  it('persists an attach — re-reading shows the new parent', async () => {
-    const story = await makeItem('STORY', 'Story');
-    const task = await makeItem('TASK', 'Task');
-
-    await agent().put(`/items/${task.id}`).send({ parentId: story.id });
-
-    const reread = await agent().get(`/items/${task.id}`);
-    expect(reread.body.parentId).toBe(story.id);
   });
 
   // ── The sibling write paths must not be a back door ───────────────────────

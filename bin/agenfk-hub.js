@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { forceLocalFlag, tarPath } from './tar-flags.mjs';
+import { copyTree } from './copy-tree.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -190,11 +191,7 @@ if (!isNpxCache) {
 
   if (!fs.existsSync(installDir)) {
     console.log(`${GREEN}Installing AgEnFK Hub to ${installDir}...${RESET}`);
-    if (fs.cpSync) {
-      fs.cpSync(REPO_ROOT, installDir, { recursive: true });
-    } else {
-      execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(installDir)}/`, { stdio: 'inherit', shell: true, windowsHide: true });
-    }
+    copyTree(REPO_ROOT, installDir);
   }
 
   if (needsDist) {
@@ -248,11 +245,7 @@ function overlayMissingWorkspaces(srcRoot, dstRoot) {
       if (!fs.existsSync(srcDir)) continue;
       if (fs.existsSync(dstDir)) continue;
       console.log(`${BLUE}[hub] Overlaying missing workspace: ${ws}${RESET}`);
-      if (fs.cpSync) {
-        fs.cpSync(srcDir, dstDir, { recursive: true });
-      } else {
-        execSync(`cp -r ${JSON.stringify(srcDir)} ${JSON.stringify(path.dirname(dstDir))}/`, { stdio: 'inherit', shell: true, windowsHide: true });
-      }
+      copyTree(srcDir, dstDir);
     }
   } catch (e) {
     console.warn(`${YELLOW}[hub] overlayMissingWorkspaces skipped: ${e.message}${RESET}`);

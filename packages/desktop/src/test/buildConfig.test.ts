@@ -489,3 +489,16 @@ describe('paths that must stay out of the repository (3d953bff)', () => {
     });
   });
 });
+
+describe('the Airlock exec helper ships (ea94c023)', () => {
+  it('build/airlock is an extra resource, at packages/airlock/', () => {
+    const entry = (config.extraResources ?? []).find((e: any) => typeof e === 'object' && e.to === 'packages/airlock');
+    expect(entry).toMatchObject({ from: 'build/airlock', to: 'packages/airlock' });
+  });
+
+  it('every packaging script bundles it first', () => {
+    const scripts = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')).scripts;
+    for (const name of ['pack', 'dist:mac', 'dist:win', 'dist:linux']) expect(scripts[name], name).toContain('npm run bundle:airlock');
+    expect(scripts['bundle:airlock']).toBe('node scripts/bundle-airlock.mjs');
+  });
+});

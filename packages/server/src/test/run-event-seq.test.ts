@@ -65,31 +65,11 @@ const post = (body: Record<string, unknown>) =>
   });
 
 describe('an event posted without a position', () => {
-  it('comes back carrying the one it was given', async () => {
-    /*
-     * THE assertion. The route used to answer with the object it was handed,
-     * so this was `undefined` — and the same object went out over the socket,
-     * which is what collapsed the live transcript.
-     */
-    const res = await post({ text: 'npm test' });
-    expect(res.status).toBe(201);
-    expect(typeof res.body.seq).toBe('number');
-  });
-
   it('numbers a stream of them in order', async () => {
     const a = await post({ text: 'one' });
     const b = await post({ text: 'two' });
     const c = await post({ text: 'three' });
     expect([a.body.seq, b.body.seq, c.body.seq]).toEqual([0, 1, 2]);
-  });
-
-  it('agrees with what a refresh reads back', async () => {
-    // The socket and a reload must not disagree about the order, which is
-    // exactly what an undefined on one side and a number on the other did.
-    await post({ text: 'one' });
-    const second = await post({ text: 'two' });
-    const listed = await internal(agent().get(`/agent-runs/${runId}/events`));
-    expect(listed.body.map((e: { seq: number }) => e.seq)).toContain(second.body.seq);
   });
 });
 

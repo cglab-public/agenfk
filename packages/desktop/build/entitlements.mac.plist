@@ -23,6 +23,11 @@
   <key>com.apple.security.network.server</key>
   <true/>
 
+  <!-- CGLAB-696: the bundled smolvm runs Airlock's machines on Hypervisor.framework.
+       Signing re-signs it with these inherited entitlements, so it needs this one. -->
+  <key>com.apple.security.hypervisor</key>
+  <true/>
+
   <!-- Agents read and write the user's repositories. -->
   <key>com.apple.security.files.user-selected.read-write</key>
   <true/>

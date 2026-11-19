@@ -14,6 +14,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ProjectPage } from '../components/ProjectPage';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
+import { paintedTypes } from './helpers/typeGrammar';
 
 vi.mock('../api', () => ({ api: { projectSettings: vi.fn() } }));
 
@@ -79,6 +80,13 @@ describe('what is in flight', () => {
   it('shows what kind of work each one is', () => {
     open();
     expect(screen.getByTestId('project-card-type-e1')).toBeDefined();
+  });
+
+  it("paints each card's square in its own type, from the grammar", () => {
+    open();
+    expect(paintedTypes(screen.getByTestId('project-card-type-e1'))).toEqual([ItemType.EPIC]);
+    expect(paintedTypes(screen.getByTestId('project-card-type-s1'))).toEqual([ItemType.STORY]);
+    expect(paintedTypes(screen.getByTestId('project-card-type-t1'))).toEqual([ItemType.TASK]);
   });
 
   it('counts what is there, as information rather than a third button', () => {

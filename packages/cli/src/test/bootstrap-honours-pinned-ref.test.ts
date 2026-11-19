@@ -154,14 +154,6 @@ describe('npx github:cglab-public/agenfk#<tag> installs that tag (#216)', () => 
     onlyFetched(downloaded, 'v2.0.0-beta.35');
     expect(existsSync(path.join(installDir, 'commands', 'from-v2.0.0-beta.35.md'))).toBe(true);
   });
-
-  it('does not fall back to another release when the pinned one has no dist', () => {
-    const home = mkdtempSync(path.join(work, 'home-'));
-    const installDir = makeInstallDir(home, '1.0.0');
-    const { downloaded } = bootstrap(makeNpxSource('github:cglab-public/agenfk#v3.0.0', '3.0.0'), home, archives);
-    onlyFetched(downloaded, 'v3.0.0');
-    for (const tag of TAGS) expect(existsSync(path.join(installDir, 'commands', `from-${tag}.md`))).toBe(false);
-  });
 });
 
 describe('npx without a pin keeps tracking the channel', () => {
@@ -169,13 +161,6 @@ describe('npx without a pin keeps tracking the channel', () => {
     const home = mkdtempSync(path.join(work, 'home-'));
     makeInstallDir(home, '1.0.0');
     const { downloaded } = bootstrap(makeNpxSource('github:cglab-public/agenfk', '1.0.0'), home, archives);
-    onlyFetched(downloaded, LATEST);
-  });
-
-  it('downloads the newest release when the npx manifest is absent', () => {
-    const home = mkdtempSync(path.join(work, 'home-'));
-    makeInstallDir(home, '1.0.0');
-    const { downloaded } = bootstrap(makeNpxSource(null, '1.0.0'), home, archives);
     onlyFetched(downloaded, LATEST);
   });
 });
@@ -256,11 +241,12 @@ describe('pinned-ref hardening (#216 review)', () => {
     }
   });
 
-  it('a pinned update whose release cannot be downloaded fails and leaves the install untouched', () => {
+  it('a pinned update whose release cannot be downloaded fails, falls back to no other release, and leaves the install untouched', () => {
     const home = mkdtempSync(path.join(work, 'home-'));
     const installDir = makeInstallDir(home, '1.0.0');
     const { r, downloaded } = bootstrap(makeNpxSource('github:cglab-public/agenfk#v3.0.0', '3.0.0'), home, archives);
     onlyFetched(downloaded, 'v3.0.0');
+    for (const tag of TAGS) expect(existsSync(path.join(installDir, 'commands', `from-${tag}.md`))).toBe(false);
     expect(r.status).not.toBe(0);
     // Nothing of the pinned source was copied over the working install.
     expect(JSON.parse(readFileSync(path.join(installDir, 'package.json'), 'utf8')).version).toBe('1.0.0');

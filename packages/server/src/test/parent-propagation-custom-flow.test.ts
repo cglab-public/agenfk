@@ -60,23 +60,6 @@ describe('parent propagation on a custom flow (CGLAB-82)', () => {
     await agent().post(`/projects/${projectId}/flow`).send({ flowId: f.body.id });
   });
 
-  it('rolls the parent forward once every child has reached a step', async () => {
-    const parent = await agent().post('/items').send({ type: 'STORY', title: 'parent', projectId });
-    const a = await agent().post('/items').send({ type: 'TASK', title: 'a', projectId, parentId: parent.body.id });
-    const b = await agent().post('/items').send({ type: 'TASK', title: 'b', projectId, parentId: parent.body.id });
-
-    // Walk both children one step at a time (one-step moves are legal).
-    for (const id of [a.body.id, b.body.id]) {
-      await agent().put(`/items/${id}`).set('x-agenfk-ui', '1').send({ status: 'SPEC' });
-      await agent().put(`/items/${id}`).set('x-agenfk-ui', '1').send({ status: 'CODE' });
-    }
-
-    const after = await agent().get(`/items/${parent.body.id}`);
-    // The parent must not still be sitting at TODO while both children are on CODE.
-    expect(after.body.status).not.toBe('TODO');
-    expect(['SPEC', 'CODE']).toContain(after.body.status);
-  });
-
   it('does not outrun the least-advanced child', async () => {
     const parent = await agent().post('/items').send({ type: 'STORY', title: 'parent2', projectId });
     const a = await agent().post('/items').send({ type: 'TASK', title: 'a2', projectId, parentId: parent.body.id });

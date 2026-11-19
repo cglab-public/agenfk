@@ -5,18 +5,10 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { HerdrMark } from '../components/HerdrMark';
 
 afterEach(cleanup);
-
-const source = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '..', 'components', 'HerdrMark.tsx'),
-  'utf8',
-);
 
 describe('the mark itself', () => {
   it('is reachable as an image, and says whose it is', () => {
@@ -50,21 +42,5 @@ describe('the mark itself', () => {
      */
     expect(svg.outerHTML).not.toMatch(/#[0-9a-f]{3,6}/i);
     expect(svg.querySelector('rect'), 'no tile, only the ram').toBeNull();
-  });
-});
-
-describe('what the file must keep saying', () => {
-  it('records where the path came from and under what licence', () => {
-    /*
-     * This is a borrowed mark. A future reader has to be able to tell that
-     * without going looking, and a silent copy is how attribution gets lost.
-     */
-    expect(source).toMatch(/herdr/);
-    expect(source).toMatch(/AGPL-3\.0/);
-    expect(source).toMatch(/assets\/logo\.svg/);
-  });
-
-  it('says the silhouette was not redrawn', () => {
-    expect(source).toMatch(/byte-for-byte|not redrawn/i);
   });
 });

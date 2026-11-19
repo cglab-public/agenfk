@@ -60,7 +60,7 @@ git add package.json package-lock.json packages/*/package.json
 git commit -m "chore: bump version to 2.0.0-beta.<N+1>"
 ```
 
-- **CHANGELOG entry is mandatory**: a `hub-docs-tenancy` test fails the build if the
+- **CHANGELOG entry is mandatory**: `packages/hub/src/test/release-changelog.test.ts` fails the build if the
   current version has no `CHANGELOG.md` entry. Add one before or with the bump commit.
 - Package and verify the distributable: `node scripts/package-dist.mjs`, then check
   the tarball carries no macOS metadata (see `.claude/commands/agenfk-release-beta.md`
@@ -108,6 +108,14 @@ When the cycle is done and CI is green:
    stable tag builds and attaches the desktop installers too.
 3. **Reset the line**: `beta` is fast-forwarded/reset to `main` and the next cycle
    begins. Feature branches still in flight rebase onto the new `beta`.
+4. **Check the Dependabot alerts** (issue #343): Dependabot counts alerts on `main`,
+   so they only close now. Compare the open-alert count
+   (`gh api 'repos/cglab-public/agenfk/dependabot/alerts?state=open&per_page=100' --paginate --jq '.[].number' | wc -l`)
+   with `npm audit` on the new `main`, and close any Dependabot PR the promotion made
+   redundant. Dependabot version updates target `beta`; security updates always
+   target `main`, so a PR on `main` may be superseded by `beta`. Dependabot reads
+   `.github/dependabot.yml` from the default branch only, so `target-branch: beta`
+   takes effect once the config reaches `main` through this graduation.
 
 Do not let the graduation slip for too long — the longer `beta` and `main` diverge,
 the riskier the merge (the beta.31 "two beta lines rejoined" mess is the cautionary

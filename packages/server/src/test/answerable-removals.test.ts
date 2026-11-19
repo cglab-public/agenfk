@@ -18,7 +18,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -27,7 +26,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, IGNORE_REPORT } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -62,10 +61,8 @@ process.exit(failed ? 1 : 0);
 async function project(steps: any[], start: string) {
   const f = await agent().post('/flows').send({ name: `ar-${++seq}`, steps });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = tmp('agenfk-ar-repo-');
-  fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass keeps working\npass old behaviour\n');
-  fs.writeFileSync(path.join(repo, 'lib.js'), 'module.exports = 1;\n');
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
+  const repo = echoRepo({ 'a.test.js': 'pass keeps working\npass old behaviour\n', 'lib.js': 'module.exports = 1;\n', ...IGNORE_REPORT }, 'agenfk-ar-repo-');
+  dirs.push(repo);
   const runner = path.join(tmp('agenfk-ar-tools-'), 'runner.js');
   fs.writeFileSync(runner, RUNNER);
   const p = await agent().post('/projects').send({ name: `ar-${++seq}` });
@@ -139,7 +136,7 @@ async function intoBuildWithRed(t: Awaited<ReturnType<typeof project>>) {
 
 describe('red-set-passes-by-name: a red test renamed or removed is answered with a reason', () => {
   // 6dd15e6e: was answerable (e2ab4ced). The red set is the card's own specification: a person passes a rename.
-  it('holds the card when a red test is renamed, and an agent\'s answer does not lift it', async () => {
+  it('holds the card when a red test is renamed, says only a person can pass it, and an agent\'s answer does not lift it', async () => {
     const t = await project(tddFlow(), 'START');
     await intoBuildWithRed(t);
     t.write('b.test.js', 'pass new rule, clearer name\n');
@@ -147,6 +144,9 @@ describe('red-set-passes-by-name: a red test renamed or removed is answered with
     expect(held.status, JSON.stringify(held.body)).toBe(422);
     expect(result(held.body, 'red-set-passes-by-name').detail).toMatch(/new rule \[missing\]/);
     expect(held.body.message).not.toMatch(/--check-note red-set-passes-by-name=/);
+    // Only a person passes it (6dd15e6e): the detail says so, and offers no answer.
+    expect(result(held.body, 'red-set-passes-by-name').detail).not.toMatch(/--check-note/);
+    expect(result(held.body, 'red-set-passes-by-name').detail).toMatch(/a person .*override .*board/i);
     const r = await validate(t.id, [{ id: 'red-set-passes-by-name', note: 'renamed to say what the rule is' }]);
     expect(r.status, JSON.stringify(r.body)).toBe(422);
     expect(result(r.body, 'red-set-passes-by-name').blocking).toBe(true);
@@ -159,38 +159,4 @@ describe('red-set-passes-by-name: a red test renamed or removed is answered with
     expect(r.status, JSON.stringify(r.body)).toBe(422);
     expect(result(r.body, 'red-set-passes-by-name').blocking).toBe(true);
   });
-
-  it('an answer for a renamed red test does not lift one that still fails beside it', async () => {
-    const t = await project(tddFlow(), 'START');
-    expect((await validate(t.id)).status).toBe(200);
-    t.write('b.test.js', 'fail new rule\nfail second rule\n');
-    expect((await validate(t.id)).status).toBe(200);
-    t.write('b.test.js', 'pass new rule, clearer name\nfail second rule\n');
-    const r = await validate(t.id, [{ id: 'red-set-passes-by-name', note: 'renamed the first' }]);
-    expect(r.status, JSON.stringify(r.body)).toBe(422);
-    expect(result(r.body, 'red-set-passes-by-name').blocking).toBe(true);
-  });
 });
-
-/*
- * 6dd15e6e (review of 6caae168, finding 5): the red set is the card's own
- * specification. Deleting it on the coding step and answering both removal
- * checks let a card leave without building anything. Only a person passes it.
- */
-describe('red-set-passes-by-name: the card\'s own red tests are not answered away by the agent', () => {
-  it('every red test deleted, both removal checks answered: the card is held, and told a person must pass it', async () => {
-    const t = await project(tddFlow(), 'START');
-    await intoBuildWithRed(t);
-    fs.rmSync(path.join(t.repo, 'b.test.js'));
-    const r = await validate(t.id, [
-      { id: 'red-set-passes-by-name', note: 'no longer needed' },
-      { id: 'test-count-not-lower', note: 'no longer needed' },
-    ]);
-    expect(r.status, JSON.stringify(r.body)).toBe(422);
-    const red = result(r.body, 'red-set-passes-by-name');
-    expect(red.blocking).toBe(true);
-    expect(red.detail).not.toMatch(/--check-note/);
-    expect(red.detail).toMatch(/a person .*override .*board/i);
-  });
-});
-

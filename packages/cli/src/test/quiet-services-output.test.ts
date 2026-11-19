@@ -21,7 +21,7 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const nonEmpty = (s: string) => strip(s).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
 /** An install dir holding the real service script and a stand-in server that reports its port. */
-function fakeInstall(opts: { withBoard: boolean; requestedPort?: string; serverReports?: boolean }) {
+function fakeInstall(opts: { withBoard: boolean; requestedPort?: string; serverReports?: boolean; env?: Record<string, string> }) {
   const work = mkdtempSync(path.join(os.tmpdir(), 'agenfk-services-'));
   const root = path.join(work, 'agenfk-system');
   const home = path.join(work, 'home');
@@ -44,7 +44,7 @@ function fakeInstall(opts: { withBoard: boolean; requestedPort?: string; serverR
     encoding: 'utf8',
     timeout: 40_000,
     cwd: root,
-    env: { HOME: home, USERPROFILE: home, PATH: path.dirname(process.execPath), AGENFK_NO_OPEN_BROWSER: '1', AGENFK_PORT: opts.requestedPort ?? '4321', VITEST: '1' },
+    env: { HOME: home, USERPROFILE: home, PATH: path.dirname(process.execPath), AGENFK_NO_OPEN_BROWSER: '1', AGENFK_PORT: opts.requestedPort ?? '4321', VITEST: '1', ...opts.env },
   });
   return { work, run };
 }
@@ -89,18 +89,6 @@ describe('start-services.mjs when the requested port was taken', () => {
   });
 });
 
-describe('start-services.mjs when the server never reports its port', () => {
-  let s: ReturnType<typeof fakeInstall>;
-  beforeAll(() => { s = fakeInstall({ withBoard: true, serverReports: false }); }, 40_000);
-  afterAll(() => rmSync(s.work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-
-  it('does not claim it is running - it warns and points at the log', () => {
-    const out = nonEmpty(`${s.run.stdout}${s.run.stderr}`);
-    expect(out.some((l) => l.startsWith('✓'))).toBe(false);
-    expect(out[0]).toMatch(/^⚠ The AgEnFK server started but has not reported its port yet - see .+api\.log$/);
-  });
-});
-
 describe('the CLI prints no ASCII banner, even at an interactive terminal', () => {
   const bin = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'index.js');
   let tty: ReturnType<typeof spawnSync> | null = null;
@@ -130,5 +118,31 @@ describe('the CLI prints no ASCII banner, even at an interactive terminal', () =
     expect(out).toHaveLength(1);
     // macOS script(1) echoes the closed stdin as `^D` ahead of the output.
     expect(out[0]).toMatch(/(^|\^D[\b]*)\d+\.\d+\.\d+\S*$/);
+  });
+});
+
+/*
+ * GH-281: the wait for the server's port is a production budget (30 x 500ms).
+ * AGENFK_PORT_WAIT_MS bounds it, so the "never reported" warning is pinned
+ * without the test sitting out the whole 15 seconds.
+ */
+describe('start-services.mjs when the server never reports its port', () => {
+  let s: ReturnType<typeof fakeInstall>;
+  let elapsed = 0;
+  beforeAll(() => {
+    const started = Date.now();
+    s = fakeInstall({ withBoard: true, serverReports: false, env: { AGENFK_PORT_WAIT_MS: '600' } });
+    elapsed = Date.now() - started;
+  }, 40_000);
+  afterAll(() => rmSync(s.work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+
+  it('does not claim it is running - it warns and points at the log', () => {
+    const out = nonEmpty(`${s.run.stdout}${s.run.stderr}`);
+    expect(out.some((l) => l.startsWith('✓'))).toBe(false);
+    expect(out[0]).toMatch(/^⚠ The AgEnFK server started but has not reported its port yet - see .+api\.log$/);
+  });
+
+  it('gives up after the AGENFK_PORT_WAIT_MS budget, not the 15s default', () => {
+    expect(elapsed).toBeLessThan(5_000);
   });
 });

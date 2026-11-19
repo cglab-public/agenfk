@@ -1,2 +1,5 @@
 release/
 build/server-bundle/
+build/airlock/
+build/airlock-cache/
+build/airlock-smolvm/

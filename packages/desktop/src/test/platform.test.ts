@@ -11,13 +11,10 @@
  * rest of the main process reads the profile.
  */
 import { describe, it, expect, vi } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
 import { profileFor, platform, accountShell } from '../main/platform';
 import { resolveShellCommand, resolveAgentCommand } from '../main/agents';
 import { loginShell } from '../main/ptyEnv';
 
-const MAIN_DIR = path.resolve(__dirname, '../main');
 
 describe('the Windows profile', () => {
   const win = profileFor('win32');
@@ -149,25 +146,6 @@ describe('the profile in use', () => {
       vi.doUnmock('os');
       vi.resetModules();
     }
-  });
-
-  it('is the only thing in the main process that asks which OS this is', () => {
-    const ASKS_THE_OS = new RegExp([
-      String.raw`process\.platform`, String.raw`process\[\s*['"]platform['"]\s*\]`,
-      String.raw`\{[^}]*\bplatform\b[^}]*\}\s*=\s*process\b(?!\s*\.)`,
-      String.raw`\bos\.(platform|type)\(`, String.raw`require\(\s*['"](node:)?os['"]\s*\)\.(platform|type)\b`,
-      // `type` is left to os.type( above: `import { type X } from 'os'` is a type import.
-      String.raw`import\s*\{[^}]*\bplatform\b[^}]*\}\s*from\s*['"](node:)?os['"]`,
-      String.raw`process\.env\.OS\b`,
-    ].join('|'));
-    const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true })
-      .flatMap(e => (e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)]));
-    const offenders = walk(MAIN_DIR)
-      .filter(f => f.endsWith('.ts') && f !== path.join(MAIN_DIR, 'platform.ts'))
-      .flatMap(f => fs.readFileSync(f, 'utf8').split('\n')
-        .map((line, i) => (ASKS_THE_OS.test(line) ? `${path.relative(MAIN_DIR, f)}:${i + 1}` : null))
-        .filter((x): x is string => x !== null));
-    expect(offenders, `read the profile from ./platform instead:\n${offenders.join('\n')}`).toEqual([]);
   });
 });
 

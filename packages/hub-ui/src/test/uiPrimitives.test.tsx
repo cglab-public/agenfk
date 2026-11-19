@@ -417,25 +417,42 @@ describe('every primitive', () => {
   });
 });
 
-describe('the primitives only use colours the tokens define', () => {
-  it('every colour utility in components/ui names a --color-* token (or a Tailwind keyword)', () => {
-    const tokens = fs.readFileSync(path.resolve(__dirname, '../../../brand/tokens.css'), 'utf8');
-    const theme = tokens.slice(tokens.indexOf('@theme {'));
-    const colours = new Set([...theme.matchAll(/--color-([\w-]+)\s*:/g)].map(m => m[1]));
-    for (const k of ['transparent', 'current', 'inherit']) colours.add(k);
-    const dir = path.resolve(__dirname, '../components/ui');
-    const PREFIX = /(?:^|[\s'"`:])(?:bg|text|border|ring|outline|fill|stroke|divide|caret)-([a-z][\w-]*?)(?:\/\d+)?(?=[\s'"`]|$)/g;
-    // Non-colour utilities sharing those prefixes.
-    const NOT_COLOUR = /^(caption|small|body|title|display|xs|sm|base|lg|xl|\d?xl|\d+|\[.*\]|left|right|center|justify|wrap|nowrap|balance|ellipsis|clip|x|y|t|b|l|r|none|hidden|solid|dashed|dotted|double|offset.*|inset|collapse|separate|spacing.*|opacity.*|image.*|fixed|local|scroll|cover|contain|auto|repeat.*|no-repeat|origin.*|clip.*|blend.*)$/;
-    const bad: string[] = [];
-    for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.tsx'))) {
-      const src = fs.readFileSync(path.join(dir, f), 'utf8');
-      for (const m of src.matchAll(PREFIX)) {
-        const name = m[1];
-        if (NOT_COLOUR.test(name)) continue;
-        if (!colours.has(name)) bad.push(`${f}: ${m[0].trim()}`);
-      }
+/*
+ * Every class the primitives actually RENDER, in every variant and tone, is
+ * compiled by the hub's real stylesheet. A colour utility naming a token that
+ * does not exist (`bg-acent`) compiles to nothing, and fails here by name.
+ */
+describe('every class the primitives render', () => {
+  it('compiles to a rule in the hub stylesheet', async () => {
+    const { container } = render(
+      <div>
+        {(['primary', 'secondary', 'ghost', 'danger'] as const).flatMap(v => (['sm', 'md'] as const).map(s => <Button key={v + s} variant={v} size={s}>b</Button>))}
+        <Button disabled>d</Button>
+        <Card><CardHeader title="t" description="d" /></Card>
+        {(['ok', 'warn', 'danger', 'info', 'accent', 'neutral'] as const).map(t => <Badge key={t} tone={t}>b</Badge>)}
+        {(['ok', 'warn', 'danger', 'info'] as const).map(t => <Callout key={t} tone={t}>c</Callout>)}
+        <Field label="f" hint="h" error="e"><Input /></Field>
+        <Field label="s"><Select><option>o</option></Select></Field>
+        <Toggle label="t1" checked onChange={() => {}} /><Toggle label="t2" checked={false} onChange={() => {}} />
+        <StatTile label="s" value={1} delta={1} series={1} /><StatTile label="s2" value={1} delta={-1} />
+        <ChipRow label="c" options={['a', 'b']} selected={new Set(['a'])} onToggle={() => {}} onClear={() => {}} />
+      </div>,
+    );
+    const classes = [...new Set(allClasses(container).split(/\s+/).filter(Boolean))]
+      // Markers, not utilities: lucide's icon names and Tailwind's group/peer hooks.
+      .filter(c => !/^(lucide(-.*)?|group|peer)$/.test(c));
+    expect(classes.length).toBeGreaterThan(20);
+
+    const { compile } = await import('@tailwindcss/node');
+    const file = path.resolve(__dirname, '../index.css');
+    const compiler = await compile(fs.readFileSync(file, 'utf8'), { base: path.dirname(file), onDependency: () => {} });
+    let size = compiler.build([]).length;
+    const dead: string[] = [];
+    for (const cls of classes) {
+      const next = compiler.build([cls]).length;
+      if (next === size) dead.push(cls);
+      size = next;
     }
-    expect(bad).toEqual([]);
+    expect(dead, 'classes that compile to nothing').toEqual([]);
   });
 });

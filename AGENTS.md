@@ -27,7 +27,7 @@ Build everything (core/storage/telemetry first, then cli/server/ui):
 npm run build
 ```
 
-Run all tests (vitest, node env, file-parallelism off — tests share fs state):
+Run all tests (vitest, node env, files in parallel on a quarter of the CPUs — each worker has its own HOME sandbox):
 ```
 npm test
 ```

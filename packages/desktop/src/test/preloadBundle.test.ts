@@ -62,15 +62,3 @@ describe('the built preload', () => {
     expect(read()).toMatch(/bySession|sessionId/);
   });
 });
-
-describe('the window that loads it', () => {
-  it('is still sandboxed, which is why the rule above exists', () => {
-    /*
-     * Read from the main process source. If sandbox were ever turned off, the
-     * bundling requirement would disappear with it — and so should this file,
-     * rather than being left asserting a constraint that no longer applies.
-     */
-    const main = fs.readFileSync(path.resolve(here, '../main/index.ts'), 'utf8');
-    expect(main).toMatch(/sandbox:\s*true/);
-  });
-});

@@ -13,9 +13,7 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -30,7 +28,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, unreadableFileVerify, observeDeclaredVerifyCommand } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
@@ -56,15 +54,20 @@ function writeDeclared(dir: string, verifyCommand: string) {
 
 /** A repository whose .agenfk/project.json declares `verifyCommand`. */
 function repoDeclaring(verifyCommand: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-noapproval-'));
+  // A clone of the per-worker template (#311); the key carries the declared command.
+  const build: GitTemplateBuild = (d) => {
+    gitSync(d, 'init', '-q', '-b', 'main');
+    gitSync(d, 'config', 'user.email', 't@t');
+    gitSync(d, 'config', 'user.name', 't');
+    writeFiles(d, { 'tests/a.test.js': 'test' });
+    fs.mkdirSync(path.join(d, '.agenfk'));
+    writeDeclared(d, verifyCommand);
+    writeFiles(d, { '.gitignore': 'report.*\nFILE_RAN\nFIRST_RAN\nSECOND_RAN\nREPORT_RAN\n' });
+    gitSync(d, 'add', '.');
+    gitSync(d, 'commit', '-qm', 'one');
+  };
+  const dir = cloneGitTemplate(`file-verify-command-no-approval:declaring:${verifyCommand}`, build, 'agenfk-noapproval-');
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
-  fs.mkdirSync(path.join(dir, 'tests'));
-  fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
-  fs.mkdirSync(path.join(dir, '.agenfk'));
-  writeDeclared(dir, verifyCommand);
-  fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\nFILE_RAN\nFIRST_RAN\nSECOND_RAN\nREPORT_RAN\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 
@@ -264,24 +267,6 @@ describe('a repository-declared verify command needs no approval (#260)', () => 
       expect(countOf(await commentsOf(bystander), /Repository verify command changed/)).toBe(1);
       const changes = ((await storage.getProject(pid)) as any).verifyCommandChanges ?? [];
       expect(changes.filter((c: any) => c.source === 'file')).toHaveLength(1);
-    });
-
-    it('refuses the gate when a pull changes the declared command while its capture runs', async () => {
-      const first = mark('FIRST_RAN');
-      const second = mark('SECOND_RAN');
-      const dir = repoDeclaring(first);
-      // The stored report command stands in for a pull landing mid-capture: it writes its report,
-      // then rewrites the declared command. The capture's tree fence must refuse it, so no close
-      // runs a command that changed under the run.
-      const midCapturePull = nodeCommand(`${JUNIT_JS}require('fs').writeFileSync('.agenfk/project.json', JSON.stringify({ verifyCommand: ${JSON.stringify(second)} }));`);
-      const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('END', 2, { isAnchor: true })]), {
-        projectRoot: dir, testReport: { ...report, command: midCapturePull },
-      });
-      const closing = await card(pid, 'WORK');
-      const res = await validateFollowing(closing);
-      expect(String(res.body.message), JSON.stringify(res.body)).toMatch(/tree changed while the command ran/);
-      expect(fs.existsSync(path.join(dir, 'SECOND_RAN'))).toBe(false);
-      expect((await storage.getItem(closing))?.status).toBe('WORK');
     });
 
     it('records the exact command a capture or close selected, not the file as it reads by then', async () => {

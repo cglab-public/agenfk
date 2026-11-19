@@ -17,7 +17,7 @@ const TEST_DB = testDbPath('flow-org-avail-hubon-test-db.sqlite');
 const savedEnv: Record<string, string | undefined> = {};
 const ENV_KEYS = [
   'AGENFK_HUB_URL', 'AGENFK_HUB_TOKEN', 'AGENFK_HUB_ORG',
-  'AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS', 'AGENFK_DB_PATH',
+  'AGENFK_HUB_SYNC_FIRST_DELAY_MS', 'AGENFK_DB_PATH',
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -95,7 +95,7 @@ describe('org-flow routes (hub enabled)', () => {
     process.env.AGENFK_HUB_URL = 'http://hub.example.test';
     process.env.AGENFK_HUB_TOKEN = 'agk_test';
     process.env.AGENFK_HUB_ORG = 'org-test';
-    process.env.AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS = '3600000';
+    process.env.AGENFK_HUB_SYNC_FIRST_DELAY_MS = '3600000';
     process.env.AGENFK_DB_PATH = TEST_DB;
     stubHubFetch(); // stub before import so any startup fetch is intercepted
     await removeTestDb(TEST_DB); // the server is not loaded yet: nothing is open

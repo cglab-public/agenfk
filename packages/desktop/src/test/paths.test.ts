@@ -82,3 +82,25 @@ describe('resolveDesktopPaths — nothing found', () => {
     expect(message).toMatch(/npm run build/);
   });
 });
+
+describe('resolveDesktopPaths: the Airlock exec helper (ea94c023)', () => {
+  it('packaged: the helper under resources/packages/airlock, when it is there', () => {
+    const resources = path.join(tmp, 'Resources');
+    stagePackages(path.join(resources, 'packages'));
+    fs.mkdirSync(path.join(resources, 'packages', 'airlock', 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(resources, 'packages', 'airlock', 'dist', 'agenfk-airlock-exec.mjs'), '// helper');
+    const resolved = resolveDesktopPaths({ dirname: path.join(tmp, 'x'), resourcesPath: resources, packaged: true });
+    expect(resolved.airlockExec).toBe(path.join(resources, 'packages', 'airlock', 'dist', 'agenfk-airlock-exec.mjs'));
+  });
+
+  it('packaged without the helper, or a source checkout: none (the server finds the CLI beside it)', () => {
+    const resources = path.join(tmp, 'Resources');
+    stagePackages(path.join(resources, 'packages'));
+    expect(resolveDesktopPaths({ dirname: path.join(tmp, 'x'), resourcesPath: resources, packaged: true }).airlockExec).toBeNull();
+    const packages = path.join(tmp, 'packages');
+    stagePackages(packages);
+    const dirname = path.join(packages, 'desktop', 'dist', 'main');
+    fs.mkdirSync(dirname, { recursive: true });
+    expect(resolveDesktopPaths({ dirname, packaged: false }).airlockExec).toBeNull();
+  });
+});

@@ -1525,9 +1525,9 @@ describe('the type badge on a board card', () => {
      * epic put a blue dot directly above the emerald STORY badge it had just
      * revealed — two answers to "what colour is a story" on one screen.
      *
-     * The blanket version of this check now lives in ItemTypeSquare.test.tsx,
-     * which reads the components directory; this one proves the rendered
-     * result on the screen that had the defect.
+     * Each other surface that shows a type pins its rendered square the same
+     * way (CardDetailModal, CardPicker, ProjectPage, AskAgenfk, ItemTypePicker
+     * and both import modals); this one is the screen that had the defect.
      */
     const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
     vi.mocked(api.listProjects).mockResolvedValue([project] as any);

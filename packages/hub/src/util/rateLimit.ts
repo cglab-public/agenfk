@@ -1,6 +1,8 @@
 import { Request, RequestHandler } from 'express';
 import expressRateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { SESSION_COOKIE, verifySession } from '../auth/session.js';
+import { bearerOf, findAdminCliToken, isAdminCliToken } from '../auth/adminCliToken.js';
+import type { DB } from '../db.js';
 
 // In-memory rate limiting + brute-force lockout for the hub. The hub is a
 // single Node process, so a per-process fixed window is sufficient.
@@ -32,7 +34,7 @@ export interface RateLimitOptions {
   windowMs: number;
   max: number;
   /** Bucket key; defaults to client IP. */
-  keyFn?: (req: Request) => string;
+  keyFn?: (req: Request) => string | Promise<string>;
   message?: string;
   /** Count only responses below 400 as free: failures alone spend the budget. */
   skipSuccessfulRequests?: boolean;
@@ -51,12 +53,23 @@ function clientKey(req: Request): string {
  * cookie that does not verify is charged to the client IP - a forged value
  * must not buy a fresh bucket. Verification is a JWT signature check, the same
  * one the route's own guard runs; it touches no database.
+ *
+ * The admin CLI's bearer token (CGLAB-702) is opaque, so it is looked up -
+ * one indexed read by hash, the same the guard then makes. A live token is
+ * charged to its user; a revoked, expired or made-up one to the address, so it
+ * can neither spend its former owner's budget nor buy a bucket of its own.
  */
-export function sessionUserKey(sessionSecret: string): (req: Request) => string {
-  return (req: Request): string => {
+export function sessionUserKey(sessionSecret: string, db: DB): (req: Request) => string | Promise<string> {
+  return (req: Request): string | Promise<string> => {
     const token = req.cookies?.[SESSION_COOKIE];
     const session = typeof token === 'string' && token ? verifySession(token, sessionSecret) : null;
-    return session ? `user:${session.orgId}:${session.userId}` : clientKey(req);
+    if (session) return `user:${session.orgId}:${session.userId}`;
+    const bearer = bearerOf(req.headers.authorization);
+    if (!bearer || !isAdminCliToken(bearer)) return clientKey(req);
+    return findAdminCliToken(db, bearer).then(
+      row => (row ? `user:${row.orgId}:${row.userId}` : clientKey(req)),
+      () => clientKey(req),
+    );
   };
 }
 

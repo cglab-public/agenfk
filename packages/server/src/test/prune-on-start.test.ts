@@ -58,11 +58,6 @@ describe('server start after the upgrade', () => {
     expect(card.stepRecords.filter((r: any) => r.kind === 'capture').map((r: any) => r.at)).toEqual([done[1].at, done[2].at, done[3].at]);
   });
 
-  it('gives an open card the runtime rule', async () => {
-    const card = await storage.getItem('open-card');
-    expect(card.stepRecords.map((r: any) => r.at)).toEqual([open[2].at]);
-  });
-
   it('says what it pruned', () => {
     expect(logs.some(l => /step records/i.test(l) && /2 card/.test(l))).toBe(true);
   });

@@ -18,7 +18,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -28,7 +27,8 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { describeCapture } from '../checkEngine';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, IGNORE_REPORT } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -42,7 +42,6 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...extra });
 
@@ -81,15 +80,17 @@ async function setup(opts: { related?: boolean | string; steps?: any[] } = { rel
     s('START', 0, { isAnchor: true }), s('PLAN', 1), s('BUILD', 2, { checks: [{ id: 'existing-tests-still-green' }] }), s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = tmp('agenfk-af-repo-');
-  fs.writeFileSync(path.join(repo, 'lib.js'), 'module.exports = 1;\n');
-  fs.writeFileSync(path.join(repo, 'my lib.js'), 'module.exports = 3;\n');
-  fs.writeFileSync(path.join(repo, 'other.js'), 'module.exports = 2;\n');
-  fs.writeFileSync(path.join(repo, 'package.json'), '{"name":"af","private":true}\n');
-  fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass adds\npass subtracts\n');
-  fs.writeFileSync(path.join(repo, 'b.test.js'), 'pass other works\n');
-  fs.writeFileSync(path.join(repo, 'c.test.js'), 'pass spaced works\n');
-  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one');
+  const repo = echoRepo({
+    'lib.js': 'module.exports = 1;\n',
+    'my lib.js': 'module.exports = 3;\n',
+    'other.js': 'module.exports = 2;\n',
+    'package.json': '{"name":"af","private":true}\n',
+    'a.test.js': 'pass adds\npass subtracts\n',
+    'b.test.js': 'pass other works\n',
+    'c.test.js': 'pass spaced works\n',
+    ...IGNORE_REPORT,
+  }, 'agenfk-af-repo-');
+  dirs.push(repo);
   const tools = tmp('agenfk-af-tools-');
   const log = path.join(tools, 'runs');
   const deps = path.join(tools, 'deps.json');
@@ -129,18 +130,12 @@ describe('a36047ea: a code change runs only the tests it affects', () => {
     const res = await validate(t.id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(t.runs().slice(1)).toEqual([{ related: ['lib.js'], ran: ['a.test.js'] }]);
+    // The reply says it ran only the affected tests.
+    expect(res.body.message).toMatch(/ran the 1 test file\(s\) affected by 1 changed file\(s\)/);
     const rec = await captureAt(t.id, 'BUILD');
     expect(rec).toMatchObject({ available: true, lazy: true, related: true, ranFiles: ['a.test.js'] });
     // The parser names a test by its file and title.
     expect(verdicts(rec.tests)).toEqual(['a.test.js:a.test.js > adds=passed', 'a.test.js:a.test.js > subtracts=passed', 'b.test.js:b.test.js > other works=passed', 'c.test.js:c.test.js > spaced works=passed']);
-  });
-
-  it('says in the reply that it ran only the affected tests', async () => {
-    const t = await setup();
-    await enterBuild(t);
-    t.edit('lib.js', 'module.exports = 10;\n');
-    const res = await validate(t.id);
-    expect(res.body.message).toMatch(/ran the 1 test file\(s\) affected by 1 changed file\(s\)/);
   });
 
   it('a failure in an affected test refuses the step, like a whole run would', async () => {
@@ -171,13 +166,7 @@ describe('a36047ea: what still runs the whole suite', () => {
     return res;
   };
 
-  it('a project with no relatedCommand', async () => {
-    const t = await setup({ related: false });
-    await enterBuild(t);
-    t.edit('lib.js', 'module.exports = 10;\n');
-    await whole(t);
-  });
-
+  // A project with no relatedCommand: "suggests a relatedCommand when a code change ran everything for want of one".
   it('a package.json change', async () => {
     const t = await setup();
     await enterBuild(t);
@@ -185,13 +174,7 @@ describe('a36047ea: what still runs the whole suite', () => {
     await whole(t);
   });
 
-  it('a config file change (vitest.config.js)', async () => {
-    const t = await setup();
-    await enterBuild(t);
-    t.edit('vitest.config.js', 'module.exports = {};\n');
-    await whole(t);
-  });
-
+  // Which other files are whole-suite files (configs, lockfiles, setup): WHOLE_SUITE_FILE in server-pure-helpers.unit.test.ts.
   it('a deleted source file', async () => {
     const t = await setup();
     await enterBuild(t);
@@ -260,22 +243,12 @@ describe('de5e5a03: an affected-only run never stands in for tests it cannot tra
     return res;
   };
 
-  it('a snapshot changed with the code: the whole suite runs', async () => {
-    const t = await setup();
-    fs.mkdirSync(path.join(t.repo, '__snapshots__'));
-    t.edit('__snapshots__/a.test.js.snap', 'exports[`adds 1`] = `1`;\n');
-    git(t.repo, 'git add . && git commit -qm snap');
-    await enterBuild(t);
-    t.edit('lib.js', 'module.exports = 10;\n');
-    t.edit('__snapshots__/a.test.js.snap', 'exports[`adds 1`] = `10`;\n');
-    await whole(t);
-    expect(t.runs().slice(1)).toEqual(['ALL']);
-  });
-
+  // Which files a related run cannot follow (a snapshot, a fixture): GRAPH_FILE in server-pure-helpers.unit.test.ts.
   it('a data file a test reads changed: the whole suite runs', async () => {
     const t = await setup();
     t.edit('fixture.json', '{"n":1}\n');
-    git(t.repo, 'git add . && git commit -qm fixture');
+    gitSync(t.repo, 'add', '.');
+    gitSync(t.repo, 'commit', '-qm', 'fixture');
     await enterBuild(t);
     t.edit('fixture.json', '{"n":2}\n');
     await whole(t);

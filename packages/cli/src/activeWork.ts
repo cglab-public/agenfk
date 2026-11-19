@@ -62,3 +62,39 @@ export function writeActiveWork(task: { id: string; projectId?: string }, sessio
     // A lost note costs an unrecorded run, never a failed gatekeeper check.
   }
 }
+
+/**
+ * The session the gatekeeper keys its note to: --session, then AGENFK_SESSION_ID (any harness),
+ * then Claude Code's CLAUDE_CODE_SESSION_ID (set in its Bash tool subprocesses), then pi's
+ * AGENFK_PI_SESSION_ID (its agenfk extension exports it). pi's ranks last: a Claude Code started
+ * from pi's shell inherits it and keeps its own session (review C3).
+ */
+export function gatekeeperSessionId(flag: string | undefined, env: NodeJS.ProcessEnv | Record<string, string | undefined>): string | undefined {
+  for (const v of [flag, env.AGENFK_SESSION_ID, env.CLAUDE_CODE_SESSION_ID, env.AGENFK_PI_SESSION_ID]) {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+/**
+ * Record the note where it can be written (BUG 3afbbf7e). Inside the Airlock sandbox
+ * ~/.agenfk is unwritable, so the note went nowhere and the session's tool calls were joined
+ * to no card: there it is handed to the server (POST /active-work), outside the sandbox. A
+ * sandbox note needs a session - a shared one would capture every other session. Never throws.
+ */
+export async function recordActiveWork(
+  task: { id: string; projectId?: string },
+  sessionId: string | undefined,
+  deps: { env: NodeJS.ProcessEnv | Record<string, string | undefined>; post: (body: { itemId: string; sessionId: string }) => Promise<unknown> },
+): Promise<void> {
+  if (!deps.env.AGENFK_AIRLOCK_SANDBOX) {
+    writeActiveWork(task, sessionId);
+    return;
+  }
+  if (!sessionId) return;
+  try {
+    await deps.post({ itemId: task.id, sessionId });
+  } catch {
+    // A lost note costs an unrecorded run, never a failed gatekeeper check.
+  }
+}

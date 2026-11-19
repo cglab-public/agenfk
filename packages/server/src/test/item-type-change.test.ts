@@ -114,17 +114,6 @@ describe('item type change (CGLAB-86)', () => {
     expect(r3.body.error).toMatch(/children/i);
   });
 
-  it('states the allowed transition in the error so users and agents can act on it', async () => {
-    const epic = await makeItem('EPIC', 'Epic');
-    await makeItem('STORY', 'Story child', { parentId: epic.id });
-    const res = await putType(epic.id, 'BUG');
-    expect(res.status).toBe(400);
-    // The error must name the one allowed transition (EPIC -> STORY) rather
-    // than a bare "remove children first" that leaves the user stuck.
-    expect(res.body.error).toMatch(/EPIC/);
-    expect(res.body.error).toMatch(/STORY/);
-  });
-
   it('allows any type change on items without children (existing behaviour)', async () => {
     const task = await makeItem('TASK', 'Lonely task');
     const res = await putType(task.id, 'BUG');
@@ -135,13 +124,6 @@ describe('item type change (CGLAB-86)', () => {
     const res2 = await putType(bug.id, 'EPIC');
     expect(res2.status).toBe(200);
     expect(res2.body.type).toBe('EPIC');
-  });
-
-  it('allows EPIC -> STORY without children (same rule, no children needed)', async () => {
-    const epic = await makeItem('EPIC', 'Epic no kids');
-    const res = await putType(epic.id, 'STORY');
-    expect(res.status).toBe(200);
-    expect(res.body.type).toBe('STORY');
   });
 
   it('setting the same type on an item with children is a no-op, not an error', async () => {

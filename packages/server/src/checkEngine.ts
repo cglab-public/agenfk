@@ -707,7 +707,8 @@ export const EVALUATORS: Record<string, Evaluator> = {
         for (const n of names) { own.add(n); if (other && descendants.has(other)) addedBy.set(n, other); }
       }
       for (const f of z(['diff', '--cached', '--no-renames', '--diff-filter=A', '--name-only', '--relative', '-z'])) own.add(f);
-      for (const f of z(['ls-files', '--others', '--exclude-standard', '-z'])) own.add(f);
+      // Spelled as the server's tree read spells it (GH #312): the same query, so a verify asks git once.
+      for (const f of z(['ls-files', '-z', '--others', '--exclude-standard'])) own.add(f);
     } catch (e: any) {
       return { outcome: 'unavailable', soft: true, detail: `git could not list what was added since ${frozen.head.slice(0, 12)}: ${e?.message ?? e}` };
     }
@@ -899,6 +900,18 @@ export function needsCapture(resolved: readonly ResolvedCheck[]): boolean {
 
 /** Is this check slow because it talks to a remote (1049ce52)? */
 export const needsNetwork = (c: ResolvedCheck): boolean => !!checkDef(c.id)?.network;
+
+/**
+ * 961f301d: while a step's approval is missing, the slow checks - a suite
+ * capture, a remote fetch, a command run - wait for the verify after it. A
+ * command check in `waitingOn` (its command itself awaits a person's approval)
+ * is judged now, so the person sees what they are asked to approve.
+ */
+export function checksDeferredToApproval(resolved: readonly ResolvedCheck[], waitingOn: readonly ResolvedCheck[]): string[] {
+  return resolved
+    .filter(c => c.applicable && (needsCapture([c]) || needsNetwork(c) || (c.id.startsWith('command-check:') && !waitingOn.includes(c))))
+    .map(c => c.id);
+}
 
 /** Does any applicable check read the step's entry record? */
 export function needsEntryRecord(resolved: readonly ResolvedCheck[]): boolean {

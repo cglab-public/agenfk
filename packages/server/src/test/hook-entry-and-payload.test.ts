@@ -37,18 +37,7 @@ function decisionOf(stdout: string): string | undefined {
   return out ? JSON.parse(out).decision : undefined;
 }
 
-describe('agenfk-mcp-enforcer reads the Claude Code payload shape (tool_name)', () => {
-  it('blocks a direct DB read via Bash when the tool arrives as tool_name', () => {
-    const res = run(ENFORCER, { tool_name: 'Bash', tool_input: { command: 'cat .agenfk/db.sqlite' } });
-    expect(res.status).toBe(0);
-    expect(decisionOf(res.stdout)).toBe('block');
-  });
-
-  it('blocks a direct DB read via the Read tool when the tool arrives as tool_name', () => {
-    const res = run(ENFORCER, { tool_name: 'Read', tool_input: { file_path: '/repo/.agenfk/db.sqlite' } });
-    expect(decisionOf(res.stdout)).toBe('block');
-  });
-
+describe('agenfk-mcp-enforcer payload shapes (tool_name is covered in mcp-enforcer-cli-first)', () => {
   it('still accepts the legacy `tool` field', () => {
     const res = run(ENFORCER, { tool: 'Bash', tool_input: { command: 'cat .agenfk/db.json' } });
     expect(decisionOf(res.stdout)).toBe('block');

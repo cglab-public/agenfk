@@ -10,6 +10,10 @@ import { authRouter, setupRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { orgRenameRouter } from './routes/orgRename.js';
 import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
+import { repoSettingsAdminRouter, repoSettingsRouter } from './routes/repoSettings.js';
+import { airlockAdminRouter, airlockRouter, AIRLOCK_ADMIN_BODY_LIMIT } from './routes/airlock.js';
+import { receiptsRouter } from './routes/receipts.js';
+import { ciRouter, ciTokensAdminRouter } from './routes/ci.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
@@ -22,6 +26,7 @@ import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { federationRouter, federationInviteRouter } from './routes/federation.js';
 import { startRollupTimer } from './rollup.js';
+import { startAirlockDatasetPruneTimer } from './services/airlockDataset.js';
 import { startFederationSync } from './services/federation/federationSync.js';
 import { migrateOsUserKeys } from './services/migrateOsUserKeys.js';
 import { migrateChildPeopleNames } from './services/migrateChildPeopleNames.js';
@@ -254,6 +259,9 @@ export async function createHubApp(
   // Read by publicHubUrl for every URL the hub hands out.
   app.locals.hubPublicUrl = config.publicUrl;
   app.use(securityHeaders());
+  // The Airlock admin routes take a policy, never a bulk upload: parsed under a
+  // tight limit of their own before the global parser (which then skips them).
+  app.use('/v1/admin/airlock', express.json({ limit: AIRLOCK_ADMIN_BODY_LIMIT }));
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -268,6 +276,15 @@ export async function createHubApp(
   // admin router's limiter nor any /v1 fallthrough sees these paths first.
   mountRouter(app, '/v1/admin/jira', jiraAdminRouter(ctx));
   mountRouter(app, '/v1/jira', jiraInstallationRouter(ctx));
+  // Repository settings (RFC-002): the board's admin routes and the
+  // installation's own read/claim, likewise ahead of the broad /v1 routers.
+  mountRouter(app, '/v1/admin/repos', repoSettingsAdminRouter(ctx));
+  mountRouter(app, '/v1', repoSettingsRouter(ctx));
+  mountRouter(app, '/v1/admin/airlock', airlockAdminRouter(ctx));
+  mountRouter(app, '/v1', airlockRouter(ctx));
+  mountRouter(app, '/v1', receiptsRouter(ctx));
+  mountRouter(app, '/v1/ci', ciRouter(ctx));
+  mountRouter(app, '/v1/admin/ci-tokens', ciTokensAdminRouter(ctx));
   mountRouter(app, '/v1', eventsRouter(ctx));
   mountRouter(app, '/v1', flowsRouter(ctx));
   mountRouter(app, '/auth', authRouter(ctx));
@@ -330,6 +347,7 @@ export async function createHubApp(
     .catch((e) => console.error('[MIGRATION] alias backfill failed:', (e as Error).message));
 
   const rollupTimer = startRollupTimer(db);
+  const datasetPruneTimer = startAirlockDatasetPruneTimer(db);
   // Child-side federation (CGLAB-181). Starting it unconditionally is safe and
   // deliberate: with no parent binding every tick is a no-op, so a standalone
   // hub pays one cheap query a minute and needs no configuration to opt out.
@@ -342,7 +360,7 @@ export async function createHubApp(
     transport: config.federationTransport as any,
     intervalMs: config.federationIntervalMs,
   });
-  ctx.stopWorkers = () => { clearInterval(rollupTimer); stopFederation(); };
+  ctx.stopWorkers = () => { clearInterval(rollupTimer); clearInterval(datasetPruneTimer); stopFederation(); };
 
   // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in
   // the released tarball that lives next to the hub package. We probe a few

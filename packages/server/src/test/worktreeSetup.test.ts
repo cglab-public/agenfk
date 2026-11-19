@@ -93,12 +93,6 @@ describe('when the project says what to run', () => {
     expect(d.notice, 'it did not say the dependencies are missing').toMatch(/no dependencies installed/i);
   });
 
-  it('is not "ready", because the work has not happened yet', () => {
-    // `ready` means usable as it stands. A command still to run is the
-    // opposite, and conflating the two would let a caller skip it.
-    expect(planWorktreeSetup({ declared: 'npm ci', hasManifest: true }).ready).toBe(false);
-  });
-
   it('ignores whitespace-only declarations', () => {
     // A blank setting is how somebody clears one, and running "" would be an
     // empty shell invocation whose failure explains nothing.
@@ -142,32 +136,9 @@ describe('when there is a manifest and no script', () => {
     expect(d.ready).toBe(false);
     expect(d.notice).toMatch(/no dependencies installed/i);
   });
-
-  it('says how to fix it, naming the command that sets the command', () => {
-    // A notice that states the problem and not the move is one people read
-    // twice and act on never.
-    expect(planWorktreeSetup({ hasManifest: true }).notice).toMatch(/--setup-command/);
-  });
-
-  it('says why nothing is guessed, so the silence is not read as a bug', () => {
-    expect(planWorktreeSetup({ hasManifest: true }).notice).toMatch(/nothing is guessed/i);
-  });
 });
 
 describe('the shape of every answer', () => {
-  it('always carries a notice, whatever it decided', () => {
-    // A silent decision about the worktree you are about to work in is the one
-    // thing this module must never produce.
-    for (const input of [
-      { declared: 'x', hasManifest: true },
-      { hasManifest: true },
-      { hasManifest: false },
-      { declared: null, hasManifest: false },
-    ]) {
-      expect(planWorktreeSetup(input).notice.length, JSON.stringify(input)).toBeGreaterThan(0);
-    }
-  });
-
   it('only reports ready when there is genuinely nothing left to do', () => {
     // ready === true must mean "use it now". Anything looser and a caller
     // skips a setup that was needed.

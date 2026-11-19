@@ -1,4 +1,4 @@
-import { ReactNode, useId, useMemo, useState } from 'react';
+import { ReactNode, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpDown, Search } from 'lucide-react';
 import { cn } from './cn';
 
@@ -18,14 +18,71 @@ export interface DataColumn<T> {
 
 type Dir = 'asc' | 'desc';
 
+/** A viewport-filling table never gets shorter than this, however short the window. */
+export const FILL_VIEWPORT_MIN = 240;
+
+/** Padding and border between the element's bottom and the bottom of `upTo` (its own padding included). */
+function chromeBelow(el: HTMLElement, upTo: HTMLElement | null): number {
+  let sum = 0;
+  for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+    const cs = getComputedStyle(a);
+    sum += parseFloat(cs.paddingBottom) || 0;
+    if (a === upTo) break;
+    sum += parseFloat(cs.borderBottomWidth) || 0;
+  }
+  return sum;
+}
+
+/**
+ * Caps an element's height so it ends at the bottom of the view, measured from
+ * where it starts. Inside the app shell the view is the scrolling pane
+ * (`[data-scroll-root]`), and the position is taken within the pane's content,
+ * so a pane left scrolled by another page measures the same. The padding and
+ * border below come from the page itself, so they follow its breakpoints.
+ * Re-measured after every render, on resize, and when the pane's content
+ * changes (a banner appearing above the page does not render this table).
+ */
+function useFillViewport(on: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [maxHeight, setMaxHeight] = useState<number | null>(null);
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!on || !el) return;
+    const root = el.closest<HTMLElement>('[data-scroll-root]');
+    const top = el.getBoundingClientRect().top;
+    const available = root
+      ? root.clientHeight - (top - root.getBoundingClientRect().top - root.clientTop + root.scrollTop)
+      : window.innerHeight - top;
+    setMaxHeight(Math.max(FILL_VIEWPORT_MIN, Math.round(available - chromeBelow(el, root))));
+  }, [on]);
+  useLayoutEffect(measure);
+  useLayoutEffect(() => {
+    if (!on) return;
+    window.addEventListener('resize', measure);
+    const root = ref.current?.closest<HTMLElement>('[data-scroll-root]');
+    const mutations = root ? new MutationObserver(measure) : null;
+    mutations?.observe(root!, { childList: true, subtree: true });
+    const resizes = root && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    resizes?.observe(root!);
+    return () => {
+      window.removeEventListener('resize', measure);
+      mutations?.disconnect();
+      resizes?.disconnect();
+    };
+  }, [on, measure]);
+  return { ref, style: on && maxHeight !== null ? { maxHeight: `${maxHeight}px`, overflowY: 'auto' as const } : undefined };
+}
+
 /**
  * The hub's table: sortable headers that say how they are sorted (aria-sort on
  * the header, a button inside it), stable ordering (ties keep the order rows
  * arrived in), and an optional search box over the rows. `caption` names the
  * table for assistive tech (aria-label, not a <caption>: each table already
- * sits under a visible heading that says the same).
+ * sits under a visible heading that says the same). `fillViewport` ends the
+ * rows at the bottom of the window and scrolls them there, under a header that
+ * stays put; the page no longer grows with the list.
  */
-export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, search, minWidth, rowHover = false }: {
+export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, search, minWidth, rowHover = false, fillViewport = false }: {
   caption: string;
   columns: DataColumn<T>[];
   rows: T[];
@@ -35,10 +92,12 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
   minWidth?: number;
   /** On only where a row is itself a target: a hover promises a click. */
   rowHover?: boolean;
+  fillViewport?: boolean;
 }) {
   const [sort, setSort] = useState<{ key: string; dir: Dir } | null>(defaultSort ?? null);
   const [query, setQuery] = useState('');
   const searchId = useId();
+  const fill = useFillViewport(fillViewport);
 
   const shown = useMemo(() => {
     const q = query.trim();
@@ -84,7 +143,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
           </div>
         </div>
       )}
-      <div className="relative overflow-x-auto">
+      <div ref={fill.ref} className="relative overflow-x-auto" style={fill.style}>
         <table aria-label={caption} className="w-full text-body" style={minWidth ? { minWidth } : undefined}>
           <thead>
             <tr className="eyebrow text-left font-mono text-ink-tertiary">
@@ -97,7 +156,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
                     key={col.key}
                     scope="col"
                     aria-sort={ariaSort}
-                    className={cn('px-3 py-2 font-semibold first:pl-5 last:pr-5', col.align === 'right' && 'text-right', col.className)}
+                    className={cn('px-3 py-2 font-semibold first:pl-5 last:pr-5', col.align === 'right' && 'text-right', fillViewport && 'sticky top-0 z-10 bg-surface', col.className)}
                   >
                     {col.sortValue ? (
                       <button

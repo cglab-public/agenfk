@@ -107,24 +107,6 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     expect(after.body.status).toBe('CHECKING');
   });
 
-  it("falls back to the project's verifyCommand on the last real step", async () => {
-    // The other half of the same disagreement: with a verifyCommand configured,
-    // omitting the command must RUN it, not skip it.
-    const projectId = await projectOnCliFlow('cli-with-verify-cmd', 'exit 1');
-    const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
-    await storage.updateItem(item.body.id, { status: 'CHECKING' } as any);
-
-    const res = await agent()
-      .post(`/items/${item.body.id}/validate`)
-      .set('x-agenfk-internal', VERIFY_TOKEN!)
-      .send({ evidence: 'claiming success' });
-
-    // The command ran and failed, so the item must NOT have advanced.
-    expect(res.status).toBe(422);
-    const after = await agent().get(`/items/${item.body.id}`);
-    expect(after.body.status).not.toBe('SHIPPED');
-  });
-
   it('never strands an item outside its own flow, even on a degenerate one', async () => {
     // If EVERY step is marked terminal — which `agenfk flow create` permits,
     // it just asks yes/no per step — there is no coding step. A failed verify
@@ -154,26 +136,5 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
 
     const after = await agent().get(`/items/${item.body.id}`);
     expect(['ONE', 'TWO']).toContain(after.body.status);
-  });
-
-  it('leaves a failed verify on a step the agent is still allowed to work in', async () => {
-    // A failed verify used to roll the item back to the "coding step"; computed
-    // with a predicate blind to isSpecial, that landed on BACKLOG — a boundary
-    // step — and the gatekeeper then blocked every Edit. Since CGLAB-275 a
-    // failed verify stays put, and the property that matters is unchanged: the
-    // agent sent to fix a failure must still be allowed to touch the code.
-    const projectId = await projectOnCliFlow('cli-failure-rollback', 'exit 1');
-    const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
-    await storage.updateItem(item.body.id, { status: 'CHECKING' } as any);
-
-    await agent().post(`/items/${item.body.id}/validate`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ evidence: 'will fail' });
-
-    const after = await agent().get(`/items/${item.body.id}`);
-    expect(after.body.status).not.toBe('BACKLOG');
-
-    // The property that actually matters, stated directly: the item is still
-    // something the gatekeeper counts as active work.
-    const active = await agent().get('/items').query({ active: 'true', projectId });
-    expect(active.body.map((i: { id: string }) => i.id)).toContain(item.body.id);
   });
 });

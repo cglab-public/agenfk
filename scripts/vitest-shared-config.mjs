@@ -1,13 +1,13 @@
 /**
  * Shared vitest test config (single source of truth).
  *
- * The root `vitest.config.ts` and `vitest.workspace.ts` both consume this, so
- * timeouts, aliases, the HOME/bcrypt env pin, and the coverage gate can never
- * drift between a plain `vitest run` and a workspace/`--project` run.
+ * Each project in the root `vitest.config.ts` and the single-project configs
+ * (e.g. vitest.windows.config.ts, hub-ui) consume this, so timeouts, aliases, the
+ * HOME/bcrypt env pin, and the coverage gate can never drift between them.
  *
  * `fileParallelism: true` opts a project into running its FILES in separate
- * workers — see PARALLEL_INCLUDE in vitest.config.ts for which packages qualify
- * and why the rest must stay serial.
+ * workers — see vitest.config.ts for which packages run so, and the HOME per
+ * worker (scripts/vitest-home-pin.mjs) that lets server/hub/cli (GH-274).
  *
  * There is deliberately no option for `sequence.concurrent`, which is a
  * different thing: concurrency of tests WITHIN one file. The two used to share
@@ -50,9 +50,9 @@ export function sharedTest(
     env: testEnv(),
     globals: true,
     environment: opts.environment ?? 'node', // Use node for server/storage
-    // Files that share filesystem state (sqlite DBs, install dirs) must run one
-    // at a time; `fileParallelism: true` is only for the fs-free packages listed
-    // in vitest.config.ts.
+    // A project whose files share filesystem state across workers (sqlite DBs,
+    // install dirs) must run them one at a time; every project in
+    // vitest.config.ts opts in, the server/hub/cli ones on a HOME per worker.
     fileParallelism: !!opts.fileParallelism,
     // Never concurrent within a file. Every package here has specs that mutate
     // shared per-file state — a jsdom document, a module mock, a temp dir — and

@@ -3,7 +3,7 @@
  *
  * The border, for the sound and banner channels.
  *
- * `ipcSurface.test.ts` already guarantees every channel registered here is
+ * `ipcSurfaceBehaviour.test.ts` already guarantees every channel registered here is
  * reachable from the preload, which is the "built and unreachable" half. This
  * file is the other half: that what crosses is what we meant to let cross.
  *
