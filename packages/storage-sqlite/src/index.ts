@@ -557,6 +557,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     this.createAirlockCoverageTable();
     this.migrateFlowsTable();
     this.migrateTerminalSessionsTable();
+    this.migrateTokenEventsTable();
     this.backfillFlowRevisions();
   }
 
@@ -742,6 +743,26 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (!columns.includes('auto_approve')) {
       this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0');
     }
+  }
+
+  /**
+   * GH-389: per-turn usage keeps cache reads and writes apart, the cost a
+   * harness reported, and a dedup key that is unique per client across files
+   * (Claude Code repeats a message in a session log and its subagent log).
+   * Rows from before have NULL in all four, which the partial index ignores.
+   * Ingestion state gains the parser's saved context.
+   */
+  private migrateTokenEventsTable(): void {
+    const cols = (this.database.prepare('PRAGMA table_info(token_events)').all() as { name: string }[]).map((c) => c.name);
+    if (!cols.includes('cache_read')) this.database.exec('ALTER TABLE token_events ADD COLUMN cache_read INTEGER');
+    if (!cols.includes('cache_write')) this.database.exec('ALTER TABLE token_events ADD COLUMN cache_write INTEGER');
+    if (!cols.includes('cost_usd')) this.database.exec('ALTER TABLE token_events ADD COLUMN cost_usd REAL');
+    if (!cols.includes('dedup_key')) this.database.exec('ALTER TABLE token_events ADD COLUMN dedup_key TEXT');
+    this.database.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_token_events_dedup_key ON token_events(client, dedup_key) WHERE dedup_key IS NOT NULL',
+    );
+    const stateCols = (this.database.prepare('PRAGMA table_info(ingestion_state)').all() as { name: string }[]).map((c) => c.name);
+    if (!stateCols.includes('parser_state')) this.database.exec('ALTER TABLE ingestion_state ADD COLUMN parser_state TEXT');
   }
 
   /** GH-294 T5: a table created before denials gains their columns (CREATE TABLE IF NOT EXISTS never adds one). */
@@ -1134,8 +1155,9 @@ export class SQLiteStorageProvider implements StorageProvider {
       `INSERT INTO token_events
         (id, ts, client, session_id, turn_id, model,
          input, cached_input, output, reasoning, total,
-         item_id, project_id, source_path, source_offset)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         item_id, project_id, source_path, source_offset,
+         cache_read, cache_write, cost_usd, dedup_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       event.id,
       event.ts,
@@ -1152,6 +1174,10 @@ export class SQLiteStorageProvider implements StorageProvider {
       event.projectId ?? null,
       event.sourcePath,
       event.sourceOffset,
+      event.cacheRead ?? null,
+      event.cacheWrite ?? null,
+      event.costUsd ?? null,
+      event.dedupKey ?? null,
     );
   }
 
@@ -1166,7 +1192,8 @@ export class SQLiteStorageProvider implements StorageProvider {
     let sql =
       `SELECT id, ts, client, session_id, turn_id, model,
               input, cached_input, output, reasoning, total,
-              item_id, project_id, source_path, source_offset
+              item_id, project_id, source_path, source_offset,
+              cache_read, cache_write, cost_usd, dedup_key
          FROM token_events`;
     if (where.length) sql += ' WHERE ' + where.join(' AND ');
     sql += ' ORDER BY ts ASC';
@@ -1188,6 +1215,10 @@ export class SQLiteStorageProvider implements StorageProvider {
       projectId: r.project_id ?? undefined,
       sourcePath: r.source_path,
       sourceOffset: r.source_offset,
+      cacheRead: r.cache_read ?? undefined,
+      cacheWrite: r.cache_write ?? undefined,
+      costUsd: r.cost_usd ?? undefined,
+      dedupKey: r.dedup_key ?? undefined,
     }));
   }
 
@@ -1533,24 +1564,26 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async getIngestionState(sourcePath: string): Promise<IngestionState | null> {
     const row = this.database.prepare(
-      'SELECT source_path, last_offset, last_run_at FROM ingestion_state WHERE source_path = ?'
-    ).get(sourcePath) as { source_path: string; last_offset: number; last_run_at: string } | undefined;
+      'SELECT source_path, last_offset, last_run_at, parser_state FROM ingestion_state WHERE source_path = ?'
+    ).get(sourcePath) as { source_path: string; last_offset: number; last_run_at: string; parser_state: string | null } | undefined;
     if (!row) return null;
     return {
       sourcePath: row.source_path,
       lastOffset: row.last_offset,
       lastRunAt: row.last_run_at,
+      ...(row.parser_state != null ? { parserState: row.parser_state } : {}),
     };
   }
 
   async setIngestionState(state: IngestionState): Promise<void> {
     this.database.prepare(
-      `INSERT INTO ingestion_state (source_path, last_offset, last_run_at)
-       VALUES (?, ?, ?)
+      `INSERT INTO ingestion_state (source_path, last_offset, last_run_at, parser_state)
+       VALUES (?, ?, ?, ?)
        ON CONFLICT(source_path) DO UPDATE SET
          last_offset = excluded.last_offset,
-         last_run_at = excluded.last_run_at`
-    ).run(state.sourcePath, state.lastOffset, state.lastRunAt);
+         last_run_at = excluded.last_run_at,
+         parser_state = excluded.parser_state`
+    ).run(state.sourcePath, state.lastOffset, state.lastRunAt, state.parserState ?? null);
   }
 
   // ── Observability: PR registration ─────────────────────────────────────────

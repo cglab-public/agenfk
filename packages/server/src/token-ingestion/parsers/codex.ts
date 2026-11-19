@@ -2,6 +2,16 @@ import { randomUUID } from 'crypto';
 import type { TokenEvent } from '@agenfk/core';
 import type { SessionLogParser } from '../watcher';
 
+/** What a pass leaves for the next one: the context earlier lines set up. */
+interface CodexState {
+  prev: { input: number; cachedInput: number; output: number; reasoning: number; total: number };
+  havePrev: boolean;
+  sessionId: string;
+  model: string;
+  turnId?: string;
+  cwd?: string;
+}
+
 /**
  * Codex session JSONL: current CLI builds emit token_count events with
  * `payload.info.last_token_usage`; older builds emitted flat cumulative totals.
@@ -11,17 +21,22 @@ import type { SessionLogParser } from '../watcher';
  * If a delta is negative (lower than previous), treat that line's cumulative
  * as a fresh baseline (likely session reset / file rotation) — emit it as-is
  * rather than emitting a negative usage.
+ *
+ * The session id, model, turn and cwd come from earlier lines (session_meta,
+ * turn_context), and legacy deltas need the previous cumulative total, so all
+ * of it is saved in `ctx.state` for the next pass to resume from.
  */
-export const parseCodexJsonl: SessionLogParser = (text, sourcePath, baseOffset) => {
+export const parseCodexJsonl: SessionLogParser = (text, sourcePath, baseOffset, ctx) => {
   const events: TokenEvent[] = [];
   let off = baseOffset;
 
-  let prev = { input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 0 };
-  let havePrev = false;
-  let sessionId = '';
-  let model = 'unknown';
-  let turnId: string | undefined;
-  let cwd: string | undefined;
+  const saved = (ctx?.state ?? null) as CodexState | null;
+  let prev = saved?.prev ?? { input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 0 };
+  let havePrev = saved?.havePrev ?? false;
+  let sessionId = saved?.sessionId ?? '';
+  let model = saved?.model ?? 'unknown';
+  let turnId: string | undefined = saved?.turnId;
+  let cwd: string | undefined = saved?.cwd;
 
   for (const line of text.split('\n')) {
     const lineBytes = Buffer.byteLength(line, 'utf8');
@@ -110,6 +125,7 @@ export const parseCodexJsonl: SessionLogParser = (text, sourcePath, baseOffset) 
       sourceOffset: lineOffset,
     });
   }
+  if (ctx) ctx.state = { prev, havePrev, sessionId, model, turnId, cwd } satisfies CodexState;
   return events;
 };
 

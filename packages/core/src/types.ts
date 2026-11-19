@@ -104,10 +104,19 @@ export interface TokenEvent {
   turnId?: string;
   model: string;
   input: number;
-  cachedInput: number;
+  cachedInput: number;        // cacheRead + cacheWrite, kept for older readers
+  cacheRead?: number;         // input served from the prompt cache
+  cacheWrite?: number;        // input written to the prompt cache
   output: number;
   reasoning: number;
   total: number;
+  /** Cost the harness itself reported for the turn (pi does), in USD. */
+  costUsd?: number;
+  /**
+   * Identity of the turn across files, unique per client (Claude Code's
+   * message.id: the same message can be in a session log and its subagent log).
+   */
+  dedupKey?: string;
   itemId?: string;            // attribution (most-recent active item at ts)
   projectId?: string;
   cwd?: string;                // ingestion-only metadata used before attribution
@@ -334,6 +343,12 @@ export interface IngestionState {
   sourcePath: string;
   lastOffset: number;
   lastRunAt: string;
+  /**
+   * JSON the parser saved after its last pass (session id, model, running
+   * totals...), so the next pass can start at lastOffset instead of re-reading
+   * the file. Absent on states written before it existed.
+   */
+  parserState?: string;
 }
 
 // ── Agent Runs: orchestrated worker transcripts per item ────────────────────
