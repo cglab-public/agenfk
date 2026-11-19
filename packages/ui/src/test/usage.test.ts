@@ -108,12 +108,12 @@ describe('estimateCost', () => {
   it('prices a wholly unpriced model from the table, cache reads at the cached rate', () => {
     const c = estimateCost([model({ turns: 1, unpricedTurns: 1, input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 1_000_000 })], prices);
     // input 10 + output 50 + cache read 1 + cache write at the input rate 10
-    expect(c).toEqual({ reported: 0, estimated: 71, unpricedModels: [] });
+    expect(c).toEqual({ reported: 0, estimated: 71, unpricedModels: [], estimatedModels: ['claude-opus-5-5'] });
   });
 
   it('keeps what a harness reported and does not estimate it again', () => {
     const c = estimateCost([model({ turns: 2, unpricedTurns: 0, input: 1_000_000, costUsd: 0.4 })], prices);
-    expect(c).toEqual({ reported: 0.4, estimated: 0, unpricedModels: [] });
+    expect(c).toEqual({ reported: 0.4, estimated: 0, unpricedModels: [], estimatedModels: [] });
   });
 
   it('names the models it could not price instead of counting them as free', () => {
@@ -124,7 +124,7 @@ describe('estimateCost', () => {
 
   it('without a price table, only the reported cost', () => {
     const c = estimateCost([model({ turns: 1, unpricedTurns: 1, input: 5 }), model({ model: 'q', turns: 1, costUsd: 0.1 })], null);
-    expect(c).toEqual({ reported: 0.1, estimated: 0, unpricedModels: ['claude-opus-5-5'] });
+    expect(c).toEqual({ reported: 0.1, estimated: 0, unpricedModels: ['claude-opus-5-5'], estimatedModels: [] });
   });
 });
 

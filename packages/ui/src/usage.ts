@@ -161,6 +161,8 @@ export interface CostView {
   estimated: number;
   /** Models with unpriced turns the board could not estimate. */
   unpricedModels: string[];
+  /** Models whose cost is the board's estimate. */
+  estimatedModels: string[];
 }
 
 /**
@@ -182,7 +184,7 @@ export interface PricesData {
 }
 
 export function estimateCost(byModel: ModelUsage[], pricesData: PricesData | null | undefined): CostView {
-  const view: CostView = { reported: 0, estimated: 0, unpricedModels: [] };
+  const view: CostView = { reported: 0, estimated: 0, unpricedModels: [], estimatedModels: [] };
   for (const m of byModel) {
     view.reported += m.costUsd;
     if (m.unpricedTurns === 0) continue;
@@ -193,6 +195,7 @@ export function estimateCost(byModel: ModelUsage[], pricesData: PricesData | nul
     }
     const input = Number(price.input) || 0;
     const cached = Number(price.input_cached ?? price.input) || 0;
+    view.estimatedModels.push(m.model);
     view.estimated += (m.input * input + m.output * (Number(price.output) || 0) + m.cacheRead * cached + m.cacheWrite * input) / 1_000_000;
   }
   return view;
@@ -205,4 +208,29 @@ export function abbreviateTokens(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+}
+
+/** A card's total as the board knows it: its close total while current, else its recorded steps. */
+export function cardTotalOf(item: Pick<AgEnFKItem, 'status' | 'usageByStep' | 'cardUsage'>): UsageTotals {
+  const closed = closeTotalOf(item);
+  if (closed) return closed.total;
+  const total = zeroTotals();
+  for (const r of item.usageByStep ?? []) add(total, r.total);
+  return total;
+}
+
+export type TokenKind = 'input' | 'cacheRead' | 'cacheWrite' | 'output';
+export const TOKEN_KINDS: Array<{ kind: TokenKind; label: string }> = [
+  { kind: 'input', label: 'Input' },
+  { kind: 'cacheRead', label: 'Cache read' },
+  { kind: 'cacheWrite', label: 'Cache write' },
+  { kind: 'output', label: 'Output' },
+];
+
+/** The four token kinds with their share of the total, largest first. */
+export function tokenMix(t: UsageTotals): Array<{ kind: TokenKind; label: string; value: number; share: number }> {
+  const all = tokensOf(t);
+  return TOKEN_KINDS
+    .map(({ kind, label }) => ({ kind, label, value: t[kind], share: all ? t[kind] / all : 0 }))
+    .sort((a, b) => b.value - a.value);
 }

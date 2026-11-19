@@ -12,6 +12,7 @@ import { closeTotalOf, currentStepSince, summarizeCardUsage, type CardUsageSumma
 const REFRESH_MS = 15_000;
 
 export function useCardUsage(itemId: string | null, given?: AgEnFKItem | null): {
+  children: AgEnFKItem[];
   item: AgEnFKItem | null;
   summary: CardUsageSummary | null;
   isPending: boolean;
@@ -32,7 +33,16 @@ export function useCardUsage(itemId: string | null, given?: AgEnFKItem | null): 
     enabled: Boolean(itemId && since),
     refetchInterval: REFRESH_MS,
   });
+  // A parent's sub-cards, for where its tokens went.
+  const children = useQuery({
+    queryKey: ['usage-children', itemId],
+    // Archived sub-cards too: the parent's close total still counts them.
+    queryFn: () => api.listItems({ parentId: itemId!, includeArchived: true }),
+    enabled: Boolean(itemId),
+    refetchInterval: REFRESH_MS,
+  });
   return {
+    children: Array.isArray(children.data) ? (children.data as AgEnFKItem[]) : [],
     item,
     summary: item ? summarizeCardUsage(item, live.data ?? []) : null,
     isPending: !item && fetched.isPending,
