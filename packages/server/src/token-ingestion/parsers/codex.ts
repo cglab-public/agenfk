@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { TokenEvent } from '@agenfk/core';
 import type { SessionLogParser } from '../watcher';
+import { numberOr } from './numbers';
 
 /** What a pass leaves for the next one: the context earlier lines set up. */
 interface CodexState {
@@ -129,9 +130,6 @@ export const parseCodexJsonl: SessionLogParser = (text, sourcePath, baseOffset, 
   return events;
 };
 
-function numberOr(v: any, fallback: number): number {
-  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
-}
 
 function tokenUsageFromCodexInfo(usage: any): {
   input: number;

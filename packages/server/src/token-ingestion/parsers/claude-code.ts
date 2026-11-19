@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { TokenEvent } from '@agenfk/core';
 import type { SessionLogParser } from '../watcher';
+import { numberOr } from './numbers';
 
 /**
  * Parses a slice of a Claude Code session JSONL file. Each line is a JSON
@@ -75,6 +76,3 @@ export const parseClaudeCodeJsonl: SessionLogParser = (text, sourcePath, baseOff
   return events;
 };
 
-function numberOr(v: any, fallback: number): number {
-  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
-}
