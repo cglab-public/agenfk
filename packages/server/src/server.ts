@@ -39,8 +39,8 @@ import { requeueDeadletter, readDeadletterIndicator, RequeueRewriteFailed } from
 import { defaultDeadletterPath } from "./hub/flusher.js";
 import { resolveActor } from "./hub/identity";
 import { createUsageIngestion, defaultIngestionSources, type UsageIngestion } from "./token-ingestion/service.js";
-import { computeStepUsage, describeUsage } from "./usage/stepUsage.js";
-import type { StepUsage } from "@agenfk/core";
+import { computeCardUsage, computeStepUsage, describeCardUsage, describeUsage } from "./usage/stepUsage.js";
+import type { CardUsage, StepUsage } from "@agenfk/core";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -2157,29 +2157,50 @@ function transitionStamp(
  * closed cards by `item.closed`, so a close it is not told about is a close
  * that never happened on its dashboards.
  */
-async function recordMoveEvents(item: { id: string; projectId: string; type: string }, from: string, to: string, flow: TransitionFlow): Promise<StepUsage | null> {
-  if (to === from) return null;
+async function recordMoveEvents(item: { id: string; projectId: string; type: string }, from: string, to: string, flow: TransitionFlow): Promise<MoveUsage> {
+  if (to === from) return { step: null, card: null };
   // GH-389: the usage of the step being left - before a close ends the
   // sessions on the card, so its last turns still count.
-  const usage = await recordStepUsage(item.id, from, to);
+  const step = await recordStepUsage(item.id, from, to);
   recordHubEvent({
     type: 'step.transitioned',
     projectId: item.projectId,
     itemId: item.id,
-    payload: { fromStatus: from, toStatus: to, itemType: item.type, ...transitionStamp(from, to, flow), ...hubUsage(usage) },
+    payload: { fromStatus: from, toStatus: to, itemType: item.type, ...transitionStamp(from, to, flow), ...hubUsage(step) },
   });
+  let card: CardUsage | null = null;
   if (isCompletionStep(to, flow) && !isCompletionStep(from, flow)) {
-    // GH-389: a closed card stops collecting usage; the sessions on it are on none until they pick another.
+    // GH-389: the card's whole usage, its descendants' included.
+    card = await recordCardUsage(item.id);
+    // A closed card stops collecting usage; the sessions on it are on none until they pick another.
     storage.endSessionCards(item.id, new Date().toISOString())
       .catch((e: Error) => console.error(`[USAGE] could not end the sessions on ${item.id}: ${e.message}`));
     recordHubEvent({
       type: 'item.closed',
       projectId: item.projectId,
       itemId: item.id,
-      payload: { fromStatus: from, toStatus: to, itemType: item.type },
+      payload: { fromStatus: from, toStatus: to, itemType: item.type, ...(card ? { usage: card } : {}) },
     });
   }
-  return usage;
+  return { step, card };
+}
+
+/** GH-389: what a move recorded - the left step's usage, and the card's when it closed. */
+interface MoveUsage {
+  step: StepUsage | null;
+  card: CardUsage | null;
+}
+
+/** GH-389: compute and store a closing card's usage. Never throws: a failure is logged and the close goes on. */
+async function recordCardUsage(itemId: string): Promise<CardUsage | null> {
+  try {
+    const card = await computeCardUsage(storage, itemId);
+    if (card) await storage.updateItem(itemId, { cardUsage: card } as any);
+    return card;
+  } catch (e) {
+    console.error(`[USAGE] could not record the card usage of ${itemId}: ${(e as Error).message}`);
+    return null;
+  }
 }
 
 /**
@@ -2214,8 +2235,9 @@ function hubUsage(usage: StepUsage | null): { usage?: Omit<StepUsage, 'step' | '
   return { usage: rest };
 }
 
-/** The verify reply's usage line, when there is one. */
-const usageNote = (usage: StepUsage | null): string => (usage ? `\n\n${describeUsage(usage)}` : '');
+/** The verify reply's usage lines: the step it left, and the whole card when it closed. */
+const usageNote = (moved: MoveUsage | null): string =>
+  (moved?.step ? `\n\n${describeUsage(moved.step)}` : '') + (moved?.card ? `\n${describeCardUsage(moved.card)}` : '');
 
 /**
  * What `previousStatus` becomes after a status change through PUT/bulk. It is
@@ -10199,7 +10221,7 @@ function runRecorder(run: ValidateRun) {
 
 async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport>; answers?: Record<string, string>; joined?: boolean; git?: GitMemo }) {
   // GH-389: the usage of the step this verify moved the card out of, for its reply.
-  let movedUsage: StepUsage | null = null;
+  let movedUsage: MoveUsage | null = null;
   /*
    * GH #312: this verify's git memo - a read-only query asked again within one epoch is answered
    * from its first answer, never across requests (a continuation of this same verify passes it on).

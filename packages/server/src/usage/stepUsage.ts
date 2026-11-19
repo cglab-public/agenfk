@@ -1,4 +1,4 @@
-import type { ModelUsage, StepUsage, TokenEvent, UsageSummary, UsageTotals } from '@agenfk/core';
+import type { CardUsage, ModelUsage, StepUsage, TokenEvent, UsageSummary, UsageTotals } from '@agenfk/core';
 
 /**
  * GH-389: a card's token usage, per step it left.
@@ -58,25 +58,6 @@ export function aggregateUsage(events: TokenEvent[]): UsageSummary {
     }
     addTotals(row, t);
     addTotals(total, t);
-  }
-  return { byModel: [...byKey.values()], total };
-}
-
-/** Sum several summaries (a card and its children) into one. */
-export function mergeUsage(parts: UsageSummary[]): UsageSummary {
-  const byKey = new Map<string, ModelUsage>();
-  const total = zeroTotals();
-  for (const part of parts) {
-    for (const m of part.byModel) {
-      const key = `${m.client}\u0000${m.model}`;
-      let row = byKey.get(key);
-      if (!row) {
-        row = { client: m.client, model: m.model, ...zeroTotals() };
-        byKey.set(key, row);
-      }
-      addTotals(row, m);
-    }
-    addTotals(total, part.total);
   }
   return { byModel: [...byKey.values()], total };
 }
@@ -141,13 +122,38 @@ export async function computeStepUsage(args: StepUsageDeps & {
   return { step: from, to, enteredAt: since, leftAt: at, complete, ...aggregateUsage(events) };
 }
 
+/**
+ * A card's usage at close: every turn charged to the card or to any of its
+ * descendants, read from the stored turns (not added up from step rows, so a
+ * turn ingested after its step was counted is not lost), broken down by the
+ * card's own steps.
+ */
+export async function computeCardUsage(
+  storage: {
+    getItem(id: string): Promise<any>;
+    listItems(q: { projectId: string }): Promise<any[]>;
+    queryTokenEvents(q: { itemId: string }): Promise<TokenEvent[]>;
+  },
+  itemId: string,
+): Promise<CardUsage | null> {
+  const item = await storage.getItem(itemId);
+  if (!item) return null;
+  const all = await storage.listItems({ projectId: item.projectId });
+  const ids = [item.id];
+  for (let i = 0; i < ids.length; i++) {
+    for (const child of all) if (child.parentId === ids[i] && !ids.includes(child.id)) ids.push(child.id);
+  }
+  const events: TokenEvent[] = [];
+  for (const id of ids) events.push(...await storage.queryTokenEvents({ itemId: id }));
+  const byStep = ((item.usageByStep ?? []) as StepUsage[]).map((u) => ({ step: u.step, total: u.total }));
+  return { ...aggregateUsage(events), byStep, cards: ids.length };
+}
+
 const n = (v: number) => v.toLocaleString('en-US');
 
-/** One line for a verify reply. */
-export function describeUsage(u: StepUsage): string {
-  const t = u.total;
-  const head = `📊 Usage in ${u.step}:`;
-  if (t.turns === 0) return `${head} no usage recorded${u.complete ? '' : ' (incomplete: the session logs could not be read in time)'}.`;
+function describeTotals(head: string, t: UsageTotals, complete: boolean): string {
+  const tail = complete ? '' : ' (incomplete: the session logs could not be read in time)';
+  if (t.turns === 0) return `${head} no usage recorded${tail}.`;
   const parts = [
     `${n(t.turns)} turn${t.turns === 1 ? '' : 's'}`,
     `${n(t.input)} input`,
@@ -157,5 +163,16 @@ export function describeUsage(u: StepUsage): string {
   ];
   if (t.costUsd > 0) parts.push(`$${t.costUsd.toFixed(2)} reported`);
   if (t.unpricedTurns > 0) parts.push(`${n(t.unpricedTurns)} turn${t.unpricedTurns === 1 ? '' : 's'} unpriced`);
-  return `${head} ${parts.join(', ')}${u.complete ? '' : ' (incomplete: the session logs could not be read in time)'}.`;
+  return `${head} ${parts.join(', ')}${tail}.`;
+}
+
+/** One line for a verify reply. */
+export function describeUsage(u: StepUsage): string {
+  return describeTotals(`📊 Usage in ${u.step}:`, u.total, u.complete);
+}
+
+/** The DONE reply's line for the whole card. */
+export function describeCardUsage(u: CardUsage): string {
+  const scope = u.cards > 1 ? ` (with ${u.cards - 1} sub-card${u.cards === 2 ? '' : 's'})` : '';
+  return describeTotals(`📊 Card usage${scope}:`, u.total, true);
 }

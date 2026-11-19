@@ -365,6 +365,16 @@ export interface UsageSummary {
   total: UsageTotals;
 }
 
+/**
+ * GH-389: a card's usage when it closed: every turn charged to it and to its
+ * descendants, broken down by the card's own steps.
+ */
+export interface CardUsage extends UsageSummary {
+  byStep: Array<{ step: string; total: UsageTotals }>;
+  /** The card plus its descendants. */
+  cards: number;
+}
+
 /** GH-389: the usage of one stay in a step, recorded when the card left it. */
 export interface StepUsage extends UsageSummary {
   step: string;
@@ -686,6 +696,8 @@ export interface BaseItem {
    * (a re-entered step gets a new row). Server-written only.
    */
   usageByStep?: StepUsage[];
+  /** GH-389: the card's usage (with its descendants') when it closed. Server-written only. */
+  cardUsage?: CardUsage;
   /** The last verify's check results (CGLAB-380). Server-written only. */
   lastChecks?: { step: string; at: string; blocked: boolean; results: StepCheckResult[] };
   history?: HistoryRecord[];
