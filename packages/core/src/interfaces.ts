@@ -112,6 +112,10 @@ export interface StorageProvider extends AgEnFKPlugin {
   sessionCardAt(client: string, sessionId: string, ts: string): Promise<{ itemId: string | null; projectId?: string } | null>;
   /** A card closed at `at`: every session whose latest row is that card is on none from then. */
   endSessionCards(itemId: string, at: string): Promise<void>;
+  /** Every (client, session) that has a row on the card: whose logs to flush before counting its usage. */
+  sessionsForItem(itemId: string): Promise<Array<{ client: string; sessionId: string }>>;
+  /** The time usage ingestion was first switched on: `now` the first time, the stored value after. */
+  ensureIngestionEpoch(now: string): Promise<string>;
 
   // Observability — agent runs (orchestrated worker transcripts per item)
   createAgentRun(run: AgentRun): Promise<AgentRun>;

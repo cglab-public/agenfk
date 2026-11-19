@@ -131,9 +131,12 @@ export interface IngestionPollerOptions {
    * ISO time ingestion was first switched on. A file last written before it
    * is fast-forwarded to its end without being parsed: those sessions predate
    * the session-to-card journal, so none of their usage could be attributed,
-   * and the backlog runs to gigabytes.
+   * and the backlog runs to gigabytes. Turns before it in a file that is still
+   * being written are dropped for the same reason.
    */
   epoch?: string;
+  /** Limit the pass to some files (flush: only the sessions being counted). */
+  fileFilter?: (client: string, absPath: string, relPath: string) => boolean;
   /** Called for each TokenEvent successfully written to storage. */
   onEvent?: (ev: TokenEvent) => void;
 }
@@ -210,10 +213,14 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
   for (const source of opts.sources) {
     const files = await listSourceFiles(source.rootDir, source.matches);
     for (const abs of files) {
+      if (opts.fileFilter && !opts.fileFilter(source.client, abs, path.relative(source.rootDir, abs))) continue;
       const result = await ingestFile(abs, source.parser, opts.storage, Number.isFinite(epochMs) ? epochMs : null);
       if (!result) continue;
       // Tag every event with the source's client name (parsers may not know it).
       for (const ev of result.events) {
+        // A session running across the epoch: its earlier turns predate the
+        // journal as much as an old file does, and are dropped the same way.
+        if (epochMs !== null && Number.isFinite(epochMs) && Date.parse(ev.ts) < epochMs) continue;
         ev.client = source.client as any;
         if (opts.attributeEvents) await attributeTokenEvent(opts.storage, ev);
         try {
@@ -230,20 +237,6 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
     }
   }
   return written;
-}
-
-export function startIngestionPoller(opts: IngestionPollerOptions): () => void {
-  const intervalMs = opts.intervalMs ?? 30_000;
-  let stopped = false;
-  const tick = async () => {
-    if (stopped) return;
-    try { await ingestOnce(opts); } catch (e) {
-      console.error('[TOKEN_INGESTION] tick failed:', (e as Error).message);
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
-  };
-  let timer: NodeJS.Timeout = setTimeout(tick, intervalMs);
-  return () => { stopped = true; clearTimeout(timer); };
 }
 
 /**

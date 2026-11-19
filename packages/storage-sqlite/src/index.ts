@@ -455,6 +455,10 @@ export class SQLiteStorageProvider implements StorageProvider {
         at_ms INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_session_cards_lookup ON session_cards(client, session_id, at_ms);
+      CREATE TABLE IF NOT EXISTS ingestion_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS ingestion_state (
         source_path TEXT PRIMARY KEY,
         last_offset INTEGER NOT NULL,
@@ -1632,6 +1636,17 @@ export class SQLiteStorageProvider implements StorageProvider {
                           WHERE t.client = s.client AND t.session_id = s.session_id
                           ORDER BY t.at_ms DESC, t.rowid DESC LIMIT 1)`
     ).run(at, atMs, itemId);
+  }
+
+  async sessionsForItem(itemId: string): Promise<Array<{ client: string; sessionId: string }>> {
+    return (this.database.prepare(
+      'SELECT DISTINCT client, session_id FROM session_cards WHERE item_id = ?'
+    ).all(itemId) as Array<{ client: string; session_id: string }>).map((r) => ({ client: r.client, sessionId: r.session_id }));
+  }
+
+  async ensureIngestionEpoch(now: string): Promise<string> {
+    this.database.prepare("INSERT INTO ingestion_meta (key, value) VALUES ('epoch', ?) ON CONFLICT(key) DO NOTHING").run(now);
+    return (this.database.prepare("SELECT value FROM ingestion_meta WHERE key = 'epoch'").get() as { value: string }).value;
   }
 
   // ── Observability: PR registration ─────────────────────────────────────────

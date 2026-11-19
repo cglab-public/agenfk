@@ -38,6 +38,7 @@ import type { HubConfig } from "./hub/types.js";
 import { requeueDeadletter, readDeadletterIndicator, RequeueRewriteFailed } from "./hub/deadletter.js";
 import { defaultDeadletterPath } from "./hub/flusher.js";
 import { resolveActor } from "./hub/identity";
+import { createUsageIngestion, defaultIngestionSources, type UsageIngestion } from "./token-ingestion/service.js";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -1704,7 +1705,21 @@ const initStorage = async () => {
   }
 
   startHubSubsystems();
+  startUsageIngestion();
 };
+
+/**
+ * GH-389: token usage from the harnesses' session logs, ingested locally.
+ * Created on every init so a transition can flush the card's sessions; it
+ * polls only in a real server, never under the test runner (the tests drive
+ * passes themselves and must not read the developer's session folders).
+ */
+let usageIngestion: UsageIngestion | null = null;
+function startUsageIngestion(): void {
+  usageIngestion?.stop();
+  usageIngestion = createUsageIngestion({ storage, sources: defaultIngestionSources(os.homedir(), process.env) });
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) usageIngestion.start();
+}
 
 /**
  * Close the database and stop the hub subsystems that hold it (#208). Safe to
@@ -1713,6 +1728,8 @@ const initStorage = async () => {
  * next initStorage().
  */
 const closeStorage = async (): Promise<void> => {
+  usageIngestion?.stop();
+  usageIngestion = null;
   hubSyncHandle?.stop();
   hubSyncHandle = null;
   hubFlusher = null;

@@ -185,4 +185,17 @@ describe('ingestOnce - reads only what changed', () => {
 
     expect(storage.inserted.map((e) => e.input)).toEqual([1]);
   });
+
+  it('a session still running across the epoch keeps only the turns after it', async () => {
+    const f = path.join(dir, 'live.jsonl');
+    fs.writeFileSync(f, '1,1\n2,2\n');
+    const storage = memStorage();
+    const stamped = (text: string, sp: string, base: number, ctx?: ParserContext) =>
+      countingParser([])(text, sp, base, ctx).map((e, i) => ({ ...e, ts: i === 0 ? '2026-10-01T00:00:00Z' : '2026-11-19T00:00:00Z' }));
+
+    await ingestOnce({ storage, sources: [source(stamped)], epoch: '2026-11-01T00:00:00Z' });
+
+    expect(storage.inserted.map((e) => e.input)).toEqual([2]);
+  });
 });
+

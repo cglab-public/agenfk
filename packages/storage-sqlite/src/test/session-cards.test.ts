@@ -70,4 +70,21 @@ describe('session cards journal', () => {
     // Before the close, the turns still belong to A.
     expect(await storage.sessionCardAt('pi', 'on-a', '2026-11-19T10:30:00.000Z')).toEqual({ itemId: 'A', projectId: 'p' });
   });
+
+  it('the ingestion epoch is stored the first time and kept from then on', async () => {
+    expect(await storage.ensureIngestionEpoch('2026-11-19T10:00:00.000Z')).toBe('2026-11-19T10:00:00.000Z');
+    expect(await storage.ensureIngestionEpoch('2026-12-01T00:00:00.000Z')).toBe('2026-11-19T10:00:00.000Z');
+  });
+
+  it('lists the sessions that worked on a card', async () => {
+    await storage.recordSessionCard({ client: 'pi', sessionId: 's1', itemId: 'A', projectId: 'p', at: '2026-11-19T10:00:00.000Z' });
+    await storage.recordSessionCard({ client: 'pi', sessionId: 's1', itemId: 'A', projectId: 'p', at: '2026-11-19T10:05:00.000Z' });
+    await storage.recordSessionCard({ client: 'claude-code', sessionId: 's2', itemId: 'A', projectId: 'p', at: '2026-11-19T10:10:00.000Z' });
+    await storage.recordSessionCard({ client: 'pi', sessionId: 's3', itemId: 'B', projectId: 'p', at: '2026-11-19T10:10:00.000Z' });
+    const sessions = await storage.sessionsForItem('A');
+    expect(sessions.sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual([
+      { client: 'pi', sessionId: 's1' }, { client: 'claude-code', sessionId: 's2' },
+    ]);
+  });
 });
+
