@@ -220,6 +220,9 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
       for (const ev of result.events) {
         // A session running across the epoch: its earlier turns predate the
         // journal as much as an old file does, and are dropped the same way.
+        // One format for every harness: the store compares times as text.
+        const tsMs = Date.parse(ev.ts);
+        if (Number.isFinite(tsMs)) ev.ts = new Date(tsMs).toISOString();
         if (epochMs !== null && Number.isFinite(epochMs) && Date.parse(ev.ts) < epochMs) continue;
         ev.client = source.client as any;
         if (opts.attributeEvents) await attributeTokenEvent(opts.storage, ev);

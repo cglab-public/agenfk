@@ -197,5 +197,16 @@ describe('ingestOnce - reads only what changed', () => {
 
     expect(storage.inserted.map((e) => e.input)).toEqual([2]);
   });
+
+  it('stores every turn time as UTC ISO with milliseconds, so stored times compare correctly as text', async () => {
+    fs.writeFileSync(path.join(dir, 'tz.jsonl'), '1,1\n2,2\n');
+    const storage = memStorage();
+    const stamped = (text: string, sp: string, base: number, ctx?: ParserContext) =>
+      countingParser([])(text, sp, base, ctx).map((e, i) => ({ ...e, ts: i === 0 ? '2026-11-19T07:30:00-03:00' : '2026-11-19T10:31:00Z' }));
+
+    await ingestOnce({ storage, sources: [source(stamped)] });
+
+    expect(storage.inserted.map((e) => e.ts)).toEqual(['2026-11-19T10:30:00.000Z', '2026-11-19T10:31:00.000Z']);
+  });
 });
 

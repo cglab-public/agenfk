@@ -39,6 +39,8 @@ import { requeueDeadletter, readDeadletterIndicator, RequeueRewriteFailed } from
 import { defaultDeadletterPath } from "./hub/flusher.js";
 import { resolveActor } from "./hub/identity";
 import { createUsageIngestion, defaultIngestionSources, type UsageIngestion } from "./token-ingestion/service.js";
+import { computeStepUsage, describeUsage } from "./usage/stepUsage.js";
+import type { StepUsage } from "@agenfk/core";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -1134,7 +1136,7 @@ const syncParentStatus = async (parentId: string, how: RollUp = {}) => {
     const fresh: any = walked.length ? await storage.getItem(parent.id) : null;
     await storage.updateItem(parent.id, { status: newStatus, ...(walked.length ? { stepRecords: [...((fresh ?? parent as any).stepRecords ?? []), ...walked] } : {}) } as any);
     io.emit('items_updated');
-    recordMoveEvents(parent, parent.status, newStatus, parentFlow);
+    await recordMoveEvents(parent, parent.status, newStatus, parentFlow);
   }
   /*
    * Up the tree when this parent moved - and, when something under it was
@@ -2155,13 +2157,16 @@ function transitionStamp(
  * closed cards by `item.closed`, so a close it is not told about is a close
  * that never happened on its dashboards.
  */
-function recordMoveEvents(item: { id: string; projectId: string; type: string }, from: string, to: string, flow: TransitionFlow): void {
-  if (to === from) return;
+async function recordMoveEvents(item: { id: string; projectId: string; type: string }, from: string, to: string, flow: TransitionFlow): Promise<StepUsage | null> {
+  if (to === from) return null;
+  // GH-389: the usage of the step being left - before a close ends the
+  // sessions on the card, so its last turns still count.
+  const usage = await recordStepUsage(item.id, from, to);
   recordHubEvent({
     type: 'step.transitioned',
     projectId: item.projectId,
     itemId: item.id,
-    payload: { fromStatus: from, toStatus: to, itemType: item.type, ...transitionStamp(from, to, flow) },
+    payload: { fromStatus: from, toStatus: to, itemType: item.type, ...transitionStamp(from, to, flow), ...hubUsage(usage) },
   });
   if (isCompletionStep(to, flow) && !isCompletionStep(from, flow)) {
     // GH-389: a closed card stops collecting usage; the sessions on it are on none until they pick another.
@@ -2174,7 +2179,43 @@ function recordMoveEvents(item: { id: string; projectId: string; type: string },
       payload: { fromStatus: from, toStatus: to, itemType: item.type },
     });
   }
+  return usage;
 }
+
+/**
+ * GH-389: compute and store the usage of the step a card is leaving. Never
+ * throws and never blocks the move for long: a failure is logged and the move
+ * goes on without a usage row.
+ */
+async function recordStepUsage(itemId: string, from: string, to: string): Promise<StepUsage | null> {
+  try {
+    const item: any = await storage.getItem(itemId);
+    if (!item) return null;
+    const usage = await computeStepUsage({
+      storage,
+      flush: (sessions) => (usageIngestion ? usageIngestion.flush(sessions) : Promise.resolve(0)),
+      item,
+      from,
+      to,
+      at: new Date().toISOString(),
+    });
+    await storage.updateItem(itemId, { usageByStep: [...(item.usageByStep ?? []), usage] } as any);
+    return usage;
+  } catch (e) {
+    console.error(`[USAGE] could not record the usage of ${itemId} in ${from}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/** The usage a step.transitioned event carries: the step's totals, never per-turn data. */
+function hubUsage(usage: StepUsage | null): { usage?: Omit<StepUsage, 'step' | 'to'> } {
+  if (!usage) return {};
+  const { step: _step, to: _to, ...rest } = usage;
+  return { usage: rest };
+}
+
+/** The verify reply's usage line, when there is one. */
+const usageNote = (usage: StepUsage | null): string => (usage ? `\n\n${describeUsage(usage)}` : '');
 
 /**
  * What `previousStatus` becomes after a status change through PUT/bulk. It is
@@ -8328,19 +8369,11 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
         itemType: updated.type,
         flow_name: await resolveFlowName(updated.projectId),
       });
-      recordHubEvent({
-        type: 'step.transitioned',
-        projectId: updated.projectId,
-        itemId: updated.id,
-        // CGLAB-612: the PUT path is the ROLLBACK path, so its event carries the
-        // same stamp — a rollback between two steps of the revision is compliant.
-        payload: {
-          fromStatus: currentItem.status,
-          toStatus: status,
-          itemType: updated.type,
-          ...(activeFlowForEvents ? transitionStamp(currentItem.status, status, activeFlowForEvents) : {}),
-        },
-      });
+      // CGLAB-612: the PUT path is the ROLLBACK path, so its event carries the
+      // same stamp; GH-389: and it records the usage of the step it leaves. PUT
+      // can never reach a completion step (refused above), so no item.closed.
+      // activeFlowForEvents is set by the validation block under this same condition.
+      await recordMoveEvents(updated, currentItem.status, status, activeFlowForEvents!);
     } else {
       recordHubEvent({
         type: 'item.updated',
@@ -10165,6 +10198,8 @@ function runRecorder(run: ValidateRun) {
 }
 
 async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport>; answers?: Record<string, string>; joined?: boolean; git?: GitMemo }) {
+  // GH-389: the usage of the step this verify moved the card out of, for its reply.
+  let movedUsage: StepUsage | null = null;
   /*
    * GH #312: this verify's git memo - a read-only query asked again within one epoch is answered
    * from its first answer, never across requests (a continuation of this same verify passes it on).
@@ -10441,7 +10476,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     if (leftTodo.refused) return;
     res = leftTodo.res;
     const movedToCoding = await storage.updateItem(itemId, { status: codingStep.name as Status, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any);
-    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, codingStep.name, activeFlow);
+    movedUsage = await recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, codingStep.name, activeFlow);
     // Entering the first working step is where a worktree earns its keep.
     await ensureWorktreeForItem(movedToCoding, true);
     io.emit('items_updated');
@@ -10449,7 +10484,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const codingCommitNote = commitOnLeaveNote(codingStep.name, stepCommitsOnLeave(sorted as any, codingStep.name));
     const mandatoryNote = (codingStepCriteria ? criteriaBanner(codingStep.name, codingStepCriteria) : '') + (codingCommitNote ? `\n\n${codingCommitNote}` : '');
     const leave = await nextLeaveNote(itemId);
-    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${leave.text}${nowOn(codingStep.name)}`, ...leave.field });
+    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${leave.text}${usageNote(movedUsage)}${nowOn(codingStep.name)}`, ...leave.field });
   }
 
   const nextStep = sorted[currentFlowStep.index + 1];
@@ -10672,14 +10707,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     }
     // The marker the roll-up reads: this parent owes a suite run, whatever its flow says later.
     const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(crossed ? { suiteDeferredCommit: crossed } : {}), ...(isExitStep ? { failureCount: 0 } : {}) } as any);
-    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+    movedUsage = await recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     if (!crossTree && commits) gitResult = await autoGitCommit(updated, (project as any)?.projectRoot);
     const crossNote = crossed
       ? `\n\nThis card's work is in another worktree (${crossed.branch ? `branch ${crossed.branch}, ` : ''}commit ${crossed.sha.substring(0, 12)}): the parent's verify is refused until that commit is merged into the parent's branch (a merge - a squash or a rebase makes new commits, which do not count).`
       : '';
-    return res.json({ status: nextStatus, message: `✅ Validation Passed (suite deferred to the parent)!\n\n${note}${crossNote}\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}` });
+    return res.json({ status: nextStatus, message: `✅ Validation Passed (suite deferred to the parent)!\n\n${note}${crossNote}\nItem moved to ${nextStatus}.${describePush(gitResult)}${usageNote(movedUsage)}${nowOn(nextStatus)}` });
   }
 
   if (isFinalStep && !resolvedCommand) {
@@ -10706,7 +10741,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], tests: [...testRecords(item.tests), { id: testId, command: resolvedCommand, output: how.recordOutput, status: 'PASSED', executedAt: new Date(), ...how.green }], ...(isExitStep ? { failureCount: 0 } : {}) };
     const updated = await storage.updateItem(itemId, updates);
     io.emit('items_updated');
-    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+    movedUsage = await recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
     if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     // Awaited, unlike before: the response describes what the commit did,
     // so it cannot be written before the commit has been attempted. No
@@ -10734,7 +10769,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // The hub counts passes: a close on a green in hand is one (the green's source is in the payload).
     recordHubEvent({ type: 'validate.passed', projectId: item.projectId, itemId, payload: { fromStatus: item.status, toStatus: nextStatus, command: resolvedCommand, via: how.output } });
     recordHubEvent({ type: 'test.logged', projectId: item.projectId, itemId, payload: { command: resolvedCommand, status: 'PASSED', testId, via: how.output } });
-    return r1.json({ status: nextStatus, message: `✅ Validation Passed (${how.how})!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}`, output: how.output });
+    return r1.json({ status: nextStatus, message: `✅ Validation Passed (${how.how})!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${usageNote(movedUsage)}${nowOn(nextStatus)}`, output: how.output });
   };
 
   // ── This move's own capture (36c5ca25) ───────────────────────────────────
@@ -10824,14 +10859,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         if (left.refused) return;
         res = left.res;
         const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], ...(isExitStep ? { failureCount: 0 } : {}) } as any);
-        recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+        movedUsage = await recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
         // Sibling propagation moves the item into a working step exactly like
         // a verify does. It is the same transition; only the reason differs.
         await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
         const leave = await nextLeaveNote(itemId);
-        return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, output: 'Sibling propagation', ...leave.field });
+        return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${leave.text}${usageNote(movedUsage)}${nowOn(nextStatus)}`, output: 'Sibling propagation', ...leave.field });
       }
     }
   }
@@ -10864,12 +10899,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     if (left.refused) return;
     res = left.res;
     const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any);
-    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+    movedUsage = await recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
     await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     const leave = await nextLeaveNote(itemId);
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, ...leave.field });
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${leave.text}${usageNote(movedUsage)}${nowOn(nextStatus)}`, ...leave.field });
   }
 
   // See above: declining beats committing somewhere plausible.
@@ -11060,7 +11095,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       const updated = await storage.updateItem(itemId, updates);
       io.emit('items_updated');
       // Before the roll-up: the child's move is recorded ahead of the parent's.
-      recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+      movedUsage = await recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
       if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
       // HEAD just before our own close commit. If it moved during the run,
       // another agent landed work this green never covered, so no commit is
@@ -11207,7 +11242,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
     const leave = await nextLeaveNote(itemId);
-    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}${leave.text}${nowOn(nextStatus)}`, output: preview, ...leave.field });
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}${leave.text}${usageNote(movedUsage)}${nowOn(nextStatus)}`, output: preview, ...leave.field });
   } else {
     const updates: any = { status: failureStatus, comments };
     // Same positional predicate as the PASSED record above: a red final gate on
