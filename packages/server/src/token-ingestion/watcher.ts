@@ -42,8 +42,10 @@ interface PassPlan {
   state: unknown;
 }
 
-function planPass(prior: IngestionState | null, fileSize: number): PassPlan {
+function planPass(prior: IngestionState | null, fileSize: number, fileId?: string): PassPlan {
   if (!prior || prior.lastOffset > fileSize) return { start: 0, parseFrom: 0, state: undefined }; // new or truncated
+  // Another file now at this path (review finding): its bytes and its session are not the old one's.
+  if (fileId && prior.fileId && prior.fileId !== fileId) return { start: 0, parseFrom: 0, state: undefined };
   if (prior.parserState !== undefined) {
     try {
       const state = JSON.parse(prior.parserState);
@@ -66,17 +68,21 @@ function processBytes(
   bufStart: number,
   plan: PassPlan,
   parser: SessionLogParser,
-): ProcessFileResult {
+): ProcessFileResult & { parsedTo: number } {
   const lastNewline = buf.lastIndexOf(0x0a);
-  const end = Math.max(plan.start, lastNewline === -1 ? bufStart : bufStart + lastNewline + 1);
+  // How far the parser read (the last complete line in `buf`), and how far
+  // the file counts as ingested: never back behind what earlier passes took.
+  const parsedTo = lastNewline === -1 ? bufStart : bufStart + lastNewline + 1;
+  const end = Math.max(plan.start, parsedTo);
   const from = plan.parseFrom - bufStart;
-  const text = end > plan.parseFrom ? buf.subarray(from, end - bufStart).toString('utf8') : '';
+  const text = parsedTo > plan.parseFrom ? buf.subarray(from, parsedTo - bufStart).toString('utf8') : '';
   const ctx: ParserContext = { state: plan.state };
   const events = text
     ? parser(text, sourcePath, plan.parseFrom, ctx).filter((ev) => ev.sourceOffset >= plan.start)
     : [];
   return {
     events,
+    parsedTo,
     nextState: {
       sourcePath,
       lastOffset: end,
@@ -101,7 +107,8 @@ export function processFile(
   parser: SessionLogParser,
 ): ProcessFileResult {
   const buf = Buffer.from(currentContents, 'utf8');
-  return processBytes(sourcePath, buf, 0, planPass(priorState, buf.length), parser);
+  const { events, nextState } = processBytes(sourcePath, buf, 0, planPass(priorState, buf.length), parser);
+  return { events, nextState };
 }
 
 // ── Runtime poller (wraps processFile + storage) ─────────────────────────────
@@ -135,6 +142,8 @@ export interface IngestionPollerOptions {
    * being written are dropped for the same reason.
    */
   epoch?: string;
+  /** Bytes read per chunk of a file (default 4 MiB); a longer line is read whole. */
+  chunkBytes?: number;
   /** Limit the pass to some files (flush: only the sessions being counted). */
   fileFilter?: (client: string, absPath: string, relPath: string) => boolean;
   /** Called for each TokenEvent successfully written to storage. */
@@ -163,44 +172,88 @@ export async function listSourceFiles(rootDir: string, predicate: (rel: string) 
   return out;
 }
 
+const DEFAULT_CHUNK_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Which file, and which generation of it, is at the path: device:inode#n.
+ * A truncated file keeps its inode but starts its offsets over, so it is a new
+ * generation (review finding): its turns must not collide with the old
+ * contents' offsets in the dedup index.
+ */
+function fileGeneration(prior: IngestionState | null, inode: string, size: number): string {
+  const [priorInode, priorGen] = (prior?.fileId ?? '').split('#');
+  if (priorInode !== inode) return `${inode}#0`;
+  const gen = Number(priorGen) || 0;
+  return prior && prior.lastOffset > size ? `${inode}#${gen + 1}` : `${inode}#${gen}`;
+}
+
 /**
  * One file's pass, reading only what it needs: nothing when the file has not
  * grown, only the appended bytes when the parser's state was saved, the whole
- * file only to rebuild context or start a new one.
+ * file only to rebuild context or start a new one - and never all at once.
+ *
+ * It reads in chunks and yields each chunk's result for the caller to store
+ * before the next is read (review finding): a session log runs to tens of
+ * megabytes, and reading one whole, then parsing it in one go, held the
+ * server's event loop and all of it in memory. A chunk ends at its last
+ * complete line; a line longer than a chunk is read whole.
  */
-async function ingestFile(
+async function* ingestFile(
   abs: string,
   parser: SessionLogParser,
   storage: StorageProvider,
   epochMs: number | null,
-): Promise<ProcessFileResult | null> {
+  chunkBytes: number,
+): AsyncGenerator<ProcessFileResult> {
   let stat: fs.Stats;
-  try { stat = await fs.promises.stat(abs); } catch { return null; }
+  try { stat = await fs.promises.stat(abs); } catch { return; }
   const prior = await storage.getIngestionState(abs);
-  if (prior && prior.lastOffset === stat.size) return null;
+  const fileId = fileGeneration(prior, `${stat.dev}:${stat.ino}`, stat.size);
+  const sameFile = !prior?.fileId || prior.fileId === fileId;
+  if (prior && sameFile && prior.lastOffset === stat.size) return;
 
   if (epochMs !== null && stat.mtimeMs < epochMs) {
     // Dropping any parser state makes a later append rebuild context first.
-    await storage.setIngestionState({ sourcePath: abs, lastOffset: stat.size, lastRunAt: new Date().toISOString() });
-    return null;
+    await storage.setIngestionState({ sourcePath: abs, lastOffset: stat.size, lastRunAt: new Date().toISOString(), fileId });
+    return;
   }
 
-  const plan = planPass(prior, stat.size);
-  let buf: Buffer;
-  try {
-    const fh = await fs.promises.open(abs, 'r');
-    try {
-      const length = stat.size - plan.parseFrom;
-      buf = Buffer.alloc(Math.max(0, length));
-      const { bytesRead } = await fh.read(buf, 0, buf.length, plan.parseFrom);
-      buf = buf.subarray(0, bytesRead);
-    } finally {
-      await fh.close();
-    }
-  } catch {
-    return null;
+  let plan = planPass(prior, stat.size, fileId);
+  // Starting over (truncated or replaced): record that now, before anything is
+  // read. A file cut to nothing, or to half a line, consumes no line this pass,
+  // and an unsaved reset would let the next pass resume at the OLD offset once
+  // the file grows past it, skipping its new beginning (review finding).
+  if (prior && plan.start === 0 && prior.lastOffset > 0) {
+    await storage.setIngestionState({ sourcePath: abs, lastOffset: 0, lastRunAt: new Date().toISOString(), fileId });
   }
-  return processBytes(abs, buf, plan.parseFrom, plan, parser);
+  let fh: fs.promises.FileHandle;
+  try { fh = await fs.promises.open(abs, 'r'); } catch { return; }
+  try {
+    let size = chunkBytes;
+    while (plan.parseFrom < stat.size) {
+      const length = Math.min(size, stat.size - plan.parseFrom);
+      const buf = Buffer.alloc(length);
+      const { bytesRead } = await fh.read(buf, 0, length, plan.parseFrom);
+      const atEnd = plan.parseFrom + bytesRead >= stat.size;
+      const result = processBytes(abs, buf.subarray(0, bytesRead), plan.parseFrom, plan, parser);
+      if (result.parsedTo === plan.parseFrom) {
+        if (atEnd || bytesRead === 0) return; // only a line still being written is left
+        size *= 2; // a line longer than the chunk: read more of it
+        continue;
+      }
+      size = chunkBytes;
+      const next = result.nextState.parserState ? JSON.parse(result.nextState.parserState) : undefined;
+      // Rebuilding context ahead of the old offset: nothing there is new, and a
+      // state saved now would claim context the parser has not reached yet.
+      if (result.parsedTo >= plan.start) {
+        yield { events: result.events, nextState: { ...result.nextState, fileId } };
+      }
+      plan = { start: plan.start, parseFrom: result.parsedTo, state: next ?? undefined };
+      if (atEnd) return;
+    }
+  } finally {
+    await fh.close();
+  }
 }
 
 /**
@@ -214,8 +267,7 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
     const files = await listSourceFiles(source.rootDir, source.matches);
     for (const abs of files) {
       if (opts.fileFilter && !opts.fileFilter(source.client, abs, path.relative(source.rootDir, abs))) continue;
-      const result = await ingestFile(abs, source.parser, opts.storage, Number.isFinite(epochMs) ? epochMs : null);
-      if (!result) continue;
+      for await (const result of ingestFile(abs, source.parser, opts.storage, Number.isFinite(epochMs) ? epochMs : null, opts.chunkBytes ?? DEFAULT_CHUNK_BYTES)) {
       // Tag every event with the source's client name (parsers may not know it).
       for (const ev of result.events) {
         // A session running across the epoch: its earlier turns predate the
@@ -225,6 +277,7 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
         if (Number.isFinite(tsMs)) ev.ts = new Date(tsMs).toISOString();
         if (epochMs !== null && Number.isFinite(epochMs) && Date.parse(ev.ts) < epochMs) continue;
         ev.client = source.client as any;
+        if (result.nextState.fileId) ev.sourceFile = result.nextState.fileId;
         if (opts.attributeEvents) await attributeTokenEvent(opts.storage, ev);
         try {
           await opts.storage.insertTokenEvent(ev);
@@ -237,6 +290,9 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
         }
       }
       await opts.storage.setIngestionState(result.nextState);
+      // Let the server answer requests between chunks.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      }
     }
   }
   return written;

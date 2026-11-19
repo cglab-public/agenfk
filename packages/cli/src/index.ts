@@ -4393,7 +4393,10 @@ program
         });
         // GH-389: the session-to-card journal the usage counts are attributed by.
         const usageWarning = await reportSessionCard(decision.task.id, harnessActor(), {
-          post: (body) => axios.post(`${API_URL}/session-cards`, body, { timeout: 5000 }),
+          post: (body) => axios.post(`${API_URL}/session-cards`, body, {
+            timeout: 5000,
+            headers: { 'x-agenfk-internal': fs.readFileSync(path.join(os.homedir(), '.agenfk', 'verify-token'), 'utf8').trim() },
+          }),
         });
         if (usageWarning) console.error(usageWarning);
       }

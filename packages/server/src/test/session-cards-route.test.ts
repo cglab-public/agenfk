@@ -48,27 +48,35 @@ const now = () => new Date(Date.now() + 1000).toISOString();
 describe('POST /session-cards', () => {
   it('records the card for the session', async () => {
     const c = await card();
-    const res = await agent().post('/session-cards').send({ client: 'claude-code', sessionId: 'sess-gk-1', itemId: c.id });
+    const res = await agent().post('/session-cards').set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ client: 'claude-code', sessionId: 'sess-gk-1', itemId: c.id });
     expect(res.status).toBe(204);
     expect(await storage.sessionCardAt('claude-code', 'sess-gk-1', now())).toEqual({ itemId: c.id, projectId: c.projectId });
   });
 
   it('refuses a client that is not a harness ingestion knows', async () => {
     const c = await card();
-    const res = await agent().post('/session-cards').send({ client: 'notepad', sessionId: 's', itemId: c.id });
+    const res = await agent().post('/session-cards').set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ client: 'notepad', sessionId: 's', itemId: c.id });
     expect(res.status).toBe(400);
   });
 
   it('refuses a session id that is not a plain identifier', async () => {
     const c = await card();
     for (const sessionId of ['', '../../etc', 'x'.repeat(200), 42]) {
-      const res = await agent().post('/session-cards').send({ client: 'pi', sessionId, itemId: c.id });
+      const res = await agent().post('/session-cards').set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ client: 'pi', sessionId, itemId: c.id });
       expect(res.status).toBe(400);
     }
   });
 
+  it('refuses a caller without the internal token, and a form post from a web page', async () => {
+    const c = await card();
+    const bare = await agent().post('/session-cards').send({ client: 'pi', sessionId: 'sess-forged', itemId: c.id });
+    const form = await agent().post('/session-cards').type('form').send(`client=pi&sessionId=sess-forged&itemId=${c.id}`);
+    expect([bare.status, form.status]).toEqual([403, 403]);
+    expect(await storage.sessionsForItem(c.id)).toEqual([]);
+  });
+
   it('refuses a card that does not exist', async () => {
-    const res = await agent().post('/session-cards').send({ client: 'pi', sessionId: 'sess-x', itemId: 'nope' });
+    const res = await agent().post('/session-cards').set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ client: 'pi', sessionId: 'sess-x', itemId: 'nope' });
     expect(res.status).toBe(404);
   });
 });
@@ -87,7 +95,7 @@ describe('verify records the caller session', () => {
   it('a verify without an actor records nothing', async () => {
     const c = await card();
     await validate(c.id);
-    expect(await storage.sessionCardAt('claude-code', '', now())).toBeNull();
+    expect(await storage.sessionsForItem(c.id)).toEqual([]);
   });
 
   it('landing on the end of the flow ends the session on that card', async () => {

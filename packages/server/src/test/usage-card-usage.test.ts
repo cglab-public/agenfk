@@ -62,4 +62,22 @@ describe('computeCardUsage', () => {
   it('a card that is gone has no usage', async () => {
     expect(await computeCardUsage(storage(items, events), 'nope')).toBeNull();
   });
+
+  it('carries whether the closing step was read completely', async () => {
+    expect((await computeCardUsage(storage(items, events), 'story', false))!.complete).toBe(false);
+    expect((await computeCardUsage(storage(items, events), 'story'))!.complete).toBe(true);
+  });
+
+  it('a sub-card that closed with turns missing makes the parent total incomplete too (review finding)', async () => {
+    const withIncompleteChild = items.map((i) => (i.id === 'task-a' ? { ...i, cardUsage: { complete: false } } : i));
+    expect((await computeCardUsage(storage(withIncompleteChild, events), 'story'))!.complete).toBe(false);
+  });
+
+  it('includes the closing step that is not stored yet, and names the step it closes in', async () => {
+    const pending = { step: 'REVIEW2', to: 'DONE', enteredAt: 'a', leftAt: 'b', complete: true, byModel: [], total: { ...zero, turns: 1, input: 3 } };
+    const u = await computeCardUsage(storage(items, events), 'story', true, pending as any, 'DONE');
+    expect(u!.byStep.map((r) => r.step)).toEqual(['WORK', 'REVIEW', 'REVIEW2']);
+    expect(u!.atStatus).toBe('DONE');
+  });
 });
+

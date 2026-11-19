@@ -73,8 +73,23 @@ interface StepUsageDeps {
 
 const DEFAULT_FLUSH_TIMEOUT_MS = 15_000;
 
-/** When the card last entered `step` at or before `at`: the latest history entry into it, else its creation. */
-function enteredAt(item: { createdAt: unknown; history?: Array<{ toStatus: unknown; timestamp: unknown }> }, step: string, at: string): string {
+/**
+ * When the card's stay in `step` began. Every move records a usage row, so the
+ * latest row - when it is the move INTO this step - ends exactly where this
+ * stay begins: the two windows meet at one instant and no turn is counted in
+ * both (review finding: the history timestamp is written a moment before the
+ * row's end, and using it double-counted turns in between). With no such row
+ * (a move from before usage existed, or a write that bypassed the workflow),
+ * the latest history entry into the step, else the card's creation.
+ */
+function enteredAt(
+  item: { createdAt: unknown; history?: Array<{ toStatus: unknown; timestamp: unknown }>; usageByStep?: Array<{ to: string; leftAt: string }> },
+  step: string,
+  at: string,
+): string {
+  const rows = item.usageByStep ?? [];
+  const last = rows[rows.length - 1];
+  if (last && last.to === step && Date.parse(last.leftAt) <= Date.parse(at)) return last.leftAt;
   const atMs = Date.parse(at);
   let best: number | null = null;
   for (const h of item.history ?? []) {
@@ -93,7 +108,7 @@ function enteredAt(item: { createdAt: unknown; history?: Array<{ toStatus: unkno
  * and the result says it may be incomplete.
  */
 export async function computeStepUsage(args: StepUsageDeps & {
-  item: { id: string; createdAt: unknown; history?: Array<{ toStatus: unknown; timestamp: unknown }> };
+  item: { id: string; createdAt: unknown; history?: Array<{ toStatus: unknown; timestamp: unknown }>; usageByStep?: Array<{ to: string; leftAt: string }> };
   from: string;
   to: string;
   at: string;
@@ -135,6 +150,12 @@ export async function computeCardUsage(
     queryTokenEvents(q: { itemId: string }): Promise<TokenEvent[]>;
   },
   itemId: string,
+  /** False when the closing step's logs could not be read in time: later turns may be missing. */
+  complete = true,
+  /** The closing step's row, not stored yet: it is saved with the move itself. */
+  pendingStep?: StepUsage | null,
+  /** The step the card closes in. */
+  atStatus?: string,
 ): Promise<CardUsage | null> {
   const item = await storage.getItem(itemId);
   if (!item) return null;
@@ -145,8 +166,17 @@ export async function computeCardUsage(
   }
   const events: TokenEvent[] = [];
   for (const id of ids) events.push(...await storage.queryTokenEvents({ itemId: id }));
-  const byStep = ((item.usageByStep ?? []) as StepUsage[]).map((u) => ({ step: u.step, total: u.total }));
-  return { ...aggregateUsage(events), byStep, cards: ids.length };
+  const rows = [...((item.usageByStep ?? []) as StepUsage[]), ...(pendingStep ? [pendingStep] : [])];
+  const byStep = rows.map((u) => ({ step: u.step, total: u.total }));
+  // A descendant that closed with turns missing makes this total incomplete too (review finding).
+  const descendantsComplete = all
+    .filter((c: any) => ids.includes(c.id) && c.id !== item.id)
+    .every((c: any) => c.cardUsage?.complete !== false);
+  return {
+    ...aggregateUsage(events), byStep, cards: ids.length,
+    complete: complete && descendantsComplete,
+    ...(atStatus ? { atStatus } : {}),
+  };
 }
 
 const n = (v: number) => v.toLocaleString('en-US');
@@ -174,5 +204,5 @@ export function describeUsage(u: StepUsage): string {
 /** The DONE reply's line for the whole card. */
 export function describeCardUsage(u: CardUsage): string {
   const scope = u.cards > 1 ? ` (with ${u.cards - 1} sub-card${u.cards === 2 ? '' : 's'})` : '';
-  return describeTotals(`📊 Card usage${scope}:`, u.total, true);
+  return describeTotals(`📊 Card usage${scope}:`, u.total, u.complete !== false);
 }

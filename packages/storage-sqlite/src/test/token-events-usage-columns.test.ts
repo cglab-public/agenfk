@@ -71,10 +71,11 @@ describe('token events: usage columns and cross-file dedup', () => {
   it('round-trips the parser state on ingestion state', async () => {
     const storage = new SQLiteStorageProvider();
     await storage.init({ path: TEST_DB });
-    await storage.setIngestionState({ sourcePath: '/p/a.jsonl', lastOffset: 10, lastRunAt: 'x', parserState: '{"sessionId":"s"}' });
+    await storage.setIngestionState({ sourcePath: '/p/a.jsonl', lastOffset: 10, lastRunAt: 'x', parserState: '{"sessionId":"s"}', fileId: '16777220:123' });
     const st = await storage.getIngestionState('/p/a.jsonl');
     await storage.shutdown();
     expect(st?.parserState).toBe('{"sessionId":"s"}');
+    expect(st?.fileId).toBe('16777220:123');
   });
 
   it('adds the new columns to a database created before them, keeping its rows', async () => {
@@ -104,4 +105,36 @@ describe('token events: usage columns and cross-file dedup', () => {
     expect(st).toMatchObject({ lastOffset: 100 });
     expect(st?.parserState).toBeUndefined();
   });
+
+  it('the offset dedup key names the file: a replaced file reuses offsets without losing its turns (review finding)', async () => {
+    const storage = new SQLiteStorageProvider();
+    await storage.init({ path: TEST_DB });
+    await storage.insertTokenEvent(ev({ sourceOffset: 0, sourceFile: '1:100' }));
+    await storage.insertTokenEvent(ev({ sourceOffset: 0, sourceFile: '1:200' })); // another file at the same path
+    await expect(storage.insertTokenEvent(ev({ sourceOffset: 0, sourceFile: '1:200' }))).rejects.toThrow(); // poll overlap
+    const rows = await storage.queryTokenEvents({});
+    await storage.shutdown();
+    expect(rows).toHaveLength(2);
+  });
+
+  it('rebuilds the offset dedup index of a database from before, so a replaced file is not rejected there either', async () => {
+    const db = new DatabaseSync(TEST_DB);
+    db.exec(`
+      CREATE TABLE token_events (
+        id TEXT PRIMARY KEY, ts TEXT NOT NULL, client TEXT NOT NULL, session_id TEXT NOT NULL, turn_id TEXT,
+        model TEXT NOT NULL, input INTEGER NOT NULL DEFAULT 0, cached_input INTEGER NOT NULL DEFAULT 0,
+        output INTEGER NOT NULL DEFAULT 0, reasoning INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,
+        item_id TEXT, project_id TEXT, source_path TEXT NOT NULL, source_offset INTEGER NOT NULL);
+      CREATE UNIQUE INDEX idx_token_events_dedup ON token_events(client, source_path, source_offset);
+    `);
+    db.close();
+    const storage = new SQLiteStorageProvider();
+    await storage.init({ path: TEST_DB });
+    await storage.insertTokenEvent(ev({ sourceOffset: 0, sourceFile: '1:100' }));
+    await storage.insertTokenEvent(ev({ sourceOffset: 0, sourceFile: '1:200' }));
+    const rows = await storage.queryTokenEvents({});
+    await storage.shutdown();
+    expect(rows).toHaveLength(2);
+  });
 });
+

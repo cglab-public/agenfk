@@ -25,7 +25,7 @@ const card = {
   id: 'i1', status: 'REVIEW', createdAt: '2026-11-19T08:00:00.000Z',
   history: [{ toStatus: 'REVIEW', timestamp: '2026-11-19T10:00:00.000Z' }],
   usageByStep: [{
-    step: 'IN_PROGRESS', to: 'REVIEW', enteredAt: 'a', leftAt: 'b', complete: true,
+    step: 'IN_PROGRESS', to: 'REVIEW', enteredAt: '2026-11-19T09:00:00.000Z', leftAt: '2026-11-19T10:00:00.050Z', complete: true,
     byModel: [{ client: 'pi', model: 'qwen3.8', ...totals({ turns: 3, input: 1200, cacheRead: 34000, cacheWrite: 500, output: 800, costUsd: 0.75 }) }],
     total: totals({ turns: 3, input: 1200, cacheRead: 34000, cacheWrite: 500, output: 800, costUsd: 0.75 }),
   }],
@@ -57,7 +57,8 @@ describe('UsageView', () => {
     wrap(<UsageView itemId="i1" />);
 
     expect(await screen.findByText(/REVIEW \(now\)/)).toBeDefined();
-    await waitFor(() => expect(api.getTokenEvents).toHaveBeenCalledWith({ itemId: 'i1', since: '2026-11-19T10:00:00.000Z' }));
+    // Where the recorded IN_PROGRESS row ended, so no turn is counted in both.
+    await waitFor(() => expect(api.getTokenEvents).toHaveBeenCalledWith({ itemId: 'i1', since: '2026-11-19T10:00:00.050Z' }));
     expect(await screen.findByText('$1.00')).toBeDefined();
   });
 
@@ -67,6 +68,23 @@ describe('UsageView', () => {
     wrap(<UsageView itemId="i1" />);
     expect(await screen.findByText(/no usage recorded/i)).toBeDefined();
     expect(screen.getByText(/Claude Code, Codex and pi/)).toBeDefined();
+  });
+
+  it('says when the totals may be missing turns', async () => {
+    vi.mocked(api.getItem).mockResolvedValue({ ...card, usageByStep: [{ ...card.usageByStep[0], complete: false }] } as never);
+    vi.mocked(api.getTokenEvents).mockResolvedValue([] as never);
+    wrap(<UsageView itemId="i1" />);
+    expect(await screen.findByText(/incomplete: some session logs could not be read in time/i)).toBeDefined();
+    expect(screen.getByRole('cell', { name: 'IN_PROGRESS (incomplete)' })).toBeDefined();
+  });
+
+  it('with nothing recorded, still says when that may be because logs could not be read', async () => {
+    const zero = { ...card.usageByStep[0], complete: false, byModel: [], total: totals() };
+    vi.mocked(api.getItem).mockResolvedValue({ ...card, usageByStep: [zero] } as never);
+    vi.mocked(api.getTokenEvents).mockResolvedValue([] as never);
+    wrap(<UsageView itemId="i1" />);
+    expect(await screen.findByText(/no usage recorded/i)).toBeDefined();
+    expect(screen.getByText(/incomplete: some session logs could not be read in time/i)).toBeDefined();
   });
 
   it('marks an estimate as an estimate', async () => {

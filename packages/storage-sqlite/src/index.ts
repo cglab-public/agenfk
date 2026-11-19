@@ -772,11 +772,21 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (!cols.includes('cache_write')) this.database.exec('ALTER TABLE token_events ADD COLUMN cache_write INTEGER');
     if (!cols.includes('cost_usd')) this.database.exec('ALTER TABLE token_events ADD COLUMN cost_usd REAL');
     if (!cols.includes('dedup_key')) this.database.exec('ALTER TABLE token_events ADD COLUMN dedup_key TEXT');
+    if (!cols.includes('source_file')) this.database.exec('ALTER TABLE token_events ADD COLUMN source_file TEXT');
+    // The offset dedup key names the FILE too: a replaced file at the same
+    // path starts its offsets over, and its turns are not the old file's
+    // (review finding). Rebuilt once on a database from before.
+    const dedup = this.database.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_token_events_dedup'").get() as { sql: string } | undefined;
+    if (!dedup || !dedup.sql.includes('source_file')) {
+      this.database.exec('DROP INDEX IF EXISTS idx_token_events_dedup');
+      this.database.exec("CREATE UNIQUE INDEX idx_token_events_dedup ON token_events(client, source_path, COALESCE(source_file, ''), source_offset)");
+    }
     this.database.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_token_events_dedup_key ON token_events(client, dedup_key) WHERE dedup_key IS NOT NULL',
     );
     const stateCols = (this.database.prepare('PRAGMA table_info(ingestion_state)').all() as { name: string }[]).map((c) => c.name);
     if (!stateCols.includes('parser_state')) this.database.exec('ALTER TABLE ingestion_state ADD COLUMN parser_state TEXT');
+    if (!stateCols.includes('file_id')) this.database.exec('ALTER TABLE ingestion_state ADD COLUMN file_id TEXT');
   }
 
   /** GH-294 T5: a table created before denials gains their columns (CREATE TABLE IF NOT EXISTS never adds one). */
@@ -1170,8 +1180,8 @@ export class SQLiteStorageProvider implements StorageProvider {
         (id, ts, client, session_id, turn_id, model,
          input, cached_input, output, reasoning, total,
          item_id, project_id, source_path, source_offset,
-         cache_read, cache_write, cost_usd, dedup_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         cache_read, cache_write, cost_usd, dedup_key, source_file)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       event.id,
       event.ts,
@@ -1192,6 +1202,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       event.cacheWrite ?? null,
       event.costUsd ?? null,
       event.dedupKey ?? null,
+      event.sourceFile ?? null,
     );
   }
 
@@ -1578,26 +1589,28 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async getIngestionState(sourcePath: string): Promise<IngestionState | null> {
     const row = this.database.prepare(
-      'SELECT source_path, last_offset, last_run_at, parser_state FROM ingestion_state WHERE source_path = ?'
-    ).get(sourcePath) as { source_path: string; last_offset: number; last_run_at: string; parser_state: string | null } | undefined;
+      'SELECT source_path, last_offset, last_run_at, parser_state, file_id FROM ingestion_state WHERE source_path = ?'
+    ).get(sourcePath) as { source_path: string; last_offset: number; last_run_at: string; parser_state: string | null; file_id: string | null } | undefined;
     if (!row) return null;
     return {
       sourcePath: row.source_path,
       lastOffset: row.last_offset,
       lastRunAt: row.last_run_at,
       ...(row.parser_state != null ? { parserState: row.parser_state } : {}),
+      ...(row.file_id != null ? { fileId: row.file_id } : {}),
     };
   }
 
   async setIngestionState(state: IngestionState): Promise<void> {
     this.database.prepare(
-      `INSERT INTO ingestion_state (source_path, last_offset, last_run_at, parser_state)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO ingestion_state (source_path, last_offset, last_run_at, parser_state, file_id)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(source_path) DO UPDATE SET
          last_offset = excluded.last_offset,
          last_run_at = excluded.last_run_at,
-         parser_state = excluded.parser_state`
-    ).run(state.sourcePath, state.lastOffset, state.lastRunAt, state.parserState ?? null);
+         parser_state = excluded.parser_state,
+         file_id = excluded.file_id`
+    ).run(state.sourcePath, state.lastOffset, state.lastRunAt, state.parserState ?? null, state.fileId ?? null);
   }
 
   // ── Observability: session-to-card journal (GH-389) ───────────────────────

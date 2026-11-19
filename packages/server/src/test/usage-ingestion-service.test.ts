@@ -129,4 +129,41 @@ describe('createUsageIngestion', () => {
 
     expect(storage.inserted).toHaveLength(0);
   });
+
+  it('a second pass does not start until the first has finished (passes are serialized)', async () => {
+    fs.writeFileSync(path.join(dir, 'sess-a.jsonl'), line('sess-a', 'm1'));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let inside = 0;
+    let maxInside = 0;
+    const slowParser = (text: string, sp: string, base: number) => {
+      inside++;
+      maxInside = Math.max(maxInside, inside);
+      return [] as TokenEvent[];
+    };
+    const storage = memStorage();
+    // Hold the first pass inside the store, after its parser ran.
+    let firstState = true;
+    let heldNow!: () => void;
+    const firstHeld = new Promise<void>((r) => { heldNow = r; });
+    const setState = storage.setIngestionState.bind(storage);
+    storage.setIngestionState = async (st: IngestionState) => {
+      if (firstState) { firstState = false; heldNow(); await gate; }
+      inside--;
+      return setState(st);
+    };
+    const svc = createUsageIngestion({ storage, sources: [{ client: 'claude-code', rootDir: dir, matches: (r: string) => r.endsWith('.jsonl'), parser: slowParser }], now: () => EPOCH });
+
+    const first = svc.runOnce();
+    fs.appendFileSync(path.join(dir, 'sess-a.jsonl'), line('sess-a', 'm2'));
+    const second = svc.flush([{ client: 'claude-code', sessionId: 'sess-a' }]);
+    await firstHeld;
+    // Give the flush every chance to start while the first pass is held.
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    expect(maxInside).toBe(1);
+    release();
+    await Promise.all([first, second]);
+    expect(maxInside).toBe(1);
+  });
 });
+

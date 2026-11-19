@@ -54,6 +54,9 @@ export interface CardUsage {
   total: UsageTotals;
   byStep: Array<{ step: string; total: UsageTotals }>;
   cards: number;
+  complete?: boolean;
+  /** The step the card closed in; the total is current only while the card is still there. */
+  atStatus?: string;
 }
 
 /** One ingested model turn (GET /token-events). */

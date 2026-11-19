@@ -208,5 +208,125 @@ describe('ingestOnce - reads only what changed', () => {
 
     expect(storage.inserted.map((e) => e.ts)).toEqual(['2026-11-19T10:30:00.000Z', '2026-11-19T10:31:00.000Z']);
   });
+
+  it('reads a large file in chunks: no parser call sees more than a chunk, every line counted once', async () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `${i},1`).join('\n') + '\n';
+    fs.writeFileSync(path.join(dir, 'big.jsonl'), lines);
+    const calls: any[] = [];
+    const storage = memStorage();
+
+    await ingestOnce({ storage, sources: [source(countingParser(calls))], chunkBytes: 32 });
+
+    expect(storage.inserted.map((e) => e.input)).toEqual(Array.from({ length: 50 }, (_, i) => i));
+    expect(calls.length).toBeGreaterThan(5);
+    expect(Math.max(...calls.map((c) => Buffer.byteLength(c.text)))).toBeLessThanOrEqual(32);
+  });
+
+  it('a line longer than a chunk is read whole', async () => {
+    fs.writeFileSync(path.join(dir, 'long.jsonl'), `${'7'.repeat(100)},1\n2,2\n`);
+    const storage = memStorage();
+    await ingestOnce({ storage, sources: [source(countingParser([]))], chunkBytes: 16 });
+    expect(storage.inserted.map((e) => e.input)).toEqual([Number('7'.repeat(100)), 2]);
+  });
+
+  it('Codex context carries across chunks of one pass', async () => {
+    const meta = JSON.stringify({ type: 'session_meta', timestamp: '2026-11-19T00:00:00Z', payload: { id: 'sess-chunked', cwd: '/repo' } });
+    const tc = (n: number) => JSON.stringify({ type: 'event_msg', timestamp: `2026-11-19T00:00:0${n}Z`,
+      payload: { type: 'token_count', info: { last_token_usage: { input_tokens: n, output_tokens: 1, total_tokens: n + 1 }, total_token_usage: { input_tokens: n * 10, output_tokens: 1, total_tokens: n * 10 + 1 } } } });
+    fs.writeFileSync(path.join(dir, 'codex.jsonl'), [meta, tc(1), tc(2), tc(3), ''].join('\n'));
+    const storage = memStorage();
+    await ingestOnce({ storage, sources: [{ client: 'codex', rootDir: dir, matches: (r: string) => r.endsWith('.jsonl'), parser: parseCodexJsonl }], chunkBytes: 64 });
+    expect(storage.inserted.map((e) => [e.sessionId, e.input])).toEqual([['sess-chunked', 1], ['sess-chunked', 2], ['sess-chunked', 3]]);
+  });
+
+  it('a file replaced by another of the SAME size is read again from the start (review finding)', async () => {
+    const f = path.join(dir, 'swap.jsonl');
+    fs.writeFileSync(f, '1,1\n');
+    const storage = memStorage();
+    const opts = { storage, sources: [source(countingParser([]))] };
+    await ingestOnce(opts);
+    fs.rmSync(f);
+    fs.writeFileSync(path.join(dir, 'other.tmp'), 'x'); // keep the old inode from being reused at once
+    fs.writeFileSync(f, '2,2\n');
+
+    await ingestOnce(opts);
+
+    expect(storage.inserted.map((e) => e.input)).toEqual([1, 2]);
+  });
+
+  it('a file replaced by a larger one starts over with no saved state', async () => {
+    const f = path.join(dir, 'swap2.jsonl');
+    fs.writeFileSync(f, '1,1\n');
+    const calls: any[] = [];
+    const storage = memStorage();
+    const opts = { storage, sources: [source(countingParser(calls))] };
+    await ingestOnce(opts);
+    fs.rmSync(f);
+    fs.writeFileSync(path.join(dir, 'other2.tmp'), 'x');
+    fs.writeFileSync(f, '5,5\n6,6\n');
+
+    await ingestOnce(opts);
+
+    expect(calls.at(-1)).toMatchObject({ baseOffset: 0, state: undefined });
+    expect(storage.inserted.map((e) => e.input)).toEqual([1, 5, 6]);
+  });
+
+  it('with the real store, a replaced file keeps every turn even at offsets the old file used (review finding)', async () => {
+    const { SQLiteStorageProvider } = await import('@agenfk/storage-sqlite');
+    const store = new SQLiteStorageProvider();
+    await store.init({ path: path.join(dir, 'store.sqlite') });
+    const f = path.join(dir, 'swap-real.jsonl');
+    fs.writeFileSync(f, '1,1\n');
+    // Real parsers give each event a random id; the helper's path:offset id would collide on its own.
+    let n = 0;
+    const unique = (t: string, sp: string, b: number, c?: ParserContext) => countingParser([])(t, sp, b, c).map((e) => ({ ...e, id: `${e.id}#${++n}` }));
+    const opts = { storage: store as any, sources: [source(unique)] };
+    await ingestOnce(opts);
+    fs.rmSync(f);
+    fs.writeFileSync(path.join(dir, 'other3.tmp'), 'x');
+    fs.writeFileSync(f, '2,2\n');
+
+    await ingestOnce(opts);
+
+    const rows = await store.queryTokenEvents({});
+    await store.shutdown();
+    expect(rows.map((e) => e.input).sort()).toEqual([1, 2]);
+  });
+
+  it('with the real store, a file truncated in place (same inode) keeps the turns written after (review finding)', async () => {
+    const { SQLiteStorageProvider } = await import('@agenfk/storage-sqlite');
+    const store = new SQLiteStorageProvider();
+    await store.init({ path: path.join(dir, 'store-trunc.sqlite') });
+    let n = 0;
+    const unique = (t: string, sp: string, b: number, c?: ParserContext) => countingParser([])(t, sp, b, c).map((e) => ({ ...e, id: `${e.id}#${++n}` }));
+    const f = path.join(dir, 'trunc.jsonl');
+    fs.writeFileSync(f, '1,1\n2,2\n');
+    const inode = fs.statSync(f).ino;
+    const opts = { storage: store as any, sources: [source(unique)] };
+    await ingestOnce(opts);
+    fs.writeFileSync(f, '9,9\n'); // 'w' truncates the same file
+    expect(fs.statSync(f).ino).toBe(inode);
+
+    await ingestOnce(opts);
+
+    const rows = await store.queryTokenEvents({});
+    await store.shutdown();
+    expect(rows.map((e) => e.input).sort((a, b) => a - b)).toEqual([1, 2, 9]);
+  });
+
+  it('a file truncated to nothing, then grown past its old size, is read from its new beginning (review finding)', async () => {
+    const f = path.join(dir, 'trunc-empty.jsonl');
+    fs.writeFileSync(f, '1,1\n2,2\n');
+    const storage = memStorage();
+    const opts = { storage, sources: [source(countingParser([]))] };
+    await ingestOnce(opts);
+    fs.writeFileSync(f, ''); // cut to nothing, same file
+    await ingestOnce(opts);
+    fs.writeFileSync(f, '7,7\n8,8\n9,9\n');
+
+    await ingestOnce(opts);
+
+    expect(storage.inserted.map((e) => e.input)).toEqual([1, 2, 7, 8, 9]);
+  });
 });
 

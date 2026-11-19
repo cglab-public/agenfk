@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import type { TokenEvent } from '@agenfk/core';
-import { aggregateUsage, computeStepUsage, describeUsage } from '../usage/stepUsage';
+import { aggregateUsage, computeStepUsage, describeUsage, describeCardUsage } from '../usage/stepUsage';
 
 const ev = (over: Partial<TokenEvent> = {}): TokenEvent => ({
   id: Math.random().toString(), ts: '2026-11-19T10:00:00Z', client: 'claude-code', sessionId: 's', model: 'claude-opus-5-5',
@@ -99,6 +99,37 @@ describe('computeStepUsage', () => {
   });
 });
 
+describe('step boundaries (review finding: overlapping windows)', () => {
+  it('a stay starts exactly where the row of the move into it ended, so no turn is counted twice', async () => {
+    // The history entry is written a moment BEFORE the previous row's end.
+    const item = {
+      id: 'card-1', createdAt: '2026-11-19T08:00:00.000Z',
+      history: [{ toStatus: 'REVIEW', timestamp: '2026-11-19T10:00:00.000Z' }],
+      usageByStep: [{ step: 'IN_PROGRESS', to: 'REVIEW', leftAt: '2026-11-19T10:00:00.050Z' }],
+    };
+    const between = ev({ itemId: 'card-1', ts: '2026-11-19T10:00:00.020Z', input: 99 }); // counted in IN_PROGRESS already
+    const after = ev({ itemId: 'card-1', ts: '2026-11-19T10:30:00.000Z', input: 1 });
+    const storage = {
+      sessionsForItem: async () => [],
+      queryTokenEvents: async (q: any) => [between, after].filter((e) => e.ts >= q.since && e.ts < q.until),
+    };
+    const u = await computeStepUsage({ storage, flush: async () => 0, item, from: 'REVIEW', to: 'TEST', at: '2026-11-19T11:00:00.000Z' });
+    expect(u.enteredAt).toBe('2026-11-19T10:00:00.050Z');
+    expect(u.total.input).toBe(1);
+  });
+
+  it('a row that is not the move into this step is ignored: the history decides', async () => {
+    const item = {
+      id: 'card-1', createdAt: '2026-11-19T08:00:00.000Z',
+      history: [{ toStatus: 'REVIEW', timestamp: '2026-11-19T10:00:00.000Z' }],
+      usageByStep: [{ step: 'TODO', to: 'IN_PROGRESS', leftAt: '2026-11-19T09:00:00.000Z' }],
+    };
+    const storage = { sessionsForItem: async () => [], queryTokenEvents: async () => [] };
+    const u = await computeStepUsage({ storage, flush: async () => 0, item, from: 'REVIEW', to: 'TEST', at: '2026-11-19T11:00:00.000Z' });
+    expect(u.enteredAt).toBe('2026-11-19T10:00:00.000Z');
+  });
+});
+
 describe('describeUsage', () => {
   it('names the step, the turns and each token kind', () => {
     const line = describeUsage({
@@ -136,5 +167,13 @@ describe('describeUsage', () => {
       byModel: [], total: { turns: 1, input: 1, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0, unpricedTurns: 1 },
     });
     expect(line).toMatch(/incomplete/i);
+  });
+});
+
+describe('describeCardUsage', () => {
+  const total = { turns: 2, input: 5, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0, unpricedTurns: 2 };
+  it('flags a close total whose last step could not be read in time', () => {
+    expect(describeCardUsage({ byModel: [], total, byStep: [], cards: 1, complete: false })).toMatch(/incomplete/i);
+    expect(describeCardUsage({ byModel: [], total, byStep: [], cards: 1, complete: true })).not.toMatch(/incomplete/i);
   });
 });

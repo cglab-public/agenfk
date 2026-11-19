@@ -57,8 +57,16 @@ class ModelBuckets {
   list(): ModelUsage[] { return [...this.rows.values()]; }
 }
 
-/** When the card entered the step it is in now: its latest move there, else its creation. */
-export function currentStepSince(item: Pick<AgEnFKItem, 'status' | 'history' | 'createdAt'>): string | null {
+/**
+ * When the card's stay in its current step began: where the last recorded
+ * step ended when that was the move into this step (so the live count starts
+ * exactly where the recorded rows stop), else its latest move there, else its
+ * creation.
+ */
+export function currentStepSince(item: Pick<AgEnFKItem, 'status' | 'history' | 'createdAt' | 'usageByStep'>): string | null {
+  const rows = item.usageByStep ?? [];
+  const last = rows[rows.length - 1];
+  if (last && last.to === String(item.status) && Number.isFinite(Date.parse(last.leftAt))) return last.leftAt;
   let best: number | null = null;
   for (const h of item.history ?? []) {
     if (String(h.toStatus) !== String(item.status)) continue;
@@ -77,6 +85,8 @@ export interface UsageRow {
   step: string;
   /** The step the card is in now, counted from its turns so far. */
   live: boolean;
+  /** False when the step's session logs could not be read in time: turns may be missing. */
+  complete: boolean;
   total: UsageTotals;
 }
 
@@ -88,26 +98,38 @@ export interface CardUsageSummary {
   subCards: number;
   /** False when not a single turn was recorded: "not measured", not zero. */
   measured: boolean;
+  /** False when some turns may be missing (a log that could not be read in time). */
+  complete: boolean;
+}
+
+/**
+ * The total recorded when the card closed, while it still describes the card:
+ * a card reopened by any route is no longer in the step it closed in.
+ */
+export function closeTotalOf(item: Pick<AgEnFKItem, 'status' | 'cardUsage'>): AgEnFKItem['cardUsage'] | null {
+  const card = item.cardUsage;
+  return card && card.atStatus === String(item.status) ? card : null;
 }
 
 /**
  * The card's usage: its recorded steps, then the current step from `liveEvents`.
  * A closed card's total is the one recorded at close, which includes its
- * sub-cards; until then it is the steps plus the current one.
+ * sub-cards; otherwise it is the steps plus the current one.
  */
 export function summarizeCardUsage(
   item: Pick<AgEnFKItem, 'status' | 'usageByStep' | 'cardUsage'> & Partial<Pick<AgEnFKItem, 'history' | 'createdAt'>>,
   liveEvents: TokenEvent[],
 ): CardUsageSummary {
+  const closed = closeTotalOf(item);
   const models = new ModelBuckets();
   const total = zeroTotals();
   const steps: UsageRow[] = (item.usageByStep ?? []).map((u) => {
     for (const m of u.byModel ?? []) models.add(m.client, m.model, m);
     add(total, u.total);
-    return { step: u.step, live: false, total: u.total };
+    return { step: u.step, live: false, complete: u.complete !== false, total: u.total };
   });
 
-  if (!item.cardUsage && liveEvents.length) {
+  if (!closed && liveEvents.length) {
     const now = zeroTotals();
     for (const ev of liveEvents) {
       const t = totalsOfEvent(ev);
@@ -115,19 +137,21 @@ export function summarizeCardUsage(
       add(now, t);
     }
     add(total, now);
-    steps.push({ step: String(item.status), live: true, total: now });
+    steps.push({ step: String(item.status), live: true, complete: true, total: now });
   }
 
-  if (item.cardUsage) {
+  const stepsComplete = steps.every((r) => r.complete);
+  if (closed) {
     return {
       steps,
-      byModel: item.cardUsage.byModel,
-      total: item.cardUsage.total,
-      subCards: Math.max(0, item.cardUsage.cards - 1),
-      measured: item.cardUsage.total.turns > 0,
+      byModel: closed.byModel,
+      total: closed.total,
+      subCards: Math.max(0, closed.cards - 1),
+      measured: closed.total.turns > 0,
+      complete: closed.complete !== false && stepsComplete,
     };
   }
-  return { steps, byModel: models.list(), total, subCards: 0, measured: total.turns > 0 };
+  return { steps, byModel: models.list(), total, subCards: 0, measured: total.turns > 0, complete: stepsComplete };
 }
 
 export interface CostView {

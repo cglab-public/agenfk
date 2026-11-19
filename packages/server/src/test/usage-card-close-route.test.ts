@@ -102,4 +102,107 @@ describe('card usage on close', () => {
     expect(closed.payload.usage.total).toMatchObject({ turns: 2, input: 307 });
     expect(closed.payload.usage.cards).toBe(2);
   });
+
+  it('the usage is saved in the SAME write as the move, never before or after it (review findings)', async () => {
+    const id = await make(await project(), 'TASK');
+    await turn(id, 5);
+    const writes: string[][] = [];
+    // Every item write: the locked path, and the one underneath it that a move takes while holding the lock.
+    const spies = (['updateItem', 'updateItemUnlocked'] as const).map((m) => {
+      const real = (storage as any)[m].bind(storage);
+      return vi.spyOn(storage as any, m).mockImplementation(async (itemId: any, updates: any) => {
+        if (itemId === id) writes.push(Object.keys(updates));
+        return real(itemId, updates);
+      });
+    });
+    try {
+      expect((await verify(id)).status).toBe(200);
+    } finally {
+      spies.forEach((sp) => sp.mockRestore());
+    }
+    const moves = writes.filter((k) => k.includes('status'));
+    expect(moves).toHaveLength(1);
+    expect(moves[0]).toEqual(expect.arrayContaining(['usageByStep', 'cardUsage']));
+    expect(writes.filter((k) => k.includes('usageByStep') || k.includes('cardUsage'))).toHaveLength(1);
+  });
+
+  it('a verify whose card moved while its usage was being computed is refused, and stores no usage', async () => {
+    const id = await make(await project(), 'TASK');
+    await turn(id, 5);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let reached!: () => void;
+    const inside = new Promise<void>((r) => { reached = r; });
+    let held = false;
+    const real = storage.sessionsForItem.bind(storage);
+    const spy = vi.spyOn(storage, 'sessionsForItem').mockImplementation(async (itemId: string) => {
+      // Hold the verify's computation only; the rollback's own goes through.
+      if (itemId === id && !held) { held = true; reached(); await gate; }
+      return real(itemId);
+    });
+    try {
+      // .then() sends it: a supertest request is lazy.
+      const pending = verify(id).then((r) => r);
+      await inside;
+      // Meanwhile, a person drags the card back on the board.
+      const back = await agent().put(`/items/${id}`).set({ 'x-agenfk-ui': '1' }).send({ status: 'TODO' });
+      expect(back.status, JSON.stringify(back.body)).toBe(200);
+      release();
+      const res = await pending;
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+    } finally {
+      release();
+      spy.mockRestore();
+    }
+    const card = (await agent().get(`/items/${id}`)).body;
+    expect(card.status).toBe('TODO');
+    expect(card.cardUsage ?? null).toBeNull();
+    expect((card.usageByStep ?? []).map((r: any) => r.to)).toEqual(['TODO']);
+  });
+
+  it('a parent roll-up whose children changed while its usage was computed does not close the parent', async () => {
+    const projectId = await project();
+    const parent = await make(projectId, 'STORY');
+    const a = await make(projectId, 'TASK', parent);
+    const b = await make(projectId, 'TASK', parent);
+    expect((await verify(b)).status).toBe(200); // b DONE; a still open, so the parent stays
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let reached!: () => void;
+    const inside = new Promise<void>((r) => { reached = r; });
+    let held = false;
+    const real = storage.sessionsForItem.bind(storage);
+    const spy = vi.spyOn(storage, 'sessionsForItem').mockImplementation(async (itemId: string) => {
+      if (itemId === parent && !held) { held = true; reached(); await gate; }
+      return real(itemId);
+    });
+    try {
+      const closingA = verify(a).then((r) => r); // a DONE -> the roll-up starts closing the parent
+      await inside;
+      // Meanwhile, b is reopened.
+      const back = await agent().put(`/items/${b}`).set({ 'x-agenfk-ui': '1' }).send({ status: 'WORK' });
+      expect(back.status, JSON.stringify(back.body)).toBe(200);
+      release();
+      expect((await closingA).status).toBe(200);
+    } finally {
+      release();
+      spy.mockRestore();
+    }
+    expect((await agent().get(`/items/${parent}`)).body.status).not.toBe('DONE');
+  });
+
+  it('the close total names the step it was taken in, so a reopened card can tell it is stale', async () => {
+    const id = await make(await project(), 'TASK');
+    await turn(id, 5);
+    expect((await verify(id)).status).toBe(200);
+    expect((await agent().get(`/items/${id}`)).body.cardUsage.atStatus).toBe('DONE');
+
+    const back = await agent().put(`/items/${id}`).set({ 'x-agenfk-ui': '1' }).send({ status: 'WORK' });
+    expect(back.status, JSON.stringify(back.body)).toBe(200);
+    const card = (await agent().get(`/items/${id}`)).body;
+    expect(card.status).toBe('WORK');
+    expect(card.cardUsage.atStatus).not.toBe(card.status);
+    // The rollback recorded the DONE stay it left, with the move itself.
+    expect(card.usageByStep.at(-1)).toMatchObject({ step: 'DONE', to: 'WORK' });
+  });
 });

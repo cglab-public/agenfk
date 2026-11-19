@@ -8,7 +8,7 @@
  * table is loaded, an ESTIMATE for models none of whose turns were priced.
  */
 import { describe, it, expect } from 'vitest';
-import { summarizeCardUsage, estimateCost, abbreviateTokens } from '../usage';
+import { summarizeCardUsage, estimateCost, abbreviateTokens, currentStepSince } from '../usage';
 import type { ModelUsage, TokenEvent } from '../types';
 
 type CardArg = Parameters<typeof summarizeCardUsage>[0];
@@ -45,12 +45,33 @@ describe('summarizeCardUsage', () => {
     const item = {
       status: 'DONE',
       usageByStep: [step('WORK', { turns: 1, input: 5 })],
-      cardUsage: { byModel: [], total: totals({ turns: 9, input: 500 }), byStep: [], cards: 3 },
+      cardUsage: { byModel: [], total: totals({ turns: 9, input: 500 }), byStep: [], cards: 3, atStatus: 'DONE' },
     };
     const s = summarizeCardUsage(asCard(item), []);
     expect(s.total).toMatchObject({ turns: 9, input: 500 });
     expect(s.subCards).toBe(2);
     expect(s.steps.map((r) => r.step)).toEqual(['WORK']);
+  });
+
+  it('a close total taken in another step is stale (the card was reopened): rows and live turns count instead', () => {
+    const item = {
+      status: 'WORK',
+      history: [{ toStatus: 'WORK', timestamp: '2026-11-19T10:00:00.000Z' }],
+      usageByStep: [step('WORK', { turns: 1, input: 5 })],
+      cardUsage: { byModel: [], total: totals({ turns: 9, input: 500 }), byStep: [], cards: 1, atStatus: 'DONE' },
+    };
+    const s = summarizeCardUsage(asCard(item), [live({ input: 2 })]);
+    expect(s.total).toMatchObject({ turns: 2, input: 7 });
+    expect(s.steps.at(-1)).toMatchObject({ live: true });
+  });
+
+  it('carries incompleteness from the close total and from any step', () => {
+    const closed = { status: 'DONE', usageByStep: [], cardUsage: { byModel: [], total: totals({ turns: 1 }), byStep: [], cards: 1, atStatus: 'DONE', complete: false } };
+    expect(summarizeCardUsage(asCard(closed), []).complete).toBe(false);
+    const openRow = { status: 'REVIEW', usageByStep: [{ ...step('WORK', { turns: 1 }), complete: false }] };
+    const s = summarizeCardUsage(asCard(openRow), []);
+    expect(s.complete).toBe(false);
+    expect(s.steps[0].complete).toBe(false);
   });
 
   it('nothing recorded is "not measured", not a zero', () => {
@@ -66,6 +87,17 @@ describe('summarizeCardUsage', () => {
     };
     const s = summarizeCardUsage(asCard(item), [live({ client: 'pi', model: 'qwen', input: 5 })]);
     expect(s.byModel).toEqual([expect.objectContaining({ client: 'pi', model: 'qwen', turns: 2, input: 15 })]);
+  });
+});
+
+describe('currentStepSince', () => {
+  it('starts the live count where the move into this step was recorded, not at the earlier history stamp', () => {
+    const item = {
+      status: 'REVIEW', createdAt: '2026-11-19T08:00:00.000Z',
+      history: [{ toStatus: 'REVIEW', timestamp: '2026-11-19T10:00:00.000Z' }],
+      usageByStep: [step('IN_PROGRESS', { turns: 1 })].map((r) => ({ ...r, to: 'REVIEW', leftAt: '2026-11-19T10:00:00.050Z' })),
+    };
+    expect(currentStepSince(asCard(item) as never)).toBe('2026-11-19T10:00:00.050Z');
   });
 });
 

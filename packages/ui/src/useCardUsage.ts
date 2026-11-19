@@ -6,7 +6,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from './api';
 import type { AgEnFKItem } from './types';
-import { currentStepSince, summarizeCardUsage, type CardUsageSummary } from './usage';
+import { closeTotalOf, currentStepSince, summarizeCardUsage, type CardUsageSummary } from './usage';
 
 /** Live turns land within a poll of the ingester (30 s); no need to ask faster. */
 const REFRESH_MS = 15_000;
@@ -25,7 +25,7 @@ export function useCardUsage(itemId: string | null, given?: AgEnFKItem | null): 
   });
   const item: AgEnFKItem | null = given ?? (fetched.data as AgEnFKItem | undefined) ?? null;
   // A closed card's total was recorded at close; only an open one has a current step to count.
-  const since = item && !item.cardUsage ? currentStepSince(item) : null;
+  const since = item && !closeTotalOf(item) ? currentStepSince(item) : null;
   const live = useQuery({
     queryKey: ['token-events', itemId, since],
     queryFn: () => api.getTokenEvents({ itemId: itemId!, since: since! }),

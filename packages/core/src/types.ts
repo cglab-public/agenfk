@@ -121,6 +121,8 @@ export interface TokenEvent {
   projectId?: string;
   cwd?: string;                // ingestion-only metadata used before attribution
   sourcePath: string;         // absolute path of the session log file
+  /** Which file was at sourcePath (device:inode): a replaced file's offsets are a new file's. */
+  sourceFile?: string;
   sourceOffset: number;       // byte/line offset within the file (dedup key)
 }
 
@@ -373,6 +375,14 @@ export interface CardUsage extends UsageSummary {
   byStep: Array<{ step: string; total: UsageTotals }>;
   /** The card plus its descendants. */
   cards: number;
+  /** False when a closing step's session logs (its own or a descendant's) could not be read in time. */
+  complete?: boolean;
+  /**
+   * The step the card closed in. The total describes the card only while it is
+   * still there: a card reopened by any route (verify, PUT, bulk, unarchive)
+   * no longer matches, and readers fall back to its step rows.
+   */
+  atStatus?: string;
 }
 
 /** GH-389: the usage of one stay in a step, recorded when the card left it. */
@@ -404,6 +414,8 @@ export interface IngestionState {
    * the file. Absent on states written before it existed.
    */
   parserState?: string;
+  /** Identity of the file the state was taken from (device:inode): a different file at the path starts over. */
+  fileId?: string;
 }
 
 // ── Agent Runs: orchestrated worker transcripts per item ────────────────────

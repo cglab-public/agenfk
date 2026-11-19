@@ -38,6 +38,9 @@ export function UsageView({ itemId, item, prices }: {
       <div className="px-3 py-4 text-[11px] text-ink-tertiary">
         <p className="text-ink-secondary">No usage recorded for this card.</p>
         <p className="mt-1">Usage is measured for Claude Code, Codex and pi sessions; other harnesses are not measured.</p>
+        {!summary.complete && (
+          <p className="mt-1 text-status-warn-text">Incomplete: some session logs could not be read in time, so turns may be missing.</p>
+        )}
       </div>
     );
   }
@@ -63,6 +66,11 @@ export function UsageView({ itemId, item, prices }: {
         {cost.unpricedModels.length > 0 && (
           <p className="text-[10px] text-status-warn-text">
             Not priced: {cost.unpricedModels.join(', ')}.
+          </p>
+        )}
+        {!summary.complete && (
+          <p className="text-[10px] text-status-warn-text">
+            Incomplete: some session logs could not be read in time, so turns may be missing.
           </p>
         )}
         {summary.subCards > 0 && (
@@ -91,7 +99,7 @@ export function UsageView({ itemId, item, prices }: {
         <tbody className="divide-y divide-border-soft">
           {summary.steps.map((row, i) => (
             <tr key={`${row.step}-${i}`} className={clsx(row.live && 'text-accent-ink')}>
-              <td className="py-1 font-mono">{row.live ? `${row.step} (now)` : row.step}</td>
+              <td className="py-1 font-mono">{row.live ? `${row.step} (now)` : row.step}{row.complete ? '' : ' (incomplete)'}</td>
               <td className="py-1 text-right font-mono">{n(row.total.turns)}</td>
               <td className="py-1 text-right font-mono">{n(tokensOf(row.total))}</td>
             </tr>

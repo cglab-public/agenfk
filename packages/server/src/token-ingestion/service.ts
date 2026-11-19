@@ -59,8 +59,11 @@ export function createUsageIngestion(opts: {
   now?: () => Date;
 }): UsageIngestion {
   const now = opts.now ?? (() => new Date());
-  let epoch: Promise<string> | null = null;
-  const getEpoch = () => (epoch ??= opts.storage.ensureIngestionEpoch(now().toISOString()));
+  // Stored when ingestion is set up, not at its first pass: a log written
+  // between the two would otherwise count as backlog and never be read.
+  const epoch: Promise<string> = opts.storage.ensureIngestionEpoch(now().toISOString());
+  epoch.catch((e: Error) => console.error('[USAGE] could not store the ingestion epoch:', e.message));
+  const getEpoch = () => epoch;
 
   let chain: Promise<unknown> = Promise.resolve();
   const serial = <T>(fn: () => Promise<T>): Promise<T> => {
