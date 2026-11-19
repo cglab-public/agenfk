@@ -339,6 +339,15 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   maxConcurrentSuiteRuns: 0,
 };
 
+/** GH-389: one entry of the session-to-card journal token attribution reads. */
+export interface SessionCardRow {
+  client: string;
+  sessionId: string;
+  itemId: string | null;
+  projectId?: string | null;
+  at: string;
+}
+
 export interface IngestionState {
   sourcePath: string;
   lastOffset: number;

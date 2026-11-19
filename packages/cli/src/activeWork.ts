@@ -98,3 +98,26 @@ export async function recordActiveWork(
     // A lost note costs an unrecorded run, never a failed gatekeeper check.
   }
 }
+
+/**
+ * GH-389: tell the server which card the harness session is on, so the
+ * session's token usage is charged to it. The session is the harness's own
+ * transcript id (harnessActor), the id ingested token events carry - a wrapping
+ * harness's AGENFK_SESSION_ID would name a session no log has. Never throws:
+ * a lost report costs that card its usage, not the gatekeeper check. Returns a
+ * warning to print when it could not be recorded, so the loss is not silent.
+ */
+export async function reportSessionCard(
+  itemId: string,
+  actor: { client: string; sessionId: string } | null,
+  deps: { post: (body: { client: string; sessionId: string; itemId: string }) => Promise<unknown> },
+): Promise<string | null> {
+  if (!actor) return null;
+  try {
+    await deps.post({ client: actor.client, sessionId: actor.sessionId, itemId });
+    return null;
+  } catch (e) {
+    const reason = (e as any)?.response?.data?.error ?? (e as Error)?.message ?? String(e);
+    return `⚠️ Could not record this session on the card, so its usage will not be counted there: ${reason}`;
+  }
+}

@@ -4,7 +4,7 @@ import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
 import { readProjectFile, unreadableFileCommand, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets, VERIFY_COMMAND_FLAG, SETUP_COMMAND_FLAG } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
-import { recordActiveWork, gatekeeperSessionId } from './activeWork.js';
+import { recordActiveWork, gatekeeperSessionId, reportSessionCard } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
@@ -4391,6 +4391,11 @@ program
           env: process.env,
           post: (body) => axios.post(`${API_URL}/active-work`, body, { timeout: 5000 }),
         });
+        // GH-389: the session-to-card journal the usage counts are attributed by.
+        const usageWarning = await reportSessionCard(decision.task.id, harnessActor(), {
+          post: (body) => axios.post(`${API_URL}/session-cards`, body, { timeout: 5000 }),
+        });
+        if (usageWarning) console.error(usageWarning);
       }
 
       // 37a292a7: what leaving this step will run, so the agent does not run the

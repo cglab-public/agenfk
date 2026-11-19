@@ -246,11 +246,31 @@ export function startIngestionPoller(opts: IngestionPollerOptions): () => void {
   return () => { stopped = true; clearTimeout(timer); };
 }
 
-async function attributeTokenEvent(storage: StorageProvider, ev: TokenEvent): Promise<void> {
+/**
+ * Charge a turn to a project and, when it can be known, a card (GH-389).
+ *
+ * A turn with a session id goes to the card the session-to-card journal says
+ * that session was on at the turn's time: the gatekeeper and verify write it,
+ * and a closed card ends it. No row (the session had not reached a card yet)
+ * or an ended row means no card, only the project. The older guess - the card
+ * in the project activated most recently - charged one agent's turns to
+ * another's card whenever two worked in one project, so it is kept only for a
+ * turn with no session id at all.
+ */
+export async function attributeTokenEvent(storage: StorageProvider, ev: TokenEvent): Promise<void> {
   const project = await findProjectForCwd(storage, ev.cwd);
-  if (!project) return;
+  if (project) ev.projectId = project.id;
 
-  ev.projectId = project.id;
+  if (ev.sessionId) {
+    const row = await storage.sessionCardAt(ev.client, ev.sessionId, ev.ts);
+    if (row?.itemId) {
+      ev.itemId = row.itemId;
+      if (row.projectId) ev.projectId = row.projectId;
+    }
+    return;
+  }
+
+  if (!project) return;
   const flow = project.flowId ? await storage.getFlow(project.flowId) : null;
   const items = await storage.listItems({ projectId: project.id });
   const itemId = findActiveItemAt(items, flow, ev.ts);

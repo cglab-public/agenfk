@@ -14,6 +14,7 @@ import {
   TokenEvent,
   TokenEventQuery,
   IngestionState,
+  SessionCardRow,
   AppSettings,
   DEFAULT_APP_SETTINGS,
   isLegalSettingValue,
@@ -445,6 +446,15 @@ export class SQLiteStorageProvider implements StorageProvider {
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         PRIMARY KEY (flow_id, revision)
       );
+      CREATE TABLE IF NOT EXISTS session_cards (
+        client TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        item_id TEXT,
+        project_id TEXT,
+        at TEXT NOT NULL,
+        at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_cards_lookup ON session_cards(client, session_id, at_ms);
       CREATE TABLE IF NOT EXISTS ingestion_state (
         source_path TEXT PRIMARY KEY,
         last_offset INTEGER NOT NULL,
@@ -1584,6 +1594,44 @@ export class SQLiteStorageProvider implements StorageProvider {
          last_run_at = excluded.last_run_at,
          parser_state = excluded.parser_state`
     ).run(state.sourcePath, state.lastOffset, state.lastRunAt, state.parserState ?? null);
+  }
+
+  // ── Observability: session-to-card journal (GH-389) ───────────────────────
+  // Compared by instant (at_ms), not as text: turn timestamps come from
+  // several harnesses and need not share an offset or precision.
+
+  async recordSessionCard(row: SessionCardRow): Promise<void> {
+    const atMs = Date.parse(row.at);
+    if (!Number.isFinite(atMs)) throw new Error(`recordSessionCard: unparseable time ${row.at}`);
+    this.database.prepare(
+      'INSERT INTO session_cards (client, session_id, item_id, project_id, at, at_ms) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(row.client, row.sessionId, row.itemId, row.projectId ?? null, row.at, atMs);
+  }
+
+  async sessionCardAt(client: string, sessionId: string, ts: string): Promise<{ itemId: string | null; projectId?: string } | null> {
+    const tMs = Date.parse(ts);
+    if (!Number.isFinite(tMs)) return null;
+    const row = this.database.prepare(
+      `SELECT item_id, project_id FROM session_cards
+        WHERE client = ? AND session_id = ? AND at_ms <= ?
+        ORDER BY at_ms DESC, rowid DESC LIMIT 1`
+    ).get(client, sessionId, tMs) as { item_id: string | null; project_id: string | null } | undefined;
+    if (!row) return null;
+    return { itemId: row.item_id ?? null, ...(row.project_id ? { projectId: row.project_id } : {}) };
+  }
+
+  async endSessionCards(itemId: string, at: string): Promise<void> {
+    const atMs = Date.parse(at);
+    if (!Number.isFinite(atMs)) throw new Error(`endSessionCards: unparseable time ${at}`);
+    this.database.prepare(
+      `INSERT INTO session_cards (client, session_id, item_id, project_id, at, at_ms)
+       SELECT s.client, s.session_id, NULL, s.project_id, ?, ?
+         FROM session_cards s
+        WHERE s.item_id = ?
+          AND s.rowid = (SELECT t.rowid FROM session_cards t
+                          WHERE t.client = s.client AND t.session_id = s.session_id
+                          ORDER BY t.at_ms DESC, t.rowid DESC LIMIT 1)`
+    ).run(at, atMs, itemId);
   }
 
   // ── Observability: PR registration ─────────────────────────────────────────

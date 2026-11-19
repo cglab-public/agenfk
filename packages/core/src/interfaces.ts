@@ -9,6 +9,7 @@ import {
   TokenEvent,
   TokenEventQuery,
   IngestionState,
+  SessionCardRow,
   AppSettings,
   TerminalSession,
   Pr,
@@ -102,6 +103,15 @@ export interface StorageProvider extends AgEnFKPlugin {
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
   getIngestionState(sourcePath: string): Promise<IngestionState | null>;
   setIngestionState(state: IngestionState): Promise<void>;
+  /**
+   * GH-389: append that a harness session is on a card from `at` (itemId null:
+   * on none, e.g. after the card closed).
+   */
+  recordSessionCard(row: SessionCardRow): Promise<void>;
+  /** The row in effect for a session at `ts` (the latest at or before it), or null. */
+  sessionCardAt(client: string, sessionId: string, ts: string): Promise<{ itemId: string | null; projectId?: string } | null>;
+  /** A card closed at `at`: every session whose latest row is that card is on none from then. */
+  endSessionCards(itemId: string, at: string): Promise<void>;
 
   // Observability — agent runs (orchestrated worker transcripts per item)
   createAgentRun(run: AgentRun): Promise<AgentRun>;

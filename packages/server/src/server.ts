@@ -2147,6 +2147,9 @@ function recordMoveEvents(item: { id: string; projectId: string; type: string },
     payload: { fromStatus: from, toStatus: to, itemType: item.type, ...transitionStamp(from, to, flow) },
   });
   if (isCompletionStep(to, flow) && !isCompletionStep(from, flow)) {
+    // GH-389: a closed card stops collecting usage; the sessions on it are on none until they pick another.
+    storage.endSessionCards(item.id, new Date().toISOString())
+      .catch((e: Error) => console.error(`[USAGE] could not end the sessions on ${item.id}: ${e.message}`));
     recordHubEvent({
       type: 'item.closed',
       projectId: item.projectId,
@@ -6154,6 +6157,37 @@ app.post("/active-work", asyncHandler(async (req: any, res: any) => {
   // From a sandbox, under its launch: the session id alone is the sandbox's word (review S3).
   const key = activeWorkKeyFor(sessionId, typeof req.airlockSession === 'string' ? req.airlockSession : undefined)!.key;
   writeActiveWork({ itemId: item.id, projectId: item.projectId }, key);
+  res.status(204).end();
+}));
+
+/**
+ * GH-389: the session-to-card journal token attribution reads. A session is on
+ * a card from the moment the gatekeeper authorizes it there (this route, sent
+ * by the CLI with the harness's own transcript session id) or it verifies the
+ * card (handleValidate below). Only clients whose session logs are ingested
+ * mean anything here; the id is a plain identifier, never a path.
+ */
+const SESSION_CARD_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi']);
+const SESSION_CARD_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/** Why a (client, session) pair cannot go in the journal, or null when it can. */
+function sessionCardError(client: unknown, sessionId: unknown): string | null {
+  if (typeof client !== 'string' || !SESSION_CARD_CLIENTS.has(client)) return `client must be one of: ${[...SESSION_CARD_CLIENTS].join(', ')}`;
+  if (typeof sessionId !== 'string' || !SESSION_CARD_ID.test(sessionId)) return 'sessionId must be 1-128 characters of letters, digits, _ . : -';
+  return null;
+}
+
+const recordSessionOnCard = (client: string, sessionId: string, item: { id: string; projectId: string }): Promise<void> =>
+  storage.recordSessionCard({ client, sessionId, itemId: item.id, projectId: item.projectId, at: new Date().toISOString() });
+
+app.post("/session-cards", asyncHandler(async (req: any, res: any) => {
+  const { client, sessionId, itemId } = req.body || {};
+  const invalid = sessionCardError(client, sessionId);
+  if (invalid) return res.status(400).json({ error: invalid });
+  if (typeof itemId !== 'string' || !itemId) return res.status(400).json({ error: 'itemId is required' });
+  const item: any = await storage.getItem(itemId);
+  if (!item) return res.status(404).json({ error: `Item ${itemId} not found` });
+  await recordSessionOnCard(client, sessionId, item);
   res.status(204).end();
 }));
 
@@ -11637,6 +11671,11 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
   const parsedAnswers = parseCheckAnswers(req.body.checkAnswers);
   if ('error' in parsedAnswers) return res.status(400).json({ error: parsedAnswers.error });
   const answers = parsedAnswers.answers;
+  // GH-389: the session verifying the card is working on it.
+  if (validatedItem) {
+    const caller = parseActor(req.body.actor);
+    if (caller && !sessionCardError(caller.client, caller.sessionId)) await recordSessionOnCard(caller.client, caller.sessionId, validatedItem);
+  }
   const asyncMode = req.body.async === true || req.body.async === 'true';
   // cf6941e0: a new verify of the card ends its wait on a person; a refusal held by one sets it again.
   if (awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
