@@ -1,5 +1,5 @@
 import { bcryptHash, bcryptCompare } from './bcryptPool.js';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { DB } from '../db.js';
 
 // Production default is 11. Overridable via env (NOT via an argument) so a
@@ -49,6 +49,22 @@ export function hashPassword(plain: string): Promise<string> {
 
 export function verifyPassword(plain: string, hash: string): Promise<boolean> {
   return bcryptCompare(plain, hash);
+}
+
+let placeholder: { rounds: number; hash: Promise<string> } | undefined;
+
+/**
+ * A hash nobody knows the password of, at the current cost. Sign-in checks against it when
+ * the email has no usable hash, so that attempt costs, and fails, like any other.
+ */
+export function placeholderHash(): Promise<string> {
+  const rounds = getBcryptRounds();
+  if (placeholder?.rounds !== rounds) {
+    const made = { rounds, hash: hashPassword(randomBytes(32).toString('hex')) };
+    placeholder = made;
+    made.hash.catch(() => { if (placeholder === made) placeholder = undefined; });   // try again next time
+  }
+  return placeholder.hash;
 }
 
 export async function findUserByEmail(db: DB, email: string): Promise<UserRow | null> {

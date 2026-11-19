@@ -175,6 +175,53 @@ describe('Content-Security-Policy', () => {
   });
 });
 
+// The BUILT bundle is what a hub serves; the source index.html above is only its input.
+describe('the built hub UI under its own Content-Security-Policy', () => {
+  const dist = path.resolve(__dirname, '../../../hub-ui/dist');
+  const built = fs.existsSync(path.join(dist, 'index.html'));
+
+  // CI and `agenfk verify` build first; a bare local `vitest run` without a build has nothing to check.
+  it.skipIf(!built && !process.env.CI)('every script and stylesheet the built page loads is allowed by the policy it is served with, and is there to load', async () => {
+    expect(built, 'packages/hub-ui/dist/index.html is missing: run `npm run build` before the tests').toBe(true);
+    process.env.AGENFK_HUB_UI_DIR = dist;
+    await boot();
+    const page = await get('/');
+    expect(page.status).toBe(200);
+    const d = directives(page.headers['content-security-policy']);
+    expect(d['script-src']).not.toMatch(/unsafe-inline|unsafe-eval/);
+
+    const html = page.text;
+    const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)];
+    expect(scripts.length).toBeGreaterThan(0);
+    const urls: string[] = [];
+    for (const [, attrs, body] of scripts) {
+      const src = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1];
+      if (src) urls.push(src);
+      // What the browser hashes: the text between the tags, line endings normalised.
+      else expect(d['script-src'], 'inline script allowed by hash').toContain(sha(body.replace(/\r\n?/g, '\n')));
+    }
+    for (const [, attrs] of html.matchAll(/<link\b([^>]*)>/gi)) {
+      const href = /\bhref\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1];
+      if (href && /\brel\s*=\s*["']?(stylesheet|modulepreload)/i.test(attrs)) urls.push(href);
+    }
+    expect(urls.some(u => /\.js(\?|$)/.test(u)), 'the page loads its app bundle').toBe(true);
+    for (const url of urls) {
+      // 'self' only: a script or stylesheet from another origin would be blocked.
+      expect(url, 'same-origin').toMatch(/^\/(?!\/)/);
+      expect((await get(url)).status, url).toBe(200);
+    }
+  });
+
+  it.skipIf(!built && !process.env.CI)('nothing the built bundle fetches at runtime points at another origin for scripts, styles or fonts', () => {
+    const assets = fs.readdirSync(path.join(dist, 'assets'));
+    for (const name of assets.filter(n => n.endsWith('.css'))) {
+      const css = fs.readFileSync(path.join(dist, 'assets', name), 'utf8');
+      const remote = [...css.matchAll(/(?:url\(\s*["']?|@import\s+["'])((?:https?:)?\/\/[^"')\s]+)/gi)].map(m => m[1]);
+      expect(remote, `${name} loads from another origin`).toEqual([]);
+    }
+  });
+});
+
 describe('inlineScriptHashes', () => {
   it('hashes the exact text of each inline script, in order', () => {
     expect(inlineScriptHashes(FIXTURE_HTML)).toEqual([sha(INLINE_A), sha(INLINE_B)]);

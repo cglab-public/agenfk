@@ -934,6 +934,7 @@ export async function migrateEmptyEmailAllowlist(adapter: HubDb): Promise<void> 
   });
 }
 
+/** Exported as bootstrapPg for tests: pg-mem cannot run it over tables that already exist. */
 async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec(SCHEMA_PG);
   await adapter.exec("DELETE FROM events WHERE type = 'tokens.logged'");
@@ -1210,6 +1211,8 @@ export async function openPgDb(connectionString: string): Promise<HubDb> {
   await bootstrap(adapter);
   return adapter;
 }
+
+export { bootstrap as bootstrapPg };
 
 /** Test-only entry point: spin up an in-process pg-mem instance. */
 /**

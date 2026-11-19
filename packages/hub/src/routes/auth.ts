@@ -8,6 +8,7 @@ import {
   findUserByEmail,
   recordLogin,
   verifyPassword,
+  placeholderHash,
 } from '../auth/password.js';
 import {
   SESSION_COOKIE,
@@ -98,20 +99,25 @@ export function authRouter(ctx: HubServerContext): Router {
       return res.status(429).json({ error: 'Account temporarily locked due to repeated failed logins. Try again later.' });
     }
 
-    const user = await findUserByEmail(ctx.db, email);
-
-    if (!user || !user.password_hash || !user.active) {
-      loginFailures.recordFailure(email);
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
+    const found = await findUserByEmail(ctx.db, email);
+    const user = found && found.password_hash && found.active ? found : null;
     // One SSO sign-in moves a password account to google/entra (oauth.ts
     // findInvitedSsoUser) while keeping its hash. Under the break-glass an
     // ADMIN's hash is accepted: the operator needs back in precisely when SSO
     // broke. Everyone else keeps to the provider they moved to.
-    if (user.provider !== 'password' && !(ctx.config.forcePasswordLogin && user.role === 'admin')) {
+    const otherProvider = !!user && user.provider !== 'password' && !(ctx.config.forcePasswordLogin && user.role === 'admin');
+    // Every attempt goes through the hash pool, against a placeholder when there
+    // is no hash to check: a saturated (429) or unavailable (503) pool then
+    // answers the same whether or not the email has a password account.
+    const matches = await verifyPassword(password, user && !otherProvider ? user.password_hash! : await placeholderHash());
+    if (!user) {
+      loginFailures.recordFailure(email);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    if (otherProvider) {
       return res.status(401).json({ error: `This account signs in with ${user.provider}` });
     }
-    if (!(await verifyPassword(password, user.password_hash))) {
+    if (!matches) {
       loginFailures.recordFailure(email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }

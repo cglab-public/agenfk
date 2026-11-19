@@ -57,6 +57,20 @@ export async function revokeAdminCliToken(db: DB, orgId: string, id: string): Pr
   return r.changes > 0;
 }
 
+/**
+ * A credential change ends a user's admin CLI access like their cookies: every live token is
+ * revoked (sparing `exceptId`), and the sign-ins they approved are dropped, so one approved with
+ * a stolen session cannot be turned into a token afterwards. Collected ones go too: a failed
+ * mint hands its grant back (routes/connect.ts), and that must not reopen one after the change.
+ */
+export async function revokeAdminCliTokensOfUser(db: DB, userId: string, exceptId?: string): Promise<void> {
+  await db.run(
+    'UPDATE admin_cli_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL AND id <> ?',
+    [new Date().toISOString(), userId, exceptId ?? ''],
+  );
+  await db.run('DELETE FROM admin_device_codes WHERE user_id = ?', [userId]);
+}
+
 /** The bearer a request carries, if any. */
 export function bearerOf(authorization: string | undefined): string | null {
   if (!authorization || !authorization.startsWith('Bearer ')) return null;

@@ -174,12 +174,12 @@ describe('sign-in', () => {
   it('sets the allowlist and a Google client, the secret read from stdin and never echoed', async () => {
     await withStdin('s3cr3t-value\n', () => hub.run([
       'hub', 'admin', 'sign-in', 'set', '--google', 'on', '--google-client-id', 'cid.apps', '--google-client-secret-stdin',
-      '--allowlist', 'x, y.com',
+      '--allowlist', 'x@acme.com, y.com',
     ]));
     const cfg = (await board('get', '/v1/admin/auth-config')).body;
     expect(cfg.googleEnabled).toBe(true);
     expect(cfg.google.clientId).toBe('cid.apps');
-    expect(cfg.emailAllowlist).toEqual(['x', 'y.com']);
+    expect(cfg.emailAllowlist).toEqual(['x@acme.com', 'y.com']);
     expect(cfg.google.clientSecretSet).toBe(true);
     expect(hub.out() + hub.err()).not.toContain('s3cr3t-value');
   });

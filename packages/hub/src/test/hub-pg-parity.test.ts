@@ -3,12 +3,10 @@
 // gets full coverage of the SQL the hub actually emits at runtime.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
 import supertest from 'supertest';
 import { backfillUserKeyAliases } from '../services/backfillUserKeyAliases';
 import { createHubApp } from '../server';
-import { openPgMemDb, backfillPrEventRemoteUrls, migrateUsersSessionEpoch, migrateEmptyEmailAllowlist } from '../db/postgres';
+import { openPgMemDb, backfillPrEventRemoteUrls, migrateUsersSessionEpoch, migrateEmptyEmailAllowlist, bootstrapPg } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
@@ -1122,13 +1120,45 @@ describe('PG parity: bootstrap() runs the session_epoch and allowlist migrations
     await db.close();
   });
 
-  it('bootstrap() calls both migrations, so dropping either call is caught', () => {
-    const src = fs.readFileSync(path.join(__dirname, '../db/postgres.ts'), 'utf8');
-    const start = src.indexOf('async function bootstrap(');
-    expect(start).toBeGreaterThan(-1);
-    const body = src.slice(start, src.indexOf('\n}\n', start)).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
-    expect(body).toMatch(/await migrateUsersSessionEpoch\(adapter\)/);
-    expect(body).toMatch(/await migrateEmptyEmailAllowlist\(adapter\)/);
+  // pg-mem cannot run bootstrap() over tables that already exist, so the real bootstrap() is run against an
+  // adapter that answers like a hub created before session_epoch and records what bootstrap does to it.
+  const runBootstrapOn = async (usersColumns: string[], state: Record<string, unknown> = {}) => {
+    const ran: string[] = [];
+    const record = async (sql: string) => { ran.push(sql.replace(/\s+/g, ' ').trim()); return { changes: 0 }; };
+    const upgraded = {
+      all: async (sql: string) => /information_schema\.columns/.test(sql) && /'users'/.test(sql) ? usersColumns.map(column_name => ({ column_name })) : [],
+      get: async (sql: string, params: unknown[] = []) => {
+        const key = /FROM system_state WHERE key = (?:'([^']+)'|\?)/.exec(sql);
+        return key && state[key[1] ?? String(params[0])] !== undefined ? { done: 1, value: state[key[1] ?? String(params[0])] } : undefined;
+      },
+      run: record,
+      exec: record,
+      transaction: async (fn: () => Promise<unknown>) => fn(),
+    } as unknown as HubDb;
+    await bootstrapPg(upgraded);
+    return ran;
+  };
+  const LEGACY_USERS = ['id', 'org_id', 'email', 'name', 'password_hash', 'provider', 'provider_subject', 'role', 'active', 'created_at', 'last_login_at'];
+  const addsEpoch = (ran: string[]) => ran.some(sql => /ALTER TABLE users ADD COLUMN IF NOT EXISTS session_epoch/.test(sql));
+  const setsEpoch = (ran: string[]) => ran.filter(sql => /UPDATE users SET session_epoch/.test(sql));
+
+  it('bootstrap() on a users table that predates session_epoch adds the column and starts existing rows at 1', async () => {
+    const ran = await runBootstrapOn(LEGACY_USERS);
+    expect(addsEpoch(ran)).toBe(true);
+    expect(setsEpoch(ran)).toEqual(['UPDATE users SET session_epoch = 1 WHERE session_epoch = 0']);
+    expect(ran.findIndex(sql => /ADD COLUMN IF NOT EXISTS session_epoch/.test(sql))).toBeLessThan(ran.findIndex(sql => /UPDATE users SET session_epoch/.test(sql)));
+  });
+
+  it('a second bootstrap() leaves an advanced epoch alone: with the column there, it writes no epoch at all', async () => {
+    const ran = await runBootstrapOn([...LEGACY_USERS, 'session_epoch'], { allowlist_empty_normalised: '1' });
+    expect(addsEpoch(ran)).toBe(false);
+    expect(setsEpoch(ran)).toEqual([]);
+  });
+
+  it('bootstrap() normalises a legacy "[]" allowlist the first time, and not once its marker is set', async () => {
+    const clears = (ran: string[]) => ran.some(sql => /UPDATE auth_config SET email_allowlist = NULL WHERE email_allowlist = '\[\]'/.test(sql));
+    expect(clears(await runBootstrapOn(LEGACY_USERS))).toBe(true);
+    expect(clears(await runBootstrapOn([...LEGACY_USERS, 'session_epoch'], { allowlist_empty_normalised: '1' }))).toBe(false);
   });
 });
 

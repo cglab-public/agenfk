@@ -1,11 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { HubServerContext, HUB_VERSION } from '../server.js';
-import { requireAdmin } from '../auth/session.js';
+import { requireAdmin, sessionPayloadFor, setSessionCookie, signSession } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
-import { revokeAdminCliToken } from '../auth/adminCliToken.js';
+import { revokeAdminCliToken, revokeAdminCliTokensOfUser } from '../auth/adminCliToken.js';
 import { checkEmailAllowlist, isValidAllowlistEntry, parseAllowlist } from '../auth/oauth.js';
 import { encryptSecret } from '../crypto.js';
-import { insertPasswordUser, hashPassword } from '../auth/password.js';
+import { insertPasswordUser, hashPassword, type UserRow } from '../auth/password.js';
 import { randomUUID } from 'crypto';
 import { DEFAULT_FLOW, describeFlowContract, mergeStepContracts, registryInstallSteps, flowChecksErrors } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
@@ -1481,7 +1481,8 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (role === 'admin' || role === 'viewer') { sets.push('role = ?'); params.push(role); }
     if (active === true || active === false) { sets.push('active = ?'); params.push(active ? 1 : 0); }
     // A new password or a deactivation bumps session_epoch so live cookies stop working
-    // (re-enabling must not revive them). Demotion needs no bump: the row's role wins.
+    // (re-enabling must not revive them), and revokes the user's admin CLI tokens with
+    // them. Demotion needs no bump: the row's role wins.
     const bumpsEpoch = (typeof password === 'string' && password.length >= 8) || active === false;
     if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(await hashPassword(password)); }
     if (bumpsEpoch) sets.push('session_epoch = session_epoch + 1');
@@ -1506,12 +1507,25 @@ export function adminRouter(ctx: HubServerContext): Router {
       where += ` AND ${NOT_LAST_ACTIVE_ADMIN}`;
       params.push(orgId, req.params.id);
     }
-    const result = await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE ${where}`, params);
-    if (result.changes === 0) {
+    const session = req.session!;
+    const self = session.userId === req.params.id;
+    let changes = 0;
+    let signedIn: UserRow | undefined;
+    await ctx.db.transaction(async () => {
+      changes = (await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE ${where}`, params)).changes;
+      if (changes === 0 || !bumpsEpoch) return;
+      // The caller's own credential stays good: the CLI token they are using, or (below) their cookie.
+      await revokeAdminCliTokensOfUser(ctx.db, String(req.params.id), self ? session.cliTokenId : undefined);
+      // Read with the write, so the cookie carries this change's epoch and a later one outdates it.
+      if (self && session.via !== 'cli') signedIn = await ctx.db.get<UserRow>('SELECT * FROM users WHERE id = ?', [req.params.id]);
+    });
+    if (changes === 0) {
       const exists = await ctx.db.get('SELECT id FROM users WHERE id = ? AND org_id = ?', [req.params.id, orgId]);
       if (!exists) return res.status(404).json({ error: 'User not found' });
       return res.status(409).json({ error: LAST_ADMIN_ERROR });
     }
+    // An admin changing their own password keeps this session; every other one of theirs is ended.
+    if (signedIn) setSessionCookie(res, signSession(sessionPayloadFor(signedIn), ctx.config.sessionSecret));
     res.json({ ok: true });
   }));
 

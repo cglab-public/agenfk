@@ -116,6 +116,27 @@ describe('every password write goes through the async hash', () => {
   });
 });
 
+describe('no route hashes or compares on the request thread', () => {
+  // Wrapping hashSync in a promise would still "return a promise"; this catches that, sync or async.
+  it('login, invite and an admin password change never call bcryptjs in this thread', async () => {
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'admin-password-1', 'admin');
+    const methods = ['hash', 'compare', 'hashSync', 'compareSync'] as const;
+    const spies = methods.map(m => vi.spyOn(bcrypt, m));
+    try {
+      const signIn = await login('admin@x', 'admin-password-1');
+      expect(signIn.status).toBe(200);
+      expect((await login('admin@x', 'wrong-password-1')).status).toBe(401);
+      const cookie = signIn.headers['set-cookie'][0];
+      const invite = await supertest(server).post('/v1/admin/users/invite').set('Cookie', cookie)
+        .send({ email: 'invited@x', password: 'invited-password-1', role: 'viewer' });
+      expect(invite.status, JSON.stringify(invite.body)).toBe(201);
+      const put = await supertest(server).put(`/v1/admin/users/${invite.body.id}`).set('Cookie', cookie).send({ password: 'changed-password-1' });
+      expect(put.status).toBe(200);
+      expect(Object.fromEntries(methods.map((m, i) => [m, spies[i].mock.calls.length]))).toEqual({ hash: 0, compare: 0, hashSync: 0, compareSync: 0 });
+    } finally { spies.forEach(s => s.mockRestore()); }
+  });
+});
+
 describe('POST /v1/admin/users/invite tells a busy hash pool from a duplicate email', () => {
   const invite = (cookie: string, email: string, password?: string) =>
     supertest(server).post('/v1/admin/users/invite').set('Cookie', cookie)
@@ -216,6 +237,39 @@ describe('the event loop stays available while passwords are being checked', () 
   }, 60_000);
 });
 
+describe('the event loop stays available while passwords are being hashed', () => {
+  const REAL_COST = '12';
+  let savedRounds: string | undefined;
+  beforeEach(() => { savedRounds = process.env.AGENFK_HUB_BCRYPT_ROUNDS; });
+  afterEach(() => {
+    if (savedRounds === undefined) delete process.env.AGENFK_HUB_BCRYPT_ROUNDS; else process.env.AGENFK_HUB_BCRYPT_ROUNDS = savedRounds;
+  });
+
+  // The write side of the ordering test above: invites hash, logins only compare.
+  it('an unrelated route answers before six invites at production cost have finished', async () => {
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'admin-password-1', 'admin');
+    const cookie = (await login('admin@x', 'admin-password-1')).headers['set-cookie'][0];
+    process.env.AGENFK_HUB_BCRYPT_ROUNDS = REAL_COST;
+
+    const url = `http://127.0.0.1:${port()}/auth/providers`;
+    await fetch(url);   // warm up
+
+    const invites = Promise.all(Array.from({ length: 6 }, (_, i) =>
+      supertest(server).post('/v1/admin/users/invite').set('Cookie', cookie).send({ email: `slow-${i}@x`, password: `invited-password-${i}`, role: 'viewer' })));
+    for (const deadline = Date.now() + 5_000; __poolStatsForTest().busy === 0 && Date.now() < deadline;) await new Promise(res => setTimeout(res, 5));
+    expect(__poolStatsForTest().busy, 'the invites reached the worker pool').toBeGreaterThan(0);
+
+    const first = await Promise.race([
+      fetch(url).then(r => r.arrayBuffer()).then(() => 'route'),
+      invites.then(() => 'invites'),
+    ]);
+    expect(first).toBe('route');
+    expect((await invites).map(r => r.status)).toEqual([201, 201, 201, 201, 201, 201]);
+    const stored = await ctx.db.get('SELECT password_hash FROM users WHERE email = ?', ['slow-0@x']);
+    expect(Number.parseInt(stored.password_hash.split('$')[2], 10)).toBe(12);
+  }, 60_000);
+});
+
 describe('the worker pool is bounded', () => {
   it('refuses work with a 429-status error once its queue is full, and finishes what it accepted', async () => {
     vi.resetModules();
@@ -263,6 +317,7 @@ describe('the worker pool is bounded', () => {
         p.then(() => 'resolved', () => 'rejected'),
         new Promise<string>(res => setTimeout(() => res('never settled'), 10_000)),
       ]);
+      expect(await pool.bcryptCompare('pw-for-busy-crash', hash)).toBe(true);   // the worker is up: a job goes straight to it
       const busyJob = outcome(pool.bcryptCompare('pw-for-busy-crash', hash));   // handed to the only worker
       const queued = [pool.bcryptCompare('pw-for-busy-crash', hash), pool.bcryptCompare('some-other-password', hash)];
       expect(pool.__poolStatsForTest()).toMatchObject({ busy: 1, queued: 2 });
@@ -302,10 +357,10 @@ describe('a worker that cannot start', () => {
     process.env.AGENFK_HUB_BCRYPT_QUEUE_MAX = '2';
     const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const real = (await import('bcryptjs')).default;
-      const onRequestThread = [vi.spyOn(real, 'compare'), vi.spyOn(real, 'hash')];
-      const pool = await import('../auth/bcryptPool');
       const hash = bcrypt.hashSync('pw-for-spawn', 4);
+      const real = (await import('bcryptjs')).default;
+      const onRequestThread = [vi.spyOn(real, 'compare'), vi.spyOn(real, 'hash'), vi.spyOn(real, 'compareSync'), vi.spyOn(real, 'hashSync')];
+      const pool = await import('../auth/bcryptPool');
 
       const during = await Promise.allSettled(Array.from({ length: 20 }, () => pool.bcryptCompare('pw-for-spawn', hash)));
       expect(during.every(r => r.status === 'rejected' && (r.reason as { status?: number }).status === 503), JSON.stringify(during.map(r => r.status))).toBe(true);
@@ -314,6 +369,52 @@ describe('a worker that cannot start', () => {
       failSpawns = false;
       vi.setSystemTime(Date.now() + 5 * 60_000);
       expect(await pool.bcryptCompare('pw-for-spawn', hash)).toBe(true);
+      await pool.shutdownBcryptPool();
+    } finally {
+      quiet.mockRestore();
+    }
+  }, 60_000);
+
+  // The worker object is created, then its script fails to load (bcryptjs missing, say): no constructor throw.
+  it('a worker that starts and then fails to initialise is unavailable too: 503s, one worker tried per backoff, and a later one serves', async () => {
+    vi.resetModules();
+    let failInit = true;
+    let started = 0;
+    vi.doMock('worker_threads', async () => {
+      const actual = await vi.importActual<typeof import('worker_threads')>('worker_threads');
+      class InitFailingWorker extends actual.Worker {
+        constructor(script: string | URL, options?: import('worker_threads').WorkerOptions) {
+          started++;
+          super(failInit ? "throw new Error(\"Cannot find module 'bcryptjs'\")" : script, options);
+        }
+      }
+      return { ...actual, Worker: InitFailingWorker };
+    });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    process.env.AGENFK_HUB_BCRYPT_WORKERS = '1';
+    const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const hash = bcrypt.hashSync('pw-for-init', 4);
+      const pool = await import('../auth/bcryptPool');
+      const refused = (results: PromiseSettledResult<boolean>[]) => results.map(r => r.status === 'rejected'
+        ? { status: (r.reason as { status?: number }).status, retryable: Number((r.reason as { retryAfterSeconds?: number }).retryAfterSeconds) > 0 }
+        : 'resolved');
+      const unavailable = { status: 503, retryable: true };
+
+      const during = await Promise.allSettled(Array.from({ length: 5 }, () => pool.bcryptCompare('pw-for-init', hash)));
+      expect(refused(during)).toEqual([unavailable, unavailable, unavailable, unavailable, unavailable]);
+      expect(started, 'one worker for the five jobs, not one each').toBe(1);
+
+      // Inside the backoff nothing is started and nothing waits.
+      const again = await Promise.allSettled([pool.bcryptCompare('pw-for-init', hash), pool.bcryptHash('pw-for-init', 4)]);
+      expect(refused(again as PromiseSettledResult<boolean>[])).toEqual([unavailable, unavailable]);
+      expect(started).toBe(1);
+      expect(pool.__poolStatsForTest()).toEqual({ workers: 0, busy: 0, queued: 0 });
+
+      failInit = false;
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      expect(await pool.bcryptCompare('pw-for-init', hash)).toBe(true);
+      expect(started).toBe(2);
       await pool.shutdownBcryptPool();
     } finally {
       quiet.mockRestore();

@@ -5,11 +5,14 @@ import * as os from 'os';
  * bcrypt on a worker_threads pool: bcryptjs's async API still hogs the event loop,
  * so concurrent bad logins could freeze the hub. A saturated pool refuses work (429); a pool
  * that cannot start a worker refuses it too (503) and tries again after SPAWN_RETRY_MS.
+ * A worker takes jobs only once it has said it is ready, so one that fails while loading
+ * (bcryptjs missing) counts as not started, like one whose constructor threw.
  */
 
 const WORKER_SRC = `
 const { parentPort, workerData } = require('worker_threads');
 const bcrypt = require(workerData.bcryptPath);
+parentPort.postMessage({ ready: true });
 parentPort.on('message', (m) => {
   try {
     parentPort.postMessage({ id: m.id, result: m.op === 'hash' ? bcrypt.hashSync(m.plain, m.rounds) : bcrypt.compareSync(m.plain, m.hash) });
@@ -21,7 +24,7 @@ parentPort.on('message', (m) => {
 
 type Op = { op: 'hash'; plain: string; rounds: number } | { op: 'compare'; plain: string; hash: string };
 interface Job { id: number; msg: Op; resolve: (v: any) => void; reject: (e: Error) => void }
-interface Slot { worker: Worker; job: Job | null }
+interface Slot { worker: Worker; job: Job | null; ready: boolean }
 
 /** Worker count: AGENFK_HUB_BCRYPT_WORKERS, else cores - 1 (1 to 4). */
 function poolSize(): number {
@@ -59,30 +62,41 @@ export class PoolUnavailableError extends Error {
 
 const spawnBackedOff = (): boolean => Date.now() < spawnRetryAt;
 
+function spawnFailed(err: Error): void {
+  spawnRetryAt = Date.now() + SPAWN_RETRY_MS;
+  console.warn(`[HUB] could not start a bcrypt worker, retrying in ${SPAWN_RETRY_MS / 1000}s:`, err.message);
+}
+
 function spawn(): Slot | undefined {
   let worker: Worker;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     worker = new Worker(WORKER_SRC, { eval: true, workerData: { bcryptPath: require.resolve('bcryptjs') } });
   } catch (err) {
-    spawnRetryAt = Date.now() + SPAWN_RETRY_MS;
-    console.warn(`[HUB] could not start a bcrypt worker, retrying in ${SPAWN_RETRY_MS / 1000}s:`, (err as Error).message);
+    spawnFailed(err as Error);
     return undefined;
   }
-  const slot: Slot = { worker, job: null };
-  worker.on('message', (m: { id: number; result?: unknown; error?: string }) => {
+  const slot: Slot = { worker, job: null, ready: false };
+  worker.on('message', (m: { ready?: boolean; id: number; result?: unknown; error?: string }) => {
+    if (m.ready) { slot.ready = true; pump(); return; }
     const job = slot.job;
     if (!job || job.id !== m.id) return;
     slot.job = null;
     if (m.error !== undefined) job.reject(new Error(m.error)); else job.resolve(m.result);
     pump();
   });
+  let gone = false;
+  // 'error' and 'exit' both fire for one death: only the first counts.
   const dead = (err: Error) => {
+    if (gone) return;
+    gone = true;
     const i = slots.indexOf(slot);
     if (i >= 0) slots.splice(i, 1);
     const job = slot.job;
     slot.job = null;
     if (job) job.reject(err);
+    // Died before it was ready: starting another at once would only repeat it, once per waiting job.
+    if (!slot.ready && !shuttingDown) spawnFailed(err);
     pump();
   };
   worker.on('error', dead);
@@ -92,28 +106,32 @@ function spawn(): Slot | undefined {
   return slot;
 }
 
-/** Give waiting jobs to idle workers, starting one when the pool is below size. */
+const starting = (): number => slots.filter(s => !s.ready).length;
+
+/** Give waiting jobs to idle workers, starting one per job still unserved while the pool is below size. */
 function pump(): void {
   while (queue.length > 0) {
-    let slot = slots.find(s => !s.job);
-    if (!slot && slots.length < poolSize() && !spawnBackedOff()) slot = spawn();
-    if (!slot) {
-      // With no worker at all nothing will take these before the retry: refuse them rather than let them wait.
-      if (slots.length === 0) for (const j of queue.splice(0)) j.reject(new PoolUnavailableError());
-      return;
+    const slot = slots.find(s => s.ready && !s.job);
+    if (slot) {
+      const job = queue.shift()!;
+      slot.job = job;
+      slot.worker.postMessage({ id: job.id, ...job.msg });
+      continue;
     }
-    const job = queue.shift()!;
-    slot.job = job;
-    slot.worker.postMessage({ id: job.id, ...job.msg });
+    if (starting() < queue.length && slots.length < poolSize() && !spawnBackedOff() && spawn()) continue;
+    break;
   }
+  // With no worker at all nothing will take these before the retry: refuse them rather than let them wait.
+  if (slots.length === 0) for (const j of queue.splice(0)) j.reject(new PoolUnavailableError());
 }
 
 function submit<T>(msg: Op): Promise<T> {
   if (shuttingDown) return Promise.reject(new Error('bcrypt pool is shut down'));
   if (slots.length === 0 && spawnBackedOff()) return Promise.reject(new PoolUnavailableError());
-  const idle = slots.some(s => !s.job);
+  const idle = slots.some(s => s.ready && !s.job);
   const canGrow = slots.length < poolSize() && !spawnBackedOff();
-  if (!idle && !canGrow && queue.length >= queueMax()) return Promise.reject(new PoolBusyError());
+  // A job a starting worker will take is not waiting behind the others.
+  if (!idle && !canGrow && queue.length - starting() >= queueMax()) return Promise.reject(new PoolBusyError());
   return new Promise<T>((resolve, reject) => {
     queue.push({ id: nextId++, msg, resolve, reject });
     pump();

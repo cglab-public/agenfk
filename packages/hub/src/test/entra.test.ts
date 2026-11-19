@@ -150,6 +150,62 @@ describe('Entra OIDC flow', () => {
     void getSpy; void postSpy;
   });
 
+  // An ACTIVE, INVITED user, so a 403 here can only be the allowlist, never the invite check.
+  describe('callback and the stored allowlist, for an active invited user', () => {
+    const invite = () => ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)',
+      ['u-pre', 'org', 'bob@acme.com', null, 'password', 'viewer'],
+    );
+    const callback = async () => {
+      vi.spyOn(axios, 'get').mockResolvedValue({ data: {
+        authorization_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/authorize',
+        token_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/token',
+        jwks_uri: 'https://login.microsoftonline.com/tenant-uuid/discovery/v2.0/keys',
+        issuer: 'https://login.microsoftonline.com/tenant-uuid/v2.0',
+      } } as any);
+      vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt.token' } } as any);
+      mockClaims = { oid: 'entra-oid-1', email: 'bob@acme.com' };
+      const start = await supertest(__server).get('/auth/entra/start').redirects(0);
+      const stateCookie = start.headers['set-cookie']?.[0];
+      const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
+      return supertest(__server).get(`/auth/entra/callback?code=abc&state=${state}`).set('Cookie', stateCookie!).redirects(0);
+    };
+    const signedIn = (cb: any): boolean => cb.headers['set-cookie']?.some((c: string) => c?.startsWith('agenfk_hub_session=')) ?? false;
+    const row = () => ctx.db.get<any>("SELECT provider, provider_subject, last_login_at FROM users WHERE id = 'u-pre'");
+
+    it.each(['{not json', '[]', '"acme.com"', '[42]'])('an unreadable list (%s) denies with the allowlist error: no session, and the row is not moved to entra', async (stored) => {
+      await enableEntra(ctx.db);
+      await ctx.db.run("UPDATE auth_config SET email_allowlist = ? WHERE org_id = 'org'", [stored]);
+      await invite();
+      const cb = await callback();
+      expect(cb.status).toBe(403);
+      expect(cb.body.error).toBe('allowlist is misconfigured');
+      expect(signedIn(cb)).toBe(false);
+      expect(await row()).toMatchObject({ provider: 'password', provider_subject: null, last_login_at: null });
+    });
+
+    it('a readable list that excludes them denies the same way', async () => {
+      await enableEntra(ctx.db, ['other.com']);
+      await invite();
+      const cb = await callback();
+      expect(cb.status).toBe(403);
+      expect(cb.body.error).toMatch(/allowlist/i);
+      expect(signedIn(cb)).toBe(false);
+      expect(await row()).toMatchObject({ provider: 'password', provider_subject: null });
+    });
+
+    it("another org's unreadable list does not count: this org has none, so the user signs in", async () => {
+      await enableEntra(ctx.db);
+      await ctx.db.run("INSERT INTO orgs (id, name) VALUES ('other-org', 'other')");
+      await ctx.db.run("INSERT INTO auth_config (org_id, password_enabled, email_allowlist) VALUES ('other-org', 1, '{not json')");
+      await invite();
+      const cb = await callback();
+      expect(cb.status).toBe(302);
+      expect(signedIn(cb)).toBe(true);
+      expect(await row()).toMatchObject({ provider: 'entra', provider_subject: 'entra-oid-1' });
+    });
+  });
+
   it('callback rejects an un-invited email with 403', async () => {
     await enableEntra(ctx.db);
     const discovery = {
