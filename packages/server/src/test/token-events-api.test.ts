@@ -108,4 +108,16 @@ describe('GET /token-events REST', () => {
     const limited = await agent().get('/token-events').query({ limit: 1 });
     expect(limited.body).toHaveLength(1);
   });
+
+  it('GH-389: pi is a client ingestion reads, so it can be filtered on', async () => {
+    const { storage } = await import('../server');
+    await storage.insertTokenEvent({
+      id: 'pi-1', ts: '2026-05-13T00:00:00Z', client: 'pi', sessionId: 's',
+      model: 'm', input: 1, cachedInput: 0, output: 1, reasoning: 0, total: 2,
+      itemId: 'item-pi', sourcePath: '/p/pi', sourceOffset: 0,
+    });
+    const res = await agent().get('/token-events').query({ client: 'pi' });
+    expect(res.status).toBe(200);
+    expect(res.body.map((e: any) => e.id)).toEqual(['pi-1']);
+  });
 });

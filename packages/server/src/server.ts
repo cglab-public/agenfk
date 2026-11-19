@@ -6185,7 +6185,7 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
 
 app.get("/token-events", asyncHandler(async (req: any, res: any) => {
   const { itemId, projectId, client, since, until, limit } = req.query as Record<string, string | undefined>;
-  const ALLOWED_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode']);
+  const ALLOWED_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi']);
   if (client && !ALLOWED_CLIENTS.has(client)) {
     return res.status(400).json({ error: `Invalid client '${client}'. Must be one of: ${[...ALLOWED_CLIENTS].join(', ')}` });
   }

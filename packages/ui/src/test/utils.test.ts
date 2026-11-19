@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDuration, calculateCycleTimeMs, stripAnsi, getModelPrice, calculateCost, formatCost } from '../utils';
+import { formatDuration, calculateCycleTimeMs, stripAnsi, getModelPrice, formatCost } from '../utils';
 
 describe('UI Utils', () => {
   describe('stripAnsi', () => {
@@ -105,43 +105,6 @@ describe('UI Utils', () => {
       // prices.find() returns undefined — neither null nor a price object
       const result = getModelPrice('gpt-4o-mini', customPrices);
       expect(result).toBeFalsy();
-    });
-  });
-
-  describe('calculateCost', () => {
-    const pricesData = {
-      prices: [
-        { id: 'gpt-4o', input: 5, output: 15 },
-      ],
-    };
-
-    it('should return 0 if tokenUsage is falsy', () => {
-      expect(calculateCost(null as any, pricesData)).toBe(0);
-    });
-
-    it('should return 0 if pricesData has no prices', () => {
-      expect(calculateCost([{ model: 'gpt-4o', input: 1000, output: 500 }], null as any)).toBe(0);
-    });
-
-    it('should calculate cost correctly', () => {
-      const usage = [{ model: 'gpt-4o', input: 1000000, output: 1000000 }];
-      const cost = calculateCost(usage, pricesData);
-      expect(cost).toBeCloseTo(5 + 15); // 5 per M input + 15 per M output
-    });
-
-    it('should skip usage entries with unknown model', () => {
-      const usage = [{ model: 'unknown-model', input: 1000000, output: 1000000 }];
-      const cost = calculateCost(usage, pricesData);
-      expect(cost).toBe(0);
-    });
-
-    it('should sum multiple entries', () => {
-      const usage = [
-        { model: 'gpt-4o', input: 1000000, output: 0 },
-        { model: 'gpt-4o', input: 0, output: 1000000 },
-      ];
-      const cost = calculateCost(usage, pricesData);
-      expect(cost).toBeCloseTo(5 + 15);
     });
   });
 

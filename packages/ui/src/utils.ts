@@ -34,17 +34,6 @@ export const getModelPrice = (model: string, prices: any[]) => {
   return null;
 };
 
-export const calculateCost = (tokenUsage: any[], pricesData: any): number => {
-  if (!tokenUsage || !pricesData?.prices) return 0;
-  return tokenUsage.reduce((acc, usage) => {
-    const price = getModelPrice(usage.model, pricesData.prices);
-    if (!price) return acc;
-    const inputCost = (usage.input / 1000000) * (price.input || 0);
-    const outputCost = (usage.output / 1000000) * (price.output || 0);
-    return acc + inputCost + outputCost;
-  }, 0);
-};
-
 export const formatCost = (cost: number): string => {
   if (cost === 0) return '$0.00';
   if (cost < 0.01) return '$' + cost.toFixed(4);
