@@ -1,32 +1,48 @@
 import { randomBytes } from 'crypto';
 import { Request, Response } from 'express';
 import { DB } from '../db.js';
-import { setSessionCookie, signSession, cookieSecure } from './session.js';
+import { setSessionCookie, signSession, sessionPayloadFor, cookieSecure } from './session.js';
 import { recordLogin, UserRow } from './password.js';
-import { SessionPayload } from '../types.js';
 
 export const OAUTH_STATE_COOKIE = 'agenfk_hub_oauth_state';
 export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 export interface AllowlistResult { allowed: boolean; reason?: string }
 
+/** Deny reason for an unreadable stored allowlist. */
+export const ALLOWLIST_MISCONFIGURED = 'allowlist is misconfigured';
+
+// Valid allowlist entries: email, @domain, domain, *.domain. Domains need two labels, so `*.com` is rejected.
+const LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+const DOMAIN = `${LABEL}(?:\\.${LABEL})+`;
+const ALLOWLIST_ENTRY = new RegExp(`^(?:[^\\s@*]+@${DOMAIN}|@${DOMAIN}|${DOMAIN}|\\*\\.${DOMAIN})$`, 'i');
+export const isValidAllowlistEntry = (v: unknown): v is string =>
+  typeof v === 'string' && v.length <= 254 && ALLOWLIST_ENTRY.test(v);
+
+/** Parsed allowlist, or null unless it is a non-empty list of strings. */
+export function parseAllowlist(allowlistJson: string): string[] | null {
+  let list: unknown;
+  try { list = JSON.parse(allowlistJson); } catch { return null; }
+  if (!Array.isArray(list) || list.length === 0 || !list.every((p): p is string => typeof p === 'string')) return null;
+  return list;
+}
+
+/** Fails closed: null means no restriction, but an unreadable list denies everyone. The admin lockout guard calls this too. */
 export function checkEmailAllowlist(email: string, allowlistJson: string | null): AllowlistResult {
-  if (!allowlistJson) return { allowed: true };
-  try {
-    const list = JSON.parse(allowlistJson) as string[];
-    if (!Array.isArray(list) || list.length === 0) return { allowed: true };
-    const lower = email.toLowerCase();
-    for (const pattern of list) {
-      const p = pattern.toLowerCase();
-      if (p.startsWith('*.') && lower.endsWith(p.slice(1))) return { allowed: true };
-      if (p.startsWith('@') && lower.endsWith(p)) return { allowed: true };
-      if (lower.endsWith('@' + p)) return { allowed: true };
-      if (lower === p) return { allowed: true };
-    }
-    return { allowed: false, reason: `Email ${email} not in allowlist` };
-  } catch {
-    return { allowed: true }; // malformed allowlist → fail open (admin can fix)
+  if (allowlistJson === null || allowlistJson === undefined) return { allowed: true };
+  const list = parseAllowlist(allowlistJson);
+  if (!list) return { allowed: false, reason: ALLOWLIST_MISCONFIGURED };
+  // Exactly one '@': patterns match by suffix, so `x@evil@acme.com` would pass `acme.com`.
+  if (email.split('@').length !== 2) return { allowed: false, reason: `Email ${email} not in allowlist` };
+  const lower = email.toLowerCase();
+  for (const pattern of list) {
+    const p = pattern.toLowerCase();
+    if (p.startsWith('*.') && lower.endsWith(p.slice(1))) return { allowed: true };
+    if (p.startsWith('@') && lower.endsWith(p)) return { allowed: true };
+    if (lower.endsWith('@' + p)) return { allowed: true };
+    if (lower === p) return { allowed: true };
   }
+  return { allowed: false, reason: `Email ${email} not in allowlist` };
 }
 
 export function issueOAuthState(res: Response): string {
@@ -127,6 +143,5 @@ export async function completeSsoLogin(
   sessionSecret: string,
 ): Promise<void> {
   await recordLogin(db, user.id);
-  const payload: SessionPayload = { userId: user.id, orgId: user.org_id, role: user.role };
-  setSessionCookie(res, signSession(payload, sessionSecret));
+  setSessionCookie(res, signSession(sessionPayloadFor(user), sessionSecret));
 }

@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import type { DB } from '../db.js';
 import { findUserByEmail, hashPassword, type UserRow } from './password.js';
+import { revokeAdminCliTokensOfUser } from './adminCliToken.js';
 
 /**
  * Admin recovery for a hub whose SSO broke (STORY a44f3697).
@@ -64,12 +65,18 @@ export async function redeemAdminRecoveryToken(db: DB, orgId: string, token: unk
   }
   const user = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', [row.user_id]);
   if (!activeAdmin(user ?? null, orgId)) return refused;
-  let spent = false;
+  // Hashed before the transaction opens: ~100 ms of bcrypt must not hold it.
+  const newHash = await hashPassword(password);
+  let recovered: UserRow | undefined;
   await db.transaction(async () => {
     const consumed = await db.run('DELETE FROM admin_recovery_tokens WHERE token_hash = ?', [tokenHash]);
     if (consumed.changes !== 1) return;   // another request spent it first
-    await db.run("UPDATE users SET password_hash = ?, provider = 'password' WHERE id = ?", [hashPassword(password), user!.id]);
-    spent = true;
+    // Bump the epoch with the password so pre-recovery sessions stop working.
+    await db.run("UPDATE users SET password_hash = ?, provider = 'password', session_epoch = session_epoch + 1 WHERE id = ?", [newHash, user!.id]);
+    await revokeAdminCliTokensOfUser(db, user!.id);
+    // Read here, not after the commit: the caller signs this epoch, and a reset landing
+    // after the commit must outdate that session rather than be signed into it.
+    recovered = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', [user!.id]);
   });
-  return spent ? { user: user! } : refused;
+  return recovered ? { user: recovered } : refused;
 }

@@ -17,6 +17,11 @@ export function signSession(payload: SessionPayload, secret: string): string {
   return jwt.sign(payload, secret, { algorithm: 'HS256', expiresIn: `${SESSION_TTL_HOURS}h` });
 }
 
+/** Claims for a fresh session, including the epoch checked by requireSession. */
+export function sessionPayloadFor(user: { id: string; org_id: string; role: SessionPayload['role']; session_epoch: number }): SessionPayload {
+  return { userId: user.id, orgId: user.org_id, role: user.role, epoch: Number(user.session_epoch) };
+}
+
 export function verifySession(token: string, secret: string): SessionPayload | null {
   try {
     return jwt.verify(token, secret) as SessionPayload;
@@ -65,7 +70,7 @@ export function clearSessionCookie(res: Response): void {
  * viewer from their next request, and a promoted viewer an admin.
  */
 /** The guard's per-request read of the signed-in user. Exported for tests that need to hold it. */
-export const SESSION_USER_SQL = 'SELECT role, active, org_id FROM users WHERE id = ?';
+export const SESSION_USER_SQL = 'SELECT role, active, org_id, session_epoch FROM users WHERE id = ?';
 
 export function requireSession(secret: string, db: DB) {
   // Named, so a route walk can tell which routes a signed-in person reaches
@@ -76,11 +81,17 @@ export function requireSession(secret: string, db: DB) {
     resolveSession(req, secret, db).then(async (found) => {
       if ('error' in found) { res.status(401).json({ error: found.error }); return; }
       const session = found.session;
-      const user = await db.get<{ role: SessionPayload['role']; active: number; org_id: string }>(SESSION_USER_SQL, [session.userId]);
+      const user = await db.get<{ role: SessionPayload['role']; active: number; org_id: string; session_epoch: number }>(SESSION_USER_SQL, [session.userId]);
       // A throw in here would otherwise escape as an unhandled rejection
       // (downstream handlers are covered by express's own try/catch).
       try {
         if (!user || !Number(user.active) || user.org_id !== session.orgId) {
+          res.status(401).json({ error: 'Session no longer valid; sign in again' });
+          return;
+        }
+        // A password reset bumps session_epoch, ending any stolen session. A cookie
+        // without an epoch claim counts as 0, which the migration already invalidated.
+        if (session.via !== 'cli' && Number(user.session_epoch) !== Number(session.epoch ?? 0)) {
           res.status(401).json({ error: 'Session no longer valid; sign in again' });
           return;
         }

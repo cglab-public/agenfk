@@ -70,6 +70,8 @@ export interface SessionPayload {
   userId: string;
   orgId: string;
   role: 'admin' | 'viewer';
+  /** users.session_epoch at issue time; requireSession refuses the cookie once the row's epoch moves on. Absent = 0. */
+  epoch?: number;
   /** What carried the session: the board's cookie, or the admin CLI's bearer token (CGLAB-702). Not in the JWT. */
   via?: 'board' | 'cli';
   /** The admin CLI token's id, when `via` is 'cli'. */

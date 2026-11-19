@@ -42,9 +42,14 @@ const enableGoogle = async (db: any, allowlist?: string[]) => {
 };
 
 describe('checkEmailAllowlist', () => {
-  it('allows everything when null/empty', () => {
+  it('allows everything when there is no allowlist (null)', () => {
     expect(checkEmailAllowlist('a@b.com', null).allowed).toBe(true);
-    expect(checkEmailAllowlist('a@b.com', '[]').allowed).toBe(true);
+  });
+  // "No allowlist" is NULL; an empty list is a misconfiguration and fails closed.
+  it('denies an empty stored list as misconfigured, not as "no restriction"', () => {
+    const r = checkEmailAllowlist('a@b.com', '[]');
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toBe('allowlist is misconfigured');
   });
   it('matches bare domains', () => {
     expect(checkEmailAllowlist('alice@acme.com', '["acme.com"]').allowed).toBe(true);
@@ -178,6 +183,56 @@ describe('Google OAuth flow', () => {
       .get(`/auth/google/callback?code=abc&state=${state}`)
       .set('Cookie', stateCookie!);
     expect(cb.status).toBe(403);
+  });
+
+  // An ACTIVE, INVITED user, so a 403 here can only be the allowlist (the test above would also pass on the invite check).
+  describe('callback and the stored allowlist, for an active invited user', () => {
+    const invite = () => ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)',
+      ['u-pre', 'org', 'alice@acme.com', null, 'password', 'viewer'],
+    );
+    const callback = async () => {
+      vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { access_token: 'tok' } } as any);
+      vi.spyOn(axios, 'get').mockResolvedValueOnce({ data: { sub: 'g-sub-1', email: 'alice@acme.com', email_verified: true } } as any);
+      const start = await supertest(__server).get('/auth/google/start').redirects(0);
+      const stateCookie = start.headers['set-cookie']?.[0];
+      const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
+      return supertest(__server).get(`/auth/google/callback?code=abc&state=${state}`).set('Cookie', stateCookie!).redirects(0);
+    };
+    const signedIn = (cb: any): boolean => cb.headers['set-cookie']?.some((c: string) => c?.startsWith('agenfk_hub_session=')) ?? false;
+    const row = () => ctx.db.get<any>("SELECT provider, provider_subject, last_login_at FROM users WHERE id = 'u-pre'");
+
+    it.each(['{not json', '[]', '"acme.com"', '[42]'])('an unreadable list (%s) denies with the allowlist error: no session, and the row is not moved to google', async (stored) => {
+      await enableGoogle(ctx.db);
+      await ctx.db.run("UPDATE auth_config SET email_allowlist = ? WHERE org_id = 'org'", [stored]);
+      await invite();
+      const cb = await callback();
+      expect(cb.status).toBe(403);
+      expect(cb.body.error).toBe('allowlist is misconfigured');
+      expect(signedIn(cb)).toBe(false);
+      expect(await row()).toMatchObject({ provider: 'password', provider_subject: null, last_login_at: null });
+    });
+
+    it('a readable list that excludes them denies the same way', async () => {
+      await enableGoogle(ctx.db, ['other.com']);
+      await invite();
+      const cb = await callback();
+      expect(cb.status).toBe(403);
+      expect(cb.body.error).toMatch(/allowlist/i);
+      expect(signedIn(cb)).toBe(false);
+      expect(await row()).toMatchObject({ provider: 'password', provider_subject: null });
+    });
+
+    it("another org's unreadable list does not count: this org has none, so the user signs in", async () => {
+      await enableGoogle(ctx.db);
+      await ctx.db.run("INSERT INTO orgs (id, name) VALUES ('other-org', 'other')");
+      await ctx.db.run("INSERT INTO auth_config (org_id, password_enabled, email_allowlist) VALUES ('other-org', 1, '{not json')");
+      await invite();
+      const cb = await callback();
+      expect(cb.status).toBe(302);
+      expect(signedIn(cb)).toBe(true);
+      expect(await row()).toMatchObject({ provider: 'google', provider_subject: 'g-sub-1' });
+    });
   });
 
   it('rejects unverified Google email', async () => {

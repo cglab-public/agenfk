@@ -121,8 +121,9 @@ export function orgRenameRouter(ctx: HubServerContext): Router {
     // a board cookie would turn a 12-hour token into a session that can
     // approve the next CLI sign-in (CGLAB-702 review).
     if (session.via !== 'cli') {
-      const { userId, role } = session;
-      const newToken = signSession({ userId, role, orgId: to }, ctx.config.sessionSecret);
+      // Carry the epoch, or requireSession refuses the next request.
+      const { userId, role, epoch } = session;
+      const newToken = signSession({ userId, role, orgId: to, epoch }, ctx.config.sessionSecret);
       setSessionCookie(res, newToken);
     }
 

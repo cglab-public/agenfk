@@ -3,10 +3,12 @@ import { timingSafeEqual } from 'crypto';
 import { HubServerContext } from '../server.js';
 import {
   countUsers,
-  createPasswordUser,
+  hashPassword,
+  insertPasswordUser,
   findUserByEmail,
   recordLogin,
   verifyPassword,
+  placeholderHash,
 } from '../auth/password.js';
 import {
   SESSION_COOKIE,
@@ -14,6 +16,7 @@ import {
   requireSession,
   setSessionCookie,
   signSession,
+  sessionPayloadFor,
 } from '../auth/session.js';
 import { rateLimit, FailedAttemptTracker, sessionUserKey } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
@@ -96,27 +99,32 @@ export function authRouter(ctx: HubServerContext): Router {
       return res.status(429).json({ error: 'Account temporarily locked due to repeated failed logins. Try again later.' });
     }
 
-    const user = await findUserByEmail(ctx.db, email);
-
-    if (!user || !user.password_hash || !user.active) {
-      loginFailures.recordFailure(email);
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
+    const found = await findUserByEmail(ctx.db, email);
+    const user = found && found.password_hash && found.active ? found : null;
     // One SSO sign-in moves a password account to google/entra (oauth.ts
     // findInvitedSsoUser) while keeping its hash. Under the break-glass an
     // ADMIN's hash is accepted: the operator needs back in precisely when SSO
     // broke. Everyone else keeps to the provider they moved to.
-    if (user.provider !== 'password' && !(ctx.config.forcePasswordLogin && user.role === 'admin')) {
+    const otherProvider = !!user && user.provider !== 'password' && !(ctx.config.forcePasswordLogin && user.role === 'admin');
+    // Every attempt goes through the hash pool, against a placeholder when there
+    // is no hash to check: a saturated (429) or unavailable (503) pool then
+    // answers the same whether or not the email has a password account.
+    const matches = await verifyPassword(password, user && !otherProvider ? user.password_hash! : await placeholderHash());
+    if (!user) {
+      loginFailures.recordFailure(email);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    if (otherProvider) {
       return res.status(401).json({ error: `This account signs in with ${user.provider}` });
     }
-    if (!verifyPassword(password, user.password_hash)) {
+    if (!matches) {
       loginFailures.recordFailure(email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     loginFailures.clear(email);
     await recordLogin(ctx.db, user.id);
-    const token = signSession({ userId: user.id, orgId: user.org_id, role: user.role }, ctx.config.sessionSecret);
+    const token = signSession(sessionPayloadFor(user), ctx.config.sessionSecret);
     setSessionCookie(res, token);
     res.json({ id: user.id, email: user.email, role: user.role, orgId: user.org_id });
   }));
@@ -131,7 +139,7 @@ export function authRouter(ctx: HubServerContext): Router {
     if ('status' in out) return res.status(out.status).json({ error: out.error });
     const user = out.user;
     await recordLogin(ctx.db, user.id);
-    setSessionCookie(res, signSession({ userId: user.id, orgId: user.org_id, role: user.role }, ctx.config.sessionSecret));
+    setSessionCookie(res, signSession(sessionPayloadFor(user), ctx.config.sessionSecret));
     console.warn(`[HUB] Admin recovery: ${user.email} signed in with a recovery token and set a new password.`);
     res.json({ id: user.id, email: user.email, role: user.role, orgId: user.org_id });
   }));
@@ -205,6 +213,8 @@ export function setupRouter(ctx: HubServerContext): Router {
     // removed the row may create an admin. If user creation throws (e.g. a
     // UNIQUE collision on email), the token is rolled back so the operator
     // can retry.
+    // Hash before the transaction opens (see insertPasswordUser).
+    const passwordHash = await hashPassword(password);
     try {
       await ctx.db.transaction(async () => {
         const consumed = await ctx.db.run('DELETE FROM bootstrap_tokens WHERE token = ?', [token]);
@@ -213,7 +223,7 @@ export function setupRouter(ctx: HubServerContext): Router {
         // one) would be a second key to an admin account. On Postgres a racer
         // holding it now waits on this DELETE and finds nothing once we commit.
         await ctx.db.run('DELETE FROM bootstrap_tokens', []);
-        await createPasswordUser(ctx.db, ctx.config.defaultOrgId, email, password, 'admin');
+        await insertPasswordUser(ctx.db, ctx.config.defaultOrgId, email, passwordHash, 'admin');
       });
     } catch (err) {
       if (err instanceof SetupAlreadyClaimed) {

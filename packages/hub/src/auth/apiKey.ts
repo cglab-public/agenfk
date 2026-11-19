@@ -24,7 +24,39 @@ declare module 'express-serve-static-core' {
   }
 }
 
-export function requireApiKey(db: DB) {
+/** AGENFK_HUB_REQUIRE_BOUND_KEYS=1|true: ingest refuses installation-unbound (org-wide) keys. Off by default for legacy fleets; read per request. */
+export function requireBoundKeys(): boolean {
+  const v = process.env.AGENFK_HUB_REQUIRE_BOUND_KEYS?.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+const BOUND_KEYS_OFF_VALUES = new Set(['', '0', 'false', 'no', 'off']);
+
+/** Boot log of the flag's state: names an unrecognised value (a typo must not silently leave it off) and counts the unbound keys it would cut off. */
+export async function logBoundKeyPosture(db: DB): Promise<void> {
+  const raw = process.env.AGENFK_HUB_REQUIRE_BOUND_KEYS?.trim().toLowerCase() ?? '';
+  if (!requireBoundKeys()) {
+    if (!BOUND_KEYS_OFF_VALUES.has(raw)) {
+      console.warn(`[HUB] AGENFK_HUB_REQUIRE_BOUND_KEYS=${JSON.stringify(raw)} is not recognised, so unbound API keys are still accepted on ingest. Use 1 or true to refuse them.`);
+    }
+    return;
+  }
+  const row = await db.get<{ c: number | string | bigint }>('SELECT COUNT(*) AS c FROM api_keys WHERE revoked_at IS NULL AND installation_id IS NULL');
+  const unbound = Number(row?.c ?? 0);
+  console.log(
+    `[HUB] AGENFK_HUB_REQUIRE_BOUND_KEYS is on: POST /v1/events refuses API keys not bound to an installation. `
+    + (unbound > 0
+      ? `${unbound} live key(s) are unbound and will be refused until those machines re-onboard (agenfk hub login / join).`
+      : 'Every live key is bound.'),
+  );
+}
+
+export interface RequireApiKeyOptions {
+  /** Ingest routes only: apply AGENFK_HUB_REQUIRE_BOUND_KEYS. */
+  ingest?: boolean;
+}
+
+export function requireApiKey(db: DB, opts: RequireApiKeyOptions = {}) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const auth = req.headers.authorization;
@@ -44,6 +76,15 @@ export function requireApiKey(db: DB) {
       );
       if (!row || row.revoked_at) {
         res.status(401).json({ error: 'Invalid or revoked token' });
+        return;
+      }
+      // After key validation, so a bad token still gets 401. The JSON `error` tells the
+      // spoke this is the hub's refusal: it keeps its batch and backs off.
+      if (opts.ingest && requireBoundKeys() && !row.installation_id) {
+        res.status(403).json({
+          error: 'This hub only accepts events from installation-bound keys, and this key is not bound to an installation. '
+            + 'Re-onboard this machine with `agenfk hub login` (or `agenfk hub join`) to get a bound key.',
+        });
         return;
       }
       req.hubApiKey = { orgId: row.org_id, tokenHash, installationId: row.installation_id ?? null };

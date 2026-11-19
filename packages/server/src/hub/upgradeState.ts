@@ -16,6 +16,7 @@
 //                                   for idempotent re-emit.
 //
 // File-backed JSON, atomically written via tmp+rename.
+import { writePrivateFileSync } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -59,11 +60,8 @@ export function readUpgradeState(dbDir: string): UpgradeState | null {
 }
 
 export function writeUpgradeState(dbDir: string, state: UpgradeState): void {
-  fs.mkdirSync(dbDir, { recursive: true });
-  const p = filePath(dbDir);
-  const tmp = `${p}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, p);
+  // Owner-only (0600), like hub.json and the deadletter beside it.
+  writePrivateFileSync(filePath(dbDir), JSON.stringify(state, null, 2));
 }
 
 export function clearUpgradeState(dbDir: string): void {
