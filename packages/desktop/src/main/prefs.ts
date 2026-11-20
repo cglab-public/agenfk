@@ -19,6 +19,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { clampTerminalFontSize, clampUiScale } from './appearance';
 
 export interface Prefs {
   /**
@@ -96,6 +97,26 @@ export interface Prefs {
   customSoundName: string;
   /** Where a cloned repository lands, remembered between runs. */
   cloneDir: string;
+
+  /**
+   * The window's zoom factor, 0.8 to 2.0 (INFRA-425).
+   *
+   * Applied by this process, not by the page: given to the window when it is
+   * built, so it holds from the first paint, and re-applied on every load so it
+   * survives a reload. See main/appearance.ts for the bounds.
+   */
+  uiScale: number;
+
+  /** The xterm font size, 8 to 32. Applied live to open terminals. */
+  terminalFontSize: number;
+
+  /**
+   * The WSL distro every terminal opens in, or '' for the platform's own shell
+   * (INFRA-425). Windows only, and only ever a name `wsl.exe --list` printed:
+   * the IPC border checks it against that list, because it is passed to
+   * `wsl.exe --distribution`.
+   */
+  wslDistro: string;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -121,6 +142,15 @@ export const DEFAULT_PREFS: Prefs = {
    * thing on the next screen that consults this file.
    */
   cloneDir: '',
+  /*
+   * Exactly what the app drew before these existed: zoom 1 and the font size
+   * `terminalOptions.ts` used to hard-code. An upgrade changes nothing until
+   * somebody chooses otherwise.
+   */
+  uiScale: 1,
+  terminalFontSize: 12,
+  // Nobody chose: PowerShell as before, and WSL only where a Linux path forces it.
+  wslDistro: '',
 };
 
 /**
@@ -140,6 +170,9 @@ export interface ReadablePrefs {
   readonly autoApprove: boolean;
   readonly defaultAgentId: string;
   readonly askBeforeOpening: boolean;
+  readonly uiScale: number;
+  readonly terminalFontSize: number;
+  readonly wslDistro: string;
 }
 
 export function readablePrefs(prefs: Prefs): ReadablePrefs {
@@ -147,6 +180,9 @@ export function readablePrefs(prefs: Prefs): ReadablePrefs {
     autoApprove: prefs.autoApprove,
     defaultAgentId: prefs.defaultAgentId,
     askBeforeOpening: prefs.askBeforeOpening,
+    uiScale: prefs.uiScale,
+    terminalFontSize: prefs.terminalFontSize,
+    wslDistro: prefs.wslDistro,
   };
 }
 
@@ -202,6 +238,14 @@ export function readPrefs(dir: string): Prefs {
     // would take the rails off for someone trying to keep them on.
     if (typeof value === typeof DEFAULT_PREFS[key]) (prefs[key] as unknown) = value;
   }
+  /*
+   * The two numbers get one more pass: a type check lets Infinity and 3 through,
+   * and a hand-edited value outside the range is pulled back inside it rather
+   * than dropped. See clampUiScale for why the file gets that and the renderer
+   * does not.
+   */
+  prefs.uiScale = clampUiScale(prefs.uiScale) ?? DEFAULT_PREFS.uiScale;
+  prefs.terminalFontSize = clampTerminalFontSize(prefs.terminalFontSize) ?? DEFAULT_PREFS.terminalFontSize;
   return prefs;
 }
 

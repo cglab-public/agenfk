@@ -51,6 +51,17 @@ export interface DetectDeps {
   readonly now?: () => number;
   /** Drop a remembered fresh PATH, so "Check again" sees an install made since. */
   readonly forgetLoginPath?: () => void;
+  /**
+   * Which of these executables the WSL distro has, on its own login PATH
+   * (INFRA-425). Absent off Windows and where there is no WSL.
+   *
+   * `exclusive` when every terminal runs in WSL (a distro is chosen in
+   * Settings): then only the distro counts, and an agent installed on Windows
+   * alone would die inside Linux with "not found". Otherwise either side does,
+   * because a project on a Linux path opens in WSL and one on a Windows path
+   * does not.
+   */
+  readonly inWsl?: (files: readonly string[]) => Promise<{ found: ReadonlySet<string>; exclusive: boolean } | null>;
 }
 
 /**
@@ -219,6 +230,10 @@ async function detectOnce(deps: DetectDeps): Promise<DetectedAgent[]> {
   // Once per detection, not once per agent: on a cold memo it is a login shell.
   const pathOverride = await probePath(deps);
   const found = new Map<string, boolean>();
+  // One wsl.exe call for every agent, not one per agent: each is a VM round trip.
+  const wsl = deps.inWsl
+    ? await deps.inWsl(ids.filter(id => !ALWAYS_AVAILABLE.has(id)).map(id => resolveAgentCommand(id).file)).catch(() => null)
+    : null;
   for (const id of ids) {
     if (ALWAYS_AVAILABLE.has(id)) {
       found.set(id, true);
@@ -229,7 +244,11 @@ async function detectOnce(deps: DetectDeps): Promise<DetectedAgent[]> {
     // while the binary on PATH is `claude`. Probing the id reported Claude
     // Code as missing on a machine that had it, and offered an install
     // command for something already installed.
-    found.set(id, Boolean(await lookUp(resolveAgentCommand(id).file, pathOverride, deps)));
+    const file = resolveAgentCommand(id).file;
+    const inLinux = wsl?.found.has(file) === true;
+    found.set(id, wsl?.exclusive
+      ? inLinux
+      : inLinux || Boolean(await lookUp(file, pathOverride, deps)));
   }
 
   // The whole entry, not just the label: picking fields off one by one is how
