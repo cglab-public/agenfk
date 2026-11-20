@@ -1302,7 +1302,7 @@ describe('PG parity: card usage (GH-389)', () => {
     });
     const close = (id: string, itemId: string, input: number, cost: number, est?: number) =>
       ev(id, 'item.closed', itemId, '2026-11-19T09:00:00.000Z', { toStatus: 'DONE', usage: { byModel: [], total: total(input, cost, est), byStep: [], cards: 1 } });
-    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
       close('k1', 'a', 100, 0.1, 2), close('k2', 'b', 10, 1), close('k3', 'c', 50, 0, 0.5),
       ev('p1', 'pr.opened', 'a', '2026-11-19T10:01:00.000Z', { prNumber: 3, repo: 'acme/api' }, 'alice', '100% done'),
       ev('p2', 'pr.opened', 'b', '2026-11-19T10:02:00.000Z', { prNumber: 20, repo: 'acme/web' }, 'bob'),
@@ -1329,6 +1329,16 @@ describe('PG parity: card usage (GH-389)', () => {
       ['b', 'bob@acme.com', 'https://github.com/acme/web/pull/20', '2026-11-19T10:02:00.000Z'],
     ]);
     expect((await get('&q=3')).rows.map((x: any) => [x.item_id, x.created_by])).toEqual([['a', 'alice@acme.com']]);
+
+    // GH-397 x GH-396: turns with no stored price (a model the table did not list) are counted, the stored estimate sorts.
+    const unpriced = { ...total(5, 0, 0), turns: 2, unpricedTurns: 2 };
+    const late = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
+      ev('k4', 'item.closed', 'd', '2026-11-19T09:00:00.000Z', { toStatus: 'DONE', usage: { byModel: [], total: unpriced, byStep: [], cards: 1 } }),
+    ] });
+    expect(late.status).toBe(200);
+    const byCost = await get('&sort=cost&dir=desc');
+    expect(byCost.rows.map((x: any) => x.item_id)).toEqual(['a', 'b', 'c', 'd']);
+    expect(byCost.costWithoutEstimate).toBe(1);
   });
 });
 

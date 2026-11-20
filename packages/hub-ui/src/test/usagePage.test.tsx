@@ -804,18 +804,30 @@ describe('UsagePage', () => {
       expect(within(t).getByText('carol@acme.com')).toBeInTheDocument();
     });
 
-    it('says next to Cost when some PRs sort by reported cost alone, having no stored estimate', async () => {
+    it('says next to Cost when some PRs have turns with no stored price, which sort by the cost stored and show today\'s prices for the rest (GH-397)', async () => {
       prPage = prPageOf(PR_ROWS, { sort: 'cost', costWithoutEstimate: 3 });
       renderAt('/usage');
       const t = await prTable();
-      expect(within(header(t, 'Cost')).getByText(/3 PRs/i)).toBeInTheDocument();
-      expect(within(t).getByText(/sort by reported cost/i)).toBeInTheDocument();
+      expect(within(header(t, 'Cost')).getByText(/3 PRs with unpriced turns/i)).toBeInTheDocument();
+      const note = within(t).getByText(/sort by the cost stored with their usage/i);
+      expect(note).toHaveTextContent(/at today's prices/i);
+      expect(within(t).queryByText(/browser's estimate|reported cost only/i)).not.toBeInTheDocument();
     });
 
     it('no such note when every PR\'s cost is stored', async () => {
       renderAt('/usage');
       const t = await prTable();
-      expect(within(t).queryByText(/sort by reported cost/i)).not.toBeInTheDocument();
+      expect(within(t).queryByText(/sort by the cost stored/i)).not.toBeInTheDocument();
+    });
+
+    it("a PR whose turns have no stored price shows them at today's prices, labelled as the other tables label it (GH-397)", async () => {
+      const legacy = { ...PR_ROWS[0], item_title: 'Older PR', usage: { byModel: [opus, qwen], total: sum(opus, qwen), byStep: [], cards: 1 } };
+      prPage = prPageOf([legacy], { sort: 'cost', costWithoutEstimate: 1 });
+      renderAt('/usage');
+      const t = await prTable();
+      // $0.50 reported + $10.00 for the unpriced Claude turns at the test table's rate.
+      expect(await within(t).findByText('$10.50')).toBeInTheDocument();
+      expect(within(t).getByText("$10.00 at today's prices")).toBeInTheDocument();
     });
   });
 

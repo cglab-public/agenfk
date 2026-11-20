@@ -727,9 +727,11 @@ export function queriesRouter(ctx: HubServerContext): Router {
    * title, `status`: closed | open), its sort (`sort`, `dir`) and its paging
    * (`page`, `pageSize`) run here, so a response is one page and `total`.
    * Cost sorts by what the usage stored: reported (costUsd) plus the estimate
-   * priced when the turns were recorded (estimatedCostUsd, GH-397); usage
-   * recorded before that carries no estimate and sorts at its reported cost,
-   * counted in `costWithoutEstimate` under a cost sort (null under any other).
+   * priced when the turns were recorded (estimatedCostUsd, GH-397). Turns with
+   * neither (`unpricedTurns`: recorded before turns were priced, or of a model
+   * the price table did not list) add nothing to it; the page prices them at
+   * today's prices where it can. `costWithoutEstimate` counts the PRs with any
+   * such turns under a cost sort (null under any other).
    * A PR not closed yet sorts last on a usage column, either way. Closes are
    * read for the page's PRs only, unless a status filter or a usage sort needs
    * them all; `malformedEvents` counts what this request read.
@@ -908,10 +910,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const pageRows = keyed.slice((page - 1) * pageSize, page * pageSize).map(({ p }) => p);
     if (!usageFirst) await resolveUsage(pageRows);
     // Only a cost sort is affected, and only then is every row's usage read.
-    const costWithoutEstimate = sort !== 'cost' ? null : rows.filter(p => {
-      const t = totalOf(p);
-      return t && num(t.unpricedTurns) > 0 && typeof t.estimatedCostUsd !== 'number';
-    }).length;
+    const costWithoutEstimate = sort !== 'cost' ? null : rows.filter(p => num(totalOf(p)?.unpricedTurns) > 0).length;
     res.json({
       rows: pageRows,
       total, page, pageSize, sort, dir, repos, costWithoutEstimate,

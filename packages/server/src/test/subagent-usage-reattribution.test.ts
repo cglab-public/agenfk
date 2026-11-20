@@ -21,6 +21,7 @@ import type { TokenEvent } from '@agenfk/core';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { reattributeSubagentUsage, REATTRIBUTION_MIGRATION } from '../token-ingestion/reattribute';
 import { createUsageIngestion, defaultIngestionSources } from '../token-ingestion/service';
+import { computeCardUsage, computeStepUsage } from '../usage/stepUsage';
 import { ClaudeTranscript } from './helpers/claudeTranscript';
 
 const PARENT_CARD = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -38,11 +39,11 @@ describe('re-attribution of the stored turns (GH-398)', () => {
   let seq = 0;
 
   /** A turn as the buggy version stored it: on whatever card the shared journal said. */
-  const stored = async (tr: ClaudeTranscript, messageId: string, ts: string, itemId: string | null) => {
+  const stored = async (tr: ClaudeTranscript, messageId: string, ts: string, itemId: string | null, extra: Partial<TokenEvent> = {}) => {
     const ev: TokenEvent = {
       id: `ev-${++seq}`, ts, client: 'claude-code', sessionId: tr.sessionId, turnId: messageId, dedupKey: messageId,
       model: 'claude-test', input: 10, cachedInput: 0, cacheRead: 0, cacheWrite: 0, output: 5, reasoning: 0, total: 15,
-      ...(itemId ? { itemId } : {}), projectId: 'proj', sourcePath: tr.pathIn(projectDir), sourceOffset: seq,
+      ...(itemId ? { itemId } : {}), projectId: 'proj', sourcePath: tr.pathIn(projectDir), sourceOffset: seq, ...extra,
     };
     await storage.insertTokenEvent(ev);
     return ev.id;
@@ -150,6 +151,42 @@ describe('re-attribution of the stored turns (GH-398)', () => {
     expect(epic.cardUsage.total.turns).toBe(2);
     expect(report.cardsRecomputed).toBeGreaterThanOrEqual(3);
     void ids;
+  });
+
+  it('GH-397: a moved turn keeps the price stored when it was used, and the recomputed usage carries it as a live transition would', async () => {
+    const parent = new ClaudeTranscript(S);
+    const a = new ClaudeTranscript(S, 'aaaa0001');
+    const b = new ClaudeTranscript(S, 'bbbb0002');
+    parent.gatekeeper(t('10:00'), PARENT_CARD);
+    a.gatekeeper(t('10:01'), CARD_A);
+    b.gatekeeper(t('10:02'), CARD_B);
+    const aWork = await stored(a, a.turn(t('10:03')), t('10:03'), CARD_B, { estimatedCostUsd: 0.25 });
+    await stored(b, b.turn(t('10:04')), t('10:04'), CARD_B, { estimatedCostUsd: 0.5 });
+    await stored(a, a.turn(t('10:06')), t('10:06'), CARD_A, { estimatedCostUsd: 0.125 });
+    for (const tr of [parent, a, b]) tr.writeTo(projectDir);
+    const stale = { step: 'IN_PROGRESS', to: 'DONE', enteredAt: t('09:00'), leftAt: t('11:00'), complete: true, byModel: [], total: {} };
+    await storage.updateItem(CARD_B, { usageByStep: [stale] } as any);
+    await storage.updateItem(CARD_A, { usageByStep: [stale], cardUsage: { ...stale, byStep: [], cards: 1, atStatus: 'DONE' } } as any);
+    await storage.updateItem(EPIC, { cardUsage: { ...stale, byStep: [], cards: 2, atStatus: 'DONE' } } as any);
+
+    await migrate();
+
+    const ev = (await storage.queryTokenEvents({})).find((e) => e.id === aWork)!;
+    expect(ev.itemId).toBe(CARD_A);
+    expect(ev.estimatedCostUsd).toBe(0.25);
+    const cardA: any = await storage.getItem(CARD_A);
+    expect(cardA.usageByStep[0].total).toMatchObject({ turns: 2, estimatedCostUsd: 0.375, unpricedTurns: 0 });
+    expect(cardA.usageByStep[0].byModel[0]).toMatchObject({ model: 'claude-test', estimatedCostUsd: 0.375, unpricedTurns: 0 });
+    expect(cardA.cardUsage.total).toMatchObject({ estimatedCostUsd: 0.375, unpricedTurns: 0 });
+    expect(((await storage.getItem(EPIC)) as any).cardUsage.total).toMatchObject({ estimatedCostUsd: 0.375, unpricedTurns: 0 });
+    expect(((await storage.getItem(CARD_B)) as any).usageByStep[0].total).toMatchObject({ turns: 1, estimatedCostUsd: 0.5, unpricedTurns: 0 });
+
+    // The same turns as a live transition and a live close would total them.
+    const live = await computeStepUsage({ storage, flush: async () => {}, item: { id: CARD_A, createdAt: t('09:00') }, from: 'IN_PROGRESS', to: 'DONE', at: t('11:00') } as any);
+    expect(cardA.usageByStep[0].total).toEqual(live.total);
+    expect(cardA.usageByStep[0].byModel).toEqual(live.byModel);
+    const liveCard = await computeCardUsage(storage, CARD_A, true, null, 'DONE');
+    expect(cardA.cardUsage.total).toEqual(liveCard.total);
   });
 
   it('runs once: a second call is skipped and moves nothing, and a forced one finds nothing left to move', async () => {

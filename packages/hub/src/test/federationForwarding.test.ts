@@ -294,6 +294,41 @@ describe('redactIdentity', () => {
     expect(out.payload).toEqual({ toStatus: 'REVIEW' });
   });
 
+  it.each([['the person', PERSON], ['the person and the installation', BOTH], ['the installation', INSTALLATION]] as const)(
+    'GH-395 x GH-397: with %s coded, a step and a close keep the stored estimate on total, byModel, own and byStep', (_name, coding) => {
+      const est = (v: number) => ({ estimatedCostUsd: v, unpricedTurns: 0 });
+      const step = (redactIdentity({
+        ...full, type: 'step.transitioned',
+        payload: { toStatus: 'REVIEW', usage: {
+          step: 'IN_PROGRESS', byModel: [m(est(0.75))], total: t(est(0.75)),
+          own: { asOf: '2026-11-19T11:00:00.000Z', byModel: [m(est(0.5))], total: t(est(0.5)) },
+        } },
+      }, 'ch-1', SECRET, coding) as any).payload.usage;
+      expect(step.total.estimatedCostUsd).toBe(0.75);
+      expect(step.byModel[0].estimatedCostUsd).toBe(0.75);
+      expect(step.own.total.estimatedCostUsd).toBe(0.5);
+      expect(step.own.byModel[0].estimatedCostUsd).toBe(0.5);
+      const close = (redactIdentity({
+        ...full, type: 'item.closed',
+        payload: { usage: {
+          cards: 2, byModel: [m(est(1.25))], total: t(est(1.25)),
+          byStep: [{ step: 'IN_PROGRESS', total: t(est(1)) }, { step: 'REVIEW', total: t(est(0.25)) }],
+          own: { asOf: '2026-11-19T12:00:00.000Z', byModel: [m(est(1))], total: t(est(1)) },
+        } },
+      }, 'ch-1', SECRET, coding) as any).payload.usage;
+      expect(close.total.estimatedCostUsd).toBe(1.25);
+      expect(close.byModel[0].estimatedCostUsd).toBe(1.25);
+      expect(close.byStep.map((s: any) => s.total.estimatedCostUsd)).toEqual([1, 0.25]);
+      expect(close.own.total.estimatedCostUsd).toBe(1);
+      expect(close.own.byModel[0].estimatedCostUsd).toBe(1);
+      const noCard = (redactIdentity({
+        ...full, type: 'usage.no-card',
+        payload: { day: '2026-11-19', asOf: '2026-11-19T18:00:00.000Z', usage: { total: t(est(0.3)), byModel: [m(est(0.3))] } },
+      }, 'ch-1', SECRET, coding) as any).payload.usage;
+      expect(noCard.total.estimatedCostUsd).toBe(0.3);
+      expect(noCard.byModel[0].estimatedCostUsd).toBe(0.3);
+    });
+
   it('GH-397: a no-card total keeps the cost AgEnFK estimated when the turns were used, and an older one without it forwards zero', () => {
     const fwd = (usage: unknown) => (redactIdentity({ ...full, type: 'usage.no-card', payload: { day: '2026-11-19', asOf: 'x', usage } }, 'ch-1', SECRET, PERSON) as any).payload.usage;
     const now = fwd({ total: { turns: 2, estimatedCostUsd: '0.75' }, byModel: [{ client: 'claude-code', model: 'claude-opus-5-5', turns: 2, estimatedCostUsd: 0.75 }] });

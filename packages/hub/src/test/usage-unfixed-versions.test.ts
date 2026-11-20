@@ -112,6 +112,24 @@ describe('ingest drops usage from versions without the fix (GH-398)', () => {
     expect(r.body.malformedEvents ?? 0).toBe(0);
   });
 
+  it('GH-397: drops the cost priced when the turns were used along with the rest, on the overview and the By PR table', async () => {
+    const priced = { ...totals, unpricedTurns: 0, estimatedCostUsd: 1.5 };
+    const pricedUsage = { byModel: [{ client: 'claude-code', model: 'claude-opus-5-5', ...priced }], total: priced, complete: true, cards: 1 };
+    const close = ev('item.closed', { fromStatus: 'REVIEW', toStatus: 'DONE', usage: { ...pricedUsage, own: pricedUsage } });
+    const free = ev('usage.no-card', { day: '2026-11-20', asOf: '2026-11-20T10:00:00.000Z', usage: pricedUsage });
+    const opened = ev('pr.opened', { prNumber: 7, repo: 'acme/api' }, { occurredAt: '2026-11-20T11:00:00.000Z' });
+    await post([close, free, opened], '2.1.0-beta.20');
+    expect(JSON.stringify(await payloadOf(close.eventId))).not.toContain('estimatedCostUsd');
+    expect(JSON.stringify(await payloadOf(free.eventId))).not.toContain('estimatedCostUsd');
+    const o = await supertest(app).get('/v1/usage/overview?from=2026-11-01').set('Cookie', cookie);
+    expect(o.status).toBe(200);
+    expect(o.body.total.estimatedCostUsd ?? 0).toBe(0);
+    expect(o.body.noCard?.total?.estimatedCostUsd ?? 0).toBe(0);
+    const p = await supertest(app).get('/v1/usage/prs?from=2026-11-01&sort=cost').set('Cookie', cookie);
+    expect(p.status).toBe(200);
+    expect(p.body.rows.map((r: any) => [r.pr_number, r.usage])).toEqual([[7, null]]);
+  });
+
   it('a forwarded event keeps its usage only from a child hub on the fixed version', async () => {
     const enroll = async (name: string, hubVersion: string) => {
       const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
@@ -174,6 +192,22 @@ for (const engine of ['sqlite', 'postgres'] as const) {
       expect((await payloadOf(forwarded)).usage).toBeUndefined();
       expect((await payloadOf(fixed)).usage.total.input).toBe(100);
       expect((await payloadOf(other)).usage).toBe('not usage');
+    });
+
+    it('GH-397: clears the cost priced when the turns were used with the rest of the usage, and keeps a fixed sender\'s', async () => {
+      const priced = { ...totals, unpricedTurns: 0, estimatedCostUsd: 1.5 };
+      const pricedUsage = { byModel: [{ client: 'claude-code', model: 'claude-opus-5-5', ...priced }], total: priced, byStep: [{ step: 'WORK', total: priced }] };
+      const withEst = (e: any) => ({ ...e, payload: { ...e.payload, usage: { ...pricedUsage, own: pricedUsage } } });
+      const oldClose = await insert(withEst(closed()), '2.1.0-beta.20');
+      const oldNoCard = await insert({ ...noCard(), payload: { ...noCard().payload, usage: pricedUsage } }, '2.1.0-beta.20');
+      const fixed = await insert(withEst(step()), USAGE_FIXED_VERSION);
+      await clearUnfixedUsage(db);
+      expect(JSON.stringify(await payloadOf(oldClose))).not.toContain('estimatedCostUsd');
+      expect(JSON.stringify(await payloadOf(oldNoCard))).not.toContain('estimatedCostUsd');
+      const kept = (await payloadOf(fixed)).usage;
+      expect(kept.total.estimatedCostUsd).toBe(1.5);
+      expect(kept.own.total.estimatedCostUsd).toBe(1.5);
+      expect(kept.byStep[0].total.estimatedCostUsd).toBe(1.5);
     });
 
     it('runs once: a second call is skipped until forced, and a forced run finds nothing left', async () => {

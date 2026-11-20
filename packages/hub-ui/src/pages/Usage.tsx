@@ -278,7 +278,7 @@ function PrUsageTable({ filterQs, nameOf, prices }: {
     prCol('cost', (
       <span>
         Cost
-        {unestimated > 0 && <span className="ml-1 normal-case font-normal">{`(${plural(unestimated, 'PR', 'PRs')}: reported only)`}</span>}
+        {unestimated > 0 && <span className="ml-1 normal-case font-normal">{`(${plural(unestimated, 'PR', 'PRs')} with unpriced turns)`}</span>}
       </span>
     ), r => (r.usage ? <Cost byModel={r.usage.byModel ?? []} prices={prices} /> : null), true),
   ];
@@ -351,8 +351,8 @@ function PrUsageTable({ filterQs, nameOf, prices }: {
           {unestimated > 0 && (
             <p className="px-5 pb-3 text-caption text-ink-tertiary">
               {unestimated === 1
-                ? '1 PR has no cost estimate stored with its usage (recorded before estimates were stored), so it sorts by reported cost only, though its Cost shows the browser\'s estimate.'
-                : `${unestimated.toLocaleString()} PRs have no cost estimate stored with their usage (recorded before estimates were stored), so they sort by reported cost only, though their Cost shows the browser's estimate.`}
+                ? '1 PR has turns with no price stored (recorded before turns were priced as they were used, or of a model the price table did not list). It sorts by the cost stored with its usage; its Cost adds those turns at today\'s prices where it can, and says so.'
+                : `${unestimated.toLocaleString()} PRs have turns with no price stored (recorded before turns were priced as they were used, or of a model the price table did not list). They sort by the cost stored with their usage; their Cost adds those turns at today's prices where it can, and says so.`}
             </p>
           )}
         </>

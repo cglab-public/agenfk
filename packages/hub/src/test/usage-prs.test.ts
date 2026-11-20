@@ -13,6 +13,7 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 import type { HubDb } from '../db/types';
+import { USAGE_FIXED_VERSION } from '../services/unfixedUsage';
 
 const SECRET = 'a'.repeat(64);
 const ALICE = { osUser: 'alice', gitName: 'Zoe Alice', gitEmail: 'alice@acme.com' };
@@ -51,7 +52,8 @@ describe('GET /v1/usage/prs', () => {
   let cookie: string;
   let token: string;
   const post = async (events: any[]) => {
-    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+    // GH-398: the hub keeps usage only from versions with the attribution fix.
+    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events });
     expect(r.status).toBe(200);
   };
   const prs = async (q = '') => {
@@ -294,6 +296,29 @@ describe('GET /v1/usage/prs', () => {
     expect((await prs('?sort=cost')).costWithoutEstimate).toBe(1);
     // Only the cost sort is affected, so only it says.
     expect((await prs()).costWithoutEstimate).toBeNull();
+  });
+
+  it('counts every PR with turns no price was stored for, whether or not some of its turns were priced (GH-397 x GH-396)', async () => {
+    await post([
+      // A model the price table did not list when the turns were used: the installation stored 0 and left them unpriced.
+      closed('unlisted', { input: 5, unpricedTurns: 2, estimatedCostUsd: 0 }),
+      // Part priced when used, part not.
+      closed('mixed', { input: 5, unpricedTurns: 1, estimatedCostUsd: 0.4 }),
+      closed('priced', { input: 5, unpricedTurns: 0, estimatedCostUsd: 0.3 }),
+      pr('unlisted', 1), pr('mixed', 2), pr('priced', 3),
+    ]);
+    expect((await prs('?sort=cost')).costWithoutEstimate).toBe(2);
+  });
+
+  it('sorts a PR by its reported cost plus the estimate stored with its usage, the figure its Cost starts from (GH-397 x GH-396)', async () => {
+    await post([
+      closed('est', { input: 1, unpricedTurns: 0, estimatedCostUsd: 0.9 }),
+      closed('rep', { input: 1_000_000, costUsd: 0.5 }),
+      closed('both', { input: 1, costUsd: 0.2, estimatedCostUsd: 0.2 }),
+      pr('est', 1), pr('rep', 2), pr('both', 3),
+    ]);
+    expect((await prs('?sort=cost&dir=desc')).rows.map((r: any) => r.item_id)).toEqual(['est', 'rep', 'both']);
+    expect((await prs('?sort=cost&dir=asc')).rows.map((r: any) => r.item_id)).toEqual(['both', 'rep', 'est']);
   });
 
   describe('Created by', () => {

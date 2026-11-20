@@ -161,6 +161,45 @@ describe('usage attribution in a session with subagents (GH-398)', () => {
     expect(((await storage.getItem(CARD_A)) as any).usageByStep[0].total.turns).toBe(3);
   });
 
+  it('GH-397: turns charged again keep the price stored when they were used, and the recomputed step rows carry it', async () => {
+    // claude-test at $100k/M input and $200k/M output: a 10-in, 5-out turn is $2.
+    const prices = async () => ({ prices: [{ id: 'claude-test', input: 100_000, output: 200_000 }] });
+    const pricedIngest = () => ingestOnce({
+      storage,
+      sources: defaultIngestionSources(home, {}).filter((s) => s.client === 'claude-code'),
+      attributeEvents: true,
+      prices,
+    });
+    const parent = new ClaudeTranscript(S);
+    const worker = new ClaudeTranscript(S, 'c9c93333');
+    parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+    parent.turn('2026-11-20T10:00:30.000Z');
+    const o1 = worker.turn(t('10:01'));
+    worker.turn(t('10:02'));
+    parent.writeTo(projectDir);
+    worker.writeTo(projectDir);
+    await pricedIngest();
+    const row = { step: 'IN_PROGRESS', to: 'REVIEW', enteredAt: t('09:00'), leftAt: t('10:30'), complete: true, byModel: [], total: {} };
+    await storage.updateItem(PARENT_CARD, { usageByStep: [row] } as any);
+    await storage.updateItem(CARD_A, { usageByStep: [row] } as any);
+
+    worker.gatekeeper(t('10:03'), CARD_A); await journal(CARD_A, t('10:03'));
+    worker.writeTo(projectDir);
+    await pricedIngest();
+
+    const moved = (await storage.queryTokenEvents({})).find((e) => e.dedupKey === o1)!;
+    expect(moved.itemId).toBe(CARD_A);
+    expect(moved.estimatedCostUsd).toBeCloseTo(2, 9);
+    const a = ((await storage.getItem(CARD_A)) as any).usageByStep[0];
+    // Its two turns and the gatekeeper call's own, all on the card it claimed.
+    expect(a.total).toMatchObject({ turns: 3, unpricedTurns: 0 });
+    expect(a.total.estimatedCostUsd).toBeCloseTo(6, 9);
+    expect(a.byModel[0].estimatedCostUsd).toBeCloseTo(6, 9);
+    const p = ((await storage.getItem(PARENT_CARD)) as any).usageByStep[0];
+    expect(p.total).toMatchObject({ turns: 1, unpricedTurns: 0 });
+    expect(p.total.estimatedCostUsd).toBeCloseTo(2, 9);
+  });
+
   it('a helper that never names a card inherits the parent\'s card at the time', async () => {
     const parent = new ClaudeTranscript(S);
     const helper = new ClaudeTranscript(S, 'dddd4444');
