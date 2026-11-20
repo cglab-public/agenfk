@@ -55,10 +55,25 @@ export class ClaudeTranscript {
       : path.join(projectDir, `${this.sessionId}.jsonl`);
   }
 
+  private spawner?: string;
+
+  /**
+   * GH-400: this subagent was spawned by another subagent, not by the session
+   * itself. The harness records it in `agent-<id>.meta.json` beside the log.
+   */
+  spawnedBy(parentAgentId: string): this {
+    this.spawner = parentAgentId;
+    return this;
+  }
+
   writeTo(projectDir: string): string {
     const p = this.pathIn(projectDir);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, this.lines.join('\n') + '\n');
+    if (this.agentId) {
+      const meta = { agentType: 'Explore', isBuiltIn: true, ...(this.spawner ? { parentAgentId: this.spawner, spawnDepth: 2 } : { spawnDepth: 1 }) };
+      fs.writeFileSync(p.replace(/\.jsonl$/, '.meta.json'), JSON.stringify(meta));
+    }
     return p;
   }
 }

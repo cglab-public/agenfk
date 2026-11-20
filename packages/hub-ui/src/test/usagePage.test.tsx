@@ -421,6 +421,21 @@ describe('UsagePage', () => {
       expect(valueIn(t, 'acme/web#7', 'Cache read')).toBe('');
     });
 
+    it('GH-400: a closed card whose close carries no usage says so, not that it is open', async () => {
+      prPage = prPageOf([
+        ...PR_ROWS,
+        { repo: 'acme/api', pr_number: 43, item_id: 's3', item_type: 'TASK', item_title: 'Closed, usage cleared', opened_at: '2026-11-17T10:00:00.000Z',
+          closed_at: '2026-11-19T08:00:00.000Z', created_by: 'bob@acme.com', url: null, usage: null },
+      ]);
+      renderAt('/usage');
+      await screen.findByText('1.1M');
+      const t = await within(section(/by pr/i)).findByRole('table');
+      await within(t).findByText('acme/api#43');
+      expect(valueIn(t, 'acme/api#43', 'Tokens')).toBe('closed, no usage reported');
+      expect(valueIn(t, 'acme/api#43', 'Cache read')).toBe('');
+      expect(valueIn(t, 'acme/web#7', 'Tokens')).toBe('not closed yet');
+    });
+
     it('does not show reasoning tokens', async () => {
       renderAt('/usage');
       await screen.findByText('1.1M');

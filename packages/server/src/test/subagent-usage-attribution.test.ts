@@ -388,4 +388,103 @@ describe('usage attribution in a session with subagents (GH-398)', () => {
 
     expect(await cardOf(work)).toBe(PARENT_CARD);
   });
+
+  describe('GH-400: a helper spawned by a subagent', () => {
+    it('inherits the card of the subagent that spawned it, not the parent\'s', async () => {
+      const parent = new ClaudeTranscript(S);
+      const worker = new ClaudeTranscript(S, 'a1a10001');
+      const helper = new ClaudeTranscript(S, 'b2b20002').spawnedBy('a1a10001');
+      parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+      worker.gatekeeper(t('10:01'), CARD_A); await journal(CARD_A, t('10:01'));
+      const exploring = helper.turn(t('10:02'));
+      for (const tr of [parent, worker, helper]) tr.writeTo(projectDir);
+
+      await ingest();
+
+      expect(await cardOf(exploring)).toBe(CARD_A);
+    });
+
+    it('is on its spawner\'s card though the parent handed its own card over and is on no card', async () => {
+      const parent = new ClaudeTranscript(S);
+      const worker = new ClaudeTranscript(S, 'a1a10003');
+      const helper = new ClaudeTranscript(S, 'b2b20004').spawnedBy('a1a10003');
+      parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+      worker.gatekeeper(t('10:01'), PARENT_CARD); await journal(PARENT_CARD, t('10:01'));
+      const coordinating = parent.turn(t('10:02'));
+      const exploring = helper.turn(t('10:03'));
+      for (const tr of [parent, worker, helper]) tr.writeTo(projectDir);
+
+      await ingest();
+
+      expect(await cardOf(coordinating)).toBeNull();
+      expect(await cardOf(exploring)).toBe(PARENT_CARD);
+    });
+
+    it('spawned before its spawner\'s first claim is on that claim\'s card, as its spawner is', async () => {
+      const parent = new ClaudeTranscript(S);
+      const worker = new ClaudeTranscript(S, 'a1a10005');
+      const helper = new ClaudeTranscript(S, 'b2b20006').spawnedBy('a1a10005');
+      parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+      const orienting = worker.turn(t('10:01'));
+      const exploring = helper.turn(t('10:02'));
+      worker.gatekeeper(t('10:03'), CARD_A); await journal(CARD_A, t('10:03'));
+      for (const tr of [parent, worker, helper]) tr.writeTo(projectDir);
+
+      await ingest();
+
+      expect(await cardOf(orienting)).toBe(CARD_A);
+      expect(await cardOf(exploring)).toBe(CARD_A);
+    });
+
+    it('follows the spawn chain past a spawner that never claims, to the nearest agent that does', async () => {
+      const parent = new ClaudeTranscript(S);
+      const worker = new ClaudeTranscript(S, 'a1a10007');
+      const middle = new ClaudeTranscript(S, 'b2b20008').spawnedBy('a1a10007');
+      const leaf = new ClaudeTranscript(S, 'c3c30009').spawnedBy('b2b20008');
+      parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+      worker.gatekeeper(t('10:01'), CARD_B); await journal(CARD_B, t('10:01'));
+      const mid = middle.turn(t('10:02'));
+      const deep = leaf.turn(t('10:03'));
+      for (const tr of [parent, worker, middle, leaf]) tr.writeTo(projectDir);
+
+      await ingest();
+
+      expect(await cardOf(mid)).toBe(CARD_B);
+      expect(await cardOf(deep)).toBe(CARD_B);
+    });
+
+    it('falls back to the parent\'s card when its spawner is unknown or the chain loops', async () => {
+      const parent = new ClaudeTranscript(S);
+      const orphan = new ClaudeTranscript(S, 'd4d40010').spawnedBy('ffff9999');
+      const loopA = new ClaudeTranscript(S, 'e5e50011').spawnedBy('e5e50012');
+      const loopB = new ClaudeTranscript(S, 'e5e50012').spawnedBy('e5e50011');
+      parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+      const lost = orphan.turn(t('10:01'));
+      const looping = loopA.turn(t('10:02'));
+      for (const tr of [parent, orphan, loopA, loopB]) tr.writeTo(projectDir);
+
+      await ingest();
+
+      expect(await cardOf(lost)).toBe(PARENT_CARD);
+      expect(await cardOf(looping)).toBe(PARENT_CARD);
+    });
+
+    it('turns stored before its spawner\'s claim was read are charged again to that card when it is', async () => {
+      const parent = new ClaudeTranscript(S);
+      const worker = new ClaudeTranscript(S, 'a1a10013');
+      const helper = new ClaudeTranscript(S, 'b2b20014').spawnedBy('a1a10013');
+      parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+      worker.turn(t('10:01'));
+      const early = helper.turn(t('10:02'));
+      for (const tr of [parent, worker, helper]) tr.writeTo(projectDir);
+      await ingest();
+      expect(await cardOf(early)).toBe(PARENT_CARD);
+
+      worker.gatekeeper(t('10:03'), CARD_A); await journal(CARD_A, t('10:03'));
+      worker.writeTo(projectDir);
+      await ingest();
+
+      expect(await cardOf(early)).toBe(CARD_A);
+    });
+  });
 });
