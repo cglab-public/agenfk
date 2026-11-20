@@ -1680,13 +1680,14 @@ export class SQLiteStorageProvider implements StorageProvider {
     ).all(itemId, itemId) as Array<{ client: string; session_id: string }>).map((r) => ({ client: r.client, sessionId: r.session_id }));
   }
 
-  async recordTranscriptClaim(row: TranscriptClaimRow): Promise<void> {
+  async recordTranscriptClaim(row: TranscriptClaimRow): Promise<boolean> {
     const atMs = Date.parse(row.at);
     if (!Number.isFinite(atMs)) throw new Error(`recordTranscriptClaim: unparseable time ${row.at}`);
-    this.database.prepare(
+    const result = this.database.prepare(
       `INSERT OR IGNORE INTO transcript_claims (client, session_id, agent_id, item_id, project_id, at, at_ms)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).run(row.client, row.sessionId, row.agentId, row.itemId, row.projectId ?? null, row.at, atMs);
+    return Number(result.changes) > 0;
   }
 
   async transcriptCardAt(client: string, sessionId: string, agentId: string, ts: string): Promise<{ itemId: string | null; projectId?: string } | null> {
@@ -1694,13 +1695,27 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (!Number.isFinite(tMs)) return null;
     const row = this.database.prepare(
       `SELECT c.item_id, c.project_id,
-              EXISTS (SELECT 1 FROM card_closes x WHERE x.item_id = c.item_id AND x.at_ms >= c.at_ms AND x.at_ms <= ?) AS closed
+              EXISTS (SELECT 1 FROM card_closes x WHERE x.item_id = c.item_id AND x.at_ms >= c.at_ms AND x.at_ms <= ?)
+              OR (c.agent_id = '' AND EXISTS (
+                SELECT 1 FROM transcript_claims h
+                 WHERE h.item_id = c.item_id AND h.client = c.client AND h.session_id = c.session_id
+                   AND h.agent_id <> '' AND h.at_ms >= c.at_ms AND h.at_ms <= ?)) AS ended
          FROM transcript_claims c
         WHERE c.client = ? AND c.session_id = ? AND c.agent_id = ? AND c.at_ms <= ?
         ORDER BY c.at_ms DESC, c.rowid DESC LIMIT 1`
-    ).get(tMs, client, sessionId, agentId, tMs) as { item_id: string; project_id: string | null; closed: number } | undefined;
+    ).get(tMs, tMs, client, sessionId, agentId, tMs) as { item_id: string; project_id: string | null; ended: number } | undefined;
     if (!row) return null;
-    return { itemId: row.closed ? null : row.item_id, ...(row.project_id ? { projectId: row.project_id } : {}) };
+    return { itemId: row.ended ? null : row.item_id, ...(row.project_id ? { projectId: row.project_id } : {}) };
+  }
+
+  async firstTranscriptClaim(client: string, sessionId: string, agentId: string): Promise<{ itemId: string; projectId?: string; at: string } | null> {
+    const row = this.database.prepare(
+      `SELECT item_id, project_id, at FROM transcript_claims
+        WHERE client = ? AND session_id = ? AND agent_id = ?
+        ORDER BY at_ms ASC, rowid ASC LIMIT 1`
+    ).get(client, sessionId, agentId) as { item_id: string; project_id: string | null; at: string } | undefined;
+    if (!row) return null;
+    return { itemId: row.item_id, ...(row.project_id ? { projectId: row.project_id } : {}), at: row.at };
   }
 
   async recordCardClose(itemId: string, at: string): Promise<void> {

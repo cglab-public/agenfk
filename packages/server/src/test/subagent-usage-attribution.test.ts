@@ -9,9 +9,11 @@
  * turns came from other agents.
  *
  * In a session with subagents, each transcript is now charged by its OWN
- * claims (its gatekeeper and verify calls): a subagent by its own, else the
- * parent's card at the time; the parent by its own only. A session without
- * subagents keeps the journal. These run the real parser, watcher and SQLite
+ * claims (its gatekeeper and verify calls): a subagent by its own, its turns
+ * before its first claim by that first claim, and only a subagent that never
+ * claims by the parent's card at the time; the parent by its own only, each
+ * ended by a subagent's claim on the same card. A session without subagents
+ * keeps the journal. These run the real parser, watcher and SQLite
  * store over session logs laid out as the harness writes them.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -86,24 +88,156 @@ describe('usage attribution in a session with subagents (GH-398)', () => {
     expect(await cardOf(parentLater)).toBe(PARENT_CARD);
   });
 
-  it('a subagent that has not named a card yet, and a helper that never does, inherit the parent\'s card at the time', async () => {
+  it('a subagent that names a card is charged to its first card from its first turn, before it named it', async () => {
     const parent = new ClaudeTranscript(S);
     const worker = new ClaudeTranscript(S, 'cccc3333');
-    const helper = new ClaudeTranscript(S, 'dddd4444');
 
     parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
-    const beforeClaim = worker.turn(t('10:01'));
-    worker.gatekeeper(t('10:02'), CARD_A); await journal(CARD_A, t('10:02'));
-    const reviewing = helper.turn(t('10:03'));
-    parent.gatekeeper(t('10:04'), CARD_B); await journal(CARD_B, t('10:04'));
-    const reviewingLater = helper.turn(t('10:05'));
-    for (const tr of [parent, worker, helper]) tr.writeTo(projectDir);
+    const orienting = worker.turn(t('10:01'));
+    const firstCall = worker.gatekeeper(t('10:02'), CARD_A); await journal(CARD_A, t('10:02'));
+    const working = worker.turn(t('10:03'));
+    const switching = worker.gatekeeper(t('10:04'), CARD_B); await journal(CARD_B, t('10:04'));
+    const onB = worker.turn(t('10:05'));
+    for (const tr of [parent, worker]) tr.writeTo(projectDir);
 
     await ingest();
 
-    expect(await cardOf(beforeClaim)).toBe(PARENT_CARD);
+    expect(await cardOf(orienting)).toBe(CARD_A);
+    expect(await cardOf(firstCall)).toBe(CARD_A);
+    expect(await cardOf(working)).toBe(CARD_A);
+    expect(await cardOf(switching)).toBe(CARD_A);
+    expect(await cardOf(onB)).toBe(CARD_B);
+  });
+
+  it('a subagent\'s turns stored before its first claim was read are charged again to that card when it is, once', async () => {
+    const parent = new ClaudeTranscript(S);
+    const worker = new ClaudeTranscript(S, 'c0c03333');
+    parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+    parent.turn('2026-11-20T10:00:30.000Z');
+    const o1 = worker.turn(t('10:01'));
+    const o2 = worker.turn(t('10:02'));
+    parent.writeTo(projectDir);
+    worker.writeTo(projectDir);
+    await ingest();
+    expect(await cardOf(o1)).toBe(PARENT_CARD);
+
+    worker.gatekeeper(t('10:03'), CARD_A); await journal(CARD_A, t('10:03'));
+    const working = worker.turn(t('10:04'));
+    worker.writeTo(projectDir);
+    await ingest();
+
+    expect(await cardOf(o1)).toBe(CARD_A);
+    expect(await cardOf(o2)).toBe(CARD_A);
+    expect(await cardOf(working)).toBe(CARD_A);
+
+    await ingest();
+    expect((await storage.queryTokenEvents({ itemId: CARD_A })).length).toBe(4);
+    expect((await storage.queryTokenEvents({ itemId: PARENT_CARD })).length).toBe(1);
+  });
+
+  it('turns charged again keep the card usage stored at a transition right: the step rows of both cards are recomputed', async () => {
+    const parent = new ClaudeTranscript(S);
+    const worker = new ClaudeTranscript(S, 'c1c13333');
+    parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+    parent.turn('2026-11-20T10:00:30.000Z');
+    worker.turn(t('10:01'));
+    worker.turn(t('10:02'));
+    parent.writeTo(projectDir);
+    worker.writeTo(projectDir);
+    await ingest();
+    const stepRow = (turns: number) => ({
+      step: 'IN_PROGRESS', to: 'REVIEW', enteredAt: t('09:00'), leftAt: t('10:30'), complete: true,
+      byModel: [{ client: 'claude-code', model: 'claude-test', turns, input: 10 * turns, cacheRead: 0, cacheWrite: 0, output: 5 * turns, reasoning: 0, costUsd: 0, unpricedTurns: turns }],
+      total: { turns, input: 10 * turns, cacheRead: 0, cacheWrite: 0, output: 5 * turns, reasoning: 0, costUsd: 0, unpricedTurns: turns },
+    });
+    await storage.updateItem(PARENT_CARD, { usageByStep: [stepRow(3)] } as any);
+    await storage.updateItem(CARD_A, { usageByStep: [stepRow(0)] } as any);
+
+    worker.gatekeeper(t('10:03'), CARD_A); await journal(CARD_A, t('10:03'));
+    worker.writeTo(projectDir);
+    await ingest();
+
+    expect(((await storage.getItem(PARENT_CARD)) as any).usageByStep[0].total.turns).toBe(1);
+    expect(((await storage.getItem(CARD_A)) as any).usageByStep[0].total.turns).toBe(3);
+  });
+
+  it('a helper that never names a card inherits the parent\'s card at the time', async () => {
+    const parent = new ClaudeTranscript(S);
+    const helper = new ClaudeTranscript(S, 'dddd4444');
+
+    parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+    const reviewing = helper.turn(t('10:03'));
+    parent.gatekeeper(t('10:04'), CARD_B); await journal(CARD_B, t('10:04'));
+    const reviewingLater = helper.turn(t('10:05'));
+    for (const tr of [parent, helper]) tr.writeTo(projectDir);
+
+    await ingest();
+
     expect(await cardOf(reviewing)).toBe(PARENT_CARD);
     expect(await cardOf(reviewingLater)).toBe(CARD_B);
+  });
+
+  it('a parent that hands its card to a subagent is charged to no card from the subagent\'s claim on it', async () => {
+    const parent = new ClaudeTranscript(S);
+    const worker = new ClaudeTranscript(S, 'f0f01111');
+
+    parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+    const before = parent.turn(t('10:01'));
+    const spawning = parent.turn(t('10:02'));
+    worker.gatekeeper(t('10:05'), PARENT_CARD); await journal(PARENT_CARD, t('10:05'));
+    const workerTurn = worker.turn(t('10:06'));
+    const coordinating = parent.turn(t('10:07'));
+    for (const tr of [parent, worker]) tr.writeTo(projectDir);
+
+    await ingest();
+
+    expect(await cardOf(before)).toBe(PARENT_CARD);
+    expect(await cardOf(spawning)).toBe(PARENT_CARD);
+    expect(await cardOf(workerTurn)).toBe(PARENT_CARD);
+    expect(await cardOf(coordinating)).toBeNull();
+  });
+
+  it('the parent\'s turns stored before the subagent\'s claim was read are taken off the handed-off card when it is', async () => {
+    const parent = new ClaudeTranscript(S);
+    const worker = new ClaudeTranscript(S, 'f1f11111');
+    parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+    const before = parent.turn(t('10:01'));
+    const coordinating = parent.turn(t('10:07'));
+    parent.writeTo(projectDir);
+    worker.turn(t('10:04'));
+    worker.writeTo(projectDir);
+    await ingest();
+    expect(await cardOf(coordinating)).toBe(PARENT_CARD);
+
+    worker.gatekeeper(t('10:05'), PARENT_CARD); await journal(PARENT_CARD, t('10:05'));
+    worker.writeTo(projectDir);
+    await ingest();
+
+    expect(await cardOf(before)).toBe(PARENT_CARD);
+    expect(await cardOf(coordinating)).toBeNull();
+  });
+
+  it('a parent that claims the handed-off card again is back on it, until a subagent claims it after that', async () => {
+    const parent = new ClaudeTranscript(S);
+    const worker = new ClaudeTranscript(S, 'f2f21111');
+
+    parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
+    worker.gatekeeper(t('10:05'), PARENT_CARD); await journal(PARENT_CARD, t('10:05'));
+    const waiting = parent.turn(t('10:06'));
+    parent.verify(t('10:10'), PARENT_CARD); await journal(PARENT_CARD, t('10:10'));
+    const reviewing = parent.turn(t('10:11'));
+    worker.gatekeeper(t('10:15'), PARENT_CARD); await journal(PARENT_CARD, t('10:15'));
+    const waitingAgain = parent.turn(t('10:16'));
+    parent.gatekeeper(t('10:20'), CARD_B); await journal(CARD_B, t('10:20'));
+    const onB = parent.turn(t('10:21'));
+    for (const tr of [parent, worker]) tr.writeTo(projectDir);
+
+    await ingest();
+
+    expect(await cardOf(waiting)).toBeNull();
+    expect(await cardOf(reviewing)).toBe(PARENT_CARD);
+    expect(await cardOf(waitingAgain)).toBeNull();
+    expect(await cardOf(onB)).toBe(CARD_B);
   });
 
   it('after handing a card to subagents, a coordinating parent is charged to no card, not to theirs', async () => {
@@ -111,7 +245,7 @@ describe('usage attribution in a session with subagents (GH-398)', () => {
     const a = new ClaudeTranscript(S, 'eeee5555');
 
     const coordinating = parent.turn(t('10:00'));
-    a.gatekeeper(t('10:01'), CARD_A); await journal(CARD_A, t('10:01'));
+    const claiming = a.gatekeeper(t('10:01'), CARD_A); await journal(CARD_A, t('10:01'));
     const waiting = parent.turn(t('10:02'));
     for (const tr of [parent, a]) tr.writeTo(projectDir);
 
@@ -119,7 +253,8 @@ describe('usage attribution in a session with subagents (GH-398)', () => {
 
     expect(await cardOf(coordinating)).toBeNull();
     expect(await cardOf(waiting)).toBeNull();
-    expect(await storage.queryTokenEvents({ itemId: null })).toHaveLength(3);
+    expect(await cardOf(claiming)).toBe(CARD_A);
+    expect(await storage.queryTokenEvents({ itemId: null })).toHaveLength(2);
   });
 
   it('a card\'s close ends the subagent\'s claim on it, though the closing verify\'s reply comes after the close', async () => {
@@ -164,14 +299,15 @@ describe('usage attribution in a session with subagents (GH-398)', () => {
     const parent = new ClaudeTranscript(S);
     const a = new ClaudeTranscript(S, 'acac9999');
     parent.gatekeeper(t('10:00'), PARENT_CARD); await journal(PARENT_CARD, t('10:00'));
-    const calling = a.gatekeeper(t('10:01'), CARD_A); await journal(CARD_A, t('10:01'));
-    const after = a.turn(t('10:02'));
+    a.gatekeeper(t('10:01'), CARD_A); await journal(CARD_A, t('10:01'));
+    const calling = a.gatekeeper(t('10:02'), CARD_B); await journal(CARD_B, t('10:02'));
+    const after = a.turn(t('10:03'));
     for (const tr of [parent, a]) tr.writeTo(projectDir);
 
     await ingest();
 
-    expect(await cardOf(calling)).toBe(PARENT_CARD);
-    expect(await cardOf(after)).toBe(CARD_A);
+    expect(await cardOf(calling)).toBe(CARD_A);
+    expect(await cardOf(after)).toBe(CARD_B);
   });
 
   it('a session without subagents keeps the journal, as before', async () => {

@@ -8,9 +8,11 @@ All notable changes to AgEnFK are documented here.
 
 - **Each subagent's usage goes to its own card.** A Claude Code subagent runs with its parent's session id, so
   parallel subagents of one session charged their usage to each other's cards, and to the parent's. In a session
-  with subagents, each transcript is now charged by its own gatekeeper and verify calls. A subagent that has named
-  no card counts toward its parent's card. The parent counts toward its own card only. A session without subagents
-  is charged as before.
+  with subagents, each transcript is now charged by its own gatekeeper and verify calls. A subagent counts toward
+  the first card it names from its first turn, and only a subagent that never names one (a reviewer, an explorer)
+  counts toward its parent's card. The parent counts toward its own card only, until one of its subagents names that
+  card: from then on the parent counts toward no card until it names one again. Turns read before the call that
+  decides their card are charged again when it is read. A session without subagents is charged as before.
 - **Stored usage is charged again once.** On upgrade, the server charges the stored turns of sessions with subagents
   again by the new rule, and recomputes the step and close usage of each card that changed. A turn whose session
   log is gone goes to no card, and it still counts for its project. The server log says what moved.

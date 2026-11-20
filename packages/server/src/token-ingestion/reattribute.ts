@@ -1,11 +1,12 @@
 import * as fs from 'fs';
-import * as path from 'path';
 import * as readline from 'readline';
 import { Status, isBoundaryStep } from '@agenfk/core';
-import type { StorageProvider, StepUsage, TokenEvent } from '@agenfk/core';
+import type { StorageProvider, TokenEvent } from '@agenfk/core';
 import { parseClaudeCodeJsonl, hasSubagents } from './parsers/claude-code';
 import { CardRefs, recordClaims, type ParserContext } from './watcher';
-import { aggregateUsage, computeCardUsage } from '../usage/stepUsage';
+import {
+  agentIdOf, chargeStoredTurn, isSubagentLog, parentLogOf, recomputeStoredUsage, transcriptCardOf, type TranscriptCard,
+} from './transcriptCards';
 
 /** The marker the one-off re-attribution leaves in the ingestion meta. */
 export const REATTRIBUTION_MIGRATION = 'migration:gh398_subagent_attribution:v1';
@@ -23,11 +24,6 @@ export interface ReattributionReport {
 }
 
 const LINES_PER_SLICE = 2000;
-
-const isSubagentLog = (p: string) => path.basename(path.dirname(p)) === 'subagents';
-/** `<dir>/<session>/subagents/agent-<id>.jsonl` belongs to `<dir>/<session>.jsonl`. */
-const parentLogOf = (p: string) => (isSubagentLog(p) ? `${path.dirname(path.dirname(p))}.jsonl` : p);
-const agentIdOf = (p: string) => path.basename(p, '.jsonl').replace(/^agent-/, '');
 
 /** Every claim a transcript on disk makes, recorded; false when it cannot be read. */
 async function readClaims(storage: StorageProvider, file: string, cards: CardRefs): Promise<boolean> {
@@ -80,49 +76,14 @@ async function backfillCloses(storage: StorageProvider): Promise<void> {
 }
 
 /**
- * The stored usage of these cards, and the close totals of their ancestors,
- * from the turns as they are charged now. Returns how many cards changed.
- */
-export async function recomputeStoredUsage(storage: StorageProvider, itemIds: Iterable<string>): Promise<number> {
-  const withAncestors: string[] = [];
-  for (const id of itemIds) {
-    let cur: any = await storage.getItem(id);
-    while (cur && !withAncestors.includes(cur.id)) {
-      withAncestors.push(cur.id);
-      cur = cur.parentId ? await storage.getItem(cur.parentId) : null;
-    }
-  }
-  let written = 0;
-  for (const id of withAncestors) {
-    const item: any = await storage.getItem(id);
-    if (!item) continue;
-    const rows: StepUsage[] = item.usageByStep ?? [];
-    if (rows.length) {
-      const usageByStep: StepUsage[] = [];
-      for (const row of rows) {
-        const events = await storage.queryTokenEvents({ itemId: id, since: row.enteredAt, until: row.leftAt });
-        usageByStep.push({ ...row, ...aggregateUsage(events) });
-      }
-      await storage.updateItem(id, { usageByStep } as any);
-    }
-    if (item.cardUsage) {
-      const cardUsage = await computeCardUsage(storage, id, item.cardUsage.complete !== false, null, item.cardUsage.atStatus);
-      await storage.updateItem(id, { cardUsage } as any);
-    }
-    if (rows.length || item.cardUsage) written++;
-  }
-  return written;
-}
-
-/**
  * GH-398: charge the turns stored under the old rule again, once.
  *
  * Only Claude Code sessions with subagents were charged wrongly: every
  * subagent's gatekeeper and verify wrote the journal under its parent's
  * session id. Their transcripts are read again for their claims, and each of
- * their turns is charged by the corrected rule (see attributeTokenEvent). A
- * turn whose transcript is gone - or, for a subagent with no claim of its own
- * at the time, whose parent's transcript is gone - cannot be re-derived: it is
+ * their turns is charged by the corrected rule (see transcriptCardOf). A
+ * turn whose transcript is gone - or, for a subagent that never claims a card,
+ * whose parent's transcript is gone - cannot be re-derived: it is
  * taken off its card rather than left on a guess, and stays counted for its
  * project as usage on no card. The cards that gained or lost turns have their
  * stored usage recomputed. Runs once; `force` runs it again.
@@ -157,26 +118,16 @@ export async function reattributeSubagentUsage(
     }
 
     for (const ev of events) {
-      const sub = isSubagentLog(ev.sourcePath);
-      const parent = parentLogOf(ev.sourcePath);
-      let target: { itemId: string | null; projectId?: string } | null = null;
-      let derivable = true;
-      if (sub && !readable.get(ev.sourcePath)) derivable = false;
-      else {
-        if (sub) target = await storage.transcriptCardAt('claude-code', sessionId, agentIdOf(ev.sourcePath), ev.ts);
-        if (!target) {
-          if (!readable.get(parent)) derivable = false;
-          else target = await storage.transcriptCardAt('claude-code', sessionId, '', ev.ts);
-        }
+      let derivable = !!readable.get(ev.sourcePath);
+      let card: TranscriptCard | null = null;
+      if (derivable) {
+        const charged = await transcriptCardOf(storage, 'claude-code', sessionId, agentIdOf(ev.sourcePath), ev.ts);
+        derivable = !charged.inherited || !!readable.get(parentLogOf(ev.sourcePath));
+        card = charged.card;
       }
-      const was = ev.itemId ?? null;
-      const now = derivable ? target?.itemId ?? null : null;
-      if (now === was) continue;
-      await storage.setTokenEventItem(ev.id, now, now ? target?.projectId ?? ev.projectId ?? null : undefined);
+      if (!await chargeStoredTurn(storage, ev, derivable ? card : null, touched)) continue;
       if (derivable) report.moved++;
       else report.cleared++;
-      if (was) touched.add(was);
-      if (now) touched.add(now);
     }
   }
 

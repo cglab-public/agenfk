@@ -103,6 +103,36 @@ describe('transcript claims', () => {
     expect((await storage.queryTokenEvents({ itemId: 'WRONG' })).map((e) => e.id)).toEqual(['t3']);
   });
 
+  it('says whether a claim was new, so a caller re-charges the turns it changes only once', async () => {
+    expect(await storage.recordTranscriptClaim(claim('agent-a', 'A', '2026-11-20T10:00:00.000Z'))).toBe(true);
+    expect(await storage.recordTranscriptClaim(claim('agent-a', 'A', '2026-11-20T10:00:00.000Z'))).toBe(false);
+  });
+
+  it('answers a transcript\'s first claim, whenever it was made', async () => {
+    expect(await storage.firstTranscriptClaim('claude-code', 's1', 'agent-a')).toBeNull();
+    await storage.recordTranscriptClaim(claim('agent-a', 'B', '2026-11-20T11:00:00.000Z'));
+    await storage.recordTranscriptClaim(claim('agent-a', 'A', '2026-11-20T10:00:00.000Z'));
+    await storage.recordTranscriptClaim(claim('agent-b', 'C', '2026-11-20T09:00:00.000Z'));
+    expect(await storage.firstTranscriptClaim('claude-code', 's1', 'agent-a')).toEqual({ itemId: 'A', projectId: 'p', at: '2026-11-20T10:00:00.000Z' });
+    expect(await storage.firstTranscriptClaim('claude-code', 's2', 'agent-a')).toBeNull();
+  });
+
+  it('a subagent\'s claim on the parent\'s card ends the parent\'s claim on it; a later claim by the parent stands until the next', async () => {
+    await storage.recordTranscriptClaim(claim('', 'X', '2026-11-20T10:00:00.000Z'));
+    await storage.recordTranscriptClaim(claim('agent-a', 'X', '2026-11-20T10:05:00.000Z'));
+    await storage.recordTranscriptClaim(claim('agent-b', 'Y', '2026-11-20T10:06:00.000Z'));
+    await storage.recordTranscriptClaim(claim('agent-a', 'X', '2026-11-20T10:00:00.000Z', 'other-session'));
+    await storage.recordTranscriptClaim(claim('agent-b', 'X', '2026-11-20T09:00:00.000Z'));
+    const at = (hhmm: string) => storage.transcriptCardAt('claude-code', 's1', '', `2026-11-20T${hhmm}:00.000Z`);
+    expect(await at('10:04')).toEqual({ itemId: 'X', projectId: 'p' });
+    expect(await at('10:05')).toEqual({ itemId: null, projectId: 'p' });
+    await storage.recordTranscriptClaim(claim('', 'X', '2026-11-20T10:10:00.000Z'));
+    expect(await at('10:11')).toEqual({ itemId: 'X', projectId: 'p' });
+    await storage.recordTranscriptClaim(claim('agent-b', 'X', '2026-11-20T10:15:00.000Z'));
+    expect(await at('10:16')).toEqual({ itemId: null, projectId: 'p' });
+    expect(await storage.transcriptCardAt('claude-code', 's1', 'agent-a', '2026-11-20T10:20:00.000Z')).toEqual({ itemId: 'X', projectId: 'p' });
+  });
+
   it('keeps one-off markers in the ingestion meta', async () => {
     expect(await storage.getIngestionMeta('migration:x')).toBeNull();
     await storage.setIngestionMeta('migration:x', '{"moved":3}');

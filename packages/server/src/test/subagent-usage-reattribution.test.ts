@@ -160,6 +160,35 @@ describe('re-attribution of the stored turns (GH-398)', () => {
     expect(await migrate({ force: true })).toMatchObject({ skipped: false, moved: 0, cleared: 0 });
   });
 
+  it('charges a subagent\'s turns before its first claim to that card, and the parent\'s turns after a subagent claimed its card to none, once', async () => {
+    const parent = new ClaudeTranscript(S);
+    const worker = new ClaudeTranscript(S, 'f0f00006');
+    const helper = new ClaudeTranscript(S, 'f0f00007');
+    parent.gatekeeper(t('10:00'), PARENT_CARD);
+    const parentBefore = await stored(parent, parent.turn(t('10:01')), t('10:01'), PARENT_CARD);
+    const orienting = await stored(worker, worker.turn(t('10:02')), t('10:02'), PARENT_CARD);
+    const helping = await stored(helper, helper.turn(t('10:03')), t('10:03'), PARENT_CARD);
+    worker.gatekeeper(t('10:04'), CARD_A);
+    const parentHandedOff = await stored(parent, parent.turn(t('10:05')), t('10:05'), CARD_A);
+    worker.gatekeeper(t('10:06'), PARENT_CARD);
+    const parentAfter = await stored(parent, parent.turn(t('10:07')), t('10:07'), PARENT_CARD);
+    const workerOnParentCard = await stored(worker, worker.turn(t('10:08')), t('10:08'), PARENT_CARD);
+    for (const tr of [parent, worker, helper]) tr.writeTo(projectDir);
+
+    const report = await migrate();
+
+    expect(await cardOf(parentBefore)).toBe(PARENT_CARD);
+    expect(await cardOf(orienting)).toBe(CARD_A);
+    expect(await cardOf(helping)).toBe(PARENT_CARD);
+    expect(await cardOf(parentHandedOff)).toBe(PARENT_CARD);
+    expect(await cardOf(parentAfter)).toBeNull();
+    expect(await cardOf(workerOnParentCard)).toBe(PARENT_CARD);
+    expect(report).toMatchObject({ sessions: 1, moved: 3, cleared: 0 });
+    expect(await migrate()).toMatchObject({ skipped: true, moved: 0 });
+    expect(await migrate({ force: true })).toMatchObject({ skipped: false, moved: 0, cleared: 0 });
+    expect(await cardOf(orienting)).toBe(CARD_A);
+  });
+
   it('records the claims it read, so the next turns of a live session are charged by them', async () => {
     const { a } = await mixedSession();
     await migrate();

@@ -3,6 +3,7 @@ import * as path from 'path';
 import type { Project, TokenEvent, IngestionState, StorageProvider } from '@agenfk/core';
 import { findActiveItemAt } from './attribution';
 import type { TranscriptClaim } from './parsers/claude-code';
+import { rechargeAfterClaims, recomputeStoredUsage, transcriptCardOf } from './transcriptCards';
 
 /**
  * What a parser may carry from one pass to the next. The watcher saves
@@ -282,7 +283,11 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
       if (opts.fileFilter && !opts.fileFilter(source.client, abs, path.relative(source.rootDir, abs))) continue;
       let ownClaims: boolean | undefined;
       for await (const result of ingestFile(abs, source.parser, opts.storage, Number.isFinite(epochMs) ? epochMs : null, opts.chunkBytes ?? DEFAULT_CHUNK_BYTES)) {
-      await recordClaims(opts.storage, source.client, result.claims, cards);
+      const newClaims = await recordClaims(opts.storage, source.client, result.claims, cards);
+      const recharged = new Set<string>();
+      if (opts.attributeEvents && source.ownClaims && newClaims.length) {
+        await rechargeAfterClaims(opts.storage, source.client as TokenEvent['client'], newClaims, recharged);
+      }
       if (opts.attributeEvents && ownClaims === undefined) ownClaims = source.ownClaims ? await source.ownClaims(abs) : false;
       // Tag every event with the source's client name (parsers may not know it).
       for (const ev of result.events) {
@@ -305,6 +310,7 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
           // file (client, dedup_key). Either way it is already counted.
         }
       }
+      if (recharged.size) await recomputeStoredUsage(opts.storage, recharged);
       await opts.storage.setIngestionState(result.nextState);
       // Let the server answer requests between chunks.
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -350,36 +356,24 @@ export class CardRefs {
  * GH-398: store the claims a pass read, each against the card its reference
  * names. A claim takes effect just after its call: the turn that made the call
  * was spent on the previous card, and is charged there whether the reply was
- * read in the same pass or a later one.
+ * read in the same pass or a later one. Returns the claims not recorded before.
  */
-export async function recordClaims(storage: StorageProvider, client: string, claims: TranscriptClaim[], cards: CardRefs): Promise<number> {
-  let recorded = 0;
+export async function recordClaims(
+  storage: StorageProvider, client: string, claims: TranscriptClaim[], cards: CardRefs,
+): Promise<Array<{ sessionId: string; agentId: string; at: string }>> {
+  const recorded: Array<{ sessionId: string; agentId: string; at: string }> = [];
   for (const claim of claims) {
     const tsMs = Date.parse(claim.at);
     if (!claim.sessionId || !Number.isFinite(tsMs)) continue;
     const card = await cards.resolve(claim.itemRef);
     if (!card) continue;
-    await storage.recordTranscriptClaim({
-      client, sessionId: claim.sessionId, agentId: claim.agentId, itemId: card.id, projectId: card.projectId,
-      at: new Date(tsMs + 1).toISOString(),
+    const at = new Date(tsMs + 1).toISOString();
+    const isNew = await storage.recordTranscriptClaim({
+      client, sessionId: claim.sessionId, agentId: claim.agentId, itemId: card.id, projectId: card.projectId, at,
     });
-    recorded++;
+    if (isNew) recorded.push({ sessionId: claim.sessionId, agentId: claim.agentId, at });
   }
   return recorded;
-}
-
-/**
- * GH-398: the card a turn's own transcript was on. A subagent's own latest
- * claim wins (a close after it means no card); without one, the subagent is
- * helping its parent and inherits the parent's card at the time. The parent
- * goes by its own claims only.
- */
-async function transcriptCard(storage: StorageProvider, ev: TokenEvent): Promise<{ itemId: string | null; projectId?: string } | null> {
-  if (ev.agentId) {
-    const own = await storage.transcriptCardAt(ev.client, ev.sessionId, ev.agentId, ev.ts);
-    if (own) return own;
-  }
-  return storage.transcriptCardAt(ev.client, ev.sessionId, '', ev.ts);
 }
 
 /**
@@ -403,7 +397,7 @@ export async function attributeTokenEvent(storage: StorageProvider, ev: TokenEve
 
   if (ev.sessionId) {
     const row = ev.agentId || opts.ownClaims
-      ? await transcriptCard(storage, ev)
+      ? (await transcriptCardOf(storage, ev.client, ev.sessionId, ev.agentId ?? '', ev.ts)).card
       : await storage.sessionCardAt(ev.client, ev.sessionId, ev.ts);
     if (row?.itemId) {
       ev.itemId = row.itemId;
