@@ -10,7 +10,6 @@
  * board can only ESTIMATE, from its price table, and says so.
  */
 import type { AgEnFKItem, ModelUsage, TokenEvent, UsageTotals } from './types';
-import { getModelPrice } from './utils';
 
 export const zeroTotals = (): UsageTotals => ({
   turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, unpricedTurns: 0,
@@ -154,52 +153,8 @@ export function summarizeCardUsage(
   return { steps, byModel: models.list(), total, subCards: 0, measured: total.turns > 0, complete: stepsComplete };
 }
 
-export interface CostView {
-  /** What the harnesses reported, in USD. */
-  reported: number;
-  /** The board's estimate for models none of whose turns were priced. */
-  estimated: number;
-  /** Models with unpriced turns the board could not estimate. */
-  unpricedModels: string[];
-  /** Models whose cost is the board's estimate. */
-  estimatedModels: string[];
-}
-
-/**
- * Cost per model: what was reported, plus an estimate from the board's price
- * table (USD per million tokens) for a model NONE of whose turns were priced.
- * Cache reads at the table's cached-input rate (else the input rate), cache
- * writes at the input rate - an estimate, labelled as one wherever it shows.
- */
-/** One row of the board's price table (USD per million tokens). */
-export interface PriceEntry {
-  id: string;
-  input?: number;
-  output?: number;
-  input_cached?: number;
-}
-
-export interface PricesData {
-  prices?: PriceEntry[];
-}
-
-export function estimateCost(byModel: ModelUsage[], pricesData: PricesData | null | undefined): CostView {
-  const view: CostView = { reported: 0, estimated: 0, unpricedModels: [], estimatedModels: [] };
-  for (const m of byModel) {
-    view.reported += m.costUsd;
-    if (m.unpricedTurns === 0) continue;
-    const price = m.unpricedTurns === m.turns && pricesData?.prices ? getModelPrice(m.model, pricesData.prices) : null;
-    if (!price) {
-      view.unpricedModels.push(m.model);
-      continue;
-    }
-    const input = Number(price.input) || 0;
-    const cached = Number(price.input_cached ?? price.input) || 0;
-    view.estimatedModels.push(m.model);
-    view.estimated += (m.input * input + m.output * (Number(price.output) || 0) + m.cacheRead * cached + m.cacheWrite * input) / 1_000_000;
-  }
-  return view;
-}
+// The estimator is shared with the hub's /usage page (GH-389): one copy.
+export { estimateCost, type CostView, type PriceEntry, type PricesData } from '@agenfk/flow-editor';
 
 export const tokensOf = (t: UsageTotals): number => t.input + t.cacheRead + t.cacheWrite + t.output;
 

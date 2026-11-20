@@ -22,7 +22,7 @@ import { ItemTypeBadge, ITEM_TYPE_VISUAL } from './ItemTypeSquare';
 import { VerifyRunBadge } from './VerifyRunBadge';
 import { VerifyRunsChip } from './VerifyRunsChip';
 import { ColumnContractBadges, ColumnRole } from './ColumnContractBadges';
-import { checkText } from '@agenfk/flow-editor';
+import { checkText, parsePrices, PRICES_URL } from '@agenfk/flow-editor';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
@@ -698,8 +698,8 @@ export const KanbanBoard: React.FC = () => {
     queryKey: ['prices'],
     /* v8 ignore next 4 */
     queryFn: async () => {
-      const res = await fetch('https://www.llm-prices.com/current-v1.json');
-      return res.json();
+      const res = await fetch(PRICES_URL);
+      return parsePrices(await res.json());
     },
     staleTime: 1000 * 60 * 60 * 24
   });
