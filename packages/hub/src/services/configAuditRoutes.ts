@@ -65,12 +65,12 @@ const userSnap: Snapshot = async (db, orgId, p) =>
   (await db.get('SELECT id, email, name, role, active, provider, password_hash FROM users WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
 const authConfigSnap: Snapshot = async (db, orgId) => (await db.get('SELECT * FROM auth_config WHERE org_id = ?', [orgId])) ?? null;
 const registrySnap: Snapshot = async (db, orgId) =>
-  (await db.get('SELECT registry_repo, registry_branch, registry_token_enc, identity_policy FROM org_settings WHERE org_id = ?', [orgId])) ?? null;
+  (await db.get('SELECT registry_repo, registry_branch, registry_token_enc FROM org_settings WHERE org_id = ?', [orgId])) ?? null;
 const assignmentsSnap: Snapshot = async (db, orgId) =>
   db.all('SELECT scope, target_id, flow_id FROM flow_assignments WHERE org_id = ? ORDER BY scope, target_id', [orgId]);
 const childHubSnap: Snapshot = async (db, orgId, p) => (await db.get('SELECT * FROM child_hubs WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
-const identityPolicySnap: Snapshot = async (db, orgId) =>
-  (await db.get('SELECT identity_policy FROM org_settings WHERE org_id = ?', [orgId])) ?? null;
+const identityCodingSnap: Snapshot = async (db, orgId) =>
+  (await db.get('SELECT identity_person, identity_installation FROM org_settings WHERE org_id = ?', [orgId])) ?? null;
 /** A param, or the same field of the body (a create names its key there). */
 const keyOf = (p: Params, req: Request, k: string) => (p[k] ?? (typeof req.body?.[k] === 'string' ? req.body[k] : '')).trim();
 const hiddenSnap: Snapshot = async (db, orgId, p, req) =>
@@ -210,11 +210,11 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   { method: 'PUT', path: '/v1/admin/child-hubs/:id', area: 'federation', action: 'child-hub.update', target: param('id', 'child hub'), snapshot: childHubSnap },
   { method: 'POST', path: '/v1/admin/child-hubs/:id/detach', area: 'federation', action: 'child-hub.detach', target: param('id', 'child hub'), snapshot: childHubSnap },
   { method: 'POST', path: '/v1/admin/child-hubs/invite', area: 'federation', action: 'child-hub.invite', target: () => 'child hub invite', noBody: true },
-  { method: 'PUT', path: '/v1/admin/child-hubs/:id/identity-policy', area: 'federation', action: 'child-hub.identity-policy', target: param('id', 'child hub'), snapshot: childHubSnap },
+  { method: 'PUT', path: '/v1/admin/child-hubs/:id/identity', area: 'federation', action: 'child-hub.identity-coding', target: param('id', 'child hub'), snapshot: childHubSnap },
   { method: 'POST', path: '/v1/admin/federation/join', area: 'federation', action: 'parent.join', target: () => 'parent hub', noBody: true },
   { method: 'POST', path: '/v1/admin/federation/release-request', area: 'federation', action: 'parent.release-request', target: () => 'parent hub' },
   { method: 'DELETE', path: '/v1/admin/federation', area: 'federation', action: 'parent.leave', target: () => 'parent hub' },
-  { method: 'PUT', path: '/v1/admin/federation/identity-policy', area: 'federation', action: 'identity-policy.update', target: () => 'identity policy', snapshot: identityPolicySnap },
+  { method: 'PUT', path: '/v1/admin/federation/identity', area: 'federation', action: 'identity-coding.update', target: () => 'identity coding', snapshot: identityCodingSnap },
   { method: 'POST', path: '/hub/federation/invite/create', area: 'federation', action: 'child-hub.invite', target: () => 'child hub invite', noBody: true },
   { method: 'POST', path: '/v1/federation/enroll', area: 'federation', action: 'child-hub.join', target: (_p, req) => `child hub ${req.body?.name ?? ''}`.trim(), noBody: true, source: 'federation' },
   { method: 'POST', path: '/v1/federation/release-request', area: 'federation', action: 'child-hub.leave-request', target: () => 'child hub', noBody: true },

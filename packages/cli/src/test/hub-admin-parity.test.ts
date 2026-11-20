@@ -125,7 +125,7 @@ describe('human-readable output', () => {
     'airlock policy show': /allow: github\.com/, 'airlock installations': null, 'airlock history': /admin@x/,
     'airlock decisions': null, 'airlock dataset show': /Collection: off/, 'airlock learning list': /Policy revision 1/,
     'repos list': /acme\/api\.git\s+npm test\s+1\s+off/, 'models list': /model-a\s+1/, 'org pending': /Nothing pending/,
-    'federation status': /No parent hub/, 'federation identity-policy show': /Child One\s+child-1\s+inherit/,
+    'federation status': /No parent hub/, 'federation identity show': /Child One\s+child-1\s+inherit\s+inherit/,
     'child-hubs list': /child-1\s+Child One/, 'jira show': /cid-smoke/, 'audit list': /admin@x\s+board/,
   };
 

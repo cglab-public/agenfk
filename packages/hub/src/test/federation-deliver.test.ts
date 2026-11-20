@@ -14,6 +14,7 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { recomputeRollups } from '../rollup';
 import { drainApp } from './helpers/drainApp';
+import { redactIdentity } from '../services/federation/forwarding';
 
 const DB = path.join(os.tmpdir(), `agenfk-hub-deliver-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -141,6 +142,28 @@ describe('POST /v1/federation/deliver', () => {
     expect(r.body.rejected).toBe(1);
     // The name says "reports"; an empty array is also an array.
     expect(r.body.rejections).toEqual([{ id: 'x', reason: 'invalid_event' }]);
+  });
+
+  it("counts the card usage of a child that codes the person and the installation on the parent's usage overview (GH-395)", async () => {
+    const a = await enroll('alpha');
+    const nums = { turns: 2, input: 100, cacheRead: 5000, cacheWrite: 300, output: 40, reasoning: 0, costUsd: 0, unpricedTurns: 2 };
+    const model = { client: 'claude-code', model: 'claude-opus-5-5', ...nums };
+    const event = redactIdentity({
+      eventId: 'step-1', orgId: 'org', installationId: 'i1', userKey: 'alice@acme.com',
+      occurredAt: '2026-09-14T10:00:00.000Z', type: 'step.transitioned', itemId: 'card-1', itemType: 'TASK',
+      payload: { fromStatus: 'IN_PROGRESS', toStatus: 'REVIEW', usage: {
+        step: 'IN_PROGRESS', to: 'REVIEW', enteredAt: '2026-09-14T09:00:00.000Z', leftAt: '2026-09-14T10:00:00.000Z',
+        complete: true, byModel: [model], total: nums, own: { asOf: '2026-09-14T10:00:00.000Z', byModel: [model], total: nums },
+      } },
+    }, a.childHubId, SECRET, { person: 'coded', installation: 'coded' });
+    const r = await deliver(a.token, [{ id: 'outbox-step-1', kind: 'event', payload: {
+      childHubId: a.childHubId, identity: { person: 'coded', installation: 'coded' }, identityPolicy: 'pseudonymize', event,
+    } }]);
+    expect(r.body).toMatchObject({ accepted: 1 });
+    const o = await supertest(app).get('/v1/usage/overview?from=2026-09-01T00:00:00.000Z&to=2026-09-30T00:00:00.000Z').set('Cookie', adminCookie);
+    expect(o.status).toBe(200);
+    expect(o.body.total).toMatchObject({ turns: 2, input: 100, cacheRead: 5000, cacheWrite: 300, output: 40 });
+    expect(o.body.byModel).toEqual([expect.objectContaining({ model: 'claude-opus-5-5', input: 100 })]);
   });
 
   it('stores a forwarded occurredAt as the UTC instant, and refuses one that does not parse (GH-391)', async () => {

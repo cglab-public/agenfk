@@ -11,11 +11,31 @@ import {
 type Json = { json?: boolean };
 const enc = encodeURIComponent;
 
-function identityPolicy(value: string, allowInherit: boolean): 'keep' | 'pseudonymize' | null {
-  if (value === 'keep' || value === 'pseudonymize') return value;
-  if (allowInherit && value === 'inherit') return null;
-  throw new AdminCliError(`Identity policy is keep or pseudonymize${allowInherit ? ' (or inherit, to follow the group\'s)' : ''}, not "${value}".`);
+type FieldCoding = 'as-written' | 'coded';
+type IdentityOpts = { person?: string; installation?: string };
+const FIELDS = ['person', 'installation'] as const;
+
+/**
+ * The fields an identity command names, checked before anything reaches the
+ * hub. `inherit` (a child hub only) is sent as null: follow the group.
+ */
+function identityChanges(opts: IdentityOpts, allowInherit: boolean): Partial<Record<typeof FIELDS[number], FieldCoding | null>> {
+  const out: Partial<Record<typeof FIELDS[number], FieldCoding | null>> = {};
+  for (const f of FIELDS) {
+    const v = opts[f];
+    if (v === undefined) continue;
+    if (v === 'as-written' || v === 'coded') out[f] = v;
+    else if (allowInherit && v === 'inherit') out[f] = null;
+    else throw new AdminCliError(`--${f} is ${allowInherit ? 'as-written, coded or inherit' : 'as-written or coded'}, not "${v}".`);
+  }
+  if (Object.keys(out).length === 0) throw new AdminCliError('Name a field to change: --person and/or --installation.');
+  return out;
 }
+
+const words = (v: string | null | undefined) => (v === 'as-written' ? 'as written' : v ?? '-');
+/** "person coded, installation as written": one hub's effective coding in a line. */
+const codingLine = (c: { person?: string; installation?: string } | null | undefined) =>
+  c ? `person ${words(c.person)}, installation ${words(c.installation)}` : '-';
 
 export function registerHubSettingsCommands(admin: Command): void {
   // ── Organization ─────────────────────────────────────────────────────────
@@ -53,10 +73,10 @@ export function registerHubSettingsCommands(admin: Command): void {
     }));
 
   // ── Federation: this hub's parent ────────────────────────────────────────
-  const fed = admin.command('federation').description('This hub\'s parent hub, and the group\'s identity policy');
+  const fed = admin.command('federation').description('This hub\'s parent hub, and what child hubs send this one');
   covers(
     'GET /v1/admin/federation', 'POST /v1/admin/federation/join', 'POST /v1/admin/federation/release-request',
-    'DELETE /v1/admin/federation', 'GET /v1/admin/federation/identity-policy', 'PUT /v1/admin/federation/identity-policy',
+    'DELETE /v1/admin/federation', 'GET /v1/admin/federation/identity', 'PUT /v1/admin/federation/identity',
   );
 
   fed.command('status').description('Whether this hub has a parent, and how it stands').option('--json', 'Print as JSON')
@@ -64,7 +84,7 @@ export function registerHubSettingsCommands(admin: Command): void {
       emit(await adminRequest('GET', '/v1/admin/federation'), opts, d => {
         if (!d.bound) { console.log(`No parent hub.${d.outboxDepth ? ` (${d.outboxDepth} event(s) still queued for a former parent)` : ''}`); return; }
         if (d.unreadable) { console.log(chalk.red(`Bound to a parent, but the binding cannot be read: ${d.error}`)); return; }
-        console.log(`Parent ${d.parentUrl} (this hub is ${d.childHubId}), ${d.state} since ${d.enrolledAt}; identity policy ${d.identityPolicy ?? '-'}; ${d.outboxDepth} event(s) queued.`);
+        console.log(`Parent ${d.parentUrl} (this hub is ${d.childHubId}), ${d.state} since ${d.enrolledAt}; sends ${codingLine(d.identity)} (set by the parent); ${d.outboxDepth} event(s) queued.`);
         if (d.releaseRequested) console.log(chalk.gray('A release has been requested from the parent.'));
         if (d.canLeave) console.log(chalk.yellow('The parent has released this hub: `agenfk hub admin federation leave --yes` completes it.'));
       });
@@ -98,29 +118,42 @@ export function registerHubSettingsCommands(admin: Command): void {
       emit(r, opts, () => console.log(chalk.green('✓ This hub has left the group; flows the parent sent stay, and become editable.')));
     }));
 
-  const fedPolicy = fed.command('identity-policy').description('Whether child hubs send people\'s identities, or pseudonyms');
-  fedPolicy.command('show').description('The group policy and each child hub\'s').option('--json', 'Print as JSON')
+  const fedIdentity = fed.command('identity').description(
+    'What child hubs send this hub: the person and the installation, each as written or coded',
+  );
+  fedIdentity.command('show').description('The group default per field and each child hub\'s own').option('--json', 'Print as JSON')
     .action(adminAction(async (opts: Json) => {
-      emit(await adminRequest('GET', '/v1/admin/federation/identity-policy'), opts, d => {
-        console.log(`Group: ${d.groupPolicy ?? '(not set)'}`);
-        printTable(d.childHubs ?? [], { HUB: (c: any) => c.name, ID: (c: any) => c.id, OWN: (c: any) => c.policy ?? 'inherit', EFFECTIVE: (c: any) => c.effective });
+      emit(await adminRequest('GET', '/v1/admin/federation/identity'), opts, d => {
+        console.log(`Person: ${d.group?.person ? words(d.group.person) : 'as written (default)'}`);
+        console.log(chalk.gray('  coded: the user key is replaced by a per-hub code; git name, email, OS user, item titles and free-form payload are not sent.'));
+        console.log(`Installation: ${d.group?.installation ? words(d.group.installation) : 'as written (default)'}`);
+        console.log(chalk.gray('  coded: the installation id is replaced by a per-hub code.'));
+        console.log(chalk.gray('Model, harness, step names, repository and ticket are always sent as written.'));
+        printTable(d.childHubs ?? [], {
+          HUB: (c: any) => c.name, ID: (c: any) => c.id,
+          PERSON: (c: any) => (c.override?.person ? words(c.override.person) : 'inherit'),
+          INSTALLATION: (c: any) => (c.override?.installation ? words(c.override.installation) : 'inherit'),
+          EFFECTIVE: (c: any) => codingLine(c.effective),
+        });
       });
     }));
-  fedPolicy.command('set <policy>').description('Set the group policy: keep or pseudonymize (keep needs --yes)')
-    .option('--yes', 'Confirm keep: child hubs then send people\'s real identities, and that cannot be taken back')
+  fedIdentity.command('set').description('Set the group default: --person and/or --installation, as-written or coded (as-written needs --yes)')
+    .option('--person <coding>', 'as-written or coded').option('--installation <coding>', 'as-written or coded')
+    .option('--yes', 'Confirm as-written: child hubs then send that field as written, and what was sent cannot be taken back')
     .option('--json', 'Print as JSON')
-    .action(adminAction(async (value: string, opts: Json & { yes?: boolean }) => {
-      const policy = identityPolicy(value, false);
-      if (policy === 'keep') requireYes(opts, 'let child hubs send people\'s real identities (already-sent identities cannot be taken back)');
-      emit(await adminRequest('PUT', '/v1/admin/federation/identity-policy', { body: { policy } }), opts,
-        () => console.log(chalk.green(`✓ Group identity policy: ${policy}.`)));
+    .action(adminAction(async (opts: Json & IdentityOpts & { yes?: boolean }) => {
+      const changes = identityChanges(opts, false);
+      const widened = FIELDS.filter(f => changes[f] === 'as-written');
+      if (widened.length) requireYes(opts, `let child hubs send the ${widened.join(' and the ')} as written (what was sent cannot be taken back)`);
+      emit(await adminRequest('PUT', '/v1/admin/federation/identity', { body: changes }), opts,
+        d => console.log(chalk.green(`✓ Group default: ${codingLine(d.effective)}.`)));
     }));
 
   // ── Federation: this hub's children ──────────────────────────────────────
   const kids = admin.command('child-hubs').description('Hubs that report to this one');
   covers(
     'GET /v1/admin/child-hubs', 'POST /v1/admin/child-hubs/invite', 'PUT /v1/admin/child-hubs/:id',
-    'POST /v1/admin/child-hubs/:id/detach', 'PUT /v1/admin/child-hubs/:id/identity-policy',
+    'POST /v1/admin/child-hubs/:id/detach', 'PUT /v1/admin/child-hubs/:id/identity',
   );
 
   kids.command('list').description('Child hubs').option('--include-detached', 'Include detached hubs').option('--json', 'Print as JSON')
@@ -155,14 +188,18 @@ export function registerHubSettingsCommands(admin: Command): void {
       emit(r, opts, d => console.log(chalk.green(`✓ Detached ${id}${d.revokedKeys !== undefined ? `; revoked ${d.revokedKeys} key(s)` : ''}.`)));
     }));
 
-  kids.command('identity-policy <id> <policy>').description('A child hub\'s own identity policy: keep, pseudonymize, or inherit (keep and inherit need --yes)')
-    .option('--yes', 'Confirm keep or inherit: either can let the hub send real identities, which cannot be taken back')
+  kids.command('identity <id>').description('A child hub\'s own coding: --person and/or --installation, as-written, coded or inherit (as-written and inherit need --yes)')
+    .option('--person <coding>', 'as-written, coded or inherit').option('--installation <coding>', 'as-written, coded or inherit')
+    .option('--yes', 'Confirm as-written or inherit: either can let the hub send that field as written, which cannot be taken back')
     .option('--json', 'Print as JSON')
-    .action(adminAction(async (id: string, value: string, opts: Json & { yes?: boolean }) => {
-      const policy = identityPolicy(value, true);
-      if (policy !== 'pseudonymize') requireYes(opts, `let ${id} send real identities${policy === null ? ' if the group policy is keep' : ''} (already-sent identities cannot be taken back)`);
-      emit(await adminRequest('PUT', `/v1/admin/child-hubs/${enc(id)}/identity-policy`, { body: { policy } }), opts,
-        () => console.log(chalk.green(`✓ ${id}: ${policy ?? 'follows the group policy'}.`)));
+    .action(adminAction(async (id: string, opts: Json & IdentityOpts & { yes?: boolean }) => {
+      const changes = identityChanges(opts, true);
+      const widened = FIELDS.filter(f => changes[f] !== undefined && changes[f] !== 'coded');
+      if (widened.length) {
+        requireYes(opts, `let ${id} send the ${widened.join(' and the ')} as written${widened.some(f => changes[f] === null) ? ' if the group default is as written' : ''} (what was sent cannot be taken back)`);
+      }
+      emit(await adminRequest('PUT', `/v1/admin/child-hubs/${enc(id)}/identity`, { body: changes }), opts,
+        d => console.log(chalk.green(`✓ ${id}: ${codingLine(d.effective)}.`)));
     }));
 
   // ── JIRA ─────────────────────────────────────────────────────────────────

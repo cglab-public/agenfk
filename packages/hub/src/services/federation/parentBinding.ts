@@ -2,6 +2,16 @@ import * as net from 'net';
 import type { DB } from '../../db.js';
 import { normalizeHttpUrl } from '../../util/httpUrl.js';
 import { encryptSecret, decryptSecret } from '../../crypto.js';
+import { AS_WRITTEN, codingFromWire, type IdentityCoding } from './identityCoding.js';
+
+/**
+ * The coding a stored binding carries. One written before per-field coding
+ * holds only the old parent's binary policy: a cached `pseudonymize` keeps
+ * both fields coded until the parent's next heartbeat says otherwise, because
+ * that parent may still be on the old version and still mean it.
+ */
+const storedCoding = (stored: { identity?: unknown; identityPolicy?: unknown }): IdentityCoding =>
+  codingFromWire(stored) ?? { ...AS_WRITTEN };
 
 /**
  * The child hub's record of its parent (CGLAB-181).
@@ -17,27 +27,6 @@ export const PARENT_BINDING_KEY = 'federation.parent';
 
 export type BindingState = 'active' | 'revoked';
 
-/**
- * How the parent wants this child's people identified upstream.
- *
- * The CHILD never chooses. The value is set at the parent — group-wide or per
- * child hub — and rides back on the heartbeat, so there is no new endpoint and
- * no directive kind. 'keep' is the default because a group is usually one
- * organisation with several teams, and a group view that cannot be reconciled
- * with the local ones is not much of a view.
- */
-export type IdentityPolicy = 'keep' | 'pseudonymize';
-
-/**
- * Coerce an untrusted value to a policy. Anything unrecognised — a corrupt
- * row, an older parent, a typo in a column — reads as 'keep'. Never guess
- * towards 'pseudonymize': silently anonymising a group's data because a value
- * did not parse is the worse failure of the two, and the harder to notice.
- */
-export function asIdentityPolicy(v: unknown): IdentityPolicy {
-  return v === 'pseudonymize' ? 'pseudonymize' : 'keep';
-}
-
 export interface ParentBinding {
   parentUrl: string;
   token: string;
@@ -49,8 +38,11 @@ export interface ParentBinding {
    * of silently showing an unbound hub.
    */
   state: BindingState;
-  /** Last policy the parent told us. Absent until the first heartbeat replies. */
-  identityPolicy: IdentityPolicy;
+  /**
+   * What the parent last told this hub to code (GH-395). As written until it
+   * says otherwise; the CHILD never chooses.
+   */
+  identity: IdentityCoding;
 }
 
 interface StoredBinding {
@@ -59,7 +51,9 @@ interface StoredBinding {
   childHubId: string;
   enrolledAt: string;
   state: BindingState;
-  identityPolicy: IdentityPolicy;
+  identity?: IdentityCoding;
+  /** Written by hubs from before per-field coding; read only when `identity` is absent. */
+  identityPolicy?: unknown;
 }
 
 /**
@@ -225,7 +219,7 @@ export function assertHttpUrl(raw: string, opts: { allowPrivate?: boolean } = {}
 export async function writeParentBinding(
   db: DB,
   secretKey: string,
-  input: { parentUrl: string; token: string; childHubId: string; enrolledAt?: string; state?: BindingState; identityPolicy?: IdentityPolicy },
+  input: { parentUrl: string; token: string; childHubId: string; enrolledAt?: string; state?: BindingState; identity?: IdentityCoding | null },
 ): Promise<void> {
   // The SAME allowance the join route applies, because this runs after the
   // parent has already accepted the enrolment. Re-validating more strictly here
@@ -242,7 +236,7 @@ export async function writeParentBinding(
     childHubId: input.childHubId,
     enrolledAt: input.enrolledAt ?? new Date().toISOString(),
     state: input.state ?? 'active',
-    identityPolicy: asIdentityPolicy(input.identityPolicy),
+    identity: storedCoding({ identity: input.identity }),
   };
   // One row, replaced, in one transaction. Delete-then-insert unguarded left a
   // window in which a concurrent reader saw NO binding — which would downgrade
@@ -276,7 +270,7 @@ export async function readParentBinding(db: DB, secretKey: string): Promise<Pare
     childHubId: stored.childHubId,
     enrolledAt: stored.enrolledAt,
     state: stored.state === 'revoked' ? 'revoked' : 'active',
-    identityPolicy: asIdentityPolicy(stored.identityPolicy),
+    identity: storedCoding(stored),
   };
 }
 

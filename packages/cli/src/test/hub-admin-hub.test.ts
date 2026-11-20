@@ -108,35 +108,53 @@ describe('federation: child hubs of this hub', () => {
     expect((await hub.json(['hub', 'admin', 'child-hubs', 'list', '--include-detached'])).map((c: any) => c.id)).toEqual(['child-1']);
   });
 
-  it('sets the group identity policy and a child\'s own, and clears the child\'s back to the group\'s', async () => {
+  it('sets each field of the group\'s identity coding and a child\'s own, and clears the child\'s back to the group\'s', async () => {
     await addChild('child-1', 'One');
-    await hub.run(['hub', 'admin', 'federation', 'identity-policy', 'set', 'pseudonymize']);
-    // keep (and inherit) can send real identities: confirmation first, nothing changed without it.
-    await expect(hub.run(['hub', 'admin', 'child-hubs', 'identity-policy', 'child-1', 'keep'])).rejects.toThrow(/exit 1/);
+    await hub.run(['hub', 'admin', 'federation', 'identity', 'set', '--person', 'coded']);
+    let p = await hub.json(['hub', 'admin', 'federation', 'identity', 'show']);
+    expect(p.group).toEqual({ person: 'coded', installation: null });
+    await expect(hub.run(['hub', 'admin', 'child-hubs', 'identity', 'child-1', '--person', 'as-written', '--installation', 'coded'])).rejects.toThrow(/exit 1/);
     expect(hub.err()).toMatch(/cannot be taken back/);
-    expect((await hub.json(['hub', 'admin', 'federation', 'identity-policy', 'show'])).childHubs[0].policy).toBeNull();
-    await hub.run(['hub', 'admin', 'child-hubs', 'identity-policy', 'child-1', 'keep', '--yes']);
-    let p = await hub.json(['hub', 'admin', 'federation', 'identity-policy', 'show']);
-    expect(p.groupPolicy).toBe('pseudonymize');
-    expect(p.childHubs[0]).toMatchObject({ id: 'child-1', policy: 'keep', effective: 'keep' });
-    await expect(hub.run(['hub', 'admin', 'child-hubs', 'identity-policy', 'child-1', 'inherit'])).rejects.toThrow(/exit 1/);
-    await hub.run(['hub', 'admin', 'child-hubs', 'identity-policy', 'child-1', 'inherit', '--yes']);
-    p = await hub.json(['hub', 'admin', 'federation', 'identity-policy', 'show']);
-    expect(p.childHubs[0]).toMatchObject({ policy: null, effective: 'pseudonymize' });
+    expect((await hub.json(['hub', 'admin', 'federation', 'identity', 'show'])).childHubs[0].override).toEqual({ person: null, installation: null });
+    await hub.run(['hub', 'admin', 'child-hubs', 'identity', 'child-1', '--person', 'as-written', '--installation', 'coded', '--yes']);
+    p = await hub.json(['hub', 'admin', 'federation', 'identity', 'show']);
+    expect(p.childHubs[0]).toMatchObject({
+      id: 'child-1', override: { person: 'as-written', installation: 'coded' }, effective: { person: 'as-written', installation: 'coded' },
+    });
+    await expect(hub.run(['hub', 'admin', 'child-hubs', 'identity', 'child-1', '--person', 'inherit'])).rejects.toThrow(/exit 1/);
+    await hub.run(['hub', 'admin', 'child-hubs', 'identity', 'child-1', '--person', 'inherit', '--yes']);
+    p = await hub.json(['hub', 'admin', 'federation', 'identity', 'show']);
+    expect(p.childHubs[0]).toMatchObject({ override: { person: null, installation: 'coded' }, effective: { person: 'coded', installation: 'coded' } });
+    await hub.run(['hub', 'admin', 'child-hubs', 'identity', 'child-1', '--installation', 'coded']);
   });
 
-  it('the group policy keep needs --yes; pseudonymize does not', async () => {
-    await hub.run(['hub', 'admin', 'federation', 'identity-policy', 'set', 'pseudonymize']);
-    await expect(hub.run(['hub', 'admin', 'federation', 'identity-policy', 'set', 'keep'])).rejects.toThrow(/exit 1/);
-    expect((await hub.json(['hub', 'admin', 'federation', 'identity-policy', 'show'])).groupPolicy).toBe('pseudonymize');
-    await hub.run(['hub', 'admin', 'federation', 'identity-policy', 'set', 'keep', '--yes']);
-    expect((await hub.json(['hub', 'admin', 'federation', 'identity-policy', 'show'])).groupPolicy).toBe('keep');
+  it('prints what each field does, the group default and each child', async () => {
+    await addChild('child-1', 'One');
+    await hub.run(['hub', 'admin', 'federation', 'identity', 'set', '--installation', 'coded']);
+    hub.clear();
+    await hub.run(['hub', 'admin', 'federation', 'identity', 'show']);
+    expect(hub.out()).toMatch(/Person: as written \(default\)/);
+    expect(hub.out()).toMatch(/Installation: coded/);
+    expect(hub.out()).toMatch(/One\s+child-1\s+inherit\s+inherit\s+person as written, installation coded/);
   });
 
-  it('refuses an unknown identity policy before reaching the hub', async () => {
-    await expect(hub.run(['hub', 'admin', 'federation', 'identity-policy', 'set', 'erase'])).rejects.toThrow(/exit 1/);
-    expect(hub.err()).toMatch(/keep or pseudonymize/);
+  it('the group setting as-written needs --yes; coded does not', async () => {
+    await hub.run(['hub', 'admin', 'federation', 'identity', 'set', '--person', 'coded', '--installation', 'coded']);
+    await expect(hub.run(['hub', 'admin', 'federation', 'identity', 'set', '--person', 'as-written'])).rejects.toThrow(/exit 1/);
+    expect((await hub.json(['hub', 'admin', 'federation', 'identity', 'show'])).group).toEqual({ person: 'coded', installation: 'coded' });
+    await hub.run(['hub', 'admin', 'federation', 'identity', 'set', '--person', 'as-written', '--yes']);
+    expect((await hub.json(['hub', 'admin', 'federation', 'identity', 'show'])).group).toEqual({ person: 'as-written', installation: 'coded' });
   });
+
+  it('refuses an unknown value, or no field at all, before reaching the hub', async () => {
+    await expect(hub.run(['hub', 'admin', 'federation', 'identity', 'set', '--person', 'pseudonymize'])).rejects.toThrow(/exit 1/);
+    expect(hub.err()).toMatch(/as-written or coded/);
+    await expect(hub.run(['hub', 'admin', 'federation', 'identity', 'set'])).rejects.toThrow(/exit 1/);
+    expect(hub.err()).toMatch(/--person|--installation/);
+    await expect(hub.run(['hub', 'admin', 'child-hubs', 'identity', 'child-1', '--installation', 'maybe'])).rejects.toThrow(/exit 1/);
+    expect(hub.err()).toMatch(/as-written, coded or inherit/);
+  });
+
 });
 
 describe('JIRA integration', () => {
@@ -210,5 +228,16 @@ describe('federation: a whole join, release and leave', () => {
     await writeParentBinding(fed.ctx.db, 'a'.repeat(64), { ...current, state: 'revoked' });
     await fed.run(['hub', 'admin', 'federation', 'leave', '--yes']);
     expect(await fed.json(['hub', 'admin', 'federation', 'status'])).toMatchObject({ bound: false });
+  });
+
+  it('status says what this hub sends its parent, field by field', async () => {
+    const token = signInviteToken({ orgId: 'group', nonce: 'n2', exp: Date.now() + 60_000, kind: 'child-hub', parentUrl: PARENT }, 'parents-own-secret');
+    await withStdin(token + '\n', () => fed.run(['hub', 'admin', 'federation', 'join', '--token-stdin', '--yes']));
+    const current = (await readParentBinding(fed.ctx.db, 'a'.repeat(64)))!;
+    await writeParentBinding(fed.ctx.db, 'a'.repeat(64), { ...current, identity: { person: 'coded', installation: 'as-written' } });
+    expect((await fed.json(['hub', 'admin', 'federation', 'status'])).identity).toEqual({ person: 'coded', installation: 'as-written' });
+    fed.clear();
+    await fed.run(['hub', 'admin', 'federation', 'status']);
+    expect(fed.out()).toMatch(/person coded, installation as written/);
   });
 });

@@ -176,13 +176,13 @@ board without a command fails the build.
 | `agenfk hub admin federation join` | Join a parent hub with the token its admin gave you (`child-hubs invite` there), read from stdin |
 | `agenfk hub admin federation release-request` | Ask the parent to release this hub from the group |
 | `agenfk hub admin federation leave` | Leave the group once the parent has released this hub |
-| `agenfk hub admin federation identity-policy show` | The group policy and each child hub's |
-| `agenfk hub admin federation identity-policy set <policy>` | Set the group policy: keep or pseudonymize (keep needs --yes) |
+| `agenfk hub admin federation identity show` | The group default per field and each child hub's own |
+| `agenfk hub admin federation identity set` | Set the group default: --person and/or --installation, as-written or coded (as-written needs --yes) |
 | `agenfk hub admin child-hubs list` | Child hubs |
 | `agenfk hub admin child-hubs invite` | A single-use token another hub uses to join this one |
 | `agenfk hub admin child-hubs rename <id> <name>` | Rename a child hub |
 | `agenfk hub admin child-hubs detach <id>` | Remove a child hub from the group and revoke its keys |
-| `agenfk hub admin child-hubs identity-policy <id> <policy>` | A child hub's own identity policy: keep, pseudonymize, or inherit (keep and inherit need --yes) |
+| `agenfk hub admin child-hubs identity <id>` | A child hub's own coding: --person and/or --installation, as-written, coded or inherit (as-written and inherit need --yes) |
 | `agenfk hub admin jira show` | The JIRA app (the secret is never shown) |
 | `agenfk hub admin jira set` | Set the Atlassian app (a new app needs its secret) |
 | `agenfk hub admin jira disconnect-all` | Disconnect every person's JIRA account |

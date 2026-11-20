@@ -56,25 +56,48 @@ describe('federationSync: heartbeat', () => {
     expect(out.skipped).toBeUndefined();
   });
 
-  it('adopts the identity policy the parent hands back, and keeps it between ticks', async () => {
+  it('adopts the per-field coding the parent hands back, keeps it between ticks, and codes both on a malformed answer', async () => {
     await writeParentBinding(db, SECRET, binding);
-    expect((await readParentBinding(db, SECRET))!.identityPolicy).toBe('keep');
+    expect((await readParentBinding(db, SECRET))!.identity).toEqual({ person: 'as-written', installation: 'as-written' });
 
-    const told = (policy: unknown) => transport({ ping: async () => ({ ok: true, identityPolicy: policy }) });
-    await federationTick({ db, secretKey: SECRET, transport: told('pseudonymize') as any });
-    expect((await readParentBinding(db, SECRET))!.identityPolicy).toBe('pseudonymize');
+    const told = (body: Record<string, unknown>) => transport({ ping: async () => ({ ok: true, ...body }) });
+    const PERSON = { person: 'coded', installation: 'as-written' };
+    await federationTick({ db, secretKey: SECRET, transport: told({ identity: PERSON, identityPolicy: 'pseudonymize' }) as any });
+    expect((await readParentBinding(db, SECRET))!.identity).toEqual(PERSON);
 
     // a parent that says nothing must not silently reset it
     await federationTick({ db, secretKey: SECRET, transport: transport() as any });
-    expect((await readParentBinding(db, SECRET))!.identityPolicy).toBe('pseudonymize');
+    expect((await readParentBinding(db, SECRET))!.identity).toEqual(PERSON);
 
-    // nor must a value we do not recognise
-    await federationTick({ db, secretKey: SECRET, transport: told('anonymous-ish') as any });
-    expect((await readParentBinding(db, SECRET))!.identityPolicy).toBe('pseudonymize');
+    await federationTick({ db, secretKey: SECRET, transport: told({ identity: { person: 'maybe', installation: 'coded' }, identityPolicy: 'keep' }) as any });
+    expect((await readParentBinding(db, SECRET))!.identity).toEqual({ person: 'coded', installation: 'coded' });
 
     // and it switches back when the parent says so
+    await federationTick({ db, secretKey: SECRET, transport: told({ identity: { person: 'as-written', installation: 'coded' } }) as any });
+    expect((await readParentBinding(db, SECRET))!.identity).toEqual({ person: 'as-written', installation: 'coded' });
+  });
+
+  it("honours an older parent's binary policy: pseudonymize codes both fields, keep codes neither", async () => {
+    await writeParentBinding(db, SECRET, binding);
+    const told = (policy: string) => transport({ ping: async () => ({ ok: true, identityPolicy: policy }) });
+    await federationTick({ db, secretKey: SECRET, transport: told('pseudonymize') as any });
+    expect((await readParentBinding(db, SECRET))!.identity).toEqual({ person: 'coded', installation: 'coded' });
     await federationTick({ db, secretKey: SECRET, transport: told('keep') as any });
-    expect((await readParentBinding(db, SECRET))!.identityPolicy).toBe('keep');
+    expect((await readParentBinding(db, SECRET))!.identity).toEqual({ person: 'as-written', installation: 'as-written' });
+  });
+
+  it('reads a binding cached under the old binary policy until the parent next says otherwise', async () => {
+    await writeParentBinding(db, SECRET, binding);
+    const row = await db.get<{ value: string }>("SELECT value FROM system_state WHERE key = 'federation.parent'");
+    const stored = JSON.parse(row!.value);
+    delete stored.identity;
+    await db.run("UPDATE system_state SET value = ? WHERE key = 'federation.parent'", [JSON.stringify({ ...stored, identityPolicy: 'pseudonymize' })]);
+    expect((await readParentBinding(db, SECRET))!.identity).toEqual({ person: 'coded', installation: 'coded' });
+    await db.run("UPDATE system_state SET value = ? WHERE key = 'federation.parent'", [JSON.stringify({ ...stored, identityPolicy: 'keep' })]);
+    expect((await readParentBinding(db, SECRET))!.identity).toEqual({ person: 'as-written', installation: 'as-written' });
+
+    await federationTick({ db, secretKey: SECRET, transport: transport({ ping: async () => ({ ok: true, identity: { person: 'coded', installation: 'as-written' } }) }) as any });
+    expect((await readParentBinding(db, SECRET))!.identity).toEqual({ person: 'coded', installation: 'as-written' });
   });
 
   it('a directive kind it does not understand is ignored, not fatal', async () => {
