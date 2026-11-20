@@ -14,11 +14,13 @@ import * as os from 'os';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
+import { adoptPortRange, portFileWithin } from './adoptPorts.js';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
 import { resolveDbPath, buildServerEnv } from './serverEnv.js';
-import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
+import { isAgenfkServer, readServerIdentity, servesUiBundle, httpGet } from './probes.js';
+import { makeJudge, versionMismatchNotice } from './adoption.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
 import { proposeDecomposition } from './propose.js';
@@ -128,9 +130,12 @@ const SHUTDOWN_GRACE_MS = 5000;
  * MAX_PORT_PROBE_ATTEMPTS of them, so "is AgEnFK already running?" is a range
  * question, not a single-port one. We scan the low end where it realistically
  * lands: far enough to cover a few stale listeners, short enough that the scan
- * does not visibly delay startup.
+ * does not visibly delay startup. It starts at AGENFK_PORT (or PORT) when set,
+ * read as the server reads it, so a build told to use another port never
+ * adopts the server on 3000; an unreadable value adopts nothing (BUG db4e8cc2).
+ * Ports only: the database is kept apart by AGENFK_DB_PATH or another home.
  */
-const ADOPT_PORT_RANGE = Array.from({ length: 16 }, (_, i) => DEFAULT_API_PORT + i);
+const ADOPT_PORT_RANGE = adoptPortRange(process.env, DEFAULT_API_PORT);
 
 /** Show a real dialog: a GUI app's console output goes nowhere the user looks. */
 function fail(title: string, detail: string): void {
@@ -302,15 +307,24 @@ async function boot(): Promise<void> {
   void currentLoginPath();
   try {
     server = await resolveServer({
-      readPort: readServerPort,
+      readPort: portFileWithin(readServerPort, process.env, DEFAULT_API_PORT),
       fallbackPorts: ADOPT_PORT_RANGE,
       // Identity, not just liveness: anything could be listening on 3000, and
       // adopting it would open a window on somebody else's application.
       probe: isAgenfkServer,
+      // Identity is not enough either (BUG cdae6039): a WSL server of another
+      // version, forwarded to localhost, is AgEnFK on a database we do not use.
+      judge: makeJudge({
+        appVersion: () => app.getVersion(),
+        appDbPath: resolveDbPath,
+        platform: runningOn,
+        readIdentity: readServerIdentity,
+      }),
       spawn: startServer,
     });
     console.log(
-      `[DESKTOP] ${server.adopted ? 'Adopted running' : 'Started'} AgEnFK server at ${server.url}`,
+      `[DESKTOP] ${server.adopted ? 'Adopted running' : 'Started'} AgEnFK server at ${server.url}` +
+      (server.versionMismatch ? ` (server ${server.versionMismatch.serverVersion}, app ${app.getVersion()})` : ''),
     );
 
     if (!await servesUiBundle(server.port)) {
@@ -356,6 +370,20 @@ async function boot(): Promise<void> {
       tearingDown = true;
       app.quit();
       return;
+    }
+
+    if (server.versionMismatch) {
+      // Not awaited: the board still opens. The user decides whether to switch.
+      const notice = versionMismatchNotice({
+        ...server.versionMismatch,
+        appVersion: app.getVersion(),
+      });
+      void dialog.showMessageBox({
+        type: 'info',
+        title: notice.title,
+        message: notice.title,
+        detail: notice.detail,
+      });
     }
 
     // Terminals need the resolved port: a card's directory comes from the
