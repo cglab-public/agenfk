@@ -4,6 +4,26 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.19] — 2026-11-20
+
+**Features** (#389)
+
+- **Usage per card.** AgEnFK reads the Claude Code, Codex and pi session logs again, one event per message, and
+  charges each turn to the card of its session. Each card move records the usage of the step it leaves, and a
+  closing card records its total with its sub-cards. The card's **Usage** tab shows it by sub-card, by step and by
+  model. A move waits up to 15 seconds for the session logs; when they are late the move continues and the step is
+  marked incomplete.
+- **A Usage page on the hub.** `/usage` shows the tokens and the cost of the org over the filters: totals, cost and
+  tokens per day, then by installation, person, harness and model, and PR. pi reports its cost; Claude Code and
+  Codex are estimated from the public price table and marked "est.". `agenfk hub admin data usage-overview` reads
+  the same data. The hub counts each turn once: late turns, events in any order, reopened cards and a restored
+  backup do not count a turn twice.
+
+**Fixes**
+
+- **The hub's new `events` index does not block event ingest on Postgres.** It is built `CONCURRENTLY`, and an
+  index left INVALID by a failed build is rebuilt on the next boot.
+
 ## [2.1.0-beta.18] — 2026-11-15
 
 **Fixes** (#371)
