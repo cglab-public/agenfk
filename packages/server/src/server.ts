@@ -10114,7 +10114,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     ...(agentReports ? { agentReports } : {}),
     review,
     root,
-    git: args => git.run(args),
+    git: (args, opts) => git.run(args, opts),
     item,
     cardBranch: await branchOfCard(item),
     cardKeys: await keysOfCard(item),
