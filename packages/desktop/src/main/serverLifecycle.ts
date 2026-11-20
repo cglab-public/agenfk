@@ -11,6 +11,8 @@
  * a real port, a real child process, or a running Electron.
  */
 
+import type { AdoptVerdict } from './adoption.js';
+
 /** Raised when no server answered within the allotted attempts. */
 export class ServerUnavailableError extends Error {
   constructor(attempts: number, waitMs: number) {
@@ -48,6 +50,12 @@ export interface ResolveServerOptions {
   adoptAttempts?: number;
   /** True when a server answers on this port (a real health request). */
   probe: (port: number) => Promise<boolean>;
+  /**
+   * Whether a server the probe accepted is ours to adopt (BUG cdae6039).
+   * Absent, every live server is adopted. A skipped one sits on another
+   * database, so starting our own beside it is safe.
+   */
+  judge?: (port: number) => Promise<AdoptVerdict>;
   /** Start our own server. Throwing here is surfaced, not swallowed. */
   /** May be async: it is awaited before the port is polled. */
   spawn: () => void | Promise<void>;
@@ -63,6 +71,8 @@ export interface ResolvedServer {
   url: string;
   /** True when we attached to a server someone else started. */
   adopted: boolean;
+  /** Set when the adopted server runs another version on our database. */
+  versionMismatch?: { serverVersion: string; database: 'same' | 'unknown' };
   /** Shut down — a no-op for an adopted server, which is not ours to kill. */
   stop(stopChild: () => void): void;
 }
@@ -74,11 +84,21 @@ const DEFAULT_ADOPT_ATTEMPTS = 3;
 const sleep = (ms: number): Promise<void> =>
   ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve();
 
-function resolved(port: number, host: string, adopted: boolean): ResolvedServer {
+const ADOPT_ALL = async (): Promise<AdoptVerdict> => ({ kind: 'adopt' });
+
+function resolved(
+  port: number,
+  host: string,
+  adopted: boolean,
+  verdict: AdoptVerdict = { kind: 'adopt' },
+): ResolvedServer {
   return {
     port,
     url: `http://${host}:${port}`,
     adopted,
+    ...(verdict.kind === 'adopt-mismatch'
+      ? { versionMismatch: { serverVersion: verdict.serverVersion, database: verdict.database } }
+      : {}),
     stop(stopChild: () => void) {
       if (!adopted) stopChild();
     },
@@ -97,6 +117,7 @@ export async function resolveServer(opts: ResolveServerOptions): Promise<Resolve
   const {
     readPort,
     probe,
+    judge = ADOPT_ALL,
     spawn,
     fallbackPorts = [],
     waitMs = DEFAULT_WAIT_MS,
@@ -115,16 +136,20 @@ export async function resolveServer(opts: ResolveServerOptions): Promise<Resolve
       .filter((p): p is number => p !== null && p !== undefined);
 
     for (const port of candidates) {
-      if (await probe(port)) return resolved(port, host, true);
+      if (!await probe(port)) continue;
+      const verdict = await judge(port);
+      if (verdict.kind !== 'skip') return resolved(port, host, true, verdict);
     }
     if (round < adoptAttempts - 1) await sleep(waitMs);
   }
 
   await spawn();
 
+  // The port file can still name a skipped server until ours publishes, so
+  // answering is not enough here either.
   for (let attempt = 0; attempt < attempts; attempt++) {
     const port = readPort();
-    if (port !== null && await probe(port)) {
+    if (port !== null && await probe(port) && (await judge(port)).kind !== 'skip') {
       return resolved(port, host, false);
     }
     await sleep(waitMs);
