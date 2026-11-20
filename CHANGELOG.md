@@ -2,9 +2,22 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [Unreleased]
+## [2.1.0-beta.21] — 2026-11-20
 
-**Fixes** (#398)
+Beta, cumulative over 2.1.0-beta.20: everything in 2.1.0-beta.20, plus the changes below. Install the hub and the clients together: a beta.21 hub drops usage that older clients send.
+
+**Features**
+
+- **A flow check fails a step whose diff adds comments with no function** (#392). Directives, docstrings and agent tool descriptions are allowed; narration and notes fail.
+- **Usage with no card reaches the hub** (#394). The server sends each project's daily totals of turns on no card, and /usage and the board show them.
+- **The hub's By PR table pages, filters and sorts on the server** (#396). `GET /v1/usage/prs` serves one page at a time, with repository, text and status filters and a sort on every column. The 1000-PR cap is gone.
+- **Claude Code and Codex turns are priced when they are ingested** (#397). Each turn stores `estimatedCostUsd` from the price table of that time. Older usage with no stored price is priced at today's prices, and the page says so.
+
+**Fixes**
+
+- **A child hub forwards card usage when identities are coded** (#395). Step and close events keep their usage numbers on the way to the parent hub, without identities.
+
+**Usage attribution** (#398)
 
 - **Each subagent's usage goes to its own card.** A Claude Code subagent runs with its parent's session id, so
   parallel subagents of one session charged their usage to each other's cards, and to the parent's. In a session
@@ -19,6 +32,13 @@ All notable changes to AgEnFK are documented here.
 - **The hub drops usage from versions before this fix.** The hub keeps the events, but it drops the usage that
   versions older than 2.1.0-beta.21 send, and the usage from child hubs on those versions. On upgrade, it clears the
   usage that it already stored from them, on SQLite and on Postgres.
+
+**From Eduardo Pin** (@eduardopincglab, @eduardopin)
+
+- **Settings has a Back button** (#362). It returns to the view Settings was opened from, which stays as it was.
+- **UI scale and terminal font size persist** (#364). Settings > Appearance sets both, and the desktop app keeps them across launches.
+- **`comment`, `add-context` and `log-test` accept a short item id** (#386), as `get` does.
+- **A flaky back-navigation test no longer fails on a loaded machine** (#358).
 
 ## [2.1.0-beta.20] — 2026-11-20
 
