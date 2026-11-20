@@ -40,6 +40,7 @@ import { defaultDeadletterPath } from "./hub/flusher.js";
 import { resolveActor } from "./hub/identity";
 import { createUsageIngestion, defaultIngestionSources, type UsageIngestion } from "./token-ingestion/service.js";
 import { computeCardUsage, computeOwnUsage, computeStepUsage, describeCardUsage, describeUsage } from "./usage/stepUsage.js";
+import { createNoCardUsageSender, fileSentState, localMidnight, mergeUsage, noCardUsageByDay, type NoCardUsageSender } from "./usage/noCardUsage.js";
 import type { CardUsage, StepUsage, UsageSummary } from "@agenfk/core";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
@@ -1731,7 +1732,28 @@ let usageIngestion: UsageIngestion | null = null;
 function startUsageIngestion(): void {
   usageIngestion?.stop();
   usageIngestion = createUsageIngestion({ storage, sources: defaultIngestionSources(os.homedir(), process.env) });
-  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) usageIngestion.start();
+  noCardSender?.stop();
+  noCardSender = createNoCardUsageSender({
+    storage,
+    record: (e) => recordHubEvent(e),
+    state: fileSentState(path.join(os.homedir(), '.agenfk', 'hub-no-card-usage.json')),
+  });
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    usageIngestion.start();
+    noCardSender.start();
+  }
+}
+
+/**
+ * GH-394: each project's usage on no card, queued for the hub as one running
+ * total per local day (usage/noCardUsage.ts). Ticks on its own timer in a real
+ * server; tests call sendNoCardUsageNow.
+ */
+let noCardSender: NoCardUsageSender | null = null;
+
+/** Queue the no-card totals that changed and are due now; how many were queued. */
+export async function sendNoCardUsageNow(): Promise<number> {
+  return noCardSender ? noCardSender.tick() : 0;
 }
 
 /**
@@ -1743,6 +1765,8 @@ function startUsageIngestion(): void {
 const closeStorage = async (): Promise<void> => {
   usageIngestion?.stop();
   usageIngestion = null;
+  await noCardSender?.stop();
+  noCardSender = null;
   hubSyncHandle?.stop();
   hubSyncHandle = null;
   hubFlusher = null;
@@ -6309,6 +6333,29 @@ app.get("/token-events", asyncHandler(async (req: any, res: any) => {
     limit: limitNum,
   });
   res.json(events);
+}));
+
+/**
+ * GH-394: a project's usage on no card over its last `days` local days
+ * (default 30), from this installation's own store: the total, by model, and
+ * per day. The board's project page reads it.
+ */
+app.get("/usage/no-card", asyncHandler(async (req: any, res: any) => {
+  const { projectId, days } = req.query as Record<string, unknown>;
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId is required' });
+  const span = days === undefined ? 30 : Number(days);
+  if (!Number.isInteger(span) || span < 1 || span > 366) return res.status(400).json({ error: 'days must be a whole number from 1 to 366' });
+  const since = localMidnight(new Date(), span - 1).toISOString();
+  const byDay = await noCardUsageByDay(storage, { projectId, since });
+  const all = mergeUsage(byDay.map(d => d.usage));
+  res.json({
+    projectId,
+    days: span,
+    since,
+    total: all.total,
+    byModel: all.byModel,
+    byDay: byDay.map(d => ({ day: d.day, total: d.usage.total, byModel: d.usage.byModel })),
+  });
 }));
 
 // ── Agent runs (orchestrated worker transcripts per item) ──────────────────
@@ -13624,7 +13671,7 @@ export const API_PATH_PREFIXES = [
   // fails. A guard test in serve-ui.test.ts catches exactly this.
   '/herdr',
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
-  '/token-events', '/session-cards', '/registry', '/items', '/internal', '/jira', '/github',
+  '/token-events', '/usage', '/session-cards', '/registry', '/items', '/internal', '/jira', '/github',
   '/releases', '/agent-runs', '/active-work', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/verify-runs',
   // `/decompositions` reviews a proposed tree and writes nothing. Same trap as
   // `/herdr`: without the prefix the desktop answers it with index.html and a

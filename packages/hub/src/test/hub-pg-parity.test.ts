@@ -1289,6 +1289,44 @@ describe('PG parity: card usage (GH-389)', () => {
   });
 });
 
+
+describe('PG parity: usage on no card (GH-394)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  it('GET /v1/usage/overview keeps the latest total per installation, project and day, the same as SQLite', async () => {
+    const total = (input: number) => ({ turns: 1, input, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0.5, unpricedTurns: 0 });
+    const usage = (input: number) => ({ byModel: [{ client: 'pi', model: 'qwen3.8:27b', ...total(input) }], total: total(input) });
+    const noCard = (eventId: string, day: string, asOf: string, occurredAt: string, input: number, inst = 'inst-1', projectId = 'p1') => ({
+      eventId, installationId: inst, orgId: 'org', occurredAt, type: 'usage.no-card', projectId,
+      actor: { osUser: 'alice', gitName: 'alice', gitEmail: 'alice@acme.com' },
+      payload: { day, asOf, usage: usage(input) },
+    });
+    const send = async (events: unknown[]) => {
+      const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events });
+      expect(r.status).toBe(200);
+    };
+    await send([
+      noCard('n2', '2026-11-19', '2026-11-19T18:00:00.000Z', '2026-11-19T17:00:00.000Z', 70),
+      noCard('n3', '2026-11-18', '2026-11-18T18:00:00.000Z', '2026-11-18T17:00:00.000Z', 3, 'inst-2'),
+    ]);
+    // Older, and delivered later: it must not replace the newer total.
+    await send([noCard('n1', '2026-11-19', '2026-11-19T12:00:00.000Z', '2026-11-19T11:00:00.000Z', 40)]);
+
+    const res = await supertest(fx.app).get('/v1/usage/overview?from=2026-11-01').set('Cookie', fx.cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body.noCard.total).toEqual(expect.objectContaining({ input: 73, turns: 2, costUsd: 1 }));
+    expect(res.body.total).toEqual(expect.objectContaining({ input: 73 }));
+    expect(res.body.noCard.byDay.map((d: any) => [d.day, d.total.input])).toEqual([['2026-11-18', 3], ['2026-11-19', 70]]);
+    expect(res.body.noCard.byInstallation.map((r: any) => [r.installation_id, r.total.input])).toEqual([['inst-1', 70], ['inst-2', 3]]);
+    const windowed = await supertest(fx.app).get('/v1/usage/overview?from=2026-11-19T12:00:00Z&to=2026-11-19T23:00:00Z').set('Cookie', fx.cookie);
+    expect(windowed.body.noCard.total.input).toBe(70);
+    expect(res.body.malformedEvents).toBe(0);
+  });
+});
+
 /**
  * GH-391 (BUG 4f507284): one instant, one answer on both databases. Postgres
  * compares TIMESTAMPTZ instants, so it was always right here; the scenario is

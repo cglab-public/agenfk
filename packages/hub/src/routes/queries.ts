@@ -75,6 +75,8 @@ interface EventFilters {
 const USAGE_CARDS_LIMIT = 5000;
 /** At most this many step events are summed per overview; the reply says when it hit it. */
 const USAGE_OVERVIEW_LIMIT = 50000;
+/** A project's usage on no card for one local day, the installation's running total (GH-394). */
+const NO_CARD_EVENT = 'usage.no-card';
 /** At most this many PRs are listed per overview. */
 const USAGE_PRS_LIMIT = 1000;
 
@@ -458,6 +460,10 @@ export function queriesRouter(ctx: HubServerContext): Router {
    * current step is not on the hub until it moves. A step with no usage is
    * unmeasured, not zero. A PR's usage is its anchor card's latest close
    * (card + subtree), null while that card is open. ?types= is ignored.
+   *
+   * GH-394: usage on no card (`noCard`) arrives as each installation's running
+   * total per project and local day; it is in `total`, never in the card
+   * breakdowns or a PR, and an item-type filter leaves it out.
    */
   router.get('/usage/overview', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
@@ -505,7 +511,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
         LIMIT ?`,
       [...winF.params, USAGE_OVERVIEW_LIMIT + 1],
     );
-    const truncated = winRows.length > USAGE_OVERVIEW_LIMIT;
+    let truncated = winRows.length > USAGE_OVERVIEW_LIMIT;
     const inWindow = new Map<string, any>();
     let measured = 0;
     let unmeasured = 0;
@@ -570,7 +576,89 @@ export function queriesRouter(ctx: HubServerContext): Router {
       credit(row, sum);
     }
 
-    const instIds = [...byInstallation.keys()];
+    // 3. Usage on no card (GH-394): each installation's running total per
+    //    project and local day. Every send is stored; the latest (payload.asOf)
+    //    stands for the key, so a resend replaces and never adds. It is credited
+    //    to the window holding that latest send, read across the whole time
+    //    span its key can occupy, so disjoint windows add up to the whole. It
+    //    has no card, so an item-type filter leaves it out and it is no PR's.
+    const noCardAll = new UsageGroup();
+    const noCardByDay = new Map<string, UsageGroup>();
+    const noCardByInstallation = new Map<string, UsageGroup>();
+    const noCardByUser = new Map<string, UsageGroup>();
+    if (!base.itemTypes) {
+      const ncF = applyEventFilters(orgId, { ...base, types: [NO_CARD_EVENT] });
+      const ncRows = await ctx.db.all<any>(
+        `SELECT event_id, installation_id, project_id, occurred_at FROM events WHERE ${ncF.where.join(' AND ')}
+          ORDER BY occurred_at DESC, event_id DESC
+          LIMIT ?`,
+        [...ncF.params, USAGE_OVERVIEW_LIMIT + 1],
+      );
+      if (ncRows.length > USAGE_OVERVIEW_LIMIT) truncated = true;
+      const picked = new Set<string>();
+      let earliest = Infinity;
+      let latest = -Infinity;
+      for (const r of ncRows.slice(0, USAGE_OVERVIEW_LIMIT)) {
+        if (!usable(r)) continue;
+        picked.add(String(r.event_id));
+        earliest = Math.min(earliest, timeOf(r.occurred_at));
+        latest = Math.max(latest, timeOf(r.occurred_at));
+      }
+      // Each picked installation's own picked projects (null: a send with no project).
+      const pairs = new Map<string, Set<string | null>>();
+      for (const r of ncRows) {
+        if (!picked.has(String(r.event_id))) continue;
+        const inst = String(r.installation_id);
+        if (!pairs.has(inst)) pairs.set(inst, new Set());
+        pairs.get(inst)!.add(r.project_id == null ? null : String(r.project_id));
+      }
+      // A key's sends all fall in its local day: within two days of any one of them.
+      const span = 2 * 24 * 60 * 60 * 1000;
+      const versions: any[] = [];
+      for (const [inst, projectSet] of pairs) {
+        const projects = [...projectSet].filter((p): p is string => p !== null);
+        const projectChunks: Array<string[] | null> = [...chunks(projects), ...(projectSet.has(null) ? [null] : [])];
+        for (const pids of projectChunks) {
+          versions.push(...await ctx.db.all<any>(
+            `SELECT event_id, installation_id, user_key, project_id, occurred_at, payload FROM events
+              WHERE org_id = ? AND type = ? AND installation_id = ?
+                AND ${pids ? `project_id IN (${pids.map(() => '?').join(',')})` : 'project_id IS NULL'}
+                AND occurred_at >= ? AND occurred_at <= ?`,
+            [orgId, NO_CARD_EVENT, inst, ...(pids ?? []), iso(earliest - span), iso(latest + span)],
+          ));
+        }
+      }
+      const newest = new Map<string, { row: any; order: number; usage: any }>();
+      for (const v of versions) {
+        if (!usable(v)) continue;
+        const p = parse(v.payload)?.payload;
+        const day = typeof p?.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.day) ? p.day : null;
+        if (!day || !p.usage || typeof p.usage !== 'object') {
+          if (picked.has(String(v.event_id))) malformed.add(String(v.event_id));
+          continue;
+        }
+        const asOf = timeOf(p.asOf);
+        const order = Number.isFinite(asOf) ? asOf : timeOf(v.occurred_at);
+        const key = `${v.installation_id}\u0000${v.project_id ?? ''}\u0000${day}`;
+        const prev = newest.get(key);
+        if (prev && (prev.order > order || (prev.order === order && String(prev.row.event_id) > String(v.event_id)))) continue;
+        newest.set(key, { row: v, order, usage: p.usage });
+      }
+      const group = (m: Map<string, UsageGroup>, k: string) => {
+        if (!m.has(k)) m.set(k, new UsageGroup());
+        return m.get(k)!;
+      };
+      for (const { row, usage } of newest.values()) {
+        if (!picked.has(String(row.event_id))) continue;
+        const sum = summaryFromModels(modelsOf(usage));
+        noCardAll.add(null, sum);
+        group(noCardByDay, dayOf(iso(row.occurred_at))).add(null, sum);
+        group(noCardByInstallation, String(row.installation_id)).add(null, sum);
+        group(noCardByUser, String(row.user_key)).add(null, sum);
+      }
+    }
+
+    const instIds = [...new Set([...byInstallation.keys(), ...noCardByInstallation.keys()])];
     const identities = new Map<string, any>();
     for (const ids of chunks(instIds)) {
       const found = await ctx.db.all<any>(
@@ -584,7 +672,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
         .sort(([a, ga], [b, gb]) => tokenWeight(gb.total) - tokenWeight(ga.total) || a.localeCompare(b))
         .map(([id, g]) => ({ [key]: id, ...extra(id), cards: g.cards, total: g.total, byModel: g.byModel() }));
 
-    // 3. PRs. The filters pick which PRs (one registered or updated in the
+    // 4. PRs. The filters pick which PRs (one registered or updated in the
     //    window, by the people chosen); each PR's anchor and opening date come
     //    from its whole history, so a filter cannot resurrect an old anchor.
     const prKey = (p: any): string | null => {
@@ -664,8 +752,14 @@ export function queriesRouter(ctx: HubServerContext): Router {
       p.usage = c.usage;
     }
 
+    const total = zeroTotals();
+    addTotals(total, all.total);
+    addTotals(total, noCardAll.total);
+    const noCardRows = (m: Map<string, UsageGroup>, key: string, extra: (id: string) => Record<string, unknown> = () => ({})) =>
+      ordered(m, key, extra).map(({ cards: _cards, ...row }) => row);
     res.json({
-      total: all.total,
+      // Cards and usage on no card; every breakdown below is the cards' only, and noCard has its own.
+      total,
       cards: all.cards,
       steps: measured,
       unmeasuredSteps: unmeasured,
@@ -677,6 +771,14 @@ export function queriesRouter(ctx: HubServerContext): Router {
       byPr: prList,
       byDay: [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b))
         .map(([day, g]) => ({ day, cards: g.cards, total: g.total, byModel: g.byModel() })),
+      noCard: {
+        total: noCardAll.total,
+        byModel: noCardAll.byModel(),
+        byInstallation: noCardRows(noCardByInstallation, 'installation_id', id => ({ label: installationLabel(identities.get(id)) })),
+        byUser: noCardRows(noCardByUser, 'user_key'),
+        byDay: [...noCardByDay.entries()].sort(([a], [b]) => a.localeCompare(b))
+          .map(([day, g]) => ({ day, total: g.total, byModel: g.byModel() })),
+      },
       truncated,
       prsTruncated,
       malformedEvents: malformed.size,

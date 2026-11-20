@@ -13,6 +13,7 @@ import { ItemTypeSquare } from './ItemTypeSquare';
 import { Switch } from './ui/switch';
 import { ProjectSuiteControl, hasSuiteControl } from './ProjectSuiteControl';
 import { ItemType } from '../types';
+import { abbreviateTokens, TOKEN_KINDS, tokensOf } from '../usage';
 
 /**
  * Where you land after a project is created, and where you go to see what it
@@ -276,6 +277,37 @@ function MenuOption(
 }
 
 /** Rows per page. Enough to scan, few enough that the pager is not a scroll. */
+/** How far back the header counts the project's usage on no card. */
+const NO_CARD_DAYS = 30;
+
+/**
+ * GH-394: the turns agents spent in this project with no card picked up -
+ * questions, setup, PR and release work - from this installation's own
+ * session logs, so the project's spend is not only what its cards show.
+ * Nothing at all when there was none.
+ */
+function NoCardUsageLine({ projectId }: { projectId: string }) {
+  const { data } = useQuery({
+    queryKey: ['no-card-usage', projectId, NO_CARD_DAYS],
+    queryFn: () => api.getNoCardUsage(projectId, NO_CARD_DAYS),
+    refetchInterval: 60_000,
+  });
+  const total = data?.total;
+  if (!data || !total || (total.turns === 0 && tokensOf(total) === 0)) return null;
+  const split = TOKEN_KINDS.map(({ kind, label }) => `${label.toLowerCase()} ${abbreviateTokens(total[kind])}`).join(' · ');
+  const cost = total.costUsd > 0 ? '$' + total.costUsd.toFixed(2) + ' reported' : null;
+  const text = [`${abbreviateTokens(tokensOf(total))} tokens not on a card`, cost, `${data.days} days`].filter(Boolean).join(' · ');
+  return (
+    <span
+      data-testid="project-page-no-card"
+      title={`${total.turns} ${total.turns === 1 ? 'turn' : 'turns'} not on a card in the last ${data.days} days: ${split}`}
+      className="shrink-0 truncate text-[11px] text-ink-tertiary"
+    >
+      {text}
+    </span>
+  );
+}
+
 const PAGE_SIZE = 25;
 const PAGER_BUTTON = 'grid h-7 w-7 place-items-center rounded-lg border border-border-soft bg-canvas text-ink-secondary hover:text-ink disabled:opacity-40 disabled:hover:text-ink-secondary';
 
@@ -497,6 +529,7 @@ export function ProjectPage({
         >
           {root ?? 'no folder yet — an agent has nowhere to run'}
         </span>
+        <NoCardUsageLine projectId={project.id} />
         <button
           type="button"
           data-testid="project-page-board"

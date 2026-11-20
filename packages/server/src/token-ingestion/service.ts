@@ -44,7 +44,8 @@ export interface UsageIngestion {
  * Local token ingestion (GH-389). Per-turn events are written to the local
  * store only: this service has no hub hook, by design - per-turn forwarding is
  * what flooded the hub in beta.10 (BUG 9c27faf6). The hub sees usage only as
- * the per-transition totals the workflow attaches to its own events.
+ * the per-transition totals the workflow attaches to its own events, and the
+ * turns on no card as a few daily totals per project (usage/noCardUsage.ts).
  *
  * Passes never overlap: a flush asked for while a poll runs waits for it, so
  * the two cannot read the same appended bytes and race on the file's state.

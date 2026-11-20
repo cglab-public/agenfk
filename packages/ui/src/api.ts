@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput, VerifyRunEntry, TokenEvent } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
+import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput, VerifyRunEntry, TokenEvent, NoCardUsage } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 import { API_URL } from './apiUrl';
 import type { AirlockHostListsDto } from './airlockHostText';
 
@@ -292,6 +292,11 @@ export const api = {
     return Array.isArray(data) ? data : [];
   },
   /** GH-389: turns ingested for a card, e.g. those of the step it is in now. */
+  /** GH-394: a project's usage on no card over its last `days` local days, from this installation. */
+  getNoCardUsage: async (projectId: string, days = 30): Promise<NoCardUsage> => {
+    const { data } = await axios.get(`${API_URL}/usage/no-card`, { params: { projectId, days } });
+    return data;
+  },
   getTokenEvents: async (params: { itemId: string; since?: string }): Promise<TokenEvent[]> => {
     const { data } = await axios.get(`${API_URL}/token-events`, { params });
     return Array.isArray(data) ? data : [];

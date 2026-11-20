@@ -1209,7 +1209,8 @@ export class SQLiteStorageProvider implements StorageProvider {
   async queryTokenEvents(query: TokenEventQuery): Promise<TokenEvent[]> {
     const where: string[] = [];
     const params: any[] = [];
-    if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
+    if (query.itemId === null) where.push('item_id IS NULL');
+    else if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
     if (query.projectId !== undefined) { where.push('project_id = ?'); params.push(query.projectId); }
     if (query.client !== undefined) { where.push('client = ?'); params.push(query.client); }
     if (query.since !== undefined) { where.push('ts >= ?'); params.push(query.since); }

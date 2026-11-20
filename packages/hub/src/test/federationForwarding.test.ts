@@ -116,6 +116,23 @@ describe('redactIdentity', () => {
     expect(redactIdentity(full, 'ch-1', SECRET).remoteUrl).toBe('https://github.com/acme/app');
   });
 
+  it('keeps a no-card usage total countable, as its day, time and token numbers only (GH-394)', () => {
+    const out = redactIdentity({
+      ...full, type: 'usage.no-card',
+      payload: {
+        day: '2026-11-19', asOf: '2026-11-19T18:00:00.000Z', flow: { name: 'secret flow' },
+        usage: { total: { turns: 2, input: 40, costUsd: '0.5', note: 'alice@acme.com' },
+          byModel: [{ client: 'pi', model: 'qwen3.8:27b', turns: 2, input: 40, costUsd: 0.5, who: 'alice@acme.com' }] },
+      },
+    }, 'ch-1', SECRET) as any;
+    expect(out.payload.day).toBe('2026-11-19');
+    expect(out.payload.asOf).toBe('2026-11-19T18:00:00.000Z');
+    expect(out.payload.usage.total).toMatchObject({ turns: 2, input: 40, costUsd: 0.5, output: 0 });
+    expect(out.payload.usage.byModel).toEqual([expect.objectContaining({ client: 'pi', model: 'qwen3.8:27b', input: 40 })]);
+    expect(JSON.stringify(out.payload)).not.toContain('alice');
+    expect(JSON.stringify(out.payload)).not.toContain('secret flow');
+  });
+
   it('survives an event with no identity at all', () => {
     const out = redactIdentity({ eventId: 'e', type: 't' }, 'ch-1', SECRET);
     expect(out.userKey).toBeNull();
