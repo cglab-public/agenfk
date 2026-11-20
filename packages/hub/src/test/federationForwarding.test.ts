@@ -173,7 +173,7 @@ describe('redactIdentity', () => {
     output: 20, reasoning: 0, costUsd: 0, unpricedTurns: 3, who: 'alice@acme.com', ...over,
   });
   const t = (over: Record<string, unknown> = {}) => ({
-    turns: 3, input: 10, cacheRead: 900, cacheWrite: 50, output: 20, reasoning: 0, costUsd: 0, unpricedTurns: 3, ...over,
+    turns: 3, input: 10, cacheRead: 900, cacheWrite: 50, output: 20, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 3, ...over,
   });
 
   it('keeps a step change countable when the person is coded: its usage numbers, own snapshot and step, no identity (GH-395)', () => {
@@ -292,6 +292,15 @@ describe('redactIdentity', () => {
   it('forwards no usage when the event had none, rather than an empty one (GH-395)', () => {
     const out = redactIdentity({ ...full, type: 'step.transitioned', payload: { toStatus: 'REVIEW' } }, 'ch-1', SECRET, PERSON) as any;
     expect(out.payload).toEqual({ toStatus: 'REVIEW' });
+  });
+
+  it('GH-397: a no-card total keeps the cost AgEnFK estimated when the turns were used, and an older one without it forwards zero', () => {
+    const fwd = (usage: unknown) => (redactIdentity({ ...full, type: 'usage.no-card', payload: { day: '2026-11-19', asOf: 'x', usage } }, 'ch-1', SECRET, PERSON) as any).payload.usage;
+    const now = fwd({ total: { turns: 2, estimatedCostUsd: '0.75' }, byModel: [{ client: 'claude-code', model: 'claude-opus-5-5', turns: 2, estimatedCostUsd: 0.75 }] });
+    expect(now.total.estimatedCostUsd).toBe(0.75);
+    expect(now.byModel[0].estimatedCostUsd).toBe(0.75);
+    const older = fwd({ total: { turns: 1 }, byModel: [{ client: 'pi', model: 'q', turns: 1 }] });
+    expect(older.total.estimatedCostUsd).toBe(0);
   });
 
   it('survives an event with no identity at all', () => {

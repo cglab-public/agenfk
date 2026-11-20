@@ -30,7 +30,7 @@ export const FORWARDABLE_PAYLOAD_KEYS = [
   'epic', 'story', 'task', 'bug', 'itemType', 'sizing',
 ] as const;
 
-const USAGE_NUMBERS = ['turns', 'input', 'cacheRead', 'cacheWrite', 'output', 'reasoning', 'costUsd', 'unpricedTurns'] as const;
+const USAGE_NUMBERS = ['turns', 'input', 'cacheRead', 'cacheWrite', 'output', 'reasoning', 'costUsd', 'estimatedCostUsd', 'unpricedTurns'] as const;
 const usageNumbers = (v: any): Record<string, number> =>
   Object.fromEntries(USAGE_NUMBERS.map(k => [k, Number.isFinite(Number(v?.[k])) ? Number(v[k]) : 0]));
 

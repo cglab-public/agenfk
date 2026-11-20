@@ -39,6 +39,7 @@ import { requeueDeadletter, readDeadletterIndicator, RequeueRewriteFailed } from
 import { defaultDeadletterPath } from "./hub/flusher.js";
 import { resolveActor } from "./hub/identity";
 import { createUsageIngestion, defaultIngestionSources, type UsageIngestion } from "./token-ingestion/service.js";
+import { createPriceTable, fetchPublicPriceTable, type PriceTable } from "./token-ingestion/priceTable.js";
 import { computeCardUsage, computeOwnUsage, computeStepUsage, describeCardUsage, describeUsage } from "./usage/stepUsage.js";
 import { createNoCardUsageSender, fileSentState, localMidnight, mergeUsage, noCardUsageByDay, type NoCardUsageSender } from "./usage/noCardUsage.js";
 import type { CardUsage, StepUsage, UsageSummary } from "@agenfk/core";
@@ -1729,9 +1730,22 @@ const initStorage = async () => {
  * passes themselves and must not read the developer's session folders).
  */
 let usageIngestion: UsageIngestion | null = null;
+/**
+ * GH-397: the price table turns are priced from at ingestion, and the board
+ * prices older usage from. Under the test runner it never fetches: it serves
+ * only a table saved under the (sandboxed) home directory.
+ */
+let usagePriceTable: PriceTable | null = null;
 function startUsageIngestion(): void {
   usageIngestion?.stop();
-  usageIngestion = createUsageIngestion({ storage, sources: defaultIngestionSources(os.homedir(), process.env) });
+  const underTest = process.env.NODE_ENV === 'test' || !!process.env.VITEST;
+  const priceTable = createPriceTable({
+    file: path.join(os.homedir(), '.agenfk', 'price-table.json'),
+    fetchTable: underTest ? null : fetchPublicPriceTable,
+  });
+  usagePriceTable = priceTable;
+  void priceTable.load();
+  usageIngestion = createUsageIngestion({ storage, sources: defaultIngestionSources(os.homedir(), process.env), prices: () => priceTable.get() });
   noCardSender?.stop();
   noCardSender = createNoCardUsageSender({
     storage,
@@ -2371,8 +2385,10 @@ function hubUsage(usage: StepUsage | null, own?: UsageSummary | null): { usage?:
 }
 
 /** The verify reply's usage lines: the step it left, and the whole card when it closed. */
-const usageNote = (moved: MoveUsage | null): string =>
-  (moved?.step ? `\n\n${describeUsage(moved.step)}` : '') + (moved?.card ? `\n${describeCardUsage(moved.card)}` : '');
+const usageNote = (moved: MoveUsage | null): string => {
+  const prices = usagePriceTable?.cached() ?? null;
+  return (moved?.step ? `\n\n${describeUsage(moved.step, prices)}` : '') + (moved?.card ? `\n${describeCardUsage(moved.card, prices)}` : '');
+};
 
 /**
  * What `previousStatus` becomes after a status change through PUT/bulk. It is
@@ -6356,6 +6372,16 @@ app.get("/usage/no-card", asyncHandler(async (req: any, res: any) => {
     byModel: all.byModel,
     byDay: byDay.map(d => ({ day: d.day, total: d.usage.total, byModel: d.usage.byModel })),
   });
+}));
+
+/**
+ * GH-397: the price table this server prices turns with at ingestion, with
+ * when it was fetched, so the board prices older usage (turns with no stored
+ * price) from the same rates. No table yet: no prices.
+ */
+app.get("/usage/prices", asyncHandler(async (_req: any, res: any) => {
+  const table = usagePriceTable ? await usagePriceTable.get() : null;
+  res.json(table ?? { prices: [], fetchedAt: null });
 }));
 
 // ── Agent runs (orchestrated worker transcripts per item) ──────────────────

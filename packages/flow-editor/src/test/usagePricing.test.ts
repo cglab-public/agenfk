@@ -15,12 +15,12 @@ describe('estimateCost', () => {
   it('prices a wholly unpriced model from the table, cache reads at the cached rate', () => {
     const c = estimateCost([model({ turns: 1, unpricedTurns: 1, input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 1_000_000 })], prices);
     // input 10 + output 50 + cache read 1 + cache write at the input rate 10
-    expect(c).toEqual({ reported: 0, estimated: 71, unpricedModels: [], estimatedModels: ['claude-opus-5-5'] });
+    expect(c).toEqual({ reported: 0, estimated: 71, estimatedAtTurn: 0, estimatedToday: 71, unpricedModels: [], estimatedModels: ['claude-opus-5-5'], todayModels: ['claude-opus-5-5'] });
   });
 
   it('keeps what a harness reported and does not estimate it again', () => {
     const c = estimateCost([model({ turns: 2, unpricedTurns: 0, input: 1_000_000, costUsd: 0.4 })], prices);
-    expect(c).toEqual({ reported: 0.4, estimated: 0, unpricedModels: [], estimatedModels: [] });
+    expect(c).toEqual({ reported: 0.4, estimated: 0, estimatedAtTurn: 0, estimatedToday: 0, unpricedModels: [], estimatedModels: [], todayModels: [] });
   });
 
   it('names the models it could not price instead of counting them as free', () => {
@@ -31,7 +31,18 @@ describe('estimateCost', () => {
 
   it('without a price table, only the reported cost', () => {
     const c = estimateCost([model({ turns: 1, unpricedTurns: 1, input: 5 }), model({ model: 'q', turns: 1, costUsd: 0.1 })], null);
-    expect(c).toEqual({ reported: 0.1, estimated: 0, unpricedModels: ['claude-opus-5-5'], estimatedModels: [] });
+    expect(c).toEqual({ reported: 0.1, estimated: 0, estimatedAtTurn: 0, estimatedToday: 0, unpricedModels: ['claude-opus-5-5'], estimatedModels: [], todayModels: [] });
+  });
+});
+
+describe('one implementation (GH-397)', () => {
+  it('the board and hub price with the very functions the local server prices turns with', async () => {
+    const core = await import('../../../core/src/usagePricing');
+    const here = await import('../index');
+    expect(here.estimateCost).toBe(core.estimateCost);
+    expect(here.parsePrices).toBe(core.parsePrices);
+    expect(here.getModelPrice).toBe(core.getModelPrice);
+    expect(here.PRICES_URL).toBe(core.PRICES_URL);
   });
 });
 
@@ -144,7 +155,7 @@ describe('parsePrices', () => {
     const parsed = parsePrices({ prices: [{ id: 'some-model' }, { id: 'half', input: 1 }, { id: '', input: 1, output: 1 }] });
     expect(parsed).toEqual({ prices: [] });
     const m = { model: 'some-model', turns: 1, unpricedTurns: 1, costUsd: 0, input: 5, output: 5, cacheRead: 0, cacheWrite: 0 };
-    expect(estimateCost([m], parsed)).toEqual({ reported: 0, estimated: 0, unpricedModels: ['some-model'], estimatedModels: [] });
+    expect(estimateCost([m], parsed)).toEqual({ reported: 0, estimated: 0, estimatedAtTurn: 0, estimatedToday: 0, unpricedModels: ['some-model'], estimatedModels: [], todayModels: [] });
   });
 
   it('a malformed table estimates nothing instead of throwing', () => {

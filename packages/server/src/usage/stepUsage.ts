@@ -1,21 +1,21 @@
-import type { CardUsage, ModelUsage, StepUsage, TokenEvent, UsageSummary, UsageTotals } from '@agenfk/core';
+import { estimateCost, fallbackPricesLabel, type CardUsage, type ModelUsage, type PricesData, type StepUsage, type TokenEvent, type UsageSummary, type UsageTotals } from '@agenfk/core';
 
 /**
  * GH-389: a card's token usage, per step it left.
  *
  * Usage is summed from the turns ingested from the harnesses' session logs and
- * attributed to the card (token-ingestion). Cost is only what a harness
- * reported itself (pi): this server never prices a turn, because that needs a
- * live price table from the internet. A turn without a reported cost is
- * counted in `unpricedTurns`, so a total never passes a partial cost off as
- * complete, and the board or hub prices those from the model and tokens.
+ * attributed to the card (token-ingestion). Cost is what a harness reported
+ * itself (pi, `costUsd`) and, apart, what this server priced the other turns
+ * at when it ingested them (`estimatedCostUsd`, GH-397). A turn with neither
+ * is counted in `unpricedTurns`, so a total never passes a partial cost off as
+ * complete; the board or hub prices those at today's prices, saying so.
  */
 
 export const zeroTotals = (): UsageTotals => ({
-  turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, unpricedTurns: 0,
+  turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 0,
 });
 
-/** Add `b` into `a`. */
+/** Add `b` into `a`. A `b` recorded before GH-397 has no estimatedCostUsd: 0. */
 export function addTotals(a: UsageTotals, b: UsageTotals): UsageTotals {
   a.turns += b.turns;
   a.input += b.input;
@@ -24,14 +24,19 @@ export function addTotals(a: UsageTotals, b: UsageTotals): UsageTotals {
   a.output += b.output;
   a.reasoning += b.reasoning;
   a.costUsd += b.costUsd;
+  a.estimatedCostUsd = (a.estimatedCostUsd || 0) + (b.estimatedCostUsd || 0);
   a.unpricedTurns += b.unpricedTurns;
   return a;
 }
 
-function totalsOf(ev: TokenEvent): UsageTotals {
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+/** One turn's totals; ingestion prices a turn from exactly these tokens. */
+export function totalsOf(ev: TokenEvent): UsageTotals {
   // Codex reports cache reads only, as cachedInput with no split.
   const split = ev.cacheRead !== undefined || ev.cacheWrite !== undefined;
-  const priced = typeof ev.costUsd === 'number' && Number.isFinite(ev.costUsd);
+  const priced = finite(ev.costUsd);
+  const estimated = !priced && finite(ev.estimatedCostUsd);
   return {
     turns: 1,
     input: ev.input,
@@ -40,7 +45,8 @@ function totalsOf(ev: TokenEvent): UsageTotals {
     output: ev.output,
     reasoning: ev.reasoning,
     costUsd: priced ? ev.costUsd! : 0,
-    unpricedTurns: priced ? 0 : 1,
+    estimatedCostUsd: estimated ? ev.estimatedCostUsd! : 0,
+    unpricedTurns: priced || estimated ? 0 : 1,
   };
 }
 
@@ -205,7 +211,12 @@ export async function computeCardUsage(
 
 const n = (v: number) => v.toLocaleString('en-US');
 
-function describeTotals(head: string, t: UsageTotals, complete: boolean): string {
+/**
+ * `today` is the estimate at today's prices of the models whose turns all lack
+ * a price (older usage), from the price table the server has at hand; it is
+ * shown, never stored.
+ */
+function describeTotals(head: string, t: UsageTotals, complete: boolean, today = 0, todayLabel = "today's prices"): string {
   const tail = complete ? '' : ' (incomplete: the session logs could not be read in time)';
   if (t.turns === 0) return `${head} no usage recorded${tail}.`;
   const parts = [
@@ -215,18 +226,30 @@ function describeTotals(head: string, t: UsageTotals, complete: boolean): string
     `${n(t.cacheWrite)} cache write`,
     `${n(t.output)} output`,
   ];
-  if (t.costUsd > 0) parts.push(`$${t.costUsd.toFixed(2)} reported`);
+  const costs = [
+    { usd: t.costUsd || 0, label: 'reported' },
+    { usd: t.estimatedCostUsd || 0, label: 'est. when used' },
+    { usd: today, label: `est. at ${todayLabel}` },
+  ].filter((c) => c.usd > 0);
+  const usd = (v: number) => `$${v.toFixed(2)}`;
+  if (costs.length === 1) parts.push(`${usd(costs[0].usd)} ${costs[0].label}`);
+  else if (costs.length > 1) {
+    const sum = costs.reduce((a, c) => a + c.usd, 0);
+    parts.push(`${usd(sum)} cost (${costs.map((c) => `${usd(c.usd)} ${c.label}`).join(' + ')})`);
+  }
   if (t.unpricedTurns > 0) parts.push(`${n(t.unpricedTurns)} turn${t.unpricedTurns === 1 ? '' : 's'} unpriced`);
   return `${head} ${parts.join(', ')}${tail}.`;
 }
 
-/** One line for a verify reply. */
-export function describeUsage(u: StepUsage): string {
-  return describeTotals(`📊 Usage in ${u.step}:`, u.total, u.complete);
+const todayOf = (u: UsageSummary, prices: PricesData | null | undefined) => (prices ? estimateCost(u.byModel ?? [], prices).estimatedToday : 0);
+
+/** One line for a verify reply; `prices` estimates older unpriced turns at today's prices. */
+export function describeUsage(u: StepUsage, prices?: PricesData | null): string {
+  return describeTotals(`📊 Usage in ${u.step}:`, u.total, u.complete, todayOf(u, prices), fallbackPricesLabel(prices));
 }
 
 /** The DONE reply's line for the whole card. */
-export function describeCardUsage(u: CardUsage): string {
+export function describeCardUsage(u: CardUsage, prices?: PricesData | null): string {
   const scope = u.cards > 1 ? ` (with ${u.cards - 1} sub-card${u.cards === 2 ? '' : 's'})` : '';
-  return describeTotals(`📊 Card usage${scope}:`, u.total, u.complete !== false);
+  return describeTotals(`📊 Card usage${scope}:`, u.total, u.complete !== false, todayOf(u, prices), fallbackPricesLabel(prices));
 }

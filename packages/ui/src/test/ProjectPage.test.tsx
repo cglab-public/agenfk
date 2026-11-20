@@ -16,7 +16,7 @@ import { api } from '../api';
 import { ItemType, Status } from '../types';
 import { paintedTypes } from './helpers/typeGrammar';
 
-vi.mock('../api', () => ({ api: { projectSettings: vi.fn(), getNoCardUsage: vi.fn() } }));
+vi.mock('../api', () => ({ api: { projectSettings: vi.fn(), getNoCardUsage: vi.fn(), getPriceTable: vi.fn(async () => null) } }));
 
 afterEach(() => cleanup());
 
@@ -93,6 +93,42 @@ describe('usage on no card', () => {
     } as never);
     open();
     expect((await screen.findByTestId('project-page-no-card')).textContent).toBe('5k tokens not on a card · $0.42 reported · 30 days');
+  });
+
+  it('GH-397: adds the cost AgEnFK estimated when the turns were used, marked est., the parts in the title', async () => {
+    noCard.mockResolvedValue({
+      projectId: 'p1', days: 30, total: { ...zero, turns: 3, input: 5_000, costUsd: 0.42, estimatedCostUsd: 1.2 },
+      byModel: [
+        { client: 'pi', model: 'qwen3.8', ...zero, turns: 1, costUsd: 0.42 },
+        { client: 'claude-code', model: 'claude-opus-5-5', ...zero, turns: 2, input: 5_000, estimatedCostUsd: 1.2 },
+      ],
+      byDay: [],
+    } as never);
+    open();
+    const line = await screen.findByTestId('project-page-no-card');
+    expect(line.textContent).toBe('5k tokens not on a card · $1.62 est. · 30 days');
+    expect(line.getAttribute('title')).toMatch(/\$0\.42 reported, \$1\.20 estimated when used/);
+  });
+
+  it("GH-397: older turns with neither cost are priced from the local server's table and said to be at today's prices", async () => {
+    vi.mocked(api.getPriceTable).mockResolvedValueOnce({ prices: [{ id: 'claude-opus-5-5', input: 10, output: 50 }], fetchedAt: new Date().toISOString() } as never);
+    const old = { ...zero, turns: 1, input: 1_000_000, unpricedTurns: 1 };
+    noCard.mockResolvedValue({
+      projectId: 'p1', days: 30, total: old, byModel: [{ client: 'claude-code', model: 'claude-opus-5-5', ...old }], byDay: [],
+    } as never);
+    open();
+    await waitFor(() => expect(screen.getByTestId('project-page-no-card').textContent)
+      .toBe("1M tokens not on a card · $10.00 est. · $10.00 at today's prices · 30 days"));
+  });
+
+  it('GH-397: a model with some turns priced and some older ones unpriced is named, not passed off as fully priced (review finding)', async () => {
+    const mixed = { ...zero, turns: 3, input: 5_000, unpricedTurns: 1, estimatedCostUsd: 2 };
+    noCard.mockResolvedValue({
+      projectId: 'p1', days: 30, total: mixed, byModel: [{ client: 'claude-code', model: 'claude-opus-5-5', ...mixed }], byDay: [],
+    } as never);
+    open();
+    expect((await screen.findByTestId('project-page-no-card')).textContent)
+      .toBe('5k tokens not on a card · $2.00 est. · not priced: claude-opus-5-5 · 30 days');
   });
 
   it('shows nothing when there was none', async () => {

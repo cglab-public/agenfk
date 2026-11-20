@@ -113,6 +113,13 @@ export interface TokenEvent {
   /** Cost the harness itself reported for the turn (pi does), in USD. */
   costUsd?: number;
   /**
+   * GH-397: what AgEnFK priced a turn its harness did not price at, in USD,
+   * from the public price table when the turn was ingested. Absent when the
+   * harness priced the turn, when the table had no price for the model or was
+   * unavailable, and on turns ingested before GH-397.
+   */
+  estimatedCostUsd?: number;
+  /**
    * Identity of the turn across files, unique per client (Claude Code's
    * message.id: the same message can be in a session log and its subagent log).
    */
@@ -347,8 +354,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 
 /**
  * GH-389: token usage summed over a set of turns. `costUsd` is only what the
- * harnesses reported themselves (pi does); `unpricedTurns` counts the turns
- * without it, which a reader prices from model and tokens.
+ * harnesses reported themselves (pi does); `estimatedCostUsd` what AgEnFK
+ * priced the rest at when it ingested them (GH-397); `unpricedTurns` counts
+ * the turns with neither, which a reader prices from model and tokens at
+ * today's prices, saying so.
  */
 export interface UsageTotals {
   turns: number;
@@ -357,7 +366,14 @@ export interface UsageTotals {
   cacheWrite: number;
   output: number;
   reasoning: number;
+  /** What the harnesses reported themselves (pi). */
   costUsd: number;
+  /**
+   * GH-397: what AgEnFK priced the other turns at when it ingested them. A
+   * reader of a total from before GH-397 treats a missing value as 0.
+   */
+  estimatedCostUsd: number;
+  /** Turns with neither a reported nor an estimated cost. */
   unpricedTurns: number;
 }
 

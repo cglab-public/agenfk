@@ -1,5 +1,5 @@
 import * as path from 'path';
-import type { StorageProvider } from '@agenfk/core';
+import type { PricesData, StorageProvider } from '@agenfk/core';
 import { ingestOnce, type IngestionSource } from './watcher';
 import { parseClaudeCodeJsonl, hasSubagents } from './parsers/claude-code';
 import { reattributeSubagentUsage } from './reattribute';
@@ -43,8 +43,9 @@ export interface UsageIngestion {
 }
 
 /**
- * Local token ingestion (GH-389). Per-turn events are written to the local
- * store only: this service has no hub hook, by design - per-turn forwarding is
+ * Local token ingestion (GH-389). Each turn its harness did not price is
+ * priced from `prices` as it is read (GH-397). Per-turn events are written to
+ * the local store only: this service has no hub hook, by design - per-turn forwarding is
  * what flooded the hub in beta.10 (BUG 9c27faf6). The hub sees usage only as
  * the per-transition totals the workflow attaches to its own events, and the
  * turns on no card as a few daily totals per project (usage/noCardUsage.ts).
@@ -60,6 +61,8 @@ export function createUsageIngestion(opts: {
   sources: IngestionSource[];
   intervalMs?: number;
   now?: () => Date;
+  /** GH-397: the price table turns the harness did not price are priced from at ingestion. */
+  prices?: () => Promise<PricesData | null>;
 }): UsageIngestion {
   const now = opts.now ?? (() => new Date());
   // Stored when ingestion is set up, not at its first pass: a log written
@@ -84,6 +87,7 @@ export function createUsageIngestion(opts: {
       sources: opts.sources,
       attributeEvents: true,
       epoch: await getEpoch(),
+      ...(opts.prices ? { prices: opts.prices } : {}),
       ...(fileFilter ? { fileFilter } : {}),
     }));
 

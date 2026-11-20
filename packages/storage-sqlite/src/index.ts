@@ -782,13 +782,15 @@ export class SQLiteStorageProvider implements StorageProvider {
    * harness reported, and a dedup key that is unique per client across files
    * (Claude Code repeats a message in a session log and its subagent log).
    * Rows from before have NULL in all four, which the partial index ignores.
-   * Ingestion state gains the parser's saved context.
+   * Ingestion state gains the parser's saved context. GH-397: the price
+   * AgEnFK put on a turn at ingestion (estimated_cost_usd), NULL before.
    */
   private migrateTokenEventsTable(): void {
     const cols = (this.database.prepare('PRAGMA table_info(token_events)').all() as { name: string }[]).map((c) => c.name);
     if (!cols.includes('cache_read')) this.database.exec('ALTER TABLE token_events ADD COLUMN cache_read INTEGER');
     if (!cols.includes('cache_write')) this.database.exec('ALTER TABLE token_events ADD COLUMN cache_write INTEGER');
     if (!cols.includes('cost_usd')) this.database.exec('ALTER TABLE token_events ADD COLUMN cost_usd REAL');
+    if (!cols.includes('estimated_cost_usd')) this.database.exec('ALTER TABLE token_events ADD COLUMN estimated_cost_usd REAL');
     if (!cols.includes('dedup_key')) this.database.exec('ALTER TABLE token_events ADD COLUMN dedup_key TEXT');
     if (!cols.includes('source_file')) this.database.exec('ALTER TABLE token_events ADD COLUMN source_file TEXT');
     // The offset dedup key names the FILE too: a replaced file at the same
@@ -1198,8 +1200,8 @@ export class SQLiteStorageProvider implements StorageProvider {
         (id, ts, client, session_id, turn_id, model,
          input, cached_input, output, reasoning, total,
          item_id, project_id, source_path, source_offset,
-         cache_read, cache_write, cost_usd, dedup_key, source_file)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         cache_read, cache_write, cost_usd, dedup_key, source_file, estimated_cost_usd)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       event.id,
       event.ts,
@@ -1221,6 +1223,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       event.costUsd ?? null,
       event.dedupKey ?? null,
       event.sourceFile ?? null,
+      event.estimatedCostUsd ?? null,
     );
   }
 
@@ -1238,7 +1241,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       `SELECT id, ts, client, session_id, turn_id, model,
               input, cached_input, output, reasoning, total,
               item_id, project_id, source_path, source_offset,
-              cache_read, cache_write, cost_usd, dedup_key
+              cache_read, cache_write, cost_usd, dedup_key, estimated_cost_usd
          FROM token_events`;
     if (where.length) sql += ' WHERE ' + where.join(' AND ');
     sql += ' ORDER BY ts ASC';
@@ -1263,6 +1266,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       cacheRead: r.cache_read ?? undefined,
       cacheWrite: r.cache_write ?? undefined,
       costUsd: r.cost_usd ?? undefined,
+      estimatedCostUsd: r.estimated_cost_usd ?? undefined,
       dedupKey: r.dedup_key ?? undefined,
     }));
   }
