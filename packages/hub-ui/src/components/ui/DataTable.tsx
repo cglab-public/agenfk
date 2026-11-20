@@ -81,12 +81,15 @@ function useFillViewport(on: boolean) {
  * table for assistive tech (aria-label, not a <caption>: each table already
  * sits under a visible heading that says the same). `fillViewport` ends the
  * rows at the bottom of the window and scrolls them there, under a header that
- * stays put; the page no longer grows with the list.
+ * stays put; the page no longer grows with the list. `pinned` rows follow the
+ * others, outside the sort and the search (a "Not on a card" line under the
+ * people it is not one of).
  */
-export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, search, minWidth, rowHover = false, fillViewport = false }: {
+export function DataTable<T>({ caption, columns, rows, pinned = [], rowKey, defaultSort, search, minWidth, rowHover = false, fillViewport = false }: {
   caption: string;
   columns: DataColumn<T>[];
   rows: T[];
+  pinned?: T[];
   rowKey: (row: T) => string;
   defaultSort?: { key: string; dir: Dir };
   search?: { label: string; placeholder?: string; matches: (row: T, query: string) => boolean };
@@ -119,6 +122,12 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
       })
       .map(x => x.row);
   }, [rows, columns, sort, search, query]);
+
+  const cells = (row: T) => columns.map(col => (
+    <td key={col.key} className={cn('px-3 py-3 first:pl-5 last:pr-5', col.align === 'right' && 'text-right', col.className)}>
+      {col.render(row)}
+    </td>
+  ));
 
   const toggle = (col: DataColumn<T>) => {
     setSort(prev => {
@@ -181,13 +190,10 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
           </thead>
           <tbody className="divide-y divide-border-soft">
             {shown.map(row => (
-              <tr key={rowKey(row)} className={cn(rowHover && 'hover:bg-accent-fill/50 transition-colors')}>
-                {columns.map(col => (
-                  <td key={col.key} className={cn('px-3 py-3 first:pl-5 last:pr-5', col.align === 'right' && 'text-right', col.className)}>
-                    {col.render(row)}
-                  </td>
-                ))}
-              </tr>
+              <tr key={rowKey(row)} className={cn(rowHover && 'hover:bg-accent-fill/50 transition-colors')}>{cells(row)}</tr>
+            ))}
+            {pinned.map(row => (
+              <tr key={rowKey(row)} data-pinned="true" className="bg-canvas/40">{cells(row)}</tr>
             ))}
           </tbody>
         </table>

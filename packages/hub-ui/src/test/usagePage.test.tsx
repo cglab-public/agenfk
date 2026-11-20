@@ -513,6 +513,117 @@ describe('UsagePage', () => {
     });
   });
 
+  describe('usage on no card (GH-394)', () => {
+    /** 300k Claude input tokens on no card: $3.00 at the test table's rate. */
+    const free = { client: 'claude-code', model: 'claude-opus-5-5', ...zero, turns: 1, input: 300_000, unpricedTurns: 1 };
+    const NOCARD = {
+      ...OVERVIEW,
+      total: sum(opus, qwen, free),
+      noCard: {
+        total: free,
+        byModel: [free],
+        byDay: [{ day: '2026-11-19', total: free, byModel: [free] }],
+        byInstallation: [{ installation_id: 'inst-c', label: null, total: free, byModel: [free] }],
+        byUser: [{ user_key: 'carol@acme.com', total: free, byModel: [free] }],
+      },
+    };
+    beforeEach(() => { overview = NOCARD; });
+    const rowsOf = (name: RegExp) => within(within(section(name)).getByRole('table')).getAllByRole('row').slice(1);
+
+    it('the headline totals include it, and say how much of them is not on a card', async () => {
+      renderAt('/usage');
+      const totals = await screen.findByRole('region', { name: /totals/i });
+      // 1.2M on cards + 300k on none; $10.50 + $3.00.
+      expect(within(totals).getByText('1.5M')).toBeInTheDocument();
+      expect(within(totals).getByText('$13.50')).toBeInTheDocument();
+      expect(within(totals).getByText(/of which 300k not on a card/i)).toBeInTheDocument();
+      expect(within(totals).getByText(/of which \$3\.00 not on a card/i)).toBeInTheDocument();
+    });
+
+    it('counts a person whose only usage is on no card', async () => {
+      renderAt('/usage');
+      const totals = await screen.findByRole('region', { name: /totals/i });
+      const tile = within(totals).getByText(/^People$/).closest('[data-stat-tile]')!;
+      // The value (3 people: alice, bob and carol), then its hint.
+      expect(tile.textContent).toBe('People33 installations');
+    });
+
+    it.each([/by installation/i, /by person/i, /by harness/i])('the %s table has a "Not on a card" row, after the others whatever the sort', async (name) => {
+      renderAt('/usage');
+      await screen.findByText('$13.50');
+      const last = () => rowsOf(name).at(-1)!;
+      expect(last()).toHaveTextContent(/not on a card/i);
+      expect(last()).toHaveTextContent('300k');
+      expect(last()).toHaveTextContent('$3.00');
+      const t = within(section(name)).getByRole('table');
+      const tokensHeader = within(t).getAllByRole('columnheader').find(h => h.textContent?.trim() === 'Tokens')!;
+      fireEvent.click(within(tokensHeader).getByRole('button'));
+      expect(last()).toHaveTextContent(/not on a card/i);
+      fireEvent.click(within(tokensHeader).getByRole('button'));
+      expect(last()).toHaveTextContent(/not on a card/i);
+    });
+
+    it('no "Not on a card" row, and no such part in the charts, when there is none', async () => {
+      overview = OVERVIEW;
+      renderAt('/usage');
+      await screen.findByText('$10.50');
+      expect(screen.queryByText(/not on a card/i)).not.toBeInTheDocument();
+    });
+
+    it('the tokens chart stacks it as its own hatched part on top of the four types, named in the legend and the bar', async () => {
+      renderAt('/usage?range=7d');
+      await screen.findByText('$13.50');
+      const chart = section(/tokens per day/i);
+      const legend = within(chart).getByRole('list', { name: /legend/i });
+      expect(within(legend).getAllByRole('listitem').map(li => li.textContent)).toEqual(['Input', 'Cache read', 'Cache write', 'Output', 'Not on a card']);
+      // 1M input on cards + 300k on none.
+      const bar = within(chart).getByRole('option', { name: /2026-11-19: 1\.3M tokens/ });
+      expect(bar).toHaveAccessibleName(/input 1M.*not on a card 300k/i);
+      const parts = [...bar.querySelectorAll<HTMLElement>('[data-series]')];
+      expect(parts.map(p => p.dataset.series)).toEqual(['Input', 'Cache read', 'Cache write', 'Output', 'Not on a card']);
+      const hatched = parts.at(-1)!;
+      expect(hatched.dataset.pattern).toBe('hatched');
+      // Striped in its colour, outlined so its edge shows: not a solid fill.
+      expect(hatched.style.boxShadow).toContain('var(--text-tertiary)');
+      expect(parts[0].style.boxShadow).toBe('');
+      expect(parseFloat(hatched.style.height)).toBeCloseTo(100 * 300 / 1300, 6);
+      expect(parseFloat(parts[0].style.height)).toBeCloseTo(100 * 1000 / 1300, 6);
+      // The legend swatch is hatched as well, so the key matches the bar.
+      expect(within(legend).getByText('Not on a card').parentElement!.querySelector('[data-pattern="hatched"]')).not.toBeNull();
+    });
+
+    it("the tokens tooltip splits the day's no-card part by type too", async () => {
+      renderAt('/usage?range=7d');
+      await screen.findByText('$13.50');
+      const chart = section(/tokens per day/i);
+      fireEvent.mouseEnter(within(chart).getByRole('option', { name: /2026-11-19: 1\.3M tokens/ }));
+      expect(within(chart).getByTestId('bar-tooltip')).toHaveTextContent(/not on a card: input 300k · cache read 0 · cache write 0 · output 0/i);
+    });
+
+    it('the cost chart splits each day into on a card and not on a card', async () => {
+      renderAt('/usage?range=7d');
+      await screen.findByText('$13.50');
+      const chart = section(/cost per day/i);
+      const legend = within(chart).getByRole('list', { name: /legend/i });
+      expect(within(legend).getAllByRole('listitem').map(li => li.textContent)).toEqual(['On a card', 'Not on a card']);
+      const bar = within(chart).getByRole('option', { name: /2026-11-19: \$13\.00/ });
+      expect(bar).toHaveAccessibleName(/on a card \$10\.00.*not on a card \$3\.00/i);
+    });
+
+    it('a day with usage on no card only is still drawn', async () => {
+      overview = { ...NOCARD, byDay: [] };
+      renderAt('/usage?range=7d');
+      await screen.findByText('$13.50');
+      expect(within(section(/tokens per day/i)).getByRole('option', { name: /2026-11-19: 300k tokens/ })).toBeInTheDocument();
+    });
+
+    it('says how usage on no card reaches the hub', async () => {
+      renderAt('/usage');
+      await screen.findByText('$13.50');
+      expect(screen.getByText(/usage on no card arrives as each installation's daily total/i)).toBeInTheDocument();
+    });
+  });
+
   it('is reachable from the dashboard nav', async () => {
     renderAt('/');
     expect(await screen.findByRole('link', { name: /^usage$/i })).toHaveAttribute('href', '/usage');

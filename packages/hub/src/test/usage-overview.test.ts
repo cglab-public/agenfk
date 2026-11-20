@@ -7,7 +7,7 @@
  * children (item.closed carries the card's whole subtree and is NOT summed).
  * A PR's usage is its anchor card's latest item.closed usage (card + subtree).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { openSqliteDb } from '../db/sqlite';
@@ -384,6 +384,155 @@ describe('GET /v1/usage/overview', () => {
   it('ignores a ?types= filter: the overview always reads step usage', async () => {
     await post([step('c1', stepUsage(opus(3)))]);
     expect((await overview('?types=item.closed')).total.input).toBe(3);
+  });
+
+  describe('usage on no card (GH-394)', () => {
+    /** One installation's running total for a project and local day, as the server sends it. */
+    const noCard = (day: string, asOf: string, usage: unknown, over: any = {}) =>
+      event({ type: 'usage.no-card', itemType: undefined, occurredAt: `${day}T15:00:00.000Z`, payload: { day, asOf, usage }, ...over });
+    const ncUsage = (input: number) => ({ byModel: [opus(input)], total: opus(input) });
+
+    it('counts in the headline total and on its own, and stays out of every card breakdown', async () => {
+      await post([
+        step('c1', stepUsage(opus(100))),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40)),
+      ]);
+      const body = await overview();
+      expect(body.total.input).toBe(140);
+      expect(body.total.turns).toBe(2);
+      expect(body.noCard.total).toMatchObject({ input: 40, turns: 1 });
+      expect(body.noCard.byModel).toEqual([expect.objectContaining({ client: 'claude-code', model: 'claude-opus-5-5', input: 40 })]);
+      expect(body.cards).toBe(1);
+      expect(body.byInstallation.map((r: any) => r.total.input)).toEqual([100]);
+      expect(body.byUser.map((r: any) => r.total.input)).toEqual([100]);
+      expect(body.byModel.map((r: any) => r.input)).toEqual([100]);
+      expect(body.noCard.byInstallation).toEqual([expect.objectContaining({ installation_id: 'inst-a', total: expect.objectContaining({ input: 40 }) })]);
+      expect(body.noCard.byUser).toEqual([expect.objectContaining({ user_key: 'alice@acme.com', total: expect.objectContaining({ input: 40 }) })]);
+    });
+
+    it('a resend replaces the earlier total, whichever of the two arrives first', async () => {
+      await post([noCard('2026-11-19', '2026-11-19T18:00:00.000Z', ncUsage(70), { occurredAt: '2026-11-19T17:30:00.000Z' })]);
+      await post([noCard('2026-11-19', '2026-11-19T12:00:00.000Z', ncUsage(40), { occurredAt: '2026-11-19T11:30:00.000Z' })]);
+      expect((await overview()).noCard.total.input).toBe(70);
+      await post([noCard('2026-11-19', '2026-11-19T20:00:00.000Z', ncUsage(90), { occurredAt: '2026-11-19T19:30:00.000Z' })]);
+      const body = await overview();
+      expect(body.noCard.total.input).toBe(90);
+      expect(body.total.input).toBe(90);
+    });
+
+    it('the same delivery twice is counted once', async () => {
+      const e = noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40), { eventId: 'nc-dup' });
+      await post([e]);
+      await post([e]);
+      expect((await overview()).noCard.total.input).toBe(40);
+    });
+
+    it('a total from a restored database (lower, but sent later) replaces the higher one instead of adding to it', async () => {
+      await post([
+        noCard('2026-11-19', '2026-11-19T12:00:00.000Z', ncUsage(80)),
+        noCard('2026-11-19', '2026-11-19T13:00:00.000Z', ncUsage(30)),
+      ]);
+      expect((await overview()).noCard.total.input).toBe(30);
+    });
+
+    it('each installation, project and day is its own total, and they add up', async () => {
+      await post([
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(50)),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(7), { projectId: 'p2', remoteUrl: 'git@github.com:acme/web.git' }),
+        noCard('2026-11-18', '2026-11-18T16:00:00.000Z', ncUsage(3)),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(11), { installationId: 'inst-b', actor: BOB }),
+      ]);
+      const body = await overview();
+      expect(body.noCard.total.input).toBe(71);
+      expect(body.noCard.byDay.map((d: any) => [d.day, d.total.input])).toEqual([['2026-11-18', 3], ['2026-11-19', 68]]);
+      expect(body.noCard.byInstallation.map((r: any) => [r.installation_id, r.total.input])).toEqual([['inst-a', 60], ['inst-b', 11]]);
+    });
+
+    it('files each total under the viewer\'s day', async () => {
+      await post([noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(5), { occurredAt: '2026-11-19T01:00:00.000Z' })]);
+      expect((await overview('?tz=America%2FSao_Paulo')).noCard.byDay.map((d: any) => d.day)).toEqual(['2026-11-18']);
+    });
+
+    it('the people and project filters apply to it, and an item-type filter leaves it out', async () => {
+      await post([
+        step('c1', stepUsage(opus(100))),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40)),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(11), { installationId: 'inst-b', actor: BOB }),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(7), { projectId: 'p2', remoteUrl: 'git@github.com:acme/web.git' }),
+      ]);
+      expect((await overview('?users=bob%40acme.com')).noCard.total.input).toBe(11);
+      expect((await overview('?projects=git%40github.com%3Aacme%2Fweb.git')).noCard.total.input).toBe(7);
+      // Even a total a client sent with an item type on it: no card is no item type.
+      await post([noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(5), { projectId: 'p9', itemType: 'TASK' })]);
+      const typed = await overview('?itemTypes=TASK');
+      expect(typed.noCard.total.input).toBe(0);
+      expect(typed.total.input).toBe(100);
+    });
+
+    it('follows the child-hub filter like the rest of the usage', async () => {
+      await post([
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40), { eventId: 'nc-local' }),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(9), { eventId: 'nc-child', installationId: 'inst-c' }),
+      ]);
+      const r = await db.run('UPDATE events SET child_hub_id = ? WHERE event_id = ?', ['hub-child-1', 'nc-child']);
+      expect(r.changes).toBe(1);
+      expect((await overview('?childHubId=local')).noCard.total.input).toBe(40);
+      expect((await overview('?childHubId=hub-child-1')).noCard.total.input).toBe(9);
+      expect((await overview()).noCard.total.input).toBe(49);
+    });
+
+    it("reads the history of the picked installations' picked projects only, never a crossed pair", async () => {
+      await post([
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40), { projectId: 'pa', remoteUrl: 'git@github.com:acme/a.git' }),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(9), { projectId: 'pb', remoteUrl: 'git@github.com:acme/b.git', installationId: 'inst-b', actor: BOB }),
+        // The crossed pairs, the day before the window: near enough to be read if the pairs were crossed.
+        noCard('2026-11-18', '2026-11-18T16:00:00.000Z', ncUsage(1), { projectId: 'pb', remoteUrl: 'git@github.com:acme/b.git' }),
+        noCard('2026-11-18', '2026-11-18T16:00:00.000Z', ncUsage(2), { projectId: 'pa', remoteUrl: 'git@github.com:acme/a.git', installationId: 'inst-b', actor: BOB }),
+      ]);
+      const all = vi.spyOn(db, 'all');
+      const body = await overview('?from=2026-11-19T00:00:00.000Z');
+      const historyRows = (await Promise.all(all.mock.calls
+        .map((c, i) => ({ sql: String(c[0]), result: all.mock.results[i].value }))
+        .filter(c => /type = \? AND installation_id = \?/.test(c.sql))
+        .map(c => c.result))).flat() as any[];
+      all.mockRestore();
+      expect(body.noCard.total.input).toBe(49);
+      expect(historyRows.map(r => `${r.installation_id}/${r.project_id}`).sort()).toEqual(['inst-a/pa', 'inst-b/pb']);
+    });
+
+    it('is never a PR', async () => {
+      await post([noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40))]);
+      expect((await overview()).byPr).toEqual([]);
+    });
+
+    it('a window credits a day\'s total by its latest send, so windows that do not overlap add up to the whole', async () => {
+      await post([
+        noCard('2026-11-19', '2026-11-19T10:00:00.000Z', ncUsage(10), { occurredAt: '2026-11-19T09:00:00.000Z' }),
+        noCard('2026-11-19', '2026-11-19T21:00:00.000Z', ncUsage(30), { occurredAt: '2026-11-19T20:00:00.000Z' }),
+      ]);
+      const before = (await overview('?to=2026-11-19T12:00:00.000Z')).noCard.total.input;
+      const after = (await overview('?from=2026-11-19T12:00:00.000Z')).noCard.total.input;
+      expect([before, after]).toEqual([0, 30]);
+      expect((await overview()).noCard.total.input).toBe(30);
+    });
+
+    it('a total with no day or no usage is skipped and counted as malformed, not a failed request', async () => {
+      await post([
+        event({ type: 'usage.no-card', itemType: undefined, payload: { asOf: '2026-11-19T16:00:00.000Z', usage: ncUsage(5) } }),
+        event({ type: 'usage.no-card', itemType: undefined, payload: { day: '2026-11-19', asOf: '2026-11-19T16:00:00.000Z' } }),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(4), { projectId: 'p3' }),
+      ]);
+      const body = await overview();
+      expect(body.noCard.total.input).toBe(4);
+      expect(body.malformedEvents).toBe(2);
+    });
+
+    it('is zero, with empty breakdowns, when nothing was sent', async () => {
+      const body = await overview();
+      expect(body.noCard.total.input).toBe(0);
+      expect(body.noCard.byModel).toEqual([]);
+      expect(body.noCard.byDay).toEqual([]);
+    });
   });
 
   describe('byPr', () => {

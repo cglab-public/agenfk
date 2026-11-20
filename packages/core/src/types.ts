@@ -127,7 +127,8 @@ export interface TokenEvent {
 }
 
 export interface TokenEventQuery {
-  itemId?: string;
+  /** A card's turns; `null` for the turns on no card (GH-394); left out, any. */
+  itemId?: string | null;
   projectId?: string;
   since?: string;
   until?: string;

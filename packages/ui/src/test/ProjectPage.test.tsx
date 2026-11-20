@@ -16,7 +16,7 @@ import { api } from '../api';
 import { ItemType, Status } from '../types';
 import { paintedTypes } from './helpers/typeGrammar';
 
-vi.mock('../api', () => ({ api: { projectSettings: vi.fn() } }));
+vi.mock('../api', () => ({ api: { projectSettings: vi.fn(), getNoCardUsage: vi.fn() } }));
 
 afterEach(() => cleanup());
 
@@ -61,6 +61,48 @@ describe('the header', () => {
     // that becomes visible rather than at the moment a run fails.
     open({ project: { id: 'p1', name: 'horizon-ds' } as never });
     expect(screen.getByTestId('project-page-root').textContent).toMatch(/no folder/i);
+  });
+});
+
+/*
+ * GH-394: the turns an agent spent in this project with no card picked up -
+ * questions, setup, PR and release work - counted from this machine's own
+ * session logs, so the project's spend is not only what its cards show.
+ */
+describe('usage on no card', () => {
+  const zero = { turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, unpricedTurns: 0 };
+  const noCard = vi.mocked(api.getNoCardUsage);
+  afterEach(() => noCard.mockReset());
+
+  it("shows the project's usage on no card, from this machine, with its split by type", async () => {
+    noCard.mockResolvedValue({
+      projectId: 'p1', days: 30,
+      total: { ...zero, turns: 12, input: 1_000_000, cacheRead: 150_000, cacheWrite: 40_000, output: 10_000 },
+      byModel: [], byDay: [],
+    } as never);
+    open();
+    const line = await screen.findByTestId('project-page-no-card');
+    expect(noCard).toHaveBeenCalledWith('p1', 30);
+    expect(line.textContent).toBe('1.2M tokens not on a card · 30 days');
+    expect(line.getAttribute('title')).toBe('12 turns not on a card in the last 30 days: input 1M · cache read 150k · cache write 40k · output 10k');
+  });
+
+  it('says the cost when a harness reported one', async () => {
+    noCard.mockResolvedValue({
+      projectId: 'p1', days: 30, total: { ...zero, turns: 2, input: 5_000, costUsd: 0.42 }, byModel: [], byDay: [],
+    } as never);
+    open();
+    expect((await screen.findByTestId('project-page-no-card')).textContent).toBe('5k tokens not on a card · $0.42 reported · 30 days');
+  });
+
+  it('shows nothing when there was none', async () => {
+    const answered = vi.fn();
+    noCard.mockImplementation(async () => { answered(); return { projectId: 'p1', days: 30, total: zero, byModel: [], byDay: [] } as never; });
+    open();
+    await waitFor(() => expect(answered).toHaveBeenCalled());
+    // Let React Query hand the answer to the component before looking.
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.queryByTestId('project-page-no-card')).toBeNull();
   });
 });
 

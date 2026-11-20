@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import { estimateCost, parsePrices, PRICES_URL, type PricedModelUsage, type PricesData } from '@agenfk/flow-editor';
+import { estimateCost, parsePrices, PRICES_URL, type CostView, type PricedModelUsage, type PricesData } from '@agenfk/flow-editor';
 import { api } from '../api';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
@@ -24,7 +24,8 @@ import { useUrlFilters } from '../hooks/useUrlFilters';
 import { useChildHubs } from '../hooks/useChildHubs';
 import { csvParam } from '../urlParams';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
-import { DailyBarChart, type DailyBar } from '../components/DailyBarChart';
+import { DailyBarChart, type BarSeries } from '../components/DailyBarChart';
+import { ALL_EVENTS_COLOR, OTHER_COLOR } from '../chartColours';
 
 const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: 'today', label: 'today' },
@@ -58,8 +59,16 @@ export interface UsageOverview {
   byModel: ModelRow[];
   byPr: PrRow[];
   byDay: Array<Group & { day: string }>;
+  /** GH-394: usage on no card, in `total` and in none of the card breakdowns. Absent from an older hub. */
+  noCard?: NoCardUsage;
   truncated: boolean;
   prsTruncated: boolean;
+}
+interface Usage { total: Totals; byModel: ModelRow[] }
+interface NoCardUsage extends Usage {
+  byDay: Array<Usage & { day: string }>;
+  byInstallation: Array<Usage & { installation_id: string; label: string | null }>;
+  byUser: Array<Usage & { user_key: string }>;
 }
 type InstallationRow = UsageOverview['byInstallation'][number];
 type PersonRow = UsageOverview['byUser'][number];
@@ -77,6 +86,30 @@ const TOKEN_TYPES = [
   { key: 'cacheWrite', label: 'Cache write', color: 'var(--series-4)' },
   { key: 'output', label: 'Output', color: 'var(--series-3)' },
 ] as const satisfies ReadonlyArray<{ key: keyof Totals; label: string; color: string }>;
+/**
+ * Usage on no card, as its own part of the daily charts: striped in the neutral
+ * colour, because it is all four token types at once and no one of them.
+ */
+const NO_CARD_LABEL = 'Not on a card';
+const NO_CARD_SERIES: BarSeries = { label: NO_CARD_LABEL, color: OTHER_COLOR, pattern: 'hatched' };
+/** The cost chart's other part when usage on no card is beside it. */
+const ON_CARD_SERIES: BarSeries = { label: 'On a card', color: ALL_EVENTS_COLOR };
+/** The key of the "Not on a card" row each table ends with. */
+const NO_CARD_ROW = '\u0000no-card';
+const hasTotals = (t: Totals | null | undefined): t is Totals => !!t && (t.turns > 0 || tokensOf(t) > 0);
+const hasUsage = (u: Usage | null | undefined): u is Usage => !!u && hasTotals(u.total);
+const typeSplit = (t: Totals) => TOKEN_TYPES.map(type => `${type.label.toLowerCase()} ${abbreviate(t[type.key])}`).join(' · ');
+/** Two costs as one: reported and estimated added, the models named once. */
+function addCost(a: CostView, b: CostView): CostView {
+  return {
+    reported: a.reported + b.reported,
+    estimated: a.estimated + b.estimated,
+    unpricedModels: [...new Set([...a.unpricedModels, ...b.unpricedModels])],
+    estimatedModels: [...new Set([...a.estimatedModels, ...b.estimatedModels])],
+  };
+}
+const NoCardName = () => <span className="text-body italic text-ink-secondary">{NO_CARD_LABEL}</span>;
+
 /** 950, 42k, 3.7M: the size of a total at a glance. */
 function abbreviate(n: number): string {
   if (n < 1000) return String(n);
@@ -247,6 +280,7 @@ export function UsagePage() {
       />
       <p className="text-caption text-ink-tertiary">
         Usage reaches the hub when a card changes step: a card's current step is counted when it moves on.
+        Usage on no card arrives as each installation's daily total per project, a few times a day, and is in the totals.
         Cost is what pi reported plus, for Claude Code and Codex, an estimate from the public price table, marked est.
       </p>
 
@@ -309,10 +343,21 @@ export function UsagePage() {
         )}
       >
         {d => {
-          const cost = estimateCost(d.byModel, priceTable);
+          const nc = hasUsage(d.noCard) ? d.noCard! : null;
+          const ncCost = nc ? estimateCost(nc.byModel, priceTable) : null;
+          const cardCost = estimateCost(d.byModel, priceTable);
+          const cost = ncCost ? addCost(cardCost, ncCost) : cardCost;
           // Every day of the range (a quiet day is a zero bar), plus any day the hub filed outside it.
           const dayRows = new Map((d.byDay ?? []).map(r => [r.day, r] as const));
-          const days = [...new Set([...daysSince(fromIsoForRange(new Date(), range)), ...dayRows.keys()])].sort();
+          const ncDays = new Map((nc?.byDay ?? []).map(r => [r.day, r] as const));
+          const days = [...new Set([...daysSince(fromIsoForRange(new Date(), range)), ...dayRows.keys(), ...ncDays.keys()])].sort();
+          const people = new Set([...d.byUser.map(r => r.user_key), ...(nc?.byUser ?? []).map(r => r.user_key)]).size;
+          const installations = new Set([...d.byInstallation.map(r => r.installation_id), ...(nc?.byInstallation ?? []).map(r => r.installation_id)]).size;
+          const ncInstallationRow: InstallationRow[] = nc ? [{ installation_id: NO_CARD_ROW, label: NO_CARD_LABEL, cards: 0, total: nc.total, byModel: nc.byModel }] : [];
+          const ncPersonRow: PersonRow[] = nc ? [{ user_key: NO_CARD_ROW, cards: 0, total: nc.total, byModel: nc.byModel }] : [];
+          const ncModelRow: ModelRow[] = nc ? [{ client: '', model: NO_CARD_LABEL, ...nc.total }] : [];
+          const isNoCardModel = (r: ModelRow) => !!nc && r === ncModelRow[0];
+          const modelsOfRow = (r: ModelRow): ModelRow[] => (isNoCardModel(r) ? nc!.byModel : [r]);
           const notes: string[] = [];
           if (d.unmeasuredSteps > 0) notes.push(`${plural(d.unmeasuredSteps, 'step change', 'step changes')} came from versions that did not report usage, and are not counted.`);
           if (d.incompleteSteps > 0) notes.push(`${plural(d.incompleteSteps, 'step change', 'step changes')}: its session logs could not be read in time; turns found later are added at the card's next step change or close.`);
@@ -327,7 +372,8 @@ export function UsagePage() {
                   hint={(
                     <span className="flex flex-col">
                       <span>{`${tokensOf(d.total).toLocaleString()} across ${plural(d.total.turns, 'turn', 'turns')}`}</span>
-                      <span>{TOKEN_TYPES.map(type => `${type.label.toLowerCase()} ${abbreviate(d.total[type.key])}`).join(' · ')}</span>
+                      <span>{typeSplit(d.total)}</span>
+                      {nc && <span>{`of which ${abbreviate(tokensOf(nc.total))} not on a card`}</span>}
                     </span>
                   )}
                 />
@@ -338,11 +384,12 @@ export function UsagePage() {
                     <span className="flex flex-col">
                       {cost.estimated > 0 && <span>{`includes ${money(cost.estimated)} estimated`}</span>}
                       {cost.unpricedModels.length > 0 && <span>{`not priced: ${cost.unpricedModels.join(', ')}`}</span>}
+                      {ncCost && <span>{`of which ${money(ncCost.reported + ncCost.estimated)} not on a card`}</span>}
                     </span>
                   )}
                 />
                 <StatTile label="Cards" value={d.cards} hint="that recorded usage" />
-                <StatTile label="People" value={d.byUser.length} hint={plural(d.byInstallation.length, 'installation', 'installations')} />
+                <StatTile label="People" value={people} hint={plural(installations, 'installation', 'installations')} />
               </section>
 
               {notes.length > 0 && (
@@ -355,27 +402,36 @@ export function UsagePage() {
                 title="Cost per day"
                 bars={days.map(day => {
                   const g = dayRows.get(day);
-                  if (!g) return { day, value: 0 };
-                  const c = estimateCost(g.byModel, priceTable);
+                  const n = ncDays.get(day);
+                  if (!g && !n) return { day, value: 0, ...(nc ? { parts: [0, 0] } : {}) };
+                  const onCard = estimateCost(g?.byModel ?? [], priceTable);
+                  const offCard = estimateCost(n?.byModel ?? [], priceTable);
+                  const c = addCost(onCard, offCard);
                   const note = [
                     c.estimated > 0 ? `includes ${money(c.estimated)} estimated` : '',
                     c.unpricedModels.length ? `not priced: ${c.unpricedModels.join(', ')}` : '',
                   ].filter(Boolean).join('; ');
-                  return { day, value: c.reported + c.estimated, ...(note ? { note } : {}) };
+                  const parts = nc ? { parts: [onCard.reported + onCard.estimated, offCard.reported + offCard.estimated] } : {};
+                  return { day, value: c.reported + c.estimated, ...parts, ...(note ? { note } : {}) };
                 })}
                 format={money}
                 tickFormat={v => (v === 0 ? '$0' : money(v))}
                 scale={100}
+                {...(nc ? { series: [ON_CARD_SERIES, NO_CARD_SERIES] } : {})}
               />
               <DailyBarChart
                 title="Tokens per day"
                 bars={days.map(day => {
                   const t = dayRows.get(day)?.total;
-                  return { day, value: t ? tokensOf(t) : 0, parts: TOKEN_TYPES.map(type => (t ? t[type.key] : 0)) };
+                  const n = ncDays.get(day)?.total;
+                  const parts = TOKEN_TYPES.map(type => (t ? t[type.key] : 0));
+                  if (nc) parts.push(n ? tokensOf(n) : 0);
+                  const note = hasTotals(n) ? { note: `not on a card: ${typeSplit(n)}` } : {};
+                  return { day, value: parts.reduce((a, b) => a + b, 0), parts, ...note };
                 })}
                 format={v => `${abbreviate(v)} tokens`}
                 tickFormat={abbreviate}
-                series={TOKEN_TYPES.map(({ label, color }) => ({ label, color }))}
+                series={[...TOKEN_TYPES.map(({ label, color }) => ({ label, color })), ...(nc ? [NO_CARD_SERIES] : [])]}
               />
 
               <Section title="By installation">
@@ -383,10 +439,12 @@ export function UsagePage() {
                   caption="Usage by installation"
                   minWidth={880}
                   rows={d.byInstallation}
+                  pinned={ncInstallationRow}
                   rowKey={r => r.installation_id}
                   columns={[
                     { key: 'installation', header: 'Installation', sortValue: r => r.label ?? r.installation_id,
-                      render: r => <span className={r.label ? 'text-body text-ink break-words' : 'font-mono text-small text-ink break-all'}>{r.label ?? r.installation_id}</span> },
+                      render: r => (r.installation_id === NO_CARD_ROW ? <NoCardName />
+                        : <span className={r.label ? 'text-body text-ink break-words' : 'font-mono text-small text-ink break-all'}>{r.label ?? r.installation_id}</span>) },
                     cardsCol<InstallationRow>(), tokensCol<InstallationRow>(r => r.total), ...typeCols<InstallationRow>(r => r.total), costCol<InstallationRow>(r => r.byModel),
                   ]}
                 />
@@ -397,10 +455,11 @@ export function UsagePage() {
                   caption="Usage by person"
                   minWidth={880}
                   rows={d.byUser}
+                  pinned={ncPersonRow}
                   rowKey={r => r.user_key}
                   columns={[
                     { key: 'person', header: 'Person', sortValue: r => nameOf(r.user_key) ?? r.user_key,
-                      render: r => <PersonName name={nameOf(r.user_key)} userKey={r.user_key} /> },
+                      render: r => (r.user_key === NO_CARD_ROW ? <NoCardName /> : <PersonName name={nameOf(r.user_key)} userKey={r.user_key} />) },
                     cardsCol<PersonRow>(), tokensCol<PersonRow>(r => r.total), ...typeCols<PersonRow>(r => r.total), costCol<PersonRow>(r => r.byModel),
                   ]}
                 />
@@ -411,13 +470,15 @@ export function UsagePage() {
                   caption="Usage by harness and model"
                   minWidth={960}
                   rows={d.byModel}
+                  pinned={ncModelRow}
                   rowKey={r => `${r.client}/${r.model}`}
                   columns={[
-                    { key: 'model', header: 'Model', sortValue: r => r.model, render: r => <span className="font-mono text-small text-ink break-all">{r.model}</span> },
+                    { key: 'model', header: 'Model', sortValue: r => r.model,
+                      render: r => (isNoCardModel(r) ? <NoCardName /> : <span className="font-mono text-small text-ink break-all">{r.model}</span>) },
                     { key: 'harness', header: 'Harness', sortValue: r => r.client, render: r => <span className="text-small text-ink-secondary">{r.client}</span> },
                     { key: 'turns', header: 'Turns', align: 'right', firstDir: 'desc', sortValue: r => r.turns,
                       render: r => <span className="font-mono tabular-nums text-ink">{r.turns.toLocaleString()}</span> },
-                    tokensCol<ModelRow>(r => r), ...typeCols<ModelRow>(r => r), costCol<ModelRow>(r => [r]),
+                    tokensCol<ModelRow>(r => r), ...typeCols<ModelRow>(r => r), costCol<ModelRow>(modelsOfRow),
                   ]}
                 />
               </Section>

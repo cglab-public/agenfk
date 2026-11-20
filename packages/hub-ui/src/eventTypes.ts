@@ -51,6 +51,7 @@ const EVENT_TYPE_META: Record<string, { label: string; group: EventTypeGroup }> 
   'item.closed': { label: 'Item closed', group: 'Work items' },
   'step.transitioned': { label: 'Step changed', group: 'Work items' },
   'comment.added': { label: 'Comment added', group: 'Work items' },
+  'usage.no-card': { label: 'Usage not on a card', group: 'Work items' },
   'validate.invoked': { label: 'Check run', group: 'Checks' },
   'validate.passed': { label: 'Check passed', group: 'Checks' },
   'validate.failed': { label: 'Check failed', group: 'Checks' },

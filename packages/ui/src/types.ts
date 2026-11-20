@@ -48,6 +48,16 @@ export interface StepUsage {
   total: UsageTotals;
 }
 
+/** GH-394: a project's usage on no card over its last `days` local days, from this installation. */
+export interface NoCardUsage {
+  projectId: string;
+  days: number;
+  since: string;
+  total: UsageTotals;
+  byModel: ModelUsage[];
+  byDay: Array<{ day: string; total: UsageTotals; byModel: ModelUsage[] }>;
+}
+
 /** The card's usage when it closed, its sub-cards' included. */
 export interface CardUsage {
   byModel: ModelUsage[];

@@ -57,6 +57,31 @@ export const FORWARDABLE_PAYLOAD_KEYS = [
   'epic', 'story', 'task', 'bug', 'itemType', 'sizing',
 ] as const;
 
+const USAGE_NUMBERS = ['turns', 'input', 'cacheRead', 'cacheWrite', 'output', 'reasoning', 'costUsd', 'unpricedTurns'] as const;
+const usageNumbers = (v: any): Record<string, number> =>
+  Object.fromEntries(USAGE_NUMBERS.map(k => [k, Number.isFinite(Number(v?.[k])) ? Number(v[k]) : 0]));
+
+/**
+ * GH-394: a day's usage on no card, rebuilt from its known fields only - the
+ * day, when it was totalled, and the token numbers per harness and model -
+ * so the parent can count it under `pseudonymize` without the free-form blob.
+ */
+function noCardPayload(raw: Record<string, unknown>): Record<string, unknown> {
+  const usage = raw.usage as any;
+  const out: Record<string, unknown> = {};
+  if (typeof raw.day === 'string') out.day = raw.day;
+  if (typeof raw.asOf === 'string') out.asOf = raw.asOf;
+  if (usage && typeof usage === 'object') {
+    out.usage = {
+      total: usageNumbers(usage.total),
+      byModel: (Array.isArray(usage.byModel) ? usage.byModel : []).map((m: any) => ({
+        client: String(m?.client ?? 'unknown'), model: String(m?.model ?? 'unknown'), ...usageNumbers(m),
+      })),
+    };
+  }
+  return out;
+}
+
 /**
  * Strip the identity surface from an event.
  *
@@ -82,6 +107,7 @@ export function redactIdentity(
       const v = (rawPayload as Record<string, unknown>)[k];
       if (v !== undefined) payload[k] = v;
     }
+    if (event.type === 'usage.no-card') Object.assign(payload, noCardPayload(rawPayload as Record<string, unknown>));
   }
 
   const userKey = typeof event.userKey === 'string' ? event.userKey : null;

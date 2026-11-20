@@ -332,6 +332,8 @@ export type HubEventType =
   | 'command.approved'
   | 'comment.added'
   | 'test.logged'
+  // A project's usage on no card for one local day, as a running total the hub replaces (GH-394).
+  | 'usage.no-card'
   // Legacy inbound-only event. Spokes no longer emit this, and Hub skips it
   // during ingest so token consumption is not stored.
   | LegacyHubEventType
