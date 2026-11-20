@@ -1285,7 +1285,49 @@ describe('PG parity: card usage (GH-389)', () => {
     expect(res.body.byInstallation.map((x: any) => [x.installation_id, x.cards, x.total.input])).toEqual([['inst-2', 1, 30], ['inst-1', 1, 5]]);
     expect(res.body.byUser.map((x: any) => [x.user_key, x.total.input])).toEqual([['bob@acme.com', 30], ['alice@acme.com', 5]]);
     expect(res.body.byModel).toEqual([expect.objectContaining({ client: 'pi', model: 'qwen3.8:27b', input: 35, costUsd: 1 })]);
-    expect(res.body.byPr.map((x: any) => [x.repo, x.pr_number, x.opened_at, x.closed_at, x.usage.total.input])).toEqual([['acme/api', 4, '2026-11-19T13:00:00.000Z', '2026-11-19T12:00:00.000Z', 5]]);
+    const prs = await supertest(fx.app).get('/v1/usage/prs?from=2026-11-01').set('Cookie', fx.cookie);
+    expect(prs.status).toBe(200);
+    expect(prs.body.rows.map((x: any) => [x.repo, x.pr_number, x.opened_at, x.closed_at, x.usage.total.input])).toEqual([['acme/api', 4, '2026-11-19T13:00:00.000Z', '2026-11-19T12:00:00.000Z', 5]]);
+  });
+
+  it('GET /v1/usage/prs pages, filters and sorts the same as SQLite (GH-396)', async () => {
+    const total = (input: number, costUsd: number, estimatedCostUsd?: number) => ({
+      turns: 1, input, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd, unpricedTurns: 0,
+      ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
+    });
+    const ev = (eventId: string, type: string, itemId: string, at: string, payload: any, who = 'alice', title = `S-${itemId}`) => ({
+      eventId, installationId: `inst-${who}`, orgId: 'org', occurredAt: at, type, itemId, itemType: 'STORY', itemTitle: title,
+      actor: { osUser: who, gitName: who === 'bob' ? 'Adam Bob' : 'Zoe Alice', gitEmail: `${who}@acme.com` }, projectId: 'p1', payload,
+    });
+    const close = (id: string, itemId: string, input: number, cost: number, est?: number) =>
+      ev(id, 'item.closed', itemId, '2026-11-19T09:00:00.000Z', { toStatus: 'DONE', usage: { byModel: [], total: total(input, cost, est), byStep: [], cards: 1 } });
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+      close('k1', 'a', 100, 0.1, 2), close('k2', 'b', 10, 1), close('k3', 'c', 50, 0, 0.5),
+      ev('p1', 'pr.opened', 'a', '2026-11-19T10:01:00.000Z', { prNumber: 3, repo: 'acme/api' }, 'alice', '100% done'),
+      ev('p2', 'pr.opened', 'b', '2026-11-19T10:02:00.000Z', { prNumber: 20, repo: 'acme/web' }, 'bob'),
+      ev('p3', 'pr.opened', 'c', '2026-11-19T10:03:00.000Z', { prNumber: 100, repo: 'acme/api' }),
+      ev('p4', 'pr.opened', 'd', '2026-11-19T10:03:00.000Z', { prNumber: 4, repo: 'acme/api' }),
+      ev('p5', 'pr.updated', 'a', '2026-11-19T10:05:00.000Z', { prNumber: 3, repo: 'acme/api' }, 'bob', '100% done'),
+    ] });
+    expect(r.status).toBe(200);
+    const get = async (q: string) => {
+      const res = await supertest(fx.app).get(`/v1/usage/prs?from=2026-11-01${q}`).set('Cookie', fx.cookie);
+      expect(res.status).toBe(200);
+      return res.body;
+    };
+
+    const first = await get('&pageSize=2');
+    expect(first.total).toBe(4);
+    expect(first.rows.map((x: any) => x.item_id)).toEqual(['d', 'c']);
+    expect((await get('&pageSize=2&page=2')).rows.map((x: any) => x.item_id)).toEqual(['b', 'a']);
+    expect((await get('&sort=cost&dir=desc')).rows.map((x: any) => x.item_id)).toEqual(['a', 'b', 'c', 'd']);
+    expect((await get('&sort=createdBy&dir=asc')).rows[0].item_id).toBe('b');
+    expect((await get('&q=%25')).rows.map((x: any) => x.item_id)).toEqual(['a']);
+    expect((await get('&status=open')).rows.map((x: any) => x.item_id)).toEqual(['d']);
+    expect((await get('&repos=acme%2Fweb')).rows.map((x: any) => [x.item_id, x.created_by, x.url, x.opened_at])).toEqual([
+      ['b', 'bob@acme.com', 'https://github.com/acme/web/pull/20', '2026-11-19T10:02:00.000Z'],
+    ]);
+    expect((await get('&q=3')).rows.map((x: any) => [x.item_id, x.created_by])).toEqual([['a', 'alice@acme.com']]);
   });
 });
 

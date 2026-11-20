@@ -49,29 +49,37 @@ const OVERVIEW = {
     { user_key: 'bob@acme.com', cards: 1, total: qwen, byModel: [qwen] },
   ],
   byModel: [opus, qwen],
-  byPr: [
-    { repo: 'acme/api', pr_number: 42, item_id: 's1', item_type: 'STORY', item_title: 'Usage overview', opened_at: '2026-11-19T10:00:00.000Z', closed_at: '2026-11-19T09:00:00.000Z',
-      usage: { byModel: [qwen], total: qwen, byStep: [], cards: 4 } },
-    { repo: 'acme/web', pr_number: 7, item_id: 's2', item_type: 'TASK', item_title: 'Still open', opened_at: '2026-11-18T10:00:00.000Z', closed_at: null, usage: null },
-  ],
   byDay: [
     { day: '2026-11-18', cards: 1, total: qwen, byModel: [qwen] },
     { day: '2026-11-19', cards: 2, total: opus, byModel: [opus] },
   ],
   truncated: false,
-  prsTruncated: false,
 };
-const EMPTY = { ...OVERVIEW, total: { ...zero }, cards: 0, steps: 0, byInstallation: [], byUser: [], byModel: [], byPr: [], byDay: [] };
+const EMPTY = { ...OVERVIEW, total: { ...zero }, cards: 0, steps: 0, byInstallation: [], byUser: [], byModel: [], byDay: [] };
+/** GH-396: one page of the By PR table, as GET /v1/usage/prs serves it. */
+const prPageOf = (rows: any[], over: any = {}) => ({
+  rows, total: rows.length, page: 1, pageSize: 25, sort: 'opened', dir: 'desc',
+  repos: [...new Set(rows.map(r => r.repo))].sort(), costWithoutEstimate: null, malformedEvents: 0, ...over,
+});
+const PR_ROWS = [
+  { repo: 'acme/api', pr_number: 42, item_id: 's1', item_type: 'STORY', item_title: 'Usage overview', opened_at: '2026-11-19T10:00:00.000Z', closed_at: '2026-11-19T09:00:00.000Z',
+    created_by: 'bob@acme.com', url: 'https://github.com/acme/api/pull/42', usage: { byModel: [qwen], total: qwen, byStep: [], cards: 4 } },
+  { repo: 'acme/web', pr_number: 7, item_id: 's2', item_type: 'TASK', item_title: 'Still open', opened_at: '2026-11-18T10:00:00.000Z', closed_at: null,
+    created_by: 'carol@acme.com', url: null, usage: null },
+];
 const PRICES = { prices: [{ id: 'claude-opus-5-5', input: 10, output: 50, input_cached: 1 }] };
 
 let overview: any = OVERVIEW;
+let prPage: any = prPageOf(PR_ROWS);
 let pricesOk = true;
 beforeEach(() => {
   overview = OVERVIEW;
+  prPage = prPageOf(PR_ROWS);
   pricesOk = true;
   get.mockReset();
   get.mockImplementation(async (url: string) => {
     if (url.startsWith('/v1/usage/overview')) return { data: overview };
+    if (url.startsWith('/v1/usage/prs')) return { data: typeof prPage === 'function' ? prPage(url) : prPage };
     if (url.startsWith('/v1/projects')) return { data: { projects: ['git@x:web.git', 'git@x:api.git'] } };
     if (url.startsWith('/v1/item-types')) return { data: { itemTypes: ['TASK'], counts: {} } };
     if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
@@ -103,6 +111,8 @@ const renderAt = (entry: string) => {
   );
 };
 const overviewCalls = () => get.mock.calls.map(c => String(c[0])).filter(u => u.startsWith('/v1/usage/overview'));
+const prCalls = () => get.mock.calls.map(c => String(c[0])).filter(u => u.startsWith('/v1/usage/prs'));
+const lastPrQuery = () => new URLSearchParams(prCalls().at(-1)!.split('?')[1] ?? '');
 const section = (name: RegExp) => screen.getByRole('region', { name });
 
 describe('UsagePage', () => {
@@ -147,7 +157,7 @@ describe('UsagePage', () => {
     renderAt('/usage');
     await screen.findByText('$10.50');
     const t = section(/by pr/i);
-    expect(within(t).getByText('acme/api#42')).toBeInTheDocument();
+    expect(await within(t).findByText('acme/api#42')).toBeInTheDocument();
     expect(within(t).getByText('Usage overview')).toBeInTheDocument();
     expect(within(t).getByText('$0.50')).toBeInTheDocument();
     expect(within(t).getByText('acme/web#7')).toBeInTheDocument();
@@ -155,14 +165,13 @@ describe('UsagePage', () => {
   });
 
   it('says what the hub cannot see rather than letting the totals look complete', async () => {
-    overview = { ...OVERVIEW, unmeasuredSteps: 2, incompleteSteps: 1, truncated: true, prsTruncated: true };
+    overview = { ...OVERVIEW, unmeasuredSteps: 2, incompleteSteps: 1, truncated: true };
     renderAt('/usage');
     await screen.findByText('$10.50');
     expect(screen.getByText(/current step is counted when it moves/i)).toBeInTheDocument();
     expect(screen.getByText(/2 step changes came from versions that did not report usage/i)).toBeInTheDocument();
     expect(screen.getByText(/1 step change.*logs could not be read in time/i)).toBeInTheDocument();
     expect(screen.getByText(/too many step changes.*newest/i)).toBeInTheDocument();
-    expect(screen.getByText(/only the newest .*PRs/i)).toBeInTheDocument();
   });
 
   it('without the price table, shows only reported cost and names the models it could not price', async () => {
@@ -229,11 +238,11 @@ describe('UsagePage', () => {
   });
 
   it('says there are no PRs in the window instead of showing an empty table', async () => {
-    overview = { ...OVERVIEW, byPr: [] };
+    prPage = prPageOf([]);
     renderAt('/usage');
     await screen.findByText('$10.50');
     const t = section(/by pr/i);
-    expect(within(t).getByText(/no pr was opened or updated in this window/i)).toBeInTheDocument();
+    expect(await within(t).findByText(/no pr was opened or updated in this window/i)).toBeInTheDocument();
     expect(within(t).queryByRole('table')).not.toBeInTheDocument();
   });
 
@@ -342,17 +351,15 @@ describe('UsagePage', () => {
         { user_key: 'bob@acme.com', cards: 1, total: pi, byModel: [pi] },
       ],
       byModel: [claude, pi],
-      byPr: [
-        { repo: 'acme/api', pr_number: 42, item_id: 's1', item_type: 'STORY', item_title: 'Usage overview', opened_at: '2026-11-19T10:00:00.000Z', closed_at: '2026-11-19T09:00:00.000Z',
-          usage: { byModel: [pi], total: pi, byStep: [], cards: 4 } },
-        { repo: 'acme/web', pr_number: 7, item_id: 's2', item_type: 'TASK', item_title: 'Still open', opened_at: '2026-11-18T10:00:00.000Z', closed_at: null, usage: null },
-      ],
       byDay: [
         { day: '2026-11-18', cards: 1, total: pi, byModel: [pi] },
         { day: '2026-11-19', cards: 2, total: claude, byModel: [claude] },
       ],
     };
-    beforeEach(() => { overview = SPLIT; });
+    beforeEach(() => {
+      overview = SPLIT;
+      prPage = prPageOf([{ ...PR_ROWS[0], usage: { byModel: [pi], total: pi, byStep: [], cards: 4 } }, PR_ROWS[1]]);
+    });
     const TYPES = ['Input', 'Cache read', 'Cache write', 'Output'];
     const cellsOf = (row: HTMLElement) => within(row).getAllByRole('cell').map(c => c.textContent);
     const headerIndex = (table: HTMLElement, name: string) =>
@@ -405,7 +412,8 @@ describe('UsagePage', () => {
     it('a PR row splits its card usage by type, and an open card shows no figures', async () => {
       renderAt('/usage');
       await screen.findByText('1.1M');
-      const t = within(section(/by pr/i)).getByRole('table');
+      const t = await within(section(/by pr/i)).findByRole('table');
+      await within(t).findByText('acme/api#42');
       expect(valueIn(t, 'acme/api#42', 'Input')).toBe('30k');
       expect(valueIn(t, 'acme/api#42', 'Cache read')).toBe('100k');
       expect(valueIn(t, 'acme/api#42', 'Output')).toBe('5k');
@@ -621,6 +629,193 @@ describe('UsagePage', () => {
       renderAt('/usage');
       await screen.findByText('$13.50');
       expect(screen.getByText(/usage on no card arrives as each installation's daily total/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('the By PR table, paged, filtered and sorted on the hub (GH-396)', () => {
+    const prTable = async () => {
+      const t = section(/by pr/i);
+      await within(t).findByText('acme/api#42');
+      return t;
+    };
+    const header = (t: HTMLElement, name: string) =>
+      within(within(t).getByRole('table')).getAllByRole('columnheader').find(h => h.textContent?.trim().startsWith(name))!;
+
+    it('asks the hub for one page, under the shared filters, newest PR first', async () => {
+      renderAt('/usage?projects=git%40x%3Aweb.git&itemTypes=TASK&childHubId=child-1');
+      await prTable();
+      const q = lastPrQuery();
+      expect(q.get('projects')).toBe('git@x:web.git');
+      expect(q.get('itemTypes')).toBe('TASK');
+      expect(q.get('childHubId')).toBe('child-1');
+      expect(q.get('from')).toBeTruthy();
+      expect([q.get('page'), q.get('pageSize'), q.get('sort'), q.get('dir')]).toEqual(['1', '25', 'opened', 'desc']);
+    });
+
+    it('shows the rows in the order the hub sent them, without sorting them again', async () => {
+      prPage = prPageOf([PR_ROWS[1], PR_ROWS[0]], { sort: 'tokens', dir: 'asc' });
+      renderAt('/usage');
+      const t = await prTable();
+      const rows = within(within(t).getByRole('table')).getAllByRole('row').slice(1);
+      expect(rows.map(r => (r.textContent?.includes('acme/web#7') ? 7 : 42))).toEqual([7, 42]);
+    });
+
+    it('pages with the controls under the table, saying where it is out of how many', async () => {
+      prPage = (url: string) => {
+        const page = Number(new URLSearchParams(url.split('?')[1]).get('page'));
+        return prPageOf(page === 2 ? [PR_ROWS[1]] : [PR_ROWS[0]], { total: 30, page });
+      };
+      renderAt('/usage');
+      const t = await prTable();
+      expect(within(t).getByText(/1–25 of 30 PRs/)).toBeInTheDocument();
+      expect(within(t).getByRole('button', { name: /previous page/i })).toBeDisabled();
+      fireEvent.click(within(t).getByRole('button', { name: /next page/i }));
+      expect(await within(t).findByText('acme/web#7')).toBeInTheDocument();
+      expect(lastPrQuery().get('page')).toBe('2');
+      expect(within(t).getByText(/26–30 of 30 PRs/)).toBeInTheDocument();
+      expect(within(t).getByRole('button', { name: /next page/i })).toBeDisabled();
+      fireEvent.click(within(t).getByRole('button', { name: /previous page/i }));
+      await waitFor(() => expect(lastPrQuery().get('page')).toBe('1'));
+    });
+
+    it('a filter changed and changed back leaves the table on page 1, not on the page it was on', async () => {
+      prPage = (url: string) => prPageOf(PR_ROWS, { total: 60, page: Number(new URLSearchParams(url.split('?')[1]).get('page')) });
+      renderAt('/usage');
+      const t = await prTable();
+      fireEvent.click(within(t).getByRole('button', { name: /next page/i }));
+      await waitFor(() => expect(lastPrQuery().get('page')).toBe('2'));
+      fireEvent.change(within(t).getByRole('combobox', { name: /status/i }), { target: { value: 'open' } });
+      await waitFor(() => expect([lastPrQuery().get('status'), lastPrQuery().get('page')]).toEqual(['open', '1']));
+      fireEvent.change(within(t).getByRole('combobox', { name: /status/i }), { target: { value: '' } });
+      await waitFor(() => expect(lastPrQuery().get('status')).toBeNull());
+      expect(lastPrQuery().get('page')).toBe('1');
+    });
+
+    it('while the next answer loads, the pager is off: it cannot page from the previous answer', async () => {
+      let release: () => void = () => {};
+      prPage = (url: string) => prPageOf(PR_ROWS, { total: 60, page: Number(new URLSearchParams(url.split('?')[1]).get('page')) });
+      renderAt('/usage');
+      const t = await prTable();
+      fireEvent.click(within(t).getByRole('button', { name: /next page/i }));
+      await waitFor(() => expect(within(t).getByText(/26–50 of 60 PRs/)).toBeInTheDocument());
+      const gate = new Promise<void>(r => { release = r; });
+      const answer = prPage;
+      prPage = null;
+      get.mockImplementation(async (url: string) => {
+        if (url.startsWith('/v1/usage/prs')) { await gate; return { data: answer(url) }; }
+        if (url.startsWith('/v1/usage/overview')) return { data: overview };
+        if (url.startsWith('/v1/people/names')) return { data: { names: {} } };
+        return { data: {} };
+      });
+      fireEvent.change(within(t).getByRole('combobox', { name: /status/i }), { target: { value: 'open' } });
+      await waitFor(() => expect(lastPrQuery().get('status')).toBe('open'));
+      expect(within(t).getByRole('button', { name: /next page/i })).toBeDisabled();
+      expect(within(t).getByRole('button', { name: /previous page/i })).toBeDisabled();
+      await act(async () => { release(); });
+      await waitFor(() => expect(within(t).getByRole('button', { name: /next page/i })).toBeEnabled());
+      expect(within(t).getByText(/1–25 of 60 PRs/)).toBeInTheDocument();
+    });
+
+    it('when the list shrinks under it, the pager pages from the page the hub served', async () => {
+      let total = 60;
+      prPage = (url: string) => {
+        const asked = Number(new URLSearchParams(url.split('?')[1]).get('page'));
+        return prPageOf(PR_ROWS, { total, page: Math.min(asked, Math.ceil(total / 25)) });
+      };
+      renderAt('/usage');
+      const t = await prTable();
+      fireEvent.click(within(t).getByRole('button', { name: /next page/i }));
+      await waitFor(() => expect(within(t).getByText(/26–50 of 60 PRs/)).toBeInTheDocument());
+      fireEvent.click(within(t).getByRole('button', { name: /next page/i }));
+      await waitFor(() => expect(within(t).getByText(/51–60 of 60 PRs/)).toBeInTheDocument());
+      // Cards closed meanwhile: the refetch of page 3 comes back as the last page, 2.
+      total = 30;
+      await act(async () => { window.dispatchEvent(new Event('visibilitychange')); });
+      await waitFor(() => expect(within(t).getByText(/26–30 of 30 PRs/)).toBeInTheDocument());
+      expect(lastPrQuery().get('page')).toBe('3');
+      expect(within(t).getByRole('button', { name: /next page/i })).toBeDisabled();
+      fireEvent.click(within(t).getByRole('button', { name: /previous page/i }));
+      await waitFor(() => expect(lastPrQuery().get('page')).toBe('1'));
+    });
+
+    it('every column sorts on the hub, the first click in the column\'s own direction, the second the other way, back to page 1', async () => {
+      prPage = (url: string) => prPageOf(PR_ROWS, { total: 60, page: Number(new URLSearchParams(url.split('?')[1]).get('page')) });
+      renderAt('/usage');
+      const t = await prTable();
+      fireEvent.click(within(t).getByRole('button', { name: /next page/i }));
+      await waitFor(() => expect(lastPrQuery().get('page')).toBe('2'));
+      const cases: Array<[string, string, string]> = [
+        ['PR', 'pr', 'asc'], ['Card', 'card', 'asc'], ['Created by', 'createdBy', 'asc'], ['Tokens', 'tokens', 'desc'],
+        ['Input', 'input', 'desc'], ['Cache read', 'cacheRead', 'desc'], ['Cache write', 'cacheWrite', 'desc'],
+        ['Output', 'output', 'desc'], ['Cost', 'cost', 'desc'],
+      ];
+      for (const [name, key, first] of cases) {
+        fireEvent.click(within(header(t, name)).getByRole('button'));
+        await waitFor(() => expect([lastPrQuery().get('sort'), lastPrQuery().get('dir')], name).toEqual([key, first]));
+        expect(lastPrQuery().get('page'), name).toBe('1');
+        expect(header(t, name)).toHaveAttribute('aria-sort', first === 'asc' ? 'ascending' : 'descending');
+      }
+      fireEvent.click(within(header(t, 'Cost')).getByRole('button'));
+      await waitFor(() => expect([lastPrQuery().get('sort'), lastPrQuery().get('dir')]).toEqual(['cost', 'asc']));
+    });
+
+    it('filters by repository (one or more), text and status, on the hub', async () => {
+      prPage = prPageOf(PR_ROWS, { repos: ['acme/api', 'acme/web', 'acme/docs'] });
+      renderAt('/usage');
+      const t = await prTable();
+      fireEvent.click(within(t).getByRole('button', { name: 'acme/web' }));
+      await waitFor(() => expect(lastPrQuery().get('repos')).toBe('acme/web'));
+      fireEvent.click(within(t).getByRole('button', { name: 'acme/docs' }));
+      await waitFor(() => expect(lastPrQuery().get('repos')?.split(',').sort()).toEqual(['acme/docs', 'acme/web']));
+      fireEvent.change(within(t).getByRole('searchbox', { name: /pr number or card title/i }), { target: { value: '42' } });
+      await waitFor(() => expect(lastPrQuery().get('q')).toBe('42'));
+      fireEvent.change(within(t).getByRole('combobox', { name: /status/i }), { target: { value: 'closed' } });
+      await waitFor(() => expect(lastPrQuery().get('status')).toBe('closed'));
+      fireEvent.change(within(t).getByRole('combobox', { name: /status/i }), { target: { value: 'open' } });
+      await waitFor(() => expect(lastPrQuery().get('status')).toBe('open'));
+      expect(within(t).getByRole('option', { name: /usage counted/i })).toBeInTheDocument();
+      expect(within(t).getByRole('option', { name: /not counted yet/i })).toBeInTheDocument();
+    });
+
+    it('a filter that matches nothing says so, and keeps the filters to undo it', async () => {
+      prPage = (url: string) => (new URLSearchParams(url.split('?')[1]).get('q') ? prPageOf([], { repos: ['acme/api'] }) : prPageOf(PR_ROWS));
+      renderAt('/usage');
+      const t = await prTable();
+      fireEvent.change(within(t).getByRole('searchbox', { name: /pr number or card title/i }), { target: { value: 'zzz' } });
+      expect(await within(t).findByText(/no pr matches these filters/i)).toBeInTheDocument();
+      expect(within(t).getByRole('searchbox', { name: /pr number or card title/i })).toHaveValue('zzz');
+    });
+
+    it('links a PR to its page on its host in a new tab, and shows plain text when there is no link', async () => {
+      renderAt('/usage');
+      const t = await prTable();
+      const link = within(t).getByRole('link', { name: /acme\/api#42/ });
+      expect(link).toHaveAttribute('href', 'https://github.com/acme/api/pull/42');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+      expect(within(t).getByText('acme/web#7').closest('a')).toBeNull();
+    });
+
+    it('shows who opened each PR, by name when the hub knows it, else the key as it is', async () => {
+      renderAt('/usage');
+      const t = await prTable();
+      expect(await within(t).findByText('Bob Builder')).toBeInTheDocument();
+      expect(within(t).getByText('bob@acme.com')).toBeInTheDocument();
+      expect(within(t).getByText('carol@acme.com')).toBeInTheDocument();
+    });
+
+    it('says next to Cost when some PRs sort by reported cost alone, having no stored estimate', async () => {
+      prPage = prPageOf(PR_ROWS, { sort: 'cost', costWithoutEstimate: 3 });
+      renderAt('/usage');
+      const t = await prTable();
+      expect(within(header(t, 'Cost')).getByText(/3 PRs/i)).toBeInTheDocument();
+      expect(within(t).getByText(/sort by reported cost/i)).toBeInTheDocument();
+    });
+
+    it('no such note when every PR\'s cost is stored', async () => {
+      renderAt('/usage');
+      const t = await prTable();
+      expect(within(t).queryByText(/sort by reported cost/i)).not.toBeInTheDocument();
     });
   });
 
