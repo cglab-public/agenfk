@@ -216,8 +216,8 @@ describe('canonicaliseEventTimes: the rows stored before GH-391', () => {
   });
 
   it('rebuilds the rollup days a rewrite moves rows out of and into, behind a newer rollup anchor', async () => {
-    // date() files 24:00 on the 19th; the stored form is the 20th. date() cannot
-    // read '+0530' at all, so that row was in no rollup.
+    // SQLite 3.53 files 24:00 on the 19th and 3.54 on the 20th; the stored form is
+    // the 20th either way. date() cannot read '+0530' at all, so that row was in no rollup.
     await insertRaw('midnight', '2026-11-19T24:00:00Z');
     await insertRaw('noncolon', '2026-11-19T23:30:00+0530');
     await insertRaw('anchor', '2026-11-25T10:00:00.000Z');
@@ -226,7 +226,8 @@ describe('canonicaliseEventTimes: the rows stored before GH-391', () => {
       (await ctx.db.all<{ day: string; events_count: number }>('SELECT day, events_count FROM rollups_daily ORDER BY day'))
         .map((r: any) => [r.day, Number(r.events_count)]),
     );
-    expect(await counts()).toEqual({ '2026-11-19': 1, '2026-11-25': 1 });
+    const midnightDay = (await ctx.db.get<{ day: string }>("SELECT date('2026-11-19T24:00:00Z') AS day"))!.day;
+    expect(await counts()).toEqual({ [midnightDay]: 1, '2026-11-25': 1 });
 
     const r = await canonicaliseEventTimes(ctx.db);
     expect(r).toMatchObject({ eventsRewritten: 2, daysRecomputed: 2 });
@@ -237,16 +238,19 @@ describe('canonicaliseEventTimes: the rows stored before GH-391', () => {
   });
 
   it('empties a rollup day the rewrite moved its only event out of', async () => {
-    await insertRaw('midnight', '2026-11-19T24:00:00Z');
+    await insertRaw('moved', '2026-11-19T10:00:00.000Z');
     await insertRaw('anchor', '2026-11-25T10:00:00.000Z');
     await recomputeRollups(ctx.db, { full: true });
-    expect((await ctx.db.all<{ day: string }>('SELECT day FROM rollups_daily ORDER BY day')).map((r: any) => r.day))
-      .toEqual(['2026-11-19', '2026-11-25']);
+    const days = async () => (await ctx.db.all<{ day: string }>('SELECT day FROM rollups_daily ORDER BY day')).map((r: any) => r.day);
+    expect(await days()).toEqual(['2026-11-19', '2026-11-25']);
+    // The state a page leaves between its rewrite and its rebuild: the event is off the 19th,
+    // whose bucket still counts it. No SQLite date() reading moves a row off a day on 3.54.
+    await ctx.db.run("DELETE FROM events WHERE event_id = 'moved'");
+    await ctx.db.run('INSERT INTO system_state (key, value) VALUES (?, ?)', [CANONICAL_EVENT_TIMES_PENDING_DAYS, JSON.stringify(['2026-11-19'])]);
 
     await canonicaliseEventTimes(ctx.db);
     // The recompute only upserts: without clearing the 19th, its stale bucket would stay forever.
-    expect((await ctx.db.all<{ day: string }>('SELECT day FROM rollups_daily ORDER BY day')).map((r: any) => r.day))
-      .toEqual(['2026-11-20', '2026-11-25']);
+    expect(await days()).toEqual(['2026-11-25']);
   });
 
   it('rebuilds the days a run cut short left pending, before anything else', async () => {
