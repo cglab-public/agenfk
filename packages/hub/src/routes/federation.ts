@@ -14,6 +14,7 @@ import { publicHubUrl } from '../util/publicUrl.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { MAX_CHILD_HUB_NAME_LEN, validChildHubName } from '../util/childHubRow.js';
 import { canonicalOccurredAt } from '../util/occurredAt.js';
+import { dropUsage, usageTrustedFrom } from '../services/unfixedUsage.js';
 
 // Hub federation, parent side (CGLAB-181). A child hub enrolls by redeeming an
 // admin-issued invite of kind 'child-hub', then heartbeats and polls for
@@ -427,6 +428,10 @@ export function federationRouter(ctx: HubServerContext): Router {
       const hidden = new Set(hiddenRows.map(r => r.user_key));
       const aliases = await loadAliasMap(ctx.db, orgId);
       const namesAllowed = await parentAllowsNames(ctx.db, orgId, childHubId);
+      const child = await ctx.db.get<{ hub_version: string | null }>(
+        'SELECT hub_version FROM child_hubs WHERE id = ? AND org_id = ?', [childHubId, orgId],
+      );
+      const keepUsage = usageTrustedFrom(child?.hub_version ?? null);
 
       let accepted = 0;
       let duplicates = 0;
@@ -475,6 +480,7 @@ export function federationRouter(ctx: HubServerContext): Router {
             if (derived) remoteUrl = sanitizeRemoteUrl(derived);
           }
 
+          if (!keepUsage) dropUsage(e);
           const result = await ctx.db.run(
             `INSERT OR IGNORE INTO events
              (event_id, org_id, installation_id, user_key, occurred_at, received_at, type,

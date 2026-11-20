@@ -124,12 +124,15 @@ export interface TokenEvent {
   /** Which file was at sourcePath (device:inode): a replaced file's offsets are a new file's. */
   sourceFile?: string;
   sourceOffset: number;       // byte/line offset within the file (dedup key)
+  /** GH-398: the Claude Code subagent whose transcript holds the turn; absent for the session's own. */
+  agentId?: string;
 }
 
 export interface TokenEventQuery {
   /** A card's turns; `null` for the turns on no card (GH-394); left out, any. */
   itemId?: string | null;
   projectId?: string;
+  sessionId?: string;
   since?: string;
   until?: string;
   client?: TokenClient;
@@ -410,6 +413,20 @@ export interface SessionCardRow {
   client: string;
   sessionId: string;
   itemId: string | null;
+  projectId?: string | null;
+  at: string;
+}
+
+/**
+ * GH-398: a transcript named a card through its own agenfk call (gatekeeper or
+ * verify). A Claude Code subagent shares its parent's session id, so claims
+ * are kept per transcript: agentId is the subagent's, '' for the parent's.
+ */
+export interface TranscriptClaimRow {
+  client: string;
+  sessionId: string;
+  agentId: string;
+  itemId: string;
   projectId?: string | null;
   at: string;
 }

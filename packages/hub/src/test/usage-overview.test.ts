@@ -14,6 +14,7 @@ import { openSqliteDb } from '../db/sqlite';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
+import { USAGE_FIXED_VERSION } from '../services/unfixedUsage';
 import type { HubDb } from '../db/types';
 
 const SECRET = 'a'.repeat(64);
@@ -57,7 +58,7 @@ describe('GET /v1/usage/overview', () => {
   let cookie: string;
   let token: string;
   const post = async (events: any[]) => {
-    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events });
     expect(r.status).toBe(200);
   };
   // A row stored before ingest refused unparseable times (GH-391): ingest now

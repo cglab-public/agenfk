@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { SEMVER_TAG_RE } from '../util/semver.js';
+import { dropUsage, usageTrustedFrom } from '../services/unfixedUsage.js';
 import { forwardEvents } from '../services/federation/forwarding.js';
 import { recomputeBackdatedDays, utcDayOf } from '../rollup.js';
 import { HubServerContext } from '../server.js';
@@ -210,6 +211,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
     const installationFromHeader = (req.headers['x-installation-id'] as string | undefined) ?? null;
     const headerVerRaw = (req.headers['x-agenfk-version'] as string | undefined) ?? null;
     const agenfkVersion = headerVerRaw && SEMVER_TAG_RE.test(headerVerRaw) ? headerVerRaw : null;
+    const keepUsage = usageTrustedFrom(agenfkVersion);
     const body = req.body;
     const events: any[] = Array.isArray(body?.events) ? body.events : [];
     if (events.length === 0) {
@@ -401,6 +403,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
           ?? (e.payload && typeof (e.payload as any).title === 'string' ? (e.payload as any).title : null);
         const externalId = (e as any).externalId
           ?? (e.payload && typeof (e.payload as any).externalId === 'string' ? (e.payload as any).externalId : null);
+        if (!keepUsage) dropUsage(e);
         const result = await ctx.db.run(INSERT_EVENT_SQL, [
           e.eventId, e.orgId, e.installationId, userKey, e.occurredAt, now,
           e.type, e.projectId ?? null, e.itemId ?? null, itemType, remoteUrl, itemTitle, externalId,

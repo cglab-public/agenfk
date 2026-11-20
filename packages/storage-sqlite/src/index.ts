@@ -15,6 +15,7 @@ import {
   TokenEventQuery,
   IngestionState,
   SessionCardRow,
+  TranscriptClaimRow,
   AppSettings,
   DEFAULT_APP_SETTINGS,
   isLegalSettingValue,
@@ -455,6 +456,23 @@ export class SQLiteStorageProvider implements StorageProvider {
         at_ms INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_session_cards_lookup ON session_cards(client, session_id, at_ms);
+      CREATE TABLE IF NOT EXISTS transcript_claims (
+        client TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        project_id TEXT,
+        at TEXT NOT NULL,
+        at_ms INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_transcript_claims_key
+        ON transcript_claims(client, session_id, agent_id, at_ms, item_id);
+      CREATE INDEX IF NOT EXISTS idx_transcript_claims_item ON transcript_claims(item_id);
+      CREATE TABLE IF NOT EXISTS card_closes (
+        item_id TEXT NOT NULL,
+        at_ms INTEGER NOT NULL,
+        PRIMARY KEY (item_id, at_ms)
+      );
       CREATE TABLE IF NOT EXISTS ingestion_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -1213,6 +1231,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     else if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
     if (query.projectId !== undefined) { where.push('project_id = ?'); params.push(query.projectId); }
     if (query.client !== undefined) { where.push('client = ?'); params.push(query.client); }
+    if (query.sessionId !== undefined) { where.push('session_id = ?'); params.push(query.sessionId); }
     if (query.since !== undefined) { where.push('ts >= ?'); params.push(query.since); }
     if (query.until !== undefined) { where.push('ts < ?'); params.push(query.until); }
     let sql =
@@ -1650,12 +1669,63 @@ export class SQLiteStorageProvider implements StorageProvider {
                           WHERE t.client = s.client AND t.session_id = s.session_id
                           ORDER BY t.at_ms DESC, t.rowid DESC LIMIT 1)`
     ).run(at, atMs, itemId);
+    await this.recordCardClose(itemId, at);
   }
 
   async sessionsForItem(itemId: string): Promise<Array<{ client: string; sessionId: string }>> {
     return (this.database.prepare(
-      'SELECT DISTINCT client, session_id FROM session_cards WHERE item_id = ?'
-    ).all(itemId) as Array<{ client: string; session_id: string }>).map((r) => ({ client: r.client, sessionId: r.session_id }));
+      `SELECT DISTINCT client, session_id FROM session_cards WHERE item_id = ?
+       UNION
+       SELECT DISTINCT client, session_id FROM transcript_claims WHERE item_id = ?`
+    ).all(itemId, itemId) as Array<{ client: string; session_id: string }>).map((r) => ({ client: r.client, sessionId: r.session_id }));
+  }
+
+  async recordTranscriptClaim(row: TranscriptClaimRow): Promise<void> {
+    const atMs = Date.parse(row.at);
+    if (!Number.isFinite(atMs)) throw new Error(`recordTranscriptClaim: unparseable time ${row.at}`);
+    this.database.prepare(
+      `INSERT OR IGNORE INTO transcript_claims (client, session_id, agent_id, item_id, project_id, at, at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(row.client, row.sessionId, row.agentId, row.itemId, row.projectId ?? null, row.at, atMs);
+  }
+
+  async transcriptCardAt(client: string, sessionId: string, agentId: string, ts: string): Promise<{ itemId: string | null; projectId?: string } | null> {
+    const tMs = Date.parse(ts);
+    if (!Number.isFinite(tMs)) return null;
+    const row = this.database.prepare(
+      `SELECT c.item_id, c.project_id,
+              EXISTS (SELECT 1 FROM card_closes x WHERE x.item_id = c.item_id AND x.at_ms >= c.at_ms AND x.at_ms <= ?) AS closed
+         FROM transcript_claims c
+        WHERE c.client = ? AND c.session_id = ? AND c.agent_id = ? AND c.at_ms <= ?
+        ORDER BY c.at_ms DESC, c.rowid DESC LIMIT 1`
+    ).get(tMs, client, sessionId, agentId, tMs) as { item_id: string; project_id: string | null; closed: number } | undefined;
+    if (!row) return null;
+    return { itemId: row.closed ? null : row.item_id, ...(row.project_id ? { projectId: row.project_id } : {}) };
+  }
+
+  async recordCardClose(itemId: string, at: string): Promise<void> {
+    const atMs = Date.parse(at);
+    if (!Number.isFinite(atMs)) throw new Error(`recordCardClose: unparseable time ${at}`);
+    this.database.prepare('INSERT OR IGNORE INTO card_closes (item_id, at_ms) VALUES (?, ?)').run(itemId, atMs);
+  }
+
+  async setTokenEventItem(id: string, itemId: string | null, projectId?: string | null): Promise<void> {
+    if (projectId === undefined) {
+      this.database.prepare('UPDATE token_events SET item_id = ? WHERE id = ?').run(itemId, id);
+    } else {
+      this.database.prepare('UPDATE token_events SET item_id = ?, project_id = ? WHERE id = ?').run(itemId, projectId, id);
+    }
+  }
+
+  async getIngestionMeta(key: string): Promise<string | null> {
+    const row = this.database.prepare('SELECT value FROM ingestion_meta WHERE key = ?').get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  async setIngestionMeta(key: string, value: string): Promise<void> {
+    this.database.prepare(
+      'INSERT INTO ingestion_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    ).run(key, value);
   }
 
   async ensureIngestionEpoch(now: string): Promise<string> {

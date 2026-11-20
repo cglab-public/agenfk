@@ -11,6 +11,7 @@ import { openSqliteDb } from '../db/sqlite';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
+import { USAGE_FIXED_VERSION } from '../services/unfixedUsage';
 import type { HubDb } from '../db/types';
 
 const SECRET = 'a'.repeat(64);
@@ -40,7 +41,7 @@ describe('usage on hub events', () => {
   let db: HubDb;
   let cookie: string;
   let token: string;
-  const post = (events: any[]) => supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+  const post = (events: any[]) => supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events });
   const get = (p: string) => supertest(app).get(p).set('Cookie', cookie);
 
   beforeEach(async () => {

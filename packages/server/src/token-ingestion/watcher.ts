@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { Project, TokenEvent, IngestionState, StorageProvider } from '@agenfk/core';
 import { findActiveItemAt } from './attribution';
+import type { TranscriptClaim } from './parsers/claude-code';
 
 /**
  * What a parser may carry from one pass to the next. The watcher saves
@@ -12,6 +13,8 @@ import { findActiveItemAt } from './attribution';
  */
 export interface ParserContext {
   state?: unknown;
+  /** GH-398: where a parser that reads transcript claims reports them. */
+  claims?: TranscriptClaim[];
 }
 
 /**
@@ -30,6 +33,8 @@ export type SessionLogParser = (
 
 export interface ProcessFileResult {
   events: TokenEvent[];
+  /** GH-398: the cards the transcript named in this slice (Claude Code only). */
+  claims: TranscriptClaim[];
   nextState: IngestionState;
 }
 
@@ -76,12 +81,13 @@ function processBytes(
   const end = Math.max(plan.start, parsedTo);
   const from = plan.parseFrom - bufStart;
   const text = parsedTo > plan.parseFrom ? buf.subarray(from, parsedTo - bufStart).toString('utf8') : '';
-  const ctx: ParserContext = { state: plan.state };
+  const ctx: ParserContext = { state: plan.state, claims: [] };
   const events = text
     ? parser(text, sourcePath, plan.parseFrom, ctx).filter((ev) => ev.sourceOffset >= plan.start)
     : [];
   return {
     events,
+    claims: ctx.claims ?? [],
     parsedTo,
     nextState: {
       sourcePath,
@@ -107,8 +113,8 @@ export function processFile(
   parser: SessionLogParser,
 ): ProcessFileResult {
   const buf = Buffer.from(currentContents, 'utf8');
-  const { events, nextState } = processBytes(sourcePath, buf, 0, planPass(priorState, buf.length), parser);
-  return { events, nextState };
+  const { events, claims, nextState } = processBytes(sourcePath, buf, 0, planPass(priorState, buf.length), parser);
+  return { events, claims, nextState };
 }
 
 // ── Runtime poller (wraps processFile + storage) ─────────────────────────────
@@ -125,6 +131,12 @@ export interface IngestionSource {
   matches: (relativePath: string) => boolean;
   /** Per-client parser. */
   parser: SessionLogParser;
+  /**
+   * GH-398: whether the turns of the file at this path are charged by the
+   * transcript's own claims rather than the session journal (a Claude Code
+   * session with subagents, whose journal rows all carry the parent's id).
+   */
+  ownClaims?: (absPath: string) => Promise<boolean>;
 }
 
 export interface IngestionPollerOptions {
@@ -246,7 +258,7 @@ async function* ingestFile(
       // Rebuilding context ahead of the old offset: nothing there is new, and a
       // state saved now would claim context the parser has not reached yet.
       if (result.parsedTo >= plan.start) {
-        yield { events: result.events, nextState: { ...result.nextState, fileId } };
+        yield { events: result.events, claims: result.claims, nextState: { ...result.nextState, fileId } };
       }
       plan = { start: plan.start, parseFrom: result.parsedTo, state: next ?? undefined };
       if (atEnd) return;
@@ -263,11 +275,15 @@ async function* ingestFile(
 export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> {
   let written = 0;
   const epochMs = opts.epoch ? Date.parse(opts.epoch) : null;
+  const cards = new CardRefs(opts.storage);
   for (const source of opts.sources) {
     const files = await listSourceFiles(source.rootDir, source.matches);
     for (const abs of files) {
       if (opts.fileFilter && !opts.fileFilter(source.client, abs, path.relative(source.rootDir, abs))) continue;
+      let ownClaims: boolean | undefined;
       for await (const result of ingestFile(abs, source.parser, opts.storage, Number.isFinite(epochMs) ? epochMs : null, opts.chunkBytes ?? DEFAULT_CHUNK_BYTES)) {
+      await recordClaims(opts.storage, source.client, result.claims, cards);
+      if (opts.attributeEvents && ownClaims === undefined) ownClaims = source.ownClaims ? await source.ownClaims(abs) : false;
       // Tag every event with the source's client name (parsers may not know it).
       for (const ev of result.events) {
         // A session running across the epoch: its earlier turns predate the
@@ -278,7 +294,7 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
         if (epochMs !== null && Number.isFinite(epochMs) && Date.parse(ev.ts) < epochMs) continue;
         ev.client = source.client as any;
         if (result.nextState.fileId) ev.sourceFile = result.nextState.fileId;
-        if (opts.attributeEvents) await attributeTokenEvent(opts.storage, ev);
+        if (opts.attributeEvents) await attributeTokenEvent(opts.storage, ev, { ownClaims });
         try {
           await opts.storage.insertTokenEvent(ev);
           written++;
@@ -299,6 +315,74 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
 }
 
 /**
+ * GH-398: the cards a transcript may name by a short id, resolved against the
+ * store once per pass. A reference that matches no card, or several, is no
+ * claim: a guess would charge a transcript to a card it never worked on.
+ */
+export class CardRefs {
+  private items: Promise<Array<{ id: string; projectId: string }>> | null = null;
+  private resolved = new Map<string, Promise<{ id: string; projectId: string } | null>>();
+
+  constructor(private storage: StorageProvider) {}
+
+  resolve(ref: string): Promise<{ id: string; projectId: string } | null> {
+    const key = ref.toLowerCase();
+    let found = this.resolved.get(key);
+    if (!found) {
+      found = this.lookUp(key);
+      this.resolved.set(key, found);
+    }
+    return found;
+  }
+
+  private async lookUp(ref: string): Promise<{ id: string; projectId: string } | null> {
+    if (ref.length === 36) {
+      const item: any = await this.storage.getItem(ref);
+      return item ? { id: item.id, projectId: item.projectId } : null;
+    }
+    this.items ??= this.storage.listItems().then((all) => all.map((i: any) => ({ id: String(i.id), projectId: String(i.projectId) })));
+    const matches = (await this.items).filter((i) => i.id.toLowerCase().startsWith(ref));
+    return matches.length === 1 ? matches[0] : null;
+  }
+}
+
+/**
+ * GH-398: store the claims a pass read, each against the card its reference
+ * names. A claim takes effect just after its call: the turn that made the call
+ * was spent on the previous card, and is charged there whether the reply was
+ * read in the same pass or a later one.
+ */
+export async function recordClaims(storage: StorageProvider, client: string, claims: TranscriptClaim[], cards: CardRefs): Promise<number> {
+  let recorded = 0;
+  for (const claim of claims) {
+    const tsMs = Date.parse(claim.at);
+    if (!claim.sessionId || !Number.isFinite(tsMs)) continue;
+    const card = await cards.resolve(claim.itemRef);
+    if (!card) continue;
+    await storage.recordTranscriptClaim({
+      client, sessionId: claim.sessionId, agentId: claim.agentId, itemId: card.id, projectId: card.projectId,
+      at: new Date(tsMs + 1).toISOString(),
+    });
+    recorded++;
+  }
+  return recorded;
+}
+
+/**
+ * GH-398: the card a turn's own transcript was on. A subagent's own latest
+ * claim wins (a close after it means no card); without one, the subagent is
+ * helping its parent and inherits the parent's card at the time. The parent
+ * goes by its own claims only.
+ */
+async function transcriptCard(storage: StorageProvider, ev: TokenEvent): Promise<{ itemId: string | null; projectId?: string } | null> {
+  if (ev.agentId) {
+    const own = await storage.transcriptCardAt(ev.client, ev.sessionId, ev.agentId, ev.ts);
+    if (own) return own;
+  }
+  return storage.transcriptCardAt(ev.client, ev.sessionId, '', ev.ts);
+}
+
+/**
  * Charge a turn to a project and, when it can be known, a card (GH-389).
  *
  * A turn with a session id goes to the card the session-to-card journal says
@@ -308,13 +392,19 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
  * in the project activated most recently - charged one agent's turns to
  * another's card whenever two worked in one project, so it is kept only for a
  * turn with no session id at all.
+ *
+ * GH-398: a subagent's turn, and every turn of a transcript whose session has
+ * subagents (`ownClaims`), goes by the transcript's own claims instead: the
+ * journal is keyed by session, and a subagent's calls carry its parent's.
  */
-export async function attributeTokenEvent(storage: StorageProvider, ev: TokenEvent): Promise<void> {
+export async function attributeTokenEvent(storage: StorageProvider, ev: TokenEvent, opts: { ownClaims?: boolean } = {}): Promise<void> {
   const project = await findProjectForCwd(storage, ev.cwd);
   if (project) ev.projectId = project.id;
 
   if (ev.sessionId) {
-    const row = await storage.sessionCardAt(ev.client, ev.sessionId, ev.ts);
+    const row = ev.agentId || opts.ownClaims
+      ? await transcriptCard(storage, ev)
+      : await storage.sessionCardAt(ev.client, ev.sessionId, ev.ts);
     if (row?.itemId) {
       ev.itemId = row.itemId;
       if (row.projectId) ev.projectId = row.projectId;

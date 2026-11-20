@@ -1,7 +1,8 @@
 import * as path from 'path';
 import type { StorageProvider } from '@agenfk/core';
 import { ingestOnce, type IngestionSource } from './watcher';
-import { parseClaudeCodeJsonl } from './parsers/claude-code';
+import { parseClaudeCodeJsonl, hasSubagents } from './parsers/claude-code';
+import { reattributeSubagentUsage } from './reattribute';
 import { parseCodexJsonl } from './parsers/codex';
 import { parsePiJsonl } from './parsers/pi';
 
@@ -10,7 +11,8 @@ const jsonl = (rel: string) => rel.endsWith('.jsonl');
 /**
  * Where each harness keeps its session logs (GH-389). Claude Code's folder
  * also holds `<session>/subagents/agent-*.jsonl`, whose records carry the
- * parent's session id, so a subagent's usage goes to the parent's card.
+ * parent's session id and their own agentId. A session with that folder is
+ * charged by each transcript's own claims (GH-398).
  */
 export function defaultIngestionSources(
   home: string,
@@ -19,7 +21,7 @@ export function defaultIngestionSources(
   const claudeDir = env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, '.claude');
   const codexDir = env.CODEX_HOME?.trim() || path.join(home, '.codex');
   return [
-    { client: 'claude-code', rootDir: path.join(claudeDir, 'projects'), matches: jsonl, parser: parseClaudeCodeJsonl },
+    { client: 'claude-code', rootDir: path.join(claudeDir, 'projects'), matches: jsonl, parser: parseClaudeCodeJsonl, ownClaims: hasSubagents },
     { client: 'codex', rootDir: path.join(codexDir, 'sessions'), matches: jsonl, parser: parseCodexJsonl },
     { client: 'pi', rootDir: path.join(home, '.pi', 'agent', 'sessions'), matches: jsonl, parser: parsePiJsonl },
   ];
@@ -72,6 +74,9 @@ export function createUsageIngestion(opts: {
     chain = run.catch(() => undefined);
     return run;
   };
+
+  serial(() => reattributeSubagentUsage(opts.storage))
+    .catch((e: Error) => console.error('[USAGE] GH-398 re-attribution failed:', e.message));
 
   const pass = (fileFilter?: (client: string, abs: string, rel: string) => boolean) =>
     serial(async () => ingestOnce({

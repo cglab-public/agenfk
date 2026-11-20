@@ -4,6 +4,20 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+**Fixes** (#398)
+
+- **Each subagent's usage goes to its own card.** A Claude Code subagent runs with its parent's session id, so
+  parallel subagents of one session charged their usage to each other's cards, and to the parent's. In a session
+  with subagents, each transcript is now charged by its own gatekeeper and verify calls. A subagent that has named
+  no card counts toward its parent's card. The parent counts toward its own card only. A session without subagents
+  is charged as before.
+- **Stored usage is charged again once.** On upgrade, the server charges the stored turns of sessions with subagents
+  again by the new rule, and recomputes the step and close usage of each card that changed. A turn whose session
+  log is gone goes to no card, and it still counts for its project. The server log says what moved.
+- **The hub drops usage from versions before this fix.** The hub keeps the events, but it drops the usage that
+  versions older than 2.1.0-beta.21 send, and the usage from child hubs on those versions. On upgrade, it clears the
+  usage that it already stored from them, on SQLite and on Postgres.
+
 ## [2.1.0-beta.20] — 2026-11-20
 
 **Features** (#393)

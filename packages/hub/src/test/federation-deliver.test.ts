@@ -15,6 +15,7 @@ import { issueApiKey } from '../auth/apiKey';
 import { recomputeRollups } from '../rollup';
 import { drainApp } from './helpers/drainApp';
 import { redactIdentity } from '../services/federation/forwarding';
+import { USAGE_FIXED_VERSION } from '../services/unfixedUsage';
 
 const DB = path.join(os.tmpdir(), `agenfk-hub-deliver-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -37,9 +38,9 @@ const row = (id: string, childHubId: string, over: Record<string, unknown> = {})
 describe('POST /v1/federation/deliver', () => {
   let app: any; let ctx: any; let adminCookie: string;
 
-  async function enroll(name: string) {
+  async function enroll(name: string, hubVersion?: string) {
     const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', adminCookie).send({});
-    const r = await supertest(app).post('/v1/federation/enroll').send({ inviteToken: inv.body.inviteToken, childHub: { name } });
+    const r = await supertest(app).post('/v1/federation/enroll').send({ inviteToken: inv.body.inviteToken, childHub: { name, ...(hubVersion ? { hubVersion } : {}) } });
     expect(r.status).toBe(200);
     return r.body as { token: string; childHubId: string };
   }
@@ -145,7 +146,7 @@ describe('POST /v1/federation/deliver', () => {
   });
 
   it("counts the card usage of a child that codes the person and the installation on the parent's usage overview (GH-395)", async () => {
-    const a = await enroll('alpha');
+    const a = await enroll('alpha', USAGE_FIXED_VERSION);
     const nums = { turns: 2, input: 100, cacheRead: 5000, cacheWrite: 300, output: 40, reasoning: 0, costUsd: 0, unpricedTurns: 2 };
     const model = { client: 'claude-code', model: 'claude-opus-5-5', ...nums };
     const event = redactIdentity({

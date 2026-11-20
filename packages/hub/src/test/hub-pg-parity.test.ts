@@ -13,6 +13,7 @@ import { recomputeRollups } from '../rollup';
 import { raceBehindGuard } from './helpers/raceBehindGuard';
 import { ACTIVE_ADMINS_SQL } from '../routes/admin';
 import type { HubDb } from '../db/types';
+import { USAGE_FIXED_VERSION } from '../services/unfixedUsage';
 
 /**
  * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
@@ -1245,7 +1246,7 @@ describe('PG parity: card usage (GH-389)', () => {
       actor: { osUser: 'alice', gitName: 'A', gitEmail: 'alice@acme.com' }, projectId: 'p1',
       payload: { toStatus: 'DONE', usage: { byModel: [], total: total(input), byStep: [], cards: 1 } },
     });
-    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
       closed('u1', 'c1', '2026-11-19T10:00:00.000Z', 1),
       closed('u2', 'c1', '2026-11-19T12:00:00.000Z', 2),
       closed('u3', 'c2', '2026-11-19T11:00:00.000Z', 3),
@@ -1268,7 +1269,7 @@ describe('PG parity: card usage (GH-389)', () => {
       eventId, installationId: inst, orgId: 'org', occurredAt: at, type, itemId, itemType: 'STORY', itemTitle: `S-${itemId}`,
       actor: { osUser: who, gitName: who, gitEmail: `${who}@acme.com` }, projectId: 'p1', payload,
     });
-    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
       base('o1', 'step.transitioned', 'c1', '2026-11-19T10:00:00.000Z', { toStatus: 'REVIEW', usage: usage(2) }),
       base('o2', 'step.transitioned', 'c2', '2026-11-19T11:00:00.000Z', { toStatus: 'REVIEW', usage: usage(30) }, 'bob', 'inst-2'),
       base('o3', 'item.closed', 'c1', '2026-11-19T12:00:00.000Z', { toStatus: 'DONE', usage: { ...usage(5), byStep: [], cards: 1, own: usage(5) } }),
@@ -1304,7 +1305,7 @@ describe('PG parity: usage on no card (GH-394)', () => {
       payload: { day, asOf, usage: usage(input) },
     });
     const send = async (events: unknown[]) => {
-      const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events });
+      const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events });
       expect(r.status).toBe(200);
     };
     await send([
@@ -1342,7 +1343,7 @@ describe('PG parity: canonical occurredAt (GH-391)', () => {
       eventId, installationId: 'inst-1', orgId: 'org', occurredAt, type: 'item.created', itemId: eventId,
       actor: { osUser: 'alice', gitName: 'Alice', gitEmail: 'alice@acme.com' }, projectId: 'p1', payload: {},
     });
-    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
       base('a-offset', '2026-11-19T09:30:00-03:00'),
       base('b-ten', '2026-11-19T10:00:00Z'),
       base('c-eleven', '2026-11-19T11:00:00.000Z'),
@@ -1363,7 +1364,7 @@ describe('PG parity: canonical occurredAt (GH-391)', () => {
 
   it('the boot migration leaves a Postgres hub alone: its column already holds instants', async () => {
     const { canonicaliseEventTimes } = await import('../services/canonicaliseEventTimes');
-    await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+    await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
       { eventId: 'p1e', installationId: 'inst-1', orgId: 'org', occurredAt: '2026-11-19T10:00:00.000Z', type: 'item.created',
         actor: { osUser: 'alice', gitName: 'Alice', gitEmail: 'alice@acme.com' }, payload: {} },
     ] });
