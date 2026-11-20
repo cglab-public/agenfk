@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import type { StorageProvider, StepUsage, TokenEvent } from '@agenfk/core';
 import { aggregateUsage, computeCardUsage } from '../usage/stepUsage';
@@ -13,26 +14,77 @@ export const parentLogOf = (p: string) => (isSubagentLog(p) ? `${path.dirname(pa
 /** The subagent whose transcript is at this path, '' for the session's own. */
 export const agentIdOf = (p: string) => (isSubagentLog(p) ? path.basename(p, '.jsonl').replace(/^agent-/, '') : '');
 
+/** The log of a subagent of the same session, beside `subagentLog`; '' for the session's own. */
+export const siblingLogOf = (subagentLog: string, agentId: string) =>
+  (agentId ? path.join(path.dirname(subagentLog), `agent-${agentId}.jsonl`) : parentLogOf(subagentLog));
+
+const spawners = new Map<string, string>();
+const SPAWNER_CACHE_MAX = 10_000;
+
+/**
+ * GH-400: the subagent that spawned the subagent whose log is `subagentLog`,
+ * '' when the session itself did (or it cannot be told). The harness records it
+ * as `parentAgentId` in `agent-<id>.meta.json` beside the log, written at
+ * spawn and never changed, so an answer read once is kept.
+ */
+export async function spawnerOf(subagentLog: string): Promise<string> {
+  if (!isSubagentLog(subagentLog)) return '';
+  const metaPath = subagentLog.replace(/\.jsonl$/, '.meta.json');
+  const known = spawners.get(metaPath);
+  if (known !== undefined) return known;
+  let spawner = '';
+  try {
+    const meta = JSON.parse(await fs.promises.readFile(metaPath, 'utf8'));
+    if (typeof meta?.parentAgentId === 'string' && /^[\w-]{1,64}$/.test(meta.parentAgentId)) spawner = meta.parentAgentId;
+  } catch {
+    return ''; // Not there (yet) or unreadable: not cached, so a later read can still find it.
+  }
+  if (spawners.size >= SPAWNER_CACHE_MAX) spawners.clear();
+  spawners.set(metaPath, spawner);
+  return spawner;
+}
+
+/** GH-400: the subagents above this one, nearest first, up to the session (loops cut). */
+export async function spawnChainOf(subagentLog: string): Promise<string[]> {
+  const chain: string[] = [];
+  const seen = new Set([agentIdOf(subagentLog)]);
+  for (let log = subagentLog, id = await spawnerOf(log); id && !seen.has(id); id = await spawnerOf(log)) {
+    seen.add(id);
+    chain.push(id);
+    log = siblingLogOf(subagentLog, id);
+  }
+  return chain;
+}
+
 /**
  * GH-398: the card a turn's own transcript was on, in a session with subagents.
  *
  * A subagent goes by its own latest claim (a close after it means no card).
  * Before its first claim it was already working towards that card, so it is
  * charged there from its first turn. Only a subagent that never claims one (a
- * reviewer, an explorer) helps its parent and inherits the parent's card at
- * the time (`inherited`). The parent goes by its own claims, and a claim of
- * its subagents on the same card ends its own: it handed the card over.
+ * reviewer, an explorer) helps the agent that spawned it and inherits that
+ * agent's card at the time (`inherited`; `from` is whose transcript decided,
+ * '' for the session's own): GH-400, a helper spawned by a subagent goes by
+ * that subagent, up the spawn chain, then the session. The parent goes by its
+ * own claims, and a claim of its subagents on the same card ends its own: it
+ * handed the card over.
+ *
+ * `sourcePath` (the turn's log) is where the spawn chain is read from; without
+ * it a subagent with no claim inherits the session's card.
  */
 export async function transcriptCardOf(
-  storage: StorageProvider, client: string, sessionId: string, agentId: string, ts: string,
-): Promise<{ card: TranscriptCard | null; inherited: boolean }> {
-  if (agentId) {
-    const own = await storage.transcriptCardAt(client, sessionId, agentId, ts);
-    if (own) return { card: own, inherited: false };
-    const first = await storage.firstTranscriptClaim(client, sessionId, agentId);
-    if (first) return { card: { itemId: first.itemId, ...(first.projectId ? { projectId: first.projectId } : {}) }, inherited: false };
+  storage: StorageProvider, client: string, sessionId: string, agentId: string, ts: string, sourcePath?: string,
+): Promise<{ card: TranscriptCard | null; inherited: boolean; from: string }> {
+  const chain = agentId ? [agentId, ...(sourcePath && isSubagentLog(sourcePath) ? await spawnChainOf(sourcePath) : [])] : [];
+  for (const id of chain) {
+    const own = await storage.transcriptCardAt(client, sessionId, id, ts);
+    if (own) return { card: own, inherited: id !== agentId, from: id };
+    const first = await storage.firstTranscriptClaim(client, sessionId, id);
+    if (first) {
+      return { card: { itemId: first.itemId, ...(first.projectId ? { projectId: first.projectId } : {}) }, inherited: id !== agentId, from: id };
+    }
   }
-  return { card: await storage.transcriptCardAt(client, sessionId, '', ts), inherited: !!agentId };
+  return { card: await storage.transcriptCardAt(client, sessionId, '', ts), inherited: !!agentId, from: '' };
 }
 
 /** Charges a stored turn to `card` if it is on another; returns whether it moved. */
@@ -85,9 +137,12 @@ export async function rechargeAfterClaims(
     const events = await storage.queryTokenEvents({ client, sessionId, ...(firstClaimers.size ? {} : { since }) });
     for (const ev of events) {
       const agentId = agentIdOf(ev.sourcePath);
-      const affected = ev.ts >= since ? (agentId !== '' || handOver) : firstClaimers.has(agentId);
+      // Before the claims: a first claimer's turns, and those of the helpers it spawned (GH-400).
+      const affected = ev.ts >= since
+        ? (agentId !== '' || handOver)
+        : agentId !== '' && (firstClaimers.has(agentId) || (await spawnChainOf(ev.sourcePath)).some((a) => firstClaimers.has(a)));
       if (!affected) continue;
-      const { card } = await transcriptCardOf(storage, client, sessionId, agentId, ev.ts);
+      const { card } = await transcriptCardOf(storage, client, sessionId, agentId, ev.ts, ev.sourcePath);
       if (await chargeStoredTurn(storage, ev, card, touched)) moved++;
     }
   }

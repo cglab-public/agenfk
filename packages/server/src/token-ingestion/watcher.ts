@@ -424,7 +424,7 @@ export async function attributeTokenEvent(storage: StorageProvider, ev: TokenEve
 
   if (ev.sessionId) {
     const row = ev.agentId || opts.ownClaims
-      ? (await transcriptCardOf(storage, ev.client, ev.sessionId, ev.agentId ?? '', ev.ts)).card
+      ? (await transcriptCardOf(storage, ev.client, ev.sessionId, ev.agentId ?? '', ev.ts, ev.sourcePath)).card
       : await storage.sessionCardAt(ev.client, ev.sessionId, ev.ts);
     if (row?.itemId) {
       ev.itemId = row.itemId;

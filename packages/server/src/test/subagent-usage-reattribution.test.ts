@@ -19,10 +19,14 @@ import * as os from 'os';
 import * as path from 'path';
 import type { TokenEvent } from '@agenfk/core';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
-import { reattributeSubagentUsage, REATTRIBUTION_MIGRATION } from '../token-ingestion/reattribute';
+import {
+  reattributeSubagentUsage, REATTRIBUTION_MIGRATION, reattributeNestedHelpers, NESTED_HELPER_MIGRATION,
+} from '../token-ingestion/reattribute';
 import { createUsageIngestion, defaultIngestionSources } from '../token-ingestion/service';
 import { computeCardUsage, computeStepUsage } from '../usage/stepUsage';
 import { ClaudeTranscript } from './helpers/claudeTranscript';
+import { parseClaudeCodeJsonl } from '../token-ingestion/parsers/claude-code';
+import { CardRefs, recordClaims, type ParserContext } from '../token-ingestion/watcher';
 
 const PARENT_CARD = 'aaaaaaaa-0000-4000-8000-000000000001';
 const CARD_A = 'bbbbbbbb-0000-4000-8000-000000000002';
@@ -279,5 +283,131 @@ describe('re-attribution of the stored turns (GH-398)', () => {
     } finally {
       log.mockRestore();
     }
+  });
+
+  describe('GH-400: helpers spawned by a subagent, on a store GH-398 already re-attributed', () => {
+    const migrateNested = (opts: { force?: boolean } = {}) => reattributeNestedHelpers(storage, { ...opts, log: () => {} });
+    /** The claims GH-398's pass and live ingestion had already recorded from these transcripts. */
+    const alreadyRead = async (...trs: ClaudeTranscript[]) => {
+      for (const tr of trs) {
+        const ctx: ParserContext = { claims: [] };
+        parseClaudeCodeJsonl(fs.readFileSync(tr.pathIn(projectDir), 'utf8'), tr.pathIn(projectDir), 0, ctx);
+        await recordClaims(storage, 'claude-code', ctx.claims!, new CardRefs(storage));
+      }
+    };
+    beforeEach(async () => { await storage.setIngestionMeta(REATTRIBUTION_MIGRATION, '{}'); });
+
+    /** The parent on PARENT_CARD, a worker on CARD_A, its helper's turns stored on the parent's card. */
+    async function nestedSession() {
+      const parent = new ClaudeTranscript(S);
+      const worker = new ClaudeTranscript(S, 'a1a10101');
+      const helper = new ClaudeTranscript(S, 'b2b20102').spawnedBy('a1a10101');
+      parent.gatekeeper(t('10:00'), PARENT_CARD);
+      worker.gatekeeper(t('10:01'), CARD_A);
+      const ids = {
+        exploring: await stored(helper, helper.turn(t('10:02')), t('10:02'), PARENT_CARD),
+        workerTurn: await stored(worker, worker.turn(t('10:03')), t('10:03'), CARD_A),
+      };
+      for (const tr of [parent, worker, helper]) tr.writeTo(projectDir);
+      await alreadyRead(parent, worker, helper);
+      return ids;
+    }
+
+    it('moves a nested helper\'s turns to its spawner\'s card and recomputes both cards, and reports it', async () => {
+      const ids = await nestedSession();
+      const row = (n: number) => ({
+        step: 'IN_PROGRESS', to: 'REVIEW', enteredAt: t('09:00'), leftAt: t('11:00'), complete: true,
+        byModel: [], total: { turns: n, input: 10 * n, cacheRead: 0, cacheWrite: 0, output: 5 * n, reasoning: 0, costUsd: 0, unpricedTurns: n },
+      });
+      await storage.updateItem(PARENT_CARD, { usageByStep: [row(1)] } as any);
+      await storage.updateItem(CARD_A, { usageByStep: [row(1)] } as any);
+
+      const report = await migrateNested();
+
+      expect(report).toMatchObject({ skipped: false, moved: 1, cardsRecomputed: 2 });
+      expect(((await storage.getItem(PARENT_CARD)) as any).usageByStep[0].total.turns).toBe(0);
+      expect(((await storage.getItem(CARD_A)) as any).usageByStep[0].total.turns).toBe(2);
+      expect(await cardOf(ids.exploring)).toBe(CARD_A);
+      expect(await cardOf(ids.workerTurn)).toBe(CARD_A);
+      expect(await storage.getIngestionMeta(NESTED_HELPER_MIGRATION)).toBeTruthy();
+    });
+
+    it('never takes a turn off its card because a transcript has since gone from disk', async () => {
+      const ids = await nestedSession();
+      const gone = new ClaudeTranscript(S, 'c3c30103').spawnedBy('a1a10101');
+      const goneTurn = await stored(gone, gone.turn(t('10:04')), t('10:04'), PARENT_CARD);
+      const goneSub = new ClaudeTranscript(S, 'c3c30104');
+      const goneSubTurn = await stored(goneSub, goneSub.turn(t('10:05')), t('10:05'), CARD_B);
+
+      const report = await migrateNested();
+
+      expect(report).toMatchObject({ moved: 1 });
+      expect(await cardOf(ids.exploring)).toBe(CARD_A);
+      expect(await cardOf(goneTurn)).toBe(PARENT_CARD);
+      expect(await cardOf(goneSubTurn)).toBe(CARD_B);
+    });
+
+    it('never moves a turn to no card: a helper working after its spawner\'s card closed keeps the card it has', async () => {
+      const parent = new ClaudeTranscript(S);
+      const worker = new ClaudeTranscript(S, 'a1a10106');
+      const helper = new ClaudeTranscript(S, 'b2b20107').spawnedBy('a1a10106');
+      parent.gatekeeper(t('10:00'), PARENT_CARD);
+      worker.gatekeeper(t('10:01'), CARD_A);
+      await storage.recordCardClose(CARD_A, t('10:02'));
+      const afterClose = await stored(helper, helper.turn(t('10:03')), t('10:03'), PARENT_CARD);
+      for (const tr of [parent, worker, helper]) tr.writeTo(projectDir);
+      await alreadyRead(parent, worker, helper);
+
+      expect(await migrateNested()).toMatchObject({ moved: 0 });
+      expect(await cardOf(afterClose)).toBe(PARENT_CARD);
+    });
+
+    it('a claim it is first to read still re-charges the turns it decides, as ingestion would have', async () => {
+      const parent = new ClaudeTranscript(S);
+      const worker = new ClaudeTranscript(S, 'a1a10108');
+      const helper = new ClaudeTranscript(S, 'b2b20109').spawnedBy('a1a10108');
+      parent.gatekeeper(t('10:00'), PARENT_CARD);
+      const orienting = await stored(worker, worker.turn(t('10:01')), t('10:01'), PARENT_CARD);
+      const exploring = await stored(helper, helper.turn(t('10:02')), t('10:02'), PARENT_CARD);
+      worker.gatekeeper(t('10:03'), CARD_A); // appended after the last pass: not recorded yet
+      for (const tr of [parent, worker, helper]) tr.writeTo(projectDir);
+      await alreadyRead(parent);
+
+      await migrateNested();
+
+      expect(await cardOf(exploring)).toBe(CARD_A);
+      expect(await cardOf(orienting)).toBe(CARD_A);
+    });
+
+    it('leaves a subagent the session spawned itself alone', async () => {
+      const parent = new ClaudeTranscript(S);
+      const reviewer = new ClaudeTranscript(S, 'd4d40105');
+      parent.gatekeeper(t('10:00'), PARENT_CARD);
+      const reviewing = await stored(reviewer, reviewer.turn(t('10:01')), t('10:01'), CARD_B);
+      for (const tr of [parent, reviewer]) tr.writeTo(projectDir);
+      await alreadyRead(parent, reviewer);
+
+      expect(await migrateNested()).toMatchObject({ moved: 0 });
+      expect(await cardOf(reviewing)).toBe(CARD_B);
+    });
+
+    it('runs once, and the usage service runs it by itself after GH-398\'s, logging what it did', async () => {
+      await nestedSession();
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        const svc = createUsageIngestion({
+          storage,
+          sources: defaultIngestionSources(home, {}).filter((s) => s.client === 'claude-code'),
+          now: () => new Date('2026-11-01T00:00:00Z'),
+        });
+        await svc.runOnce();
+        expect(await storage.getIngestionMeta(NESTED_HELPER_MIGRATION)).toBeTruthy();
+        expect(log.mock.calls.flat().join('\n')).toMatch(/GH-400.*moved 1 turn/);
+      } finally {
+        log.mockRestore();
+      }
+      expect(await migrateNested()).toMatchObject({ skipped: true, moved: 0 });
+      expect(await migrateNested({ force: true })).toMatchObject({ skipped: false, moved: 0 });
+    });
   });
 });

@@ -273,7 +273,10 @@ function PrUsageTable({ filterQs, nameOf, prices }: {
     }),
     prCol('card', 'Card', r => <span className="text-body text-ink break-words">{r.item_title ?? r.item_id}</span>),
     prCol('createdBy', 'Created by', r => (r.created_by ? <PersonName name={nameOf(r.created_by)} userKey={r.created_by} /> : null)),
-    prCol('tokens', 'Tokens', r => (r.usage ? <Tokens t={r.usage.total} /> : <span className="text-caption text-ink-tertiary">not closed yet</span>), true),
+    // GH-400: a close can carry no usage (an older version, or cleared on the hub), and the card is still closed.
+    prCol('tokens', 'Tokens', r => (r.usage
+      ? <Tokens t={r.usage.total} />
+      : <span className="text-caption text-ink-tertiary">{r.closed_at ? 'closed, no usage reported' : 'not closed yet'}</span>), true),
     ...TOKEN_TYPES.map(type => prCol(type.key, type.label, r => (r.usage ? <TokenCount n={r.usage.total[type.key]} /> : null), true)),
     prCol('cost', (
       <span>

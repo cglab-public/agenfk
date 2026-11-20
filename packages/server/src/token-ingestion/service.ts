@@ -2,7 +2,7 @@ import * as path from 'path';
 import type { PricesData, StorageProvider } from '@agenfk/core';
 import { ingestOnce, type IngestionSource } from './watcher';
 import { parseClaudeCodeJsonl, hasSubagents } from './parsers/claude-code';
-import { reattributeSubagentUsage } from './reattribute';
+import { reattributeNestedHelpers, reattributeSubagentUsage } from './reattribute';
 import { parseCodexJsonl } from './parsers/codex';
 import { parsePiJsonl } from './parsers/pi';
 
@@ -80,6 +80,8 @@ export function createUsageIngestion(opts: {
 
   serial(() => reattributeSubagentUsage(opts.storage))
     .catch((e: Error) => console.error('[USAGE] GH-398 re-attribution failed:', e.message));
+  serial(() => reattributeNestedHelpers(opts.storage))
+    .catch((e: Error) => console.error('[USAGE] GH-400 re-attribution failed:', e.message));
 
   const pass = (fileFilter?: (client: string, abs: string, rel: string) => boolean) =>
     serial(async () => ingestOnce({
