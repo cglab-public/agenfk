@@ -2,6 +2,23 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.1.0-beta.22] — 2026-11-20
+
+Beta, cumulative over 2.1.0-beta.21: everything in 2.1.0-beta.21, plus the changes below.
+
+**Usage attribution** (#400, #401)
+
+- **A helper spawned by a subagent counts toward its spawner's card.** A subagent that never names a card used to
+  count toward the session's card, also when another subagent spawned it, and after a handover that was no card. It
+  now follows its spawn chain and counts toward the nearest spawner's card, and toward the session's card only when no
+  spawner names one.
+- **Stored usage of these helpers is charged again once.** On upgrade, the server moves the stored turns of helpers
+  spawned by subagents to their spawner's card and recomputes the usage of each card that changed. A turn whose
+  session log is gone stays where it is. The server log says what moved.
+- **The hub's By PR table says when a closed card reported no usage.** It showed "not closed yet" for a card that was
+  closed with no usage, which looked like the "Card closed" filter did not work. It now shows "closed, no usage
+  reported".
+
 ## [2.1.0-beta.21] — 2026-11-20
 
 Beta, cumulative over 2.1.0-beta.20: everything in 2.1.0-beta.20, plus the changes below. Install the hub and the clients together: a beta.21 hub drops usage that older clients send.
