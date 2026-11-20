@@ -904,6 +904,51 @@ export async function backfillPrEventRemoteUrls(adapter: HubDb): Promise<void> {
   }
 }
 
+/**
+ * An index on the events ingestion table, built so it never blocks ingest
+ * and never fails boot.
+ *
+ * - CONCURRENTLY, and NOT inside SCHEMA_PG: that batch is one multi-statement
+ *   simple query, which Postgres wraps in an implicit transaction, where a
+ *   plain CREATE INDEX would hold a SHARE lock on events - blocking every
+ *   insert - until the batch commits. Each standalone exec() is its own
+ *   implicit transaction, where CONCURRENTLY is legal.
+ * - A failed concurrent build leaves an INVALID index that the planner never
+ *   uses, and IF NOT EXISTS matches it by name, so it would stay forever: an
+ *   invalid one is dropped (concurrently) and built again.
+ * - Any failure is logged and boot goes on (the reads work, only slower).
+ */
+export async function ensureEventsIndexConcurrently(adapter: Pick<HubDb, 'all' | 'exec'>, name: string, spec: string): Promise<void> {
+  // The index of that name ON events in the schema the unqualified DDL below
+  // resolves to - not a namesake elsewhere.
+  let rows: Array<{ indisvalid: boolean }> | null = null;
+  try {
+    rows = await adapter.all<{ indisvalid: boolean }>(
+      `SELECT i.indisvalid FROM pg_index i
+         JOIN pg_class c ON c.oid = i.indexrelid
+         JOIN pg_class t ON t.oid = i.indrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relname = ? AND t.relname = 'events' AND n.nspname = current_schema()`, [name],
+    );
+  } catch (e) {
+    console.warn(`[hub] ${name}: could not read the index catalog, building anyway:`, (e as Error)?.message);
+  }
+  if (rows && rows.length > 0 && rows[0].indisvalid) return;
+  if (rows && rows.length > 0) {
+    try {
+      await adapter.exec(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+    } catch (e) {
+      console.warn(`[hub] ${name} is INVALID (a failed build) and could not be dropped; queries will not use it until it is:`, (e as Error)?.message);
+      return;
+    }
+  }
+  try {
+    await adapter.exec(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${spec}`);
+  } catch (e) {
+    console.warn(`[hub] ${name} build skipped:`, (e as Error)?.message);
+  }
+}
+
 async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec(SCHEMA_PG);
   await adapter.exec("DELETE FROM events WHERE type = 'tokens.logged'");
@@ -1036,23 +1081,14 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
-  // GH-389 usage overview: a card's steps and closes, by card.
-  await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_org_item_type ON events(org_id, item_id, type)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key)");
 
   // BUG ab9b39d3: backs the Admin -> Flows lookup of the latest remote_url per
-  // project. CONCURRENTLY, and deliberately NOT inside SCHEMA_PG: that batch is
-  // one multi-statement simple query, so Postgres wraps it in an implicit
-  // transaction, and a plain CREATE INDEX there would hold a SHARE lock on the
-  // events ingestion table — blocking every insert — until the whole batch
-  // commits. Each standalone exec() is its own implicit transaction, where
-  // CONCURRENTLY is legal. A failed concurrent build leaves an INVALID index
-  // that is simply rebuilt on the next boot, so don't fail boot over it.
-  try {
-    await adapter.exec("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_org_project_time ON events(org_id, project_id, occurred_at)");
-  } catch (e) {
-    console.warn('[hub] idx_events_org_project_time build skipped:', (e as Error)?.message);
-  }
+  // project. GH-389 (BUG 0a4eb1d6): a card's steps and closes, by card, for the
+  // usage overview. Both on the events ingestion table, so built CONCURRENTLY:
+  // see ensureEventsIndexConcurrently.
+  await ensureEventsIndexConcurrently(adapter, 'idx_events_org_project_time', 'events(org_id, project_id, occurred_at)');
+  await ensureEventsIndexConcurrently(adapter, 'idx_events_org_item_type', 'events(org_id, item_id, type)');
 
   // Canonicalise events.remote_url so the projects filter in the hub UI
   // doesn't show duplicates for repos expressed as ssh / https / with-or-
