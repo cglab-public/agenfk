@@ -9,6 +9,7 @@ import { RecoverPage } from './pages/Recover';
 import { OrgPage } from './pages/Org';
 import { PrOverviewPage } from './pages/PrOverview';
 import { AdherencePage } from './pages/Adherence';
+import { UsagePage } from './pages/Usage';
 import { UserDetailPage } from './pages/UserDetail';
 import { ConnectPage } from './pages/Connect';
 import { AdminLayout, AdminAuth, AdminKeys, AdminUsers, AdminInstallations } from './pages/Admin';
@@ -65,6 +66,7 @@ export function App() {
       <Route path="/" element={<RequireAuth><Layout><OrgPage /></Layout></RequireAuth>} />
       <Route path="/prs" element={<RequireAuth><Layout><PrOverviewPage /></Layout></RequireAuth>} />
       <Route path="/adherence" element={<RequireAuth><Layout><AdherencePage /></Layout></RequireAuth>} />
+      <Route path="/usage" element={<RequireAuth><Layout><UsagePage /></Layout></RequireAuth>} />
       <Route path="/users/:userKey" element={<RequireAuth><Layout><UserDetailPage /></Layout></RequireAuth>} />
       <Route path="/admin" element={<RequireAuth><Layout><AdminLayout /></Layout></RequireAuth>}>
         <Route path="auth" element={<AdminAuth />} />
