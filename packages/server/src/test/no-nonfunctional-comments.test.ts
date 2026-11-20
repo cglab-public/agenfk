@@ -146,7 +146,7 @@ describe('the evaluator', () => {
     expect(r.detail).toContain('leak.ts (symbolic link)');
   });
 
-  it('names a file it cannot read instead of failing the check', () => {
+  it.skipIf(process.platform === 'win32')('names a file it cannot read instead of failing the check (POSIX permissions)', () => {
     const { dir, head } = repo({ 'x.ts': 'export {};\n' });
     put(dir, 'locked.ts', '// note\n');
     fs.chmodSync(path.join(dir, 'locked.ts'), 0o000);
@@ -166,10 +166,20 @@ describe('the evaluator', () => {
     expect(r.detail).toContain('a.ts:2');
   });
 
-  it('reads a file whose name git has to quote, emoji and tab included', () => {
+  it.skipIf(process.platform === 'win32')('reads a file whose name git has to quote, emoji and tab included', () => {
     const name = 'x\u{1F600}\tname.ts';
     const { dir, head } = repo({ [name]: 'export const a = 1;\n' });
     git(dir)(['config', 'core.quotePath', 'false']);
+    put(dir, name, 'export const a = 1;\n// a note\n');
+    const r = judge(ctx(dir, head));
+    expect(r.outcome).toBe('fail');
+    expect(r.detail).toContain(`${name}:2`);
+  });
+
+  it('reads a file whose name git quotes as octal escapes under the default core.quotePath', () => {
+    const name = 'x\u{1F600} name.ts';
+    const { dir, head } = repo({ [name]: 'export const a = 1;\n' });
+    git(dir)(['config', 'core.quotePath', 'true']);
     put(dir, name, 'export const a = 1;\n// a note\n');
     const r = judge(ctx(dir, head));
     expect(r.outcome).toBe('fail');
