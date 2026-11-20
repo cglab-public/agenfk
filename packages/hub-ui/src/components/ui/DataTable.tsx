@@ -7,7 +7,8 @@ export interface DataColumn<T> {
   header: ReactNode;
   render: (row: T) => ReactNode;
   /** Present = sortable. */
-  sortValue?: (row: T) => string | number;
+  /** null: the row has no value here, so it sorts last whichever way the column is sorted. */
+  sortValue?: (row: T) => string | number | null;
   /** Direction of the first click on this header (default ascending); counts
    *  and dates usually want 'desc'. Declared, not guessed from the data. */
   firstDir?: Dir;
@@ -110,6 +111,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
     return filtered
       .map((row, i) => ({ row, i, v: value(row) }))
       .sort((a, b) => {
+        if (a.v === null || b.v === null) return a.v === b.v ? a.i - b.i : a.v === null ? 1 : -1;
         const c = typeof a.v === 'number' && typeof b.v === 'number'
           ? a.v - b.v
           : String(a.v).localeCompare(String(b.v), undefined, { sensitivity: 'base', numeric: true });

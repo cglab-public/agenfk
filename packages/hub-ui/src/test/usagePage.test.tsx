@@ -326,6 +326,193 @@ describe('UsagePage', () => {
     });
   });
 
+  describe('tokens split by type (GH-391 follow-up)', () => {
+    // Each type a different size, so a figure in the wrong column shows.
+    const claude = { client: 'claude-code', model: 'claude-opus-5-5', ...zero, turns: 3, input: 1_000, cacheRead: 900_000, cacheWrite: 50_000, output: 20_000, reasoning: 7_777, unpricedTurns: 3 };
+    const pi = { client: 'pi', model: 'qwen3.8:27b', ...zero, turns: 1, input: 30_000, cacheRead: 100_000, output: 5_000, costUsd: 0.5 };
+    const SPLIT = {
+      ...OVERVIEW,
+      total: sum(claude, pi),
+      byInstallation: [
+        { installation_id: 'inst-a', label: 'Alice <alice@acme.com>', cards: 2, total: claude, byModel: [claude] },
+        { installation_id: 'inst-b', label: 'Bob <bob@acme.com>', cards: 1, total: pi, byModel: [pi] },
+      ],
+      byUser: [
+        { user_key: 'alice@acme.com', cards: 2, total: claude, byModel: [claude] },
+        { user_key: 'bob@acme.com', cards: 1, total: pi, byModel: [pi] },
+      ],
+      byModel: [claude, pi],
+      byPr: [
+        { repo: 'acme/api', pr_number: 42, item_id: 's1', item_type: 'STORY', item_title: 'Usage overview', opened_at: '2026-11-19T10:00:00.000Z', closed_at: '2026-11-19T09:00:00.000Z',
+          usage: { byModel: [pi], total: pi, byStep: [], cards: 4 } },
+        { repo: 'acme/web', pr_number: 7, item_id: 's2', item_type: 'TASK', item_title: 'Still open', opened_at: '2026-11-18T10:00:00.000Z', closed_at: null, usage: null },
+      ],
+      byDay: [
+        { day: '2026-11-18', cards: 1, total: pi, byModel: [pi] },
+        { day: '2026-11-19', cards: 2, total: claude, byModel: [claude] },
+      ],
+    };
+    beforeEach(() => { overview = SPLIT; });
+    const TYPES = ['Input', 'Cache read', 'Cache write', 'Output'];
+    const cellsOf = (row: HTMLElement) => within(row).getAllByRole('cell').map(c => c.textContent);
+    const headerIndex = (table: HTMLElement, name: string) =>
+      within(table).getAllByRole('columnheader').findIndex(h => h.textContent?.trim() === name);
+    const rowFor = (table: HTMLElement, text: string) =>
+      within(table).getAllByRole('row').find(r => r.textContent?.includes(text))!;
+    const valueIn = (table: HTMLElement, rowText: string, column: string) =>
+      cellsOf(rowFor(table, rowText))[headerIndex(table, column)];
+
+    it('the headline keeps the total and lists the four types under it', async () => {
+      renderAt('/usage');
+      const totals = await screen.findByRole('region', { name: /totals/i });
+      // 31k input + 1M cache read + 50k cache write + 25k output.
+      expect(await within(totals).findByText('1.1M')).toBeInTheDocument();
+      expect(within(totals).getByText(/input 31k · cache read 1M · cache write 50k · output 25k/i)).toBeInTheDocument();
+    });
+
+    it.each([
+      [/by installation/i, 'Alice', 'Bob'],
+      [/by person/i, 'alice@acme.com', 'Bob Builder'],
+      [/by harness/i, 'claude-opus-5-5', 'qwen3.8:27b'],
+    ])('the %s table keeps the Tokens total and puts each type in its own column', async (name, a, b) => {
+      renderAt('/usage');
+      await screen.findByText('1.1M');
+      const t = within(section(name)).getByRole('table');
+      for (const col of ['Tokens', ...TYPES]) expect(headerIndex(t, col)).toBeGreaterThan(-1);
+      expect(valueIn(t, a, 'Tokens')).toBe('971k');
+      expect(valueIn(t, a, 'Input')).toBe('1k');
+      expect(valueIn(t, a, 'Cache read')).toBe('900k');
+      expect(valueIn(t, a, 'Cache write')).toBe('50k');
+      expect(valueIn(t, a, 'Output')).toBe('20k');
+      expect(valueIn(t, b, 'Input')).toBe('30k');
+      expect(valueIn(t, b, 'Cache read')).toBe('100k');
+      expect(valueIn(t, b, 'Cache write')).toBe('0');
+      expect(valueIn(t, b, 'Output')).toBe('5k');
+    });
+
+    it('sorts by a type column, by that type and not by the total', async () => {
+      renderAt('/usage');
+      await screen.findByText('1.1M');
+      const t = within(section(/by person/i)).getByRole('table');
+      const firstRow = () => within(t).getAllByRole('row')[1].textContent;
+      fireEvent.click(within(within(t).getAllByRole('columnheader')[headerIndex(t, 'Input')]).getByRole('button'));
+      // Bob has the larger input (30k against 1k), though Alice has the larger total.
+      expect(firstRow()).toContain('Bob Builder');
+      fireEvent.click(within(within(t).getAllByRole('columnheader')[headerIndex(t, 'Cache read')]).getByRole('button'));
+      expect(firstRow()).toContain('alice@acme.com');
+    });
+
+    it('a PR row splits its card usage by type, and an open card shows no figures', async () => {
+      renderAt('/usage');
+      await screen.findByText('1.1M');
+      const t = within(section(/by pr/i)).getByRole('table');
+      expect(valueIn(t, 'acme/api#42', 'Input')).toBe('30k');
+      expect(valueIn(t, 'acme/api#42', 'Cache read')).toBe('100k');
+      expect(valueIn(t, 'acme/api#42', 'Output')).toBe('5k');
+      expect(valueIn(t, 'acme/web#7', 'Tokens')).toBe('not closed yet');
+      expect(valueIn(t, 'acme/web#7', 'Cache read')).toBe('');
+    });
+
+    it('does not show reasoning tokens', async () => {
+      renderAt('/usage');
+      await screen.findByText('1.1M');
+      expect(screen.queryByText(/reasoning/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('8k')).not.toBeInTheDocument();
+    });
+
+    it('stacks each day of the tokens chart by type, with a legend and every type in the bar\'s name', async () => {
+      renderAt('/usage');
+      await screen.findByText('1.1M');
+      const chart = section(/tokens per day/i);
+      const legend = within(chart).getByRole('list', { name: /legend/i });
+      expect(within(legend).getAllByRole('listitem').map(li => li.textContent)).toEqual(TYPES);
+      const bar = within(chart).getByRole('option', { name: /2026-11-19: 971k tokens/ });
+      expect(bar).toHaveAccessibleName(/input 1k.*cache read 900k.*cache write 50k.*output 20k/i);
+      const heights = Object.fromEntries([...bar.querySelectorAll<HTMLElement>('[data-series]')]
+        .map(s => [s.dataset.series!, parseFloat(s.style.height)]));
+      expect(Object.keys(heights)).toEqual(TYPES);
+      // Each part is its share of the day: cache read is 900 of 971 parts.
+      // The parts fill the bar exactly, each its share of the day.
+      expect(Object.values(heights).reduce((a, b) => a + b, 0)).toBeCloseTo(100, 6);
+      expect(heights['Input']).toBeCloseTo(100 * 1 / 971, 6);
+      expect(heights['Cache read']).toBeCloseTo(100 * 900 / 971, 6);
+      expect(heights['Cache write']).toBeCloseTo(100 * 50 / 971, 6);
+      expect(heights['Output']).toBeCloseTo(100 * 20 / 971, 6);
+      // The tooltip lists the types too.
+      fireEvent.mouseEnter(bar);
+      const tip = within(chart).getByTestId('bar-tooltip');
+      for (const type of TYPES) expect(within(tip).getByText(new RegExp(type, 'i'))).toBeInTheDocument();
+    });
+
+    it('hovering a segment names that segment in the tooltip: its type, tokens and share of the day', async () => {
+      renderAt('/usage');
+      await screen.findByText('1.1M');
+      const chart = section(/tokens per day/i);
+      const bar = within(chart).getByRole('option', { name: /2026-11-19: 971k tokens/ });
+      const segment = (type: string) => bar.querySelector<HTMLElement>(`[data-series="${type}"]`)!;
+      const tip = () => within(chart).getByTestId('bar-tooltip');
+      fireEvent.mouseEnter(segment('Output'));
+      // 20k of 971k is 2%.
+      expect(within(tip()).getByText(/output/i).closest('[data-active="true"]')).toHaveTextContent(/output.*20k.*2%/i);
+      expect(tip().querySelectorAll('[data-active="true"]')).toHaveLength(1);
+      fireEvent.mouseEnter(segment('Cache read'));
+      expect(within(tip()).getByText(/cache read/i).closest('[data-active="true"]')).toHaveTextContent(/cache read.*900k.*93%/i);
+      expect(tip().querySelectorAll('[data-active="true"]')).toHaveLength(1);
+      // On the bar but off every segment, no line is singled out.
+      fireEvent.mouseEnter(bar);
+      expect(tip().querySelectorAll('[data-active="true"]')).toHaveLength(0);
+      expect(within(tip()).getByText(/971k tokens/)).toBeInTheDocument();
+    });
+
+    it('the keyboard leaves no part singled out: moving, Escape and leaving the chart all clear it', async () => {
+      renderAt('/usage');
+      await screen.findByText('1.1M');
+      const chart = section(/tokens per day/i);
+      const list = within(chart).getByRole('listbox');
+      const bar = within(chart).getByRole('option', { name: /2026-11-19: 971k tokens/ });
+      const active = () => within(chart).queryByTestId('bar-tooltip')?.querySelectorAll('[data-active="true"]').length ?? 0;
+      const hoverOutput = () => fireEvent.mouseEnter(bar.querySelector('[data-series="Output"]')!);
+      hoverOutput();
+      expect(active()).toBe(1);
+      list.focus();
+      fireEvent.keyDown(list, { key: 'ArrowLeft' });
+      expect(within(chart).getByTestId('bar-tooltip')).toBeInTheDocument();
+      expect(active()).toBe(0);
+      fireEvent.keyDown(list, { key: 'ArrowRight' });
+      expect(active()).toBe(0);
+      // Escape and blur close the tooltip; reopening it on the same bar with a
+      // click (which picks only the day) shows no part singled out.
+      hoverOutput();
+      fireEvent.keyDown(list, { key: 'Escape' });
+      expect(within(chart).queryByTestId('bar-tooltip')).not.toBeInTheDocument();
+      fireEvent.click(bar);
+      expect(active()).toBe(0);
+      hoverOutput();
+      fireEvent.blur(list);
+      expect(within(chart).queryByTestId('bar-tooltip')).not.toBeInTheDocument();
+      fireEvent.click(bar);
+      expect(active()).toBe(0);
+    });
+
+    it.each(['Tokens', 'Input', 'Cache read', 'Cost'])('a PR with no usage yet sorts last by %s, in both directions', async (column) => {
+      renderAt('/usage');
+      await screen.findByText('1.1M');
+      const t = within(section(/by pr/i)).getByRole('table');
+      const click = () => fireEvent.click(within(within(t).getAllByRole('columnheader')[headerIndex(t, column)]).getByRole('button'));
+      const lastRow = () => within(t).getAllByRole('row').at(-1)!.textContent;
+      click();
+      expect(lastRow()).toContain('acme/web#7');
+      click();
+      expect(lastRow()).toContain('acme/web#7');
+    });
+
+    it('the cost chart stays one series, with no legend', async () => {
+      renderAt('/usage');
+      await screen.findByText('1.1M');
+      expect(within(section(/cost per day/i)).queryByRole('list', { name: /legend/i })).not.toBeInTheDocument();
+    });
+  });
+
   it('is reachable from the dashboard nav', async () => {
     renderAt('/');
     expect(await screen.findByRole('link', { name: /^usage$/i })).toHaveAttribute('href', '/usage');

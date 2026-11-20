@@ -67,6 +67,16 @@ interface ProjectsResponse { projects: string[] }
 interface ItemTypesResponse { itemTypes: string[]; counts?: Record<string, number> }
 
 const tokensOf = (t: Totals) => t.input + t.cacheRead + t.cacheWrite + t.output;
+/**
+ * The four token types the total is made of, each shown on its own. Reasoning
+ * is left out: some harnesses count it inside output, so it is not a fifth part.
+ */
+const TOKEN_TYPES = [
+  { key: 'input', label: 'Input', color: 'var(--series-1)' },
+  { key: 'cacheRead', label: 'Cache read', color: 'var(--series-2)' },
+  { key: 'cacheWrite', label: 'Cache write', color: 'var(--series-4)' },
+  { key: 'output', label: 'Output', color: 'var(--series-3)' },
+] as const satisfies ReadonlyArray<{ key: keyof Totals; label: string; color: string }>;
 /** 950, 42k, 3.7M: the size of a total at a glance. */
 function abbreviate(n: number): string {
   if (n < 1000) return String(n);
@@ -119,8 +129,9 @@ function Cost({ byModel, prices }: { byModel: PricedModelUsage[]; prices: Prices
     </span>
   );
 }
-const Tokens = ({ t }: { t: Totals }) => (
-  <span className="font-mono tabular-nums text-ink" title={`${tokensOf(t).toLocaleString()} tokens`}>{abbreviate(tokensOf(t))}</span>
+const Tokens = ({ t }: { t: Totals }) => <TokenCount n={tokensOf(t)} />;
+const TokenCount = ({ n }: { n: number }) => (
+  <span className="font-mono tabular-nums text-ink" title={`${n.toLocaleString()} tokens`}>{abbreviate(n)}</span>
 );
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -215,6 +226,12 @@ export function UsagePage() {
     key: 'tokens', header: 'Tokens', align: 'right' as const, firstDir: 'desc' as const,
     sortValue: (r: T) => tokensOf(total(r)), render: (r: T) => <Tokens t={total(r)} />,
   });
+  /** A column per token type, beside the total; a row with no usage yet shows none. */
+  const typeCols = <T,>(total: (r: T) => Totals | null) => TOKEN_TYPES.map(type => ({
+    key: type.key, header: type.label, align: 'right' as const, firstDir: 'desc' as const,
+    sortValue: (r: T) => total(r)?.[type.key] ?? null,
+    render: (r: T) => { const t = total(r); return t ? <TokenCount n={t[type.key]} /> : null; },
+  }));
   const cardsCol = <T extends { cards: number },>() => ({
     key: 'cards', header: 'Cards', align: 'right' as const, firstDir: 'desc' as const,
     sortValue: (r: T) => r.cards, render: (r: T) => <span className="font-mono tabular-nums text-ink">{r.cards.toLocaleString()}</span>,
@@ -304,7 +321,16 @@ export function UsagePage() {
           return (
             <>
               <section aria-label="Totals" className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <StatTile label="Tokens" value={abbreviate(tokensOf(d.total))} hint={`${tokensOf(d.total).toLocaleString()} across ${plural(d.total.turns, 'turn', 'turns')}`} />
+                <StatTile
+                  label="Tokens"
+                  value={abbreviate(tokensOf(d.total))}
+                  hint={(
+                    <span className="flex flex-col">
+                      <span>{`${tokensOf(d.total).toLocaleString()} across ${plural(d.total.turns, 'turn', 'turns')}`}</span>
+                      <span>{TOKEN_TYPES.map(type => `${type.label.toLowerCase()} ${abbreviate(d.total[type.key])}`).join(' · ')}</span>
+                    </span>
+                  )}
+                />
                 <StatTile
                   label="Cost"
                   value={money(cost.reported + cost.estimated)}
@@ -343,21 +369,25 @@ export function UsagePage() {
               />
               <DailyBarChart
                 title="Tokens per day"
-                bars={days.map(day => ({ day, value: dayRows.has(day) ? tokensOf(dayRows.get(day)!.total) : 0 }))}
+                bars={days.map(day => {
+                  const t = dayRows.get(day)?.total;
+                  return { day, value: t ? tokensOf(t) : 0, parts: TOKEN_TYPES.map(type => (t ? t[type.key] : 0)) };
+                })}
                 format={v => `${abbreviate(v)} tokens`}
                 tickFormat={abbreviate}
+                series={TOKEN_TYPES.map(({ label, color }) => ({ label, color }))}
               />
 
               <Section title="By installation">
                 <DataTable
                   caption="Usage by installation"
-                  minWidth={560}
+                  minWidth={880}
                   rows={d.byInstallation}
                   rowKey={r => r.installation_id}
                   columns={[
                     { key: 'installation', header: 'Installation', sortValue: r => r.label ?? r.installation_id,
                       render: r => <span className={r.label ? 'text-body text-ink break-words' : 'font-mono text-small text-ink break-all'}>{r.label ?? r.installation_id}</span> },
-                    cardsCol<InstallationRow>(), tokensCol<InstallationRow>(r => r.total), costCol<InstallationRow>(r => r.byModel),
+                    cardsCol<InstallationRow>(), tokensCol<InstallationRow>(r => r.total), ...typeCols<InstallationRow>(r => r.total), costCol<InstallationRow>(r => r.byModel),
                   ]}
                 />
               </Section>
@@ -365,13 +395,13 @@ export function UsagePage() {
               <Section title="By person">
                 <DataTable
                   caption="Usage by person"
-                  minWidth={560}
+                  minWidth={880}
                   rows={d.byUser}
                   rowKey={r => r.user_key}
                   columns={[
                     { key: 'person', header: 'Person', sortValue: r => nameOf(r.user_key) ?? r.user_key,
                       render: r => <PersonName name={nameOf(r.user_key)} userKey={r.user_key} /> },
-                    cardsCol<PersonRow>(), tokensCol<PersonRow>(r => r.total), costCol<PersonRow>(r => r.byModel),
+                    cardsCol<PersonRow>(), tokensCol<PersonRow>(r => r.total), ...typeCols<PersonRow>(r => r.total), costCol<PersonRow>(r => r.byModel),
                   ]}
                 />
               </Section>
@@ -379,7 +409,7 @@ export function UsagePage() {
               <Section title="By harness and model">
                 <DataTable
                   caption="Usage by harness and model"
-                  minWidth={560}
+                  minWidth={960}
                   rows={d.byModel}
                   rowKey={r => `${r.client}/${r.model}`}
                   columns={[
@@ -387,7 +417,7 @@ export function UsagePage() {
                     { key: 'harness', header: 'Harness', sortValue: r => r.client, render: r => <span className="text-small text-ink-secondary">{r.client}</span> },
                     { key: 'turns', header: 'Turns', align: 'right', firstDir: 'desc', sortValue: r => r.turns,
                       render: r => <span className="font-mono tabular-nums text-ink">{r.turns.toLocaleString()}</span> },
-                    tokensCol<ModelRow>(r => r), costCol<ModelRow>(r => [r]),
+                    tokensCol<ModelRow>(r => r), ...typeCols<ModelRow>(r => r), costCol<ModelRow>(r => [r]),
                   ]}
                 />
               </Section>
@@ -401,7 +431,7 @@ export function UsagePage() {
                 ) : (
                   <DataTable
                   caption="Usage by PR"
-                  minWidth={640}
+                  minWidth={960}
                   rows={d.byPr}
                   rowKey={r => `${r.repo}#${r.pr_number}`}
                   columns={[
@@ -409,10 +439,11 @@ export function UsagePage() {
                       render: r => <span className="font-mono text-small text-ink">{`${r.repo}#${r.pr_number}`}</span> },
                     { key: 'card', header: 'Card', sortValue: r => r.item_title ?? r.item_id,
                       render: r => <span className="text-body text-ink break-words">{r.item_title ?? r.item_id}</span> },
-                    { key: 'tokens', header: 'Tokens', align: 'right', firstDir: 'desc', sortValue: r => (r.usage ? tokensOf(r.usage.total) : -1),
+                    { key: 'tokens', header: 'Tokens', align: 'right', firstDir: 'desc', sortValue: r => (r.usage ? tokensOf(r.usage.total) : null),
                       render: r => (r.usage ? <Tokens t={r.usage.total} /> : <span className="text-caption text-ink-tertiary">not closed yet</span>) },
+                    ...typeCols<PrRow>(r => r.usage?.total ?? null),
                     { key: 'cost', header: 'Cost', align: 'right', firstDir: 'desc',
-                      sortValue: r => { if (!r.usage) return -1; const c = estimateCost(r.usage.byModel ?? [], priceTable); return c.reported + c.estimated; },
+                      sortValue: r => { if (!r.usage) return null; const c = estimateCost(r.usage.byModel ?? [], priceTable); return c.reported + c.estimated; },
                       render: r => (r.usage ? <Cost byModel={r.usage.byModel ?? []} prices={priceTable} /> : null) },
                   ]}
                 />
