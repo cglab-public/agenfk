@@ -256,23 +256,27 @@ describe('agenfk update-project <id>', () => {
 // agenfk add-context <id>
 // ---------------------------------------------------------------------------
 describe('agenfk add-context <id>', () => {
+  // Full-length ids: a shorter value is resolved as a prefix against GET /items first.
+  const ITEM_1 = '11111111-1111-4111-8111-111111111111';
+  const ITEM_2 = '22222222-2222-4222-8222-222222222222';
+
   it('is registered as a top-level command', () => {
     expect(program.commands.map(c => c.name())).toContain('add-context');
   });
 
   it('appends a context item to the existing context array and PUTs it', async () => {
     mockedAxios.get.mockResolvedValue({
-      data: { id: 'item-1', context: [{ id: 'c0', path: 'old.md' }] },
+      data: { id: ITEM_1, context: [{ id: 'c0', path: 'old.md' }] },
     });
     mockedAxios.put.mockResolvedValue({ data: {} });
 
     await program.parseAsync([
-      'node', 'agenfk', 'add-context', 'item-1',
+      'node', 'agenfk', 'add-context', ITEM_1,
       '--path', 'docs/spec.md',
       '--description', 'the spec',
     ]);
 
-    expect(mockedAxios.get).toHaveBeenCalledWith(`${API}/items/item-1`);
+    expect(mockedAxios.get).toHaveBeenCalledWith(`${API}/items/${ITEM_1}`);
     const [, body] = mockedAxios.put.mock.calls[0];
     const ctx = (body as any).context;
     expect(ctx).toHaveLength(2);
@@ -282,11 +286,11 @@ describe('agenfk add-context <id>', () => {
   });
 
   it('handles an item that has no existing context array', async () => {
-    mockedAxios.get.mockResolvedValue({ data: { id: 'item-2' } });
+    mockedAxios.get.mockResolvedValue({ data: { id: ITEM_2 } });
     mockedAxios.put.mockResolvedValue({ data: {} });
 
     await program.parseAsync([
-      'node', 'agenfk', 'add-context', 'item-2', '--path', 'a.ts',
+      'node', 'agenfk', 'add-context', ITEM_2, '--path', 'a.ts',
     ]);
 
     const [, body] = mockedAxios.put.mock.calls[0];
