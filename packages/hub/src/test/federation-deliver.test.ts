@@ -143,6 +143,22 @@ describe('POST /v1/federation/deliver', () => {
     expect(r.body.rejections).toEqual([{ id: 'x', reason: 'invalid_event' }]);
   });
 
+  it('stores a forwarded occurredAt as the UTC instant, and refuses one that does not parse (GH-391)', async () => {
+    const a = await enroll('alpha');
+    // 22:30-03:00 is 01:30Z the NEXT day: the rollup must land there, not on the 14th.
+    const r = await deliver(a.token, [
+      row('off', a.childHubId, { occurredAt: '2026-09-14T22:30:00-03:00' }),
+      { ...row('junk', a.childHubId, { occurredAt: 'last tuesday' }), id: 'junk-row' },
+    ]);
+    expect(r.body).toMatchObject({ accepted: 1, rejected: 1 });
+    expect(r.body.rejections).toEqual([{ id: 'junk-row', reason: 'invalid_event' }]);
+    const stored = await ctx.db.get<any>('SELECT occurred_at, payload FROM events WHERE event_id = ?', [`ch:${a.childHubId}:off`]);
+    expect(stored.occurred_at).toBe('2026-09-15T01:30:00.000Z');
+    expect(JSON.parse(stored.payload).occurredAt).toBe('2026-09-15T01:30:00.000Z');
+    const days = await ctx.db.all<{ day: string }>('SELECT DISTINCT day FROM rollups_daily ORDER BY day');
+    expect(days.map(d => d.day)).toEqual(['2026-09-15']);
+  });
+
   it('rejects an event missing any of the three fields it is keyed and dated by', async () => {
     const a = await enroll('alpha');
     const bad = (over: Record<string, unknown>) => ({

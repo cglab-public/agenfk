@@ -17,6 +17,7 @@ import { prUrlFor } from '../util/remoteUrl.js';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
 import { UsageGroup, tokenWeight, installationLabel, chunks, zeroTotals, addTotals, modelsOf, summaryFromModels, CardLedger } from '../util/usageGroup.js';
+import { canonicalOccurredAt } from '../util/occurredAt.js';
 
 /**
  * A query parameter that is not the shape the route reads. Express parses
@@ -84,9 +85,19 @@ function readEventFilters(req: Request): EventFilters {
     projects: parseList(req, 'projects'),
     itemTypes: parseList(req, 'itemTypes'),
     childHubs: parseList(req, 'childHubId'),
-    from: singleValue(req, 'from'),
-    to: singleValue(req, 'to'),
+    from: timeBound(singleValue(req, 'from')),
+    to: timeBound(singleValue(req, 'to')),
   };
+}
+
+/**
+ * A window bound in the form events.occurred_at is stored in (GH-391), so
+ * SQLite's text comparison and Postgres' instant comparison agree: '10:00:00Z'
+ * would otherwise sort after the stored '10:00:00.000Z' on SQLite alone. One
+ * that does not parse is passed on as sent, as before.
+ */
+function timeBound(v: string | null): string | null {
+  return v == null ? v : canonicalOccurredAt(v) ?? v;
 }
 
 function applyEventFilters(orgId: string, f: EventFilters, timeCol: 'occurred_at' | 'day' = 'occurred_at')

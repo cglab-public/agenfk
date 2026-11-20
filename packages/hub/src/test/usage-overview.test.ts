@@ -60,6 +60,15 @@ describe('GET /v1/usage/overview', () => {
     const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
     expect(r.status).toBe(200);
   };
+  // A row stored before ingest refused unparseable times (GH-391): ingest now
+  // rejects one, so the old row is made by rewriting a stored event.
+  const legacyTime = async (eventId: string, occurredAt: string) => {
+    const r = await db.run(
+      "UPDATE events SET occurred_at = ?, payload = json_set(payload, '$.occurredAt', ?) WHERE event_id = ?",
+      [occurredAt, occurredAt, eventId],
+    );
+    expect(r.changes).toBe(1);
+  };
   const overview = async (q = '') => {
     const r = await supertest(app).get(`/v1/usage/overview${q}`).set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -344,7 +353,8 @@ describe('GET /v1/usage/overview', () => {
   });
 
   it('an event stored with a timestamp that does not parse is skipped and counted, not a failed request', async () => {
-    await post([step('bad', stepUsage(opus(5)), { occurredAt: 'not-a-time' }), step('ok', stepUsage(opus(7)))]);
+    await post([step('bad', stepUsage(opus(5)), { eventId: 'ov-bad' }), step('ok', stepUsage(opus(7)))]);
+    await legacyTime('ov-bad', 'not-a-time');
     const r = await supertest(app).get('/v1/usage/overview').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.total.input).toBe(7);
@@ -463,9 +473,10 @@ describe('GET /v1/usage/overview', () => {
     it("a malformed close of a PR's anchor is skipped and counted, never a failed request or a lost valid close", async () => {
       await post([
         closed('s1', 9, { occurredAt: '2026-11-19T09:00:00.000Z' }),
-        closed('s1', 1, { occurredAt: 'not-a-time' }),
+        closed('s1', 1, { eventId: 'cl-bad' }),
         pr('pr.opened', 's1', 13),
       ]);
+      await legacyTime('cl-bad', 'not-a-time');
       const r = await supertest(app).get('/v1/usage/overview').set('Cookie', cookie);
       expect(r.status).toBe(200);
       expect(r.body.byPr[0].usage.total.input).toBe(9);
