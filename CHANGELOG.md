@@ -4,6 +4,24 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+## [2.1.0-beta.20] — 2026-11-20
+
+**Features** (#393)
+
+- **The hub's Usage page shows each token type.** The headline, the tables (by installation, person, harness and
+  model, and PR) and the daily tokens chart show input, cache read, cache write and output beside the total. Each
+  type column sorts, and the chart stacks each day by type, with a tooltip on each part. Reasoning tokens are not
+  shown, because some harnesses count them in the output tokens.
+
+**Fixes** (#391)
+
+- **The hub stores one form of each event time.** Ingest and federation store `occurredAt` as a UTC ISO time, so
+  SQLite and Postgres filter and sort events the same way. A time without an offset is read as UTC. An event whose
+  time is not ISO 8601 is rejected alone, and does not cause its batch to fail on Postgres. On its first boot, a
+  SQLite hub rewrites the stored times one time and rebuilds the rollups of the days that changed; it keeps each row
+  that it cannot parse.
+- **A PR with no usage yet sorts last on the Usage page**, in each sort direction.
+
 ## [2.1.0-beta.19] — 2026-11-20
 
 **Features** (#389)
