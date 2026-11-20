@@ -88,6 +88,31 @@ describe('card usage on close', () => {
     expect(closed.payload.usage.byStep[0].step).toBe('WORK');
   });
 
+  it('GH-397: a turn priced at ingestion carries its estimate through the step, the close, the reply and the hub event', async () => {
+    const id = await make(await project(), 'TASK');
+    for (const est of [0.5, 0.25]) {
+      await storage.insertTokenEvent({
+        id: `close-est-${++off}`, ts: new Date().toISOString(), client: 'claude-code', sessionId: 'cc-s', model: 'claude-opus-5-5',
+        input: 10, cachedInput: 0, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, total: 11, estimatedCostUsd: est, itemId: id,
+        sourcePath: '/p/cc.jsonl', sourceOffset: off,
+      } as TokenEvent);
+    }
+    await turn(id, 1);
+
+    const res = await verify(id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.message).toMatch(/\$1\.00 cost \(\$0\.25 reported \+ \$0\.75 est\. when used\)/);
+
+    const card = (await agent().get(`/items/${id}`)).body;
+    expect(card.cardUsage.total).toMatchObject({ turns: 3, costUsd: 0.25, estimatedCostUsd: 0.75, unpricedTurns: 0 });
+    expect(card.usageByStep.at(-1).total).toMatchObject({ estimatedCostUsd: 0.75 });
+
+    const closed = await closedEvent(id);
+    expect(closed.payload.usage.total).toMatchObject({ costUsd: 0.25, estimatedCostUsd: 0.75 });
+    expect(closed.payload.usage.own.total).toMatchObject({ estimatedCostUsd: 0.75 });
+    expect(closed.payload.usage.byModel.find((m: any) => m.model === 'claude-opus-5-5')).toMatchObject({ estimatedCostUsd: 0.75, unpricedTurns: 0 });
+  });
+
   it("a closing move's step and close carry ONE own snapshot, even when a turn is ingested between their reads", async () => {
     const id = await make(await project(), 'TASK');
     await turn(id, 100);

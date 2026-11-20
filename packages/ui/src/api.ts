@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { PricesData } from '@agenfk/flow-editor';
 import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput, VerifyRunEntry, TokenEvent, NoCardUsage } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 import { API_URL } from './apiUrl';
 import type { AirlockHostListsDto } from './airlockHostText';
@@ -296,6 +297,11 @@ export const api = {
   getNoCardUsage: async (projectId: string, days = 30): Promise<NoCardUsage> => {
     const { data } = await axios.get(`${API_URL}/usage/no-card`, { params: { projectId, days } });
     return data;
+  },
+  /** GH-397: the price table the local server prices turns with, for older usage it holds no price for. */
+  getPriceTable: async (): Promise<PricesData | null> => {
+    const { data } = await axios.get(`${API_URL}/usage/prices`);
+    return data && Array.isArray(data.prices) && data.prices.length ? data : null;
   },
   getTokenEvents: async (params: { itemId: string; since?: string }): Promise<TokenEvent[]> => {
     const { data } = await axios.get(`${API_URL}/token-events`, { params });

@@ -3,14 +3,17 @@
  * the org over the board filters, by installation, by person, by harness and
  * model, and by PR, from GET /v1/usage/overview.
  *
- * Cost: harnesses that price their own turns (pi) report it; for the rest it
- * is ESTIMATED from the shared price table (@agenfk/flow-editor, the same one
- * the board uses) and labelled so. What the hub cannot see is said on the page.
+ * Cost: harnesses that price their own turns (pi) report it; the rest each
+ * installation priced when it ingested the turns (estimatedCostUsd, GH-397),
+ * from the public price table as it was then. Older usage with neither is
+ * ESTIMATED here at today's prices (@agenfk/flow-editor, the same code the
+ * board and the installations price with), and says so. What the hub cannot
+ * see is said on the page.
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import { estimateCost, parsePrices, PRICES_URL, type CostView, type PricedModelUsage, type PricesData } from '@agenfk/flow-editor';
+import { addCostViews, costTotal, estimateCost, parsePrices, PRICES_URL, type CostView, type PricedModelUsage, type PricesData } from '@agenfk/flow-editor';
 import { api } from '../api';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
@@ -39,6 +42,8 @@ const USAGE_FILTER_KEYS = ['projects', 'itemTypes', 'range'] as const;
 interface Totals {
   turns: number; input: number; cacheRead: number; cacheWrite: number;
   output: number; reasoning: number; costUsd: number; unpricedTurns: number;
+  /** GH-397: priced by the installation when the turns were used; absent from an older hub or older usage. */
+  estimatedCostUsd?: number;
 }
 type ModelRow = Totals & { client: string; model: string };
 interface Group { cards: number; total: Totals; byModel: ModelRow[] }
@@ -99,15 +104,15 @@ const NO_CARD_ROW = '\u0000no-card';
 const hasTotals = (t: Totals | null | undefined): t is Totals => !!t && (t.turns > 0 || tokensOf(t) > 0);
 const hasUsage = (u: Usage | null | undefined): u is Usage => !!u && hasTotals(u.total);
 const typeSplit = (t: Totals) => TOKEN_TYPES.map(type => `${type.label.toLowerCase()} ${abbreviate(t[type.key])}`).join(' · ');
-/** Two costs as one: reported and estimated added, the models named once. */
-function addCost(a: CostView, b: CostView): CostView {
-  return {
-    reported: a.reported + b.reported,
-    estimated: a.estimated + b.estimated,
-    unpricedModels: [...new Set([...a.unpricedModels, ...b.unpricedModels])],
-    estimatedModels: [...new Set([...a.estimatedModels, ...b.estimatedModels])],
-  };
+/** What a cost holds besides what was reported: priced when used, at today's prices, not priced at all. */
+function costNotes(c: CostView): string[] {
+  return [
+    c.estimatedAtTurn > 0 ? `includes ${money(c.estimatedAtTurn)} estimated when used` : '',
+    c.estimatedToday > 0 ? `includes ${money(c.estimatedToday)} estimated at today's prices` : '',
+    c.unpricedModels.length ? `not priced: ${c.unpricedModels.join(', ')}` : '',
+  ].filter(Boolean);
 }
+const TODAY_TITLE = 'usage recorded before turns were priced as they were used, priced at today\'s public prices';
 const NoCardName = () => <span className="text-body italic text-ink-secondary">{NO_CARD_LABEL}</span>;
 
 /** 950, 42k, 3.7M: the size of a total at a glance. */
@@ -149,13 +154,18 @@ function useLocalDay(): string {
 }
 const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
-/** A row's cost: reported plus estimated, the estimate and anything unpriced said beside it. */
+/**
+ * A row's cost: reported plus estimated, the estimate and anything unpriced
+ * said beside it. "est." is a figure AgEnFK priced rather than the harness;
+ * the part at today's prices (older usage) is named apart.
+ */
 function Cost({ byModel, prices }: { byModel: PricedModelUsage[]; prices: PricesData | undefined }) {
   const c = estimateCost(byModel, prices);
   return (
     <span className="inline-flex flex-wrap items-baseline justify-end gap-x-1.5">
-      <span className="font-mono tabular-nums text-ink">{money(c.reported + c.estimated)}</span>
-      {c.estimated > 0 && <span className="text-caption text-ink-tertiary" title="estimated from the public price table">est.</span>}
+      <span className="font-mono tabular-nums text-ink">{money(costTotal(c))}</span>
+      {c.estimated > 0 && <span className="text-caption text-ink-tertiary" title="priced by AgEnFK from the public price table, not reported by the harness">est.</span>}
+      {c.estimatedToday > 0 && <span className="text-caption text-ink-tertiary" title={TODAY_TITLE}>{`${money(c.estimatedToday)} at today's prices`}</span>}
       {c.unpricedModels.length > 0 && (
         <span className="text-caption text-ink-tertiary">{`not priced: ${c.unpricedModels.join(', ')}`}</span>
       )}
@@ -252,7 +262,7 @@ export function UsagePage() {
   const priceTable = prices.data;
   const costCol = <T,>(models: (r: T) => ModelRow[]) => ({
     key: 'cost', header: 'Cost', align: 'right' as const, firstDir: 'desc' as const,
-    sortValue: (r: T) => { const c = estimateCost(models(r), priceTable); return c.reported + c.estimated; },
+    sortValue: (r: T) => costTotal(estimateCost(models(r), priceTable)),
     render: (r: T) => <Cost byModel={models(r)} prices={priceTable} />,
   });
   const tokensCol = <T,>(total: (r: T) => Totals) => ({
@@ -281,7 +291,8 @@ export function UsagePage() {
       <p className="text-caption text-ink-tertiary">
         Usage reaches the hub when a card changes step: a card's current step is counted when it moves on.
         Usage on no card arrives as each installation's daily total per project, a few times a day, and is in the totals.
-        Cost is what pi reported plus, for Claude Code and Codex, an estimate from the public price table, marked est.
+        Cost is what pi reported plus, for Claude Code and Codex, what each installation priced the turns at from the public price table when they were used, marked est.
+        Older usage recorded before that is priced at today's prices, and says so.
       </p>
 
       <FilterAccordion
@@ -346,7 +357,7 @@ export function UsagePage() {
           const nc = hasUsage(d.noCard) ? d.noCard! : null;
           const ncCost = nc ? estimateCost(nc.byModel, priceTable) : null;
           const cardCost = estimateCost(d.byModel, priceTable);
-          const cost = ncCost ? addCost(cardCost, ncCost) : cardCost;
+          const cost = ncCost ? addCostViews(cardCost, ncCost) : cardCost;
           // Every day of the range (a quiet day is a zero bar), plus any day the hub filed outside it.
           const dayRows = new Map((d.byDay ?? []).map(r => [r.day, r] as const));
           const ncDays = new Map((nc?.byDay ?? []).map(r => [r.day, r] as const));
@@ -379,12 +390,11 @@ export function UsagePage() {
                 />
                 <StatTile
                   label="Cost"
-                  value={money(cost.reported + cost.estimated)}
+                  value={money(costTotal(cost))}
                   hint={(
                     <span className="flex flex-col">
-                      {cost.estimated > 0 && <span>{`includes ${money(cost.estimated)} estimated`}</span>}
-                      {cost.unpricedModels.length > 0 && <span>{`not priced: ${cost.unpricedModels.join(', ')}`}</span>}
-                      {ncCost && <span>{`of which ${money(ncCost.reported + ncCost.estimated)} not on a card`}</span>}
+                      {costNotes(cost).map(note => <span key={note}>{note}</span>)}
+                      {ncCost && <span>{`of which ${money(costTotal(ncCost))} not on a card`}</span>}
                     </span>
                   )}
                 />
@@ -406,13 +416,10 @@ export function UsagePage() {
                   if (!g && !n) return { day, value: 0, ...(nc ? { parts: [0, 0] } : {}) };
                   const onCard = estimateCost(g?.byModel ?? [], priceTable);
                   const offCard = estimateCost(n?.byModel ?? [], priceTable);
-                  const c = addCost(onCard, offCard);
-                  const note = [
-                    c.estimated > 0 ? `includes ${money(c.estimated)} estimated` : '',
-                    c.unpricedModels.length ? `not priced: ${c.unpricedModels.join(', ')}` : '',
-                  ].filter(Boolean).join('; ');
-                  const parts = nc ? { parts: [onCard.reported + onCard.estimated, offCard.reported + offCard.estimated] } : {};
-                  return { day, value: c.reported + c.estimated, ...parts, ...(note ? { note } : {}) };
+                  const c = addCostViews(onCard, offCard);
+                  const note = costNotes(c).join('; ');
+                  const parts = nc ? { parts: [costTotal(onCard), costTotal(offCard)] } : {};
+                  return { day, value: costTotal(c), ...parts, ...(note ? { note } : {}) };
                 })}
                 format={money}
                 tickFormat={v => (v === 0 ? '$0' : money(v))}
@@ -504,7 +511,7 @@ export function UsagePage() {
                       render: r => (r.usage ? <Tokens t={r.usage.total} /> : <span className="text-caption text-ink-tertiary">not closed yet</span>) },
                     ...typeCols<PrRow>(r => r.usage?.total ?? null),
                     { key: 'cost', header: 'Cost', align: 'right', firstDir: 'desc',
-                      sortValue: r => { if (!r.usage) return null; const c = estimateCost(r.usage.byModel ?? [], priceTable); return c.reported + c.estimated; },
+                      sortValue: r => (r.usage ? costTotal(estimateCost(r.usage.byModel ?? [], priceTable)) : null),
                       render: r => (r.usage ? <Cost byModel={r.usage.byModel ?? []} prices={priceTable} /> : null) },
                   ]}
                 />

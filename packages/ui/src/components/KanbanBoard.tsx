@@ -22,7 +22,8 @@ import { ItemTypeBadge, ITEM_TYPE_VISUAL } from './ItemTypeSquare';
 import { VerifyRunBadge } from './VerifyRunBadge';
 import { VerifyRunsChip } from './VerifyRunsChip';
 import { ColumnContractBadges, ColumnRole } from './ColumnContractBadges';
-import { checkText, parsePrices, PRICES_URL } from '@agenfk/flow-editor';
+import { checkText } from '@agenfk/flow-editor';
+import { usePriceTable } from '../usePriceTable';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
@@ -694,15 +695,7 @@ export const KanbanBoard: React.FC = () => {
     return Object.fromEntries(activeFlow.steps.map((s: FlowStep) => [s.name, s]));
   }, [activeFlow]);
   
-  const { data: pricesData } = useQuery({
-    queryKey: ['prices'],
-    /* v8 ignore next 4 */
-    queryFn: async () => {
-      const res = await fetch(PRICES_URL);
-      return parsePrices(await res.json());
-    },
-    staleTime: 1000 * 60 * 60 * 24
-  });
+  const pricesData = usePriceTable();
 
   const [selectedItem, setSelectedItem] = useState<AgEnFKItem | null>(null);
 

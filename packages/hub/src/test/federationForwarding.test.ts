@@ -133,6 +133,15 @@ describe('redactIdentity', () => {
     expect(JSON.stringify(out.payload)).not.toContain('secret flow');
   });
 
+  it('GH-397: a no-card total keeps the cost AgEnFK estimated when the turns were used, and an older one without it forwards zero', () => {
+    const fwd = (usage: unknown) => (redactIdentity({ ...full, type: 'usage.no-card', payload: { day: '2026-11-19', asOf: 'x', usage } }, 'ch-1', SECRET) as any).payload.usage;
+    const now = fwd({ total: { turns: 2, estimatedCostUsd: '0.75' }, byModel: [{ client: 'claude-code', model: 'claude-opus-5-5', turns: 2, estimatedCostUsd: 0.75 }] });
+    expect(now.total.estimatedCostUsd).toBe(0.75);
+    expect(now.byModel[0].estimatedCostUsd).toBe(0.75);
+    const older = fwd({ total: { turns: 1 }, byModel: [{ client: 'pi', model: 'q', turns: 1 }] });
+    expect(older.total.estimatedCostUsd).toBe(0);
+  });
+
   it('survives an event with no identity at all', () => {
     const out = redactIdentity({ eventId: 'e', type: 't' }, 'ch-1', SECRET);
     expect(out.userKey).toBeNull();

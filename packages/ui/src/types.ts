@@ -28,7 +28,9 @@ export interface UsageTotals {
   reasoning: number;
   /** Only what the harnesses reported themselves (pi). */
   costUsd: number;
-  /** Turns no harness priced: the board estimates them from its price table. */
+  /** GH-397: what AgEnFK priced the other turns at when it ingested them; absent from usage recorded before. */
+  estimatedCostUsd?: number;
+  /** Turns with neither: the board estimates them at today's prices, and says so. */
   unpricedTurns: number;
 }
 
@@ -84,6 +86,8 @@ export interface TokenEvent {
   reasoning: number;
   total: number;
   costUsd?: number;
+  /** GH-397: what AgEnFK priced the turn at when it ingested it. */
+  estimatedCostUsd?: number;
   itemId?: string;
 }
 

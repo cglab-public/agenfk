@@ -2,11 +2,13 @@
  * GH-389 follow-up: the usage overview's aggregation. A UsageGroup sums the
  * usage payloads (UsageSummary: total + byModel) of the events it is given,
  * merging models by client + model and counting the distinct cards behind it.
+ * GH-397: estimatedCostUsd (what the installation priced its turns at when it
+ * ingested them) is summed like the rest; a payload from before has none: 0.
  */
-export const USAGE_FIELDS = ['turns', 'input', 'cacheRead', 'cacheWrite', 'output', 'reasoning', 'costUsd', 'unpricedTurns'] as const;
+export const USAGE_FIELDS = ['turns', 'input', 'cacheRead', 'cacheWrite', 'output', 'reasoning', 'costUsd', 'estimatedCostUsd', 'unpricedTurns'] as const;
 export type UsageTotalsRow = Record<typeof USAGE_FIELDS[number], number>;
 export type ModelRow = UsageTotalsRow & { client: string; model: string };
-export const zeroTotals = (): UsageTotalsRow => ({ turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, unpricedTurns: 0 });
+export const zeroTotals = (): UsageTotalsRow => ({ turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 0 });
 /** Adds b into a. Payload numbers may arrive as strings (Postgres json): coerced, junk is 0. */
 export function addTotals(a: UsageTotalsRow, b: any): void {
   for (const k of USAGE_FIELDS) { const v = Number(b?.[k]); if (Number.isFinite(v)) a[k] += v; }

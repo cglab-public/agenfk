@@ -6,13 +6,15 @@
  * included). The step the card is in now has no row yet, so it is counted
  * live from the turns ingested since the card entered it.
  *
- * Cost: harnesses that price their own turns (pi) report it; for the rest the
- * board can only ESTIMATE, from its price table, and says so.
+ * Cost: harnesses that price their own turns (pi) report it; the local server
+ * prices the rest when it ingests them (estimatedCostUsd, GH-397). Older usage
+ * with neither is estimated at today's prices, from the server's price table,
+ * and said to be.
  */
 import type { AgEnFKItem, ModelUsage, TokenEvent, UsageTotals } from './types';
 
 export const zeroTotals = (): UsageTotals => ({
-  turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, unpricedTurns: 0,
+  turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 0,
 });
 
 function add(a: UsageTotals, b: UsageTotals): UsageTotals {
@@ -23,6 +25,7 @@ function add(a: UsageTotals, b: UsageTotals): UsageTotals {
   a.output += b.output;
   a.reasoning += b.reasoning;
   a.costUsd += b.costUsd;
+  a.estimatedCostUsd = (a.estimatedCostUsd ?? 0) + (b.estimatedCostUsd ?? 0);
   a.unpricedTurns += b.unpricedTurns;
   return a;
 }
@@ -30,6 +33,7 @@ function add(a: UsageTotals, b: UsageTotals): UsageTotals {
 function totalsOfEvent(ev: TokenEvent): UsageTotals {
   const split = ev.cacheRead !== undefined || ev.cacheWrite !== undefined;
   const priced = typeof ev.costUsd === 'number' && Number.isFinite(ev.costUsd);
+  const estimated = !priced && typeof ev.estimatedCostUsd === 'number' && Number.isFinite(ev.estimatedCostUsd);
   return {
     turns: 1,
     input: ev.input,
@@ -38,7 +42,8 @@ function totalsOfEvent(ev: TokenEvent): UsageTotals {
     output: ev.output,
     reasoning: ev.reasoning,
     costUsd: priced ? ev.costUsd! : 0,
-    unpricedTurns: priced ? 0 : 1,
+    estimatedCostUsd: estimated ? ev.estimatedCostUsd! : 0,
+    unpricedTurns: priced || estimated ? 0 : 1,
   };
 }
 
@@ -154,7 +159,7 @@ export function summarizeCardUsage(
 }
 
 // The estimator is shared with the hub's /usage page (GH-389): one copy.
-export { estimateCost, type CostView, type PriceEntry, type PricesData } from '@agenfk/flow-editor';
+export { addCostViews, costTotal, estimateCost, fallbackPricesLabel, type CostView, type PriceEntry, type PricesData } from '@agenfk/flow-editor';
 
 export const tokensOf = (t: UsageTotals): number => t.input + t.cacheRead + t.cacheWrite + t.output;
 

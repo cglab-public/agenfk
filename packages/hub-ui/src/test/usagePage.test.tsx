@@ -624,6 +624,104 @@ describe('UsagePage', () => {
     });
   });
 
+  describe('cost priced when the turns were used (GH-397)', () => {
+    /** Claude turns AgEnFK priced at ingestion: $2.50 stored, nothing left unpriced. */
+    const pricedOpus = { ...opus, unpricedTurns: 0, estimatedCostUsd: 2.5 };
+    /** No card: 300k Claude tokens priced at ingestion at $0.75. */
+    const pricedFree = { client: 'claude-code', model: 'claude-opus-5-5', ...zero, turns: 1, input: 300_000, estimatedCostUsd: 0.75 };
+    const PRICED = {
+      ...OVERVIEW,
+      total: { ...sum(pricedOpus, qwen, pricedFree), estimatedCostUsd: 3.25 },
+      byInstallation: [
+        { installation_id: 'inst-a', label: 'Alice <alice@acme.com>', cards: 2, total: pricedOpus, byModel: [pricedOpus] },
+        { installation_id: 'inst-b-unnamed', label: null, cards: 1, total: qwen, byModel: [qwen] },
+      ],
+      byUser: [{ user_key: 'alice@acme.com', cards: 2, total: pricedOpus, byModel: [pricedOpus] }],
+      byModel: [pricedOpus, qwen],
+      byPr: [{ repo: 'acme/api', pr_number: 42, item_id: 's1', item_type: 'STORY', item_title: 'Priced PR', opened_at: '2026-11-19T10:00:00.000Z', closed_at: '2026-11-19T09:00:00.000Z',
+        usage: { byModel: [pricedOpus, qwen], total: pricedOpus, byStep: [], cards: 1 } }],
+      byDay: [{ day: '2026-11-19', cards: 2, total: pricedOpus, byModel: [pricedOpus, qwen] }],
+      noCard: {
+        total: pricedFree, byModel: [pricedFree],
+        byDay: [{ day: '2026-11-19', total: pricedFree, byModel: [pricedFree] }],
+        byInstallation: [{ installation_id: 'inst-c', label: null, total: pricedFree, byModel: [pricedFree] }],
+        byUser: [{ user_key: 'carol@acme.com', total: pricedFree, byModel: [pricedFree] }],
+      },
+    };
+    beforeEach(() => { overview = PRICED; });
+    const ready = async () => within(await screen.findByRole('region', { name: /totals/i })).findByText('$3.75');
+
+    it('the totals add the stored estimate to the reported cost, said as estimated when used, not at today\'s prices', async () => {
+      renderAt('/usage');
+      const totals = await screen.findByRole('region', { name: /totals/i });
+      // $0.50 reported + $2.50 + $0.75 stored estimates; the price table's $10/M rate plays no part.
+      expect(within(totals).getByText('$3.75')).toBeInTheDocument();
+      expect(within(totals).getByText(/includes \$3\.25 estimated when used/i)).toBeInTheDocument();
+      expect(within(totals).queryByText(/today's prices/i)).not.toBeInTheDocument();
+      expect(within(totals).getByText(/of which \$0\.75 not on a card/i)).toBeInTheDocument();
+    });
+
+    it('the figure is the same with the price table unavailable: stored prices need none', async () => {
+      pricesOk = false;
+      renderAt('/usage');
+      const totals = await screen.findByRole('region', { name: /totals/i });
+      expect(await within(totals).findByText('$3.75')).toBeInTheDocument();
+      expect(within(totals).queryByText(/not priced/i)).not.toBeInTheDocument();
+    });
+
+    it.each([/by installation/i, /by person/i, /by harness/i])('the %s table shows the stored estimate, marked est.', async (name) => {
+      renderAt('/usage');
+      await ready();
+      const t = section(name);
+      expect(within(t).getByText('$2.50')).toBeInTheDocument();
+      expect(within(t).getAllByText(/^est\.$/).length).toBeGreaterThan(0);
+      expect(within(t).queryByText(/today's prices/i)).not.toBeInTheDocument();
+    });
+
+    it('a PR costs what its card cost when its turns were used', async () => {
+      renderAt('/usage');
+      await ready();
+      expect(within(section(/by pr/i)).getByText('$3.00')).toBeInTheDocument();
+    });
+
+    it('the cost chart uses the stored estimates on and off a card', async () => {
+      renderAt('/usage?range=7d');
+      await ready();
+      const bar = within(section(/cost per day/i)).getByRole('option', { name: /2026-11-19: \$3\.75/ });
+      expect(bar).toHaveAccessibleName(/on a card \$3\.00.*not on a card \$0\.75/i);
+      expect(bar).toHaveAccessibleName(/estimated when used/i);
+    });
+
+    it("older usage with no stored price is priced at today's prices, and the page says which part that is", async () => {
+      // An older day all unpriced, a newer one priced when used.
+      const legacy = { ...opus, turns: 2, unpricedTurns: 2, input: 1_000_000 };
+      const priced = { ...opus, turns: 2, unpricedTurns: 0, input: 1_000, estimatedCostUsd: 2.5 };
+      const mixed = { ...opus, turns: 4, unpricedTurns: 2, input: 1_001_000, estimatedCostUsd: 2.5 };
+      overview = { ...OVERVIEW, total: { ...sum(mixed, qwen), estimatedCostUsd: 2.5 }, byModel: [mixed, qwen],
+        byInstallation: [{ installation_id: 'inst-a', label: 'Alice', cards: 2, total: mixed, byModel: [mixed] }],
+        byUser: [{ user_key: 'alice@acme.com', cards: 2, total: mixed, byModel: [mixed] }],
+        byDay: [
+          { day: '2026-11-18', cards: 1, total: legacy, byModel: [legacy, qwen] },
+          { day: '2026-11-19', cards: 1, total: priced, byModel: [priced] },
+        ], byPr: [] };
+      renderAt('/usage?range=7d');
+      // Over the window the model's turns are part priced, part not: the tile keeps
+      // the $0.50 reported + $2.50 priced when used, and says the rest is not priced.
+      const totals = await screen.findByRole('region', { name: /totals/i });
+      expect(await within(totals).findByText('$3.00')).toBeInTheDocument();
+      expect(within(totals).getByText(/includes \$2\.50 estimated when used/i)).toBeInTheDocument();
+      expect(within(totals).getByText(/not priced: claude-opus-5-5/i)).toBeInTheDocument();
+      // The day whose turns all lack a price is priced at today's prices, and says so.
+      const chart = section(/cost per day/i);
+      expect(within(chart).getByRole('option', { name: /2026-11-18: \$10\.50.*today's prices/ })).toBeInTheDocument();
+      expect(within(chart).getByRole('option', { name: /2026-11-19: \$2\.50.*estimated when used/ })).toBeInTheDocument();
+      // A row whose turns are part priced, part not, cannot tell the unpriced part's tokens: it says so.
+      const t = section(/by harness/i);
+      expect(within(t).getByText('$2.50')).toBeInTheDocument();
+      expect(within(t).getByText(/not priced: claude-opus-5-5/i)).toBeInTheDocument();
+    });
+  });
+
   it('is reachable from the dashboard nav', async () => {
     renderAt('/');
     expect(await screen.findByRole('link', { name: /^usage$/i })).toHaveAttribute('href', '/usage');

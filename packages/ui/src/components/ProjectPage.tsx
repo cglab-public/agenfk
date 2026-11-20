@@ -13,7 +13,9 @@ import { ItemTypeSquare } from './ItemTypeSquare';
 import { Switch } from './ui/switch';
 import { ProjectSuiteControl, hasSuiteControl } from './ProjectSuiteControl';
 import { ItemType } from '../types';
-import { abbreviateTokens, TOKEN_KINDS, tokensOf } from '../usage';
+import { abbreviateTokens, estimateCost, fallbackPricesLabel, TOKEN_KINDS, tokensOf } from '../usage';
+import { usePriceTable } from '../usePriceTable';
+import { formatCost } from '../utils';
 
 /**
  * Where you land after a project is created, and where you go to see what it
@@ -292,15 +294,27 @@ function NoCardUsageLine({ projectId }: { projectId: string }) {
     queryFn: () => api.getNoCardUsage(projectId, NO_CARD_DAYS),
     refetchInterval: 60_000,
   });
+  const prices = usePriceTable();
   const total = data?.total;
   if (!data || !total || (total.turns === 0 && tokensOf(total) === 0)) return null;
   const split = TOKEN_KINDS.map(({ kind, label }) => `${label.toLowerCase()} ${abbreviateTokens(total[kind])}`).join(' · ');
-  const cost = total.costUsd > 0 ? '$' + total.costUsd.toFixed(2) + ' reported' : null;
-  const text = [`${abbreviateTokens(tokensOf(total))} tokens not on a card`, cost, `${data.days} days`].filter(Boolean).join(' · ');
+  const reported = total.costUsd || 0;
+  const atTurn = total.estimatedCostUsd || 0;
+  const view = estimateCost(data.byModel ?? [], prices);
+  const today = view.estimatedToday;
+  const cost = atTurn + today > 0 ? `${formatCost(reported + atTurn + today)} est.` : reported > 0 ? `${formatCost(reported)} reported` : null;
+  const todayText = today > 0 ? `${formatCost(today)} at ${fallbackPricesLabel(prices)}` : null;
+  const notPriced = view.unpricedModels.length ? `not priced: ${view.unpricedModels.join(', ')}` : null;
+  const text = [`${abbreviateTokens(tokensOf(total))} tokens not on a card`, cost, todayText, notPriced, `${data.days} days`].filter(Boolean).join(' · ');
+  const costParts = [
+    reported > 0 ? `${formatCost(reported)} reported` : '',
+    atTurn > 0 ? `${formatCost(atTurn)} estimated when used` : '',
+    today > 0 ? `${formatCost(today)} estimated at ${fallbackPricesLabel(prices)}` : '',
+  ].filter(Boolean);
   return (
     <span
       data-testid="project-page-no-card"
-      title={`${total.turns} ${total.turns === 1 ? 'turn' : 'turns'} not on a card in the last ${data.days} days: ${split}`}
+      title={`${total.turns} ${total.turns === 1 ? 'turn' : 'turns'} not on a card in the last ${data.days} days: ${split}${costParts.length ? `; cost ${costParts.join(', ')}` : ''}`}
       className="shrink-0 truncate text-[11px] text-ink-tertiary"
     >
       {text}

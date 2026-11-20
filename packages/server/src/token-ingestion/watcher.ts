@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { Project, TokenEvent, IngestionState, StorageProvider } from '@agenfk/core';
+import { priceTokens, type Project, type TokenEvent, type IngestionState, type StorageProvider, type PricesData } from '@agenfk/core';
 import { findActiveItemAt } from './attribution';
+import { totalsOf } from '../usage/stepUsage';
 
 /**
  * What a parser may carry from one pass to the next. The watcher saves
@@ -148,6 +149,12 @@ export interface IngestionPollerOptions {
   fileFilter?: (client: string, absPath: string, relPath: string) => boolean;
   /** Called for each TokenEvent successfully written to storage. */
   onEvent?: (ev: TokenEvent) => void;
+  /**
+   * GH-397: the price table to price turns with that their harness did not
+   * price. Read at most once per pass, and only when a turn needs it; null or
+   * a failure leaves those turns unpriced.
+   */
+  prices?: () => Promise<PricesData | null>;
 }
 
 /**
@@ -263,6 +270,11 @@ async function* ingestFile(
 export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> {
   let written = 0;
   const epochMs = opts.epoch ? Date.parse(opts.epoch) : null;
+  let table: Promise<PricesData | null> | null = null;
+  const tableNow = () => (table ??= (opts.prices ? opts.prices() : Promise.resolve(null)).catch((e: Error) => {
+    console.error(`[USAGE] no price table for this pass: ${e.message}`);
+    return null;
+  }));
   for (const source of opts.sources) {
     const files = await listSourceFiles(source.rootDir, source.matches);
     for (const abs of files) {
@@ -279,6 +291,7 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
         ev.client = source.client as any;
         if (result.nextState.fileId) ev.sourceFile = result.nextState.fileId;
         if (opts.attributeEvents) await attributeTokenEvent(opts.storage, ev);
+        if (opts.prices) await priceTokenEvent(ev, tableNow);
         try {
           await opts.storage.insertTokenEvent(ev);
           written++;
@@ -296,6 +309,20 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
     }
   }
   return written;
+}
+
+/**
+ * GH-397: price a turn its harness did not price, from the table as it is at
+ * ingestion, as `estimatedCostUsd`. A turn the harness priced (pi) is left as
+ * reported; a model the table has no price for, or no table, leaves it unpriced.
+ */
+export async function priceTokenEvent(ev: TokenEvent, table: () => Promise<PricesData | null>): Promise<void> {
+  if (typeof ev.costUsd === 'number' && Number.isFinite(ev.costUsd)) return;
+  const prices = await table();
+  if (!prices) return;
+  const t = totalsOf(ev);
+  const cost = priceTokens(ev.model, { input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite }, prices);
+  if (cost !== null && Number.isFinite(cost)) ev.estimatedCostUsd = cost;
 }
 
 /**

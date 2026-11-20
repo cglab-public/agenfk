@@ -143,6 +143,40 @@ describe('GET /v1/usage/overview', () => {
     ]);
   });
 
+  it('GH-397: sums the cost AgEnFK estimated when the turns were used, apart from the reported cost, in every breakdown and on no card', async () => {
+    const priced = (input: number, est: number) => ({ ...opus(input), unpricedTurns: 0, estimatedCostUsd: est });
+    const usageOf = (...byModel: any[]) => {
+      const u: any = stepUsage(...byModel);
+      u.total.estimatedCostUsd = byModel.reduce((a, m) => a + (m.estimatedCostUsd ?? 0), 0);
+      return u;
+    };
+    await post([
+      step('c1', usageOf(priced(10, 0.5), qwen(1, 0.25))),
+      step('c2', usageOf(priced(30, 0.25))),
+      // An older step with no estimatedCostUsd at all: zero, not NaN.
+      step('c3', stepUsage(opus(5))),
+      event({ type: 'usage.no-card', itemType: undefined, occurredAt: '2026-11-19T15:00:00.000Z',
+        payload: { day: '2026-11-19', asOf: '2026-11-19T16:00:00.000Z', usage: { byModel: [priced(4, 0.125)], total: priced(4, 0.125) } } }),
+    ]);
+    const body = await overview();
+    expect(body.total).toMatchObject({ costUsd: 0.25, estimatedCostUsd: 0.875, unpricedTurns: 1 });
+    expect(body.byModel.find((m: any) => m.model === 'claude-opus-5-5')).toMatchObject({ estimatedCostUsd: 0.75, unpricedTurns: 1 });
+    expect(body.byInstallation[0].total).toMatchObject({ estimatedCostUsd: 0.75 });
+    expect(body.byUser[0].byModel.find((m: any) => m.model === 'claude-opus-5-5')).toMatchObject({ estimatedCostUsd: 0.75 });
+    expect(body.byDay[0].total).toMatchObject({ estimatedCostUsd: 0.75 });
+    expect(body.noCard.total).toMatchObject({ estimatedCostUsd: 0.125 });
+    expect(body.noCard.byModel[0]).toMatchObject({ estimatedCostUsd: 0.125 });
+  });
+
+  it("GH-397: a card's later snapshot credits only the estimate it has beyond the one already counted", async () => {
+    const snap = (est: number, asOf: string) => ({ ...stepUsage(), own: { byModel: [{ ...opus(10), unpricedTurns: 0, estimatedCostUsd: est }], total: { ...opus(10), unpricedTurns: 0, estimatedCostUsd: est }, asOf } });
+    await post([
+      step('c1', snap(0.5, '2026-11-19T10:00:00.000Z')),
+      step('c1', snap(0.75, '2026-11-19T11:00:00.000Z'), { occurredAt: '2026-11-19T11:00:00.000Z' }),
+    ]);
+    expect((await overview()).total.estimatedCostUsd).toBe(0.75);
+  });
+
   it('breaks down by installation and by user, each with its own models, biggest first', async () => {
     await post([
       step('a1', stepUsage(opus(10))),

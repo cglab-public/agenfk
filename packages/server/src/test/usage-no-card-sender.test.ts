@@ -85,6 +85,16 @@ describe('noCardUsageByDay', () => {
 });
 
 describe('the no-card usage sender', () => {
+  it('GH-397: sends the price AgEnFK put on each turn at ingestion with the day total, apart from the reported cost', async () => {
+    const { sender, sent } = setup([
+      ev({ estimatedCostUsd: 0.5 }), ev({ estimatedCostUsd: 0.25 }), ev({ client: 'pi', model: 'qwen3.8:27b', costUsd: 0.1 }),
+    ]);
+    await sender.tick();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload.usage.total).toMatchObject({ turns: 3, costUsd: 0.1, estimatedCostUsd: 0.75, unpricedTurns: 0 });
+    expect(sent[0].payload.usage.byModel.find((m: any) => m.model === 'claude-opus-5-5')).toMatchObject({ estimatedCostUsd: 0.75 });
+  });
+
   it('sends one running total per project per local day, not one event per turn', async () => {
     const turns = Array.from({ length: 40 }, (_, i) => ev({ ts: at(19, 9, i) }));
     const { sender, sent } = setup([...turns, ev({ ts: at(19, 10), projectId: 'p2' })]);
