@@ -46,6 +46,20 @@ program.option('--toon', 'Emit token-optimized TOON instead of JSON on read comm
 function structuredOutput(data: unknown): string {
   return program.opts().toon ? toonEncode(data) : JSON.stringify(data, null, 2);
 }
+
+/**
+ * Resolve an <id> argument the way `get` does (resolveItemIdPrefix): a full id
+ * is taken as-is, a unique prefix becomes the full id. An unknown or ambiguous
+ * prefix prints why - the ambiguous one with its candidates - and exits 1, so
+ * the command sends nothing that names an item. Returns null in that case.
+ */
+async function resolveItemIdOrExit(id: string): Promise<string | null> {
+  if (id.length >= 36) return id;
+  const { data: allItems } = await axios.get(`${API_URL}/items`);
+  const resolved = resolveItemIdPrefix(allItems, id);
+  if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); return null; }
+  return resolved.id;
+}
 const INTEGRATION_ALIASES: Record<string, string> = {
   claude: 'claude',
   'claude-code': 'claude',
@@ -2125,16 +2139,9 @@ program
   .description('Delete an item')
   .action(async (id) => {
     try {
-      let targetId = id;
-      if (id.length < 36) {
-        const { data: allItems } = await axios.get(`${API_URL}/items`);
-        const found = allItems.filter((i: any) => i.id.startsWith(id));
-        if (found.length === 0) {
-           console.error(chalk.red(`Item starting with ${id} not found.`));
-           return;
-        }
-        targetId = found[0].id;
-      }
+      // An ambiguous prefix is refused, never resolved to its first match: this deletes.
+      const targetId = await resolveItemIdOrExit(id);
+      if (!targetId) return;
 
       await axios.delete(`${API_URL}/items/${targetId}`);
       console.log(chalk.green(`Deleted item ${targetId}`));
@@ -2148,16 +2155,9 @@ program
   .description('Move an item and all its children to another project')
   .action(async (id, targetProjectId) => {
     try {
-      let targetId = id;
-      if (id.length < 36) {
-        const { data: allItems } = await axios.get(`${API_URL}/items`);
-        const found = allItems.filter((i: any) => i.id.startsWith(id));
-        if (found.length === 0) {
-          console.error(chalk.red(`Item starting with ${id} not found.`));
-          return;
-        }
-        targetId = found[0].id;
-      }
+      // An ambiguous prefix is refused, never resolved to its first match: this moves a subtree.
+      const targetId = await resolveItemIdOrExit(id);
+      if (!targetId) return;
 
       const { data } = await axios.post(`${API_URL}/items/${targetId}/move`, { targetProjectId });
       const { item, movedCount } = data;

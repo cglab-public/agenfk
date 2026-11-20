@@ -81,6 +81,14 @@ Beta, cumulative over 2.1.0-beta.20: everything in 2.1.0-beta.20, plus the chang
 - **The hub's new `events` index does not block event ingest on Postgres.** It is built `CONCURRENTLY`, and an
   index left INVALID by a failed build is rebuilt on the next boot.
 
+**Fixes**
+
+- **`agenfk delete` and `agenfk move` refuse an ambiguous id prefix instead of acting on its first match.** A short
+  id that started more than one item's id deleted (or moved, with all its children) whichever came first in the list.
+  Both now fail with exit 1, list the matching items and change nothing, like `get` and `update`. A prefix nothing
+  starts with now also exits 1 (it printed an error and exited 0). Every command that resolves a short id through
+  the shared resolver (`run start`, `run list --item`) lists the candidates of an ambiguous prefix too.
+
 ## [2.1.0-beta.18] — 2026-11-15
 
 **Fixes** (#371)
