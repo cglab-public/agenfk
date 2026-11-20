@@ -37,6 +37,20 @@ describe('token events: usage columns and cross-file dedup', () => {
     expect(row).toMatchObject({ cacheRead: 9000, cacheWrite: 500, costUsd: 0.0123, dedupKey: 'msg_1' });
   });
 
+  it('GH-397: stores and returns the price AgEnFK put on a turn when it was ingested, apart from the reported cost', async () => {
+    const storage = new SQLiteStorageProvider();
+    await storage.init({ path: TEST_DB });
+    await storage.insertTokenEvent(ev({ dedupKey: 'msg_e', estimatedCostUsd: 0.042 }));
+    await storage.insertTokenEvent(ev({ dedupKey: 'msg_r', costUsd: 0.5, sourceOffset: 1 }));
+    const rows = await storage.queryTokenEvents({});
+    await storage.shutdown();
+    const byKey = Object.fromEntries(rows.map(r => [r.dedupKey, r]));
+    expect(byKey.msg_e).toMatchObject({ estimatedCostUsd: 0.042 });
+    expect(byKey.msg_e.costUsd).toBeUndefined();
+    expect(byKey.msg_r).toMatchObject({ costUsd: 0.5 });
+    expect(byKey.msg_r.estimatedCostUsd).toBeUndefined();
+  });
+
   it('refuses a second event with the same dedup key for the same client, even from another file', async () => {
     const storage = new SQLiteStorageProvider();
     await storage.init({ path: TEST_DB });
@@ -102,6 +116,7 @@ describe('token events: usage columns and cross-file dedup', () => {
 
     expect(rows.map((r) => r.id)).toEqual(['old']);
     expect(rows[0].dedupKey).toBeUndefined();
+    expect(rows[0].estimatedCostUsd).toBeUndefined();
     expect(st).toMatchObject({ lastOffset: 100 });
     expect(st?.parserState).toBeUndefined();
   });

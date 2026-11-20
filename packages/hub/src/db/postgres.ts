@@ -174,7 +174,8 @@ const SCHEMA_PG = `
     detached_by_email TEXT,
     release_requested_at TIMESTAMPTZ,
     release_reason TEXT,
-    identity_policy TEXT
+    identity_person TEXT,
+    identity_installation TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
 
@@ -337,7 +338,8 @@ const SCHEMA_PG = `
     registry_branch TEXT NOT NULL DEFAULT 'main',
     registry_token_enc TEXT,
     registry_copied_at TIMESTAMPTZ,
-    identity_policy TEXT,
+    identity_person TEXT,
+    identity_installation TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
@@ -949,6 +951,28 @@ export async function ensureEventsIndexConcurrently(adapter: Pick<HubDb, 'all' |
   }
 }
 
+/**
+ * Per-field identity coding (GH-395) on child_hubs and org_settings. See the
+ * SQLite block: deployed hubs already have both tables, so the columns only
+ * ever arrive through an ALTER, and an existing binary `pseudonymize` is
+ * reset to as written rather than carried over. Exported so a test can run it
+ * against a pg-mem database shaped like a deployed hub; bootstrap runs it on
+ * every boot, where it changes nothing after the first.
+ */
+export async function migrateIdentityCodingColumns(adapter: Pick<HubDb, 'all' | 'exec'>): Promise<void> {
+  for (const table of ['child_hubs', 'org_settings']) {
+    const cols = await adapter.all<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = '${table}'`,
+    );
+    const have = new Set(cols.map(c => c.column_name));
+    if (have.size === 0) continue;
+    for (const col of ['identity_person', 'identity_installation']) {
+      if (!have.has(col)) await adapter.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${col} TEXT`);
+    }
+    if (have.has('identity_policy')) await adapter.exec(`UPDATE ${table} SET identity_policy = NULL WHERE identity_policy IS NOT NULL`);
+  }
+}
+
 async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec(SCHEMA_PG);
   await adapter.exec("DELETE FROM events WHERE type = 'tokens.logged'");
@@ -1047,21 +1071,7 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec("DROP INDEX IF EXISTS idx_events_org_child_time");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_org_childnorm_time ON events(org_id, COALESCE(child_hub_id, ''), occurred_at)");
 
-  // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
-  // See the SQLite block: deployed hubs already have both tables, so the
-  // column only ever arrives through an ALTER.
-  const chCols = await adapter.all<{ column_name: string }>(
-    "SELECT column_name FROM information_schema.columns WHERE table_name = 'child_hubs'"
-  );
-  if (chCols.length > 0 && !new Set(chCols.map(c => c.column_name)).has('identity_policy')) {
-    await adapter.exec("ALTER TABLE child_hubs ADD COLUMN identity_policy TEXT");
-  }
-  const osCols = await adapter.all<{ column_name: string }>(
-    "SELECT column_name FROM information_schema.columns WHERE table_name = 'org_settings'"
-  );
-  if (osCols.length > 0 && !new Set(osCols.map(c => c.column_name)).has('identity_policy')) {
-    await adapter.exec("ALTER TABLE org_settings ADD COLUMN identity_policy TEXT");
-  }
+  await migrateIdentityCodingColumns(adapter);
 
   const rdCols = await adapter.all<{ column_name: string }>(
     `SELECT column_name FROM information_schema.columns WHERE table_name = 'rollups_daily'`

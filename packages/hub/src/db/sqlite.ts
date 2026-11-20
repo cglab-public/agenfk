@@ -183,7 +183,8 @@ const SCHEMA_SQLITE = `
     detached_by_email TEXT,
     release_requested_at TEXT,
     release_reason TEXT,
-    identity_policy TEXT
+    identity_person TEXT,
+    identity_installation TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
 
@@ -351,7 +352,8 @@ const SCHEMA_SQLITE = `
     registry_branch TEXT NOT NULL DEFAULT 'main',
     registry_token_enc TEXT,
     registry_copied_at TEXT,
-    identity_policy TEXT,
+    identity_person TEXT,
+    identity_installation TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -958,6 +960,29 @@ class SqliteAdapter implements HubDb {
   }
 }
 
+/**
+ * Per-field identity coding (GH-395) on child_hubs and org_settings. Both
+ * tables exist on deployed hubs, so CREATE TABLE IF NOT EXISTS never adds the
+ * columns; without them the ping route's SELECT throws and every child in the
+ * group reads dead on the parent's roster.
+ *
+ * The binary identity_policy that came before is reset, not carried over: an
+ * existing `pseudonymize` becomes as written (both new columns NULL), by the
+ * user's decision. Clearing the old value keeps a downgrade from finding it
+ * half-applied. Nothing writes identity_policy any more, so on every boot
+ * after the first this changes nothing.
+ */
+function migrateIdentityCodingColumns(raw: RawDb): void {
+  for (const table of ['child_hubs', 'org_settings']) {
+    const have = new Set((raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(c => c.name));
+    if (have.size === 0) continue;
+    for (const col of ['identity_person', 'identity_installation']) {
+      if (!have.has(col)) raw.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`);
+    }
+    if (have.has('identity_policy')) raw.exec(`UPDATE ${table} SET identity_policy = NULL WHERE identity_policy IS NOT NULL`);
+  }
+}
+
 export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   // ':memory:' is a real SQLite filename, not a sentinel we intercept — but the
   // mkdir below would try to create a directory named '.' for it, and WAL is
@@ -1098,18 +1123,7 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
     `);
   }
 
-  // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
-  // Both tables already exist on deployed hubs, so CREATE TABLE IF NOT EXISTS
-  // never adds them. Without these the ping route's SELECT throws and every
-  // child in the group reads dead on the parent's roster.
-  const chCols = raw.prepare("PRAGMA table_info(child_hubs)").all() as Array<{ name: string }>;
-  if (chCols.length > 0 && !new Set(chCols.map(c => c.name)).has('identity_policy')) {
-    raw.exec("ALTER TABLE child_hubs ADD COLUMN identity_policy TEXT");
-  }
-  const osCols = raw.prepare("PRAGMA table_info(org_settings)").all() as Array<{ name: string }>;
-  if (osCols.length > 0 && !new Set(osCols.map(c => c.name)).has('identity_policy')) {
-    raw.exec("ALTER TABLE org_settings ADD COLUMN identity_policy TEXT");
-  }
+  migrateIdentityCodingColumns(raw);
 
   const ukmCols = raw.prepare("PRAGMA table_info(user_key_merges)").all() as Array<{ name: string }>;
   if (ukmCols.length > 0 && !new Set(ukmCols.map(c => c.name)).has('reverted_at')) {

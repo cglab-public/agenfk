@@ -35,15 +35,17 @@
  * the type and the copy are this app's own.
  */
 import React from 'react';
+import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN } from '../terminalOptions';
+import { desktopInfo } from '../desktop';
 import { clsx } from 'clsx';
-import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, FolderCog, ShieldCheck, type LucideIcon } from 'lucide-react';
+import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, FolderCog, ShieldCheck, ArrowLeft, ALargeSmall, type LucideIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
 import {
   listAgentsFromBridge, refreshAgentsFromBridge,
   readPrefsFromBridge, setAutoApproveOnBridge,
-  setDefaultAgentOnBridge, setAskBeforeOpeningOnBridge,
-  canChooseSound, canNotifyAttention,
+  setDefaultAgentOnBridge, setAskBeforeOpeningOnBridge, setUiScaleOnBridge, setTerminalFontSizeOnBridge,
+  canChooseSound, canNotifyAttention, canSetAppearance,
   currentSoundFromBridge, chooseSoundOnBridge, clearSoundOnBridge,
 } from './agentBridge';
 import { AgentPicker } from './AgentPicker';
@@ -231,6 +233,17 @@ function Command({ children }: { children: React.ReactNode }): React.ReactElemen
  * the pane does not render. When a section arrives, both sides learn about it
  * at once.
  */
+/*
+ * The choices Appearance offers, inside the ranges main enforces
+ * (main/appearance.ts). Tenths for the scale, because that is what one press of
+ * Ctrl+= moves, so a value set by the keyboard is always one of the options.
+ */
+const UI_SCALE_OPTIONS: readonly number[] = Array.from({ length: 13 }, (_, i) => Math.round((0.8 + i * 0.1) * 10) / 10);
+const TERMINAL_FONT_SIZE_OPTIONS: readonly number[] = Array.from(
+  { length: TERMINAL_FONT_SIZE_MAX - TERMINAL_FONT_SIZE_MIN + 1 },
+  (_, i) => TERMINAL_FONT_SIZE_MIN + i,
+);
+
 interface SettingsSection {
   readonly id: string;
   readonly label: string;
@@ -379,7 +392,14 @@ function initials(name: string | null, login: string): string {
  * `initialSection`: the section to open on (GH-294: `agenfk airlock edit` links
  * `?settings=airlock`). An id no section has opens the first one.
  */
-export function SettingsPanel({ projectId, initialSection }: { projectId?: string | null; initialSection?: string | null } = {}): React.ReactElement {
+export function SettingsPanel({ projectId, initialSection, onBack, backLabel = 'Back' }: {
+  projectId?: string | null;
+  initialSection?: string | null;
+  /** Return to the view Settings was opened from. Absent, no Back is drawn. */
+  onBack?: () => void;
+  /** Its accessible name, saying where it goes ("Back to Tasks"). */
+  backLabel?: string;
+} = {}): React.ReactElement {
   const queryClient = useQueryClient();
   const { data: settings, isError: readFailed } = useQuery<AppSettingsDto>({
     queryKey: ['settings'],
@@ -490,6 +510,25 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
     onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
   });
   const defaultAgentId = prefs?.defaultAgentId ?? '';
+
+  /*
+   * Appearance (INFRA-425). Same shape as the switches above: the setter
+   * answers with the settled slice, and a refusal re-reads rather than leaving
+   * the screen on a value main did not store.
+   */
+  const appearanceAvailable = canSetAppearance();
+  // Cmd on macOS, where Ctrl+= is left to the terminal (main/appearance.ts).
+  const zoomKey = desktopInfo()?.platform === 'darwin' ? '⌘' : 'Ctrl+';
+  const saveUiScale = useMutation({
+    mutationFn: (value: number) => setUiScaleOnBridge(value),
+    onSuccess: settled => { queryClient.setQueryData(['desktop-prefs'], settled); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
+  });
+  const saveTerminalFontSize = useMutation({
+    mutationFn: (value: number) => setTerminalFontSizeOnBridge(value),
+    onSuccess: settled => { queryClient.setQueryData(['desktop-prefs'], settled); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
+  });
 
   /*
    * What the ROW shows: the stored choice, or the agent that would run instead —
@@ -782,6 +821,62 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
       </>,
     },
     {
+      id: 'appearance',
+      label: 'Appearance',
+      icon: ALargeSmall,
+      rows: appearanceAvailable ? (
+        <>
+        <SettingRow
+          testId="ui-scale-row"
+          title="Interface scale"
+          /* The WSLg case is named because it is the one that sends people
+             here: a Linux window drawn at 1x on a monitor Windows scales up. */
+          description={`How large the whole window draws. Raise it when the text is too small to read, for example a WSLg window on a monitor Windows scales to 150%. ${zoomKey}= and ${zoomKey}- change it too, and both are remembered.`}
+          control={
+            <select
+              aria-label="Interface scale"
+              value={String(prefs?.uiScale ?? 1)}
+              disabled={saveUiScale.isPending}
+              onChange={e => saveUiScale.mutate(Number(e.target.value))}
+              className="rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {UI_SCALE_OPTIONS.map(scale => (
+                <option key={scale} value={String(scale)}>{`${Math.round(scale * 100)}%`}</option>
+              ))}
+            </select>
+          }
+        />
+        <SettingRow
+          testId="terminal-font-size-row"
+          title="Terminal font size"
+          description="The size of the text in every terminal, including the ones already open."
+          control={
+            <select
+              aria-label="Terminal font size"
+              value={String(prefs?.terminalFontSize ?? 12)}
+              disabled={saveTerminalFontSize.isPending}
+              onChange={e => saveTerminalFontSize.mutate(Number(e.target.value))}
+              className="rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {TERMINAL_FONT_SIZE_OPTIONS.map(size => (
+                <option key={size} value={String(size)}>{`${size} px`}</option>
+              ))}
+            </select>
+          }
+        />
+        </>
+      ) : (
+        <SettingRow
+          testId="appearance-unavailable-row"
+          title="Interface scale and terminal font size"
+          /* A note rather than controls that would refuse silently: these are
+             stored by the desktop app, and this build cannot reach them. */
+          description="Set in the AgEnFK desktop app. In a browser, use the browser's own zoom."
+          control={null}
+        />
+      ),
+    },
+    {
       id: 'notifications',
       label: 'Notifications',
       icon: Bell,
@@ -1056,11 +1151,28 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
 
   return (
     <div className="flex h-full min-h-0">
+      <div className="flex w-48 shrink-0 flex-col border-r border-border-soft">
+      {/* Outside the nav: the nav is the list of sections, and tests and screen
+          readers walk it as exactly that (5f367fa9). */}
+      {onBack && (
+        <div className="px-2 pt-4">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label={backLabel}
+            title={backLabel}
+            className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] text-ink-secondary transition-colors hover:bg-nav-surface hover:text-ink"
+          >
+            <ArrowLeft size={15} aria-hidden="true" className="mr-2.5 shrink-0 opacity-80" />
+            Back
+          </button>
+        </div>
+      )}
       {/* The rail. Its entries come from `sections`, so it can never offer one
           the pane cannot show. */}
       <nav
         aria-label="Settings sections"
-        className="w-48 shrink-0 border-r border-border-soft px-2 py-6"
+        className={clsx('px-2 pb-6', onBack ? 'pt-2' : 'pt-6')}
       >
         {sections.map(section => (
           <button
@@ -1085,6 +1197,7 @@ export function SettingsPanel({ projectId, initialSection }: { projectId?: strin
           </button>
         ))}
       </nav>
+      </div>
 
       {/* min-w-0 is load-bearing: without it a long description refuses to wrap
           and pushes the whole window into horizontal scroll, which is the

@@ -7,13 +7,14 @@
  * children (item.closed carries the card's whole subtree and is NOT summed).
  * A PR's usage is its anchor card's latest item.closed usage (card + subtree).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { openSqliteDb } from '../db/sqlite';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
+import { USAGE_FIXED_VERSION } from '../services/unfixedUsage';
 import type { HubDb } from '../db/types';
 
 const SECRET = 'a'.repeat(64);
@@ -57,7 +58,7 @@ describe('GET /v1/usage/overview', () => {
   let cookie: string;
   let token: string;
   const post = async (events: any[]) => {
-    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events });
     expect(r.status).toBe(200);
   };
   // A row stored before ingest refused unparseable times (GH-391): ingest now
@@ -73,6 +74,12 @@ describe('GET /v1/usage/overview', () => {
     const r = await supertest(app).get(`/v1/usage/overview${q}`).set('Cookie', cookie);
     expect(r.status).toBe(200);
     return r.body;
+  };
+  /** GH-396: the PR list moved off the overview to its own paged endpoint. */
+  const prRows = async (q = '') => {
+    const r = await supertest(app).get(`/v1/usage/prs${q}`).set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    return r.body.rows;
   };
 
   beforeEach(async () => {
@@ -97,7 +104,7 @@ describe('GET /v1/usage/overview', () => {
     expect(body.byInstallation).toEqual([]);
     expect(body.byUser).toEqual([]);
     expect(body.byModel).toEqual([]);
-    expect(body.byPr).toEqual([]);
+    expect(await prRows()).toEqual([]);
     expect(body.byDay).toEqual([]);
   });
 
@@ -141,6 +148,40 @@ describe('GET /v1/usage/overview', () => {
       expect.objectContaining({ client: 'claude-code', model: 'claude-opus-5-5', input: 40, turns: 2, unpricedTurns: 2, costUsd: 0 }),
       expect.objectContaining({ client: 'pi', model: 'qwen3.8:27b', input: 3, turns: 2, unpricedTurns: 0, costUsd: 0.75 }),
     ]);
+  });
+
+  it('GH-397: sums the cost AgEnFK estimated when the turns were used, apart from the reported cost, in every breakdown and on no card', async () => {
+    const priced = (input: number, est: number) => ({ ...opus(input), unpricedTurns: 0, estimatedCostUsd: est });
+    const usageOf = (...byModel: any[]) => {
+      const u: any = stepUsage(...byModel);
+      u.total.estimatedCostUsd = byModel.reduce((a, m) => a + (m.estimatedCostUsd ?? 0), 0);
+      return u;
+    };
+    await post([
+      step('c1', usageOf(priced(10, 0.5), qwen(1, 0.25))),
+      step('c2', usageOf(priced(30, 0.25))),
+      // An older step with no estimatedCostUsd at all: zero, not NaN.
+      step('c3', stepUsage(opus(5))),
+      event({ type: 'usage.no-card', itemType: undefined, occurredAt: '2026-11-19T15:00:00.000Z',
+        payload: { day: '2026-11-19', asOf: '2026-11-19T16:00:00.000Z', usage: { byModel: [priced(4, 0.125)], total: priced(4, 0.125) } } }),
+    ]);
+    const body = await overview();
+    expect(body.total).toMatchObject({ costUsd: 0.25, estimatedCostUsd: 0.875, unpricedTurns: 1 });
+    expect(body.byModel.find((m: any) => m.model === 'claude-opus-5-5')).toMatchObject({ estimatedCostUsd: 0.75, unpricedTurns: 1 });
+    expect(body.byInstallation[0].total).toMatchObject({ estimatedCostUsd: 0.75 });
+    expect(body.byUser[0].byModel.find((m: any) => m.model === 'claude-opus-5-5')).toMatchObject({ estimatedCostUsd: 0.75 });
+    expect(body.byDay[0].total).toMatchObject({ estimatedCostUsd: 0.75 });
+    expect(body.noCard.total).toMatchObject({ estimatedCostUsd: 0.125 });
+    expect(body.noCard.byModel[0]).toMatchObject({ estimatedCostUsd: 0.125 });
+  });
+
+  it("GH-397: a card's later snapshot credits only the estimate it has beyond the one already counted", async () => {
+    const snap = (est: number, asOf: string) => ({ ...stepUsage(), own: { byModel: [{ ...opus(10), unpricedTurns: 0, estimatedCostUsd: est }], total: { ...opus(10), unpricedTurns: 0, estimatedCostUsd: est }, asOf } });
+    await post([
+      step('c1', snap(0.5, '2026-11-19T10:00:00.000Z')),
+      step('c1', snap(0.75, '2026-11-19T11:00:00.000Z'), { occurredAt: '2026-11-19T11:00:00.000Z' }),
+    ]);
+    expect((await overview()).total.estimatedCostUsd).toBe(0.75);
   });
 
   it('breaks down by installation and by user, each with its own models, biggest first', async () => {
@@ -242,7 +283,7 @@ describe('GET /v1/usage/overview', () => {
       ]);
       const body = await overview();
       expect(body.total.input).toBe(100);
-      expect(body.byPr[0].usage.total.input).toBe(100);
+      expect((await prRows())[0].usage.total.input).toBe(100);
     });
 
     it('turns recovered at a close are not counted again by the step that reopens the card', async () => {
@@ -366,7 +407,6 @@ describe('GET /v1/usage/overview', () => {
     const body = await overview();
     expect(body.incompleteSteps).toBe(1);
     expect(body.truncated).toBe(false);
-    expect(body.prsTruncated).toBe(false);
   });
 
   it('applies the board filters (time window, people, projects)', async () => {
@@ -386,6 +426,155 @@ describe('GET /v1/usage/overview', () => {
     expect((await overview('?types=item.closed')).total.input).toBe(3);
   });
 
+  describe('usage on no card (GH-394)', () => {
+    /** One installation's running total for a project and local day, as the server sends it. */
+    const noCard = (day: string, asOf: string, usage: unknown, over: any = {}) =>
+      event({ type: 'usage.no-card', itemType: undefined, occurredAt: `${day}T15:00:00.000Z`, payload: { day, asOf, usage }, ...over });
+    const ncUsage = (input: number) => ({ byModel: [opus(input)], total: opus(input) });
+
+    it('counts in the headline total and on its own, and stays out of every card breakdown', async () => {
+      await post([
+        step('c1', stepUsage(opus(100))),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40)),
+      ]);
+      const body = await overview();
+      expect(body.total.input).toBe(140);
+      expect(body.total.turns).toBe(2);
+      expect(body.noCard.total).toMatchObject({ input: 40, turns: 1 });
+      expect(body.noCard.byModel).toEqual([expect.objectContaining({ client: 'claude-code', model: 'claude-opus-5-5', input: 40 })]);
+      expect(body.cards).toBe(1);
+      expect(body.byInstallation.map((r: any) => r.total.input)).toEqual([100]);
+      expect(body.byUser.map((r: any) => r.total.input)).toEqual([100]);
+      expect(body.byModel.map((r: any) => r.input)).toEqual([100]);
+      expect(body.noCard.byInstallation).toEqual([expect.objectContaining({ installation_id: 'inst-a', total: expect.objectContaining({ input: 40 }) })]);
+      expect(body.noCard.byUser).toEqual([expect.objectContaining({ user_key: 'alice@acme.com', total: expect.objectContaining({ input: 40 }) })]);
+    });
+
+    it('a resend replaces the earlier total, whichever of the two arrives first', async () => {
+      await post([noCard('2026-11-19', '2026-11-19T18:00:00.000Z', ncUsage(70), { occurredAt: '2026-11-19T17:30:00.000Z' })]);
+      await post([noCard('2026-11-19', '2026-11-19T12:00:00.000Z', ncUsage(40), { occurredAt: '2026-11-19T11:30:00.000Z' })]);
+      expect((await overview()).noCard.total.input).toBe(70);
+      await post([noCard('2026-11-19', '2026-11-19T20:00:00.000Z', ncUsage(90), { occurredAt: '2026-11-19T19:30:00.000Z' })]);
+      const body = await overview();
+      expect(body.noCard.total.input).toBe(90);
+      expect(body.total.input).toBe(90);
+    });
+
+    it('the same delivery twice is counted once', async () => {
+      const e = noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40), { eventId: 'nc-dup' });
+      await post([e]);
+      await post([e]);
+      expect((await overview()).noCard.total.input).toBe(40);
+    });
+
+    it('a total from a restored database (lower, but sent later) replaces the higher one instead of adding to it', async () => {
+      await post([
+        noCard('2026-11-19', '2026-11-19T12:00:00.000Z', ncUsage(80)),
+        noCard('2026-11-19', '2026-11-19T13:00:00.000Z', ncUsage(30)),
+      ]);
+      expect((await overview()).noCard.total.input).toBe(30);
+    });
+
+    it('each installation, project and day is its own total, and they add up', async () => {
+      await post([
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(50)),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(7), { projectId: 'p2', remoteUrl: 'git@github.com:acme/web.git' }),
+        noCard('2026-11-18', '2026-11-18T16:00:00.000Z', ncUsage(3)),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(11), { installationId: 'inst-b', actor: BOB }),
+      ]);
+      const body = await overview();
+      expect(body.noCard.total.input).toBe(71);
+      expect(body.noCard.byDay.map((d: any) => [d.day, d.total.input])).toEqual([['2026-11-18', 3], ['2026-11-19', 68]]);
+      expect(body.noCard.byInstallation.map((r: any) => [r.installation_id, r.total.input])).toEqual([['inst-a', 60], ['inst-b', 11]]);
+    });
+
+    it('files each total under the viewer\'s day', async () => {
+      await post([noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(5), { occurredAt: '2026-11-19T01:00:00.000Z' })]);
+      expect((await overview('?tz=America%2FSao_Paulo')).noCard.byDay.map((d: any) => d.day)).toEqual(['2026-11-18']);
+    });
+
+    it('the people and project filters apply to it, and an item-type filter leaves it out', async () => {
+      await post([
+        step('c1', stepUsage(opus(100))),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40)),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(11), { installationId: 'inst-b', actor: BOB }),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(7), { projectId: 'p2', remoteUrl: 'git@github.com:acme/web.git' }),
+      ]);
+      expect((await overview('?users=bob%40acme.com')).noCard.total.input).toBe(11);
+      expect((await overview('?projects=git%40github.com%3Aacme%2Fweb.git')).noCard.total.input).toBe(7);
+      // Even a total a client sent with an item type on it: no card is no item type.
+      await post([noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(5), { projectId: 'p9', itemType: 'TASK' })]);
+      const typed = await overview('?itemTypes=TASK');
+      expect(typed.noCard.total.input).toBe(0);
+      expect(typed.total.input).toBe(100);
+    });
+
+    it('follows the child-hub filter like the rest of the usage', async () => {
+      await post([
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40), { eventId: 'nc-local' }),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(9), { eventId: 'nc-child', installationId: 'inst-c' }),
+      ]);
+      const r = await db.run('UPDATE events SET child_hub_id = ? WHERE event_id = ?', ['hub-child-1', 'nc-child']);
+      expect(r.changes).toBe(1);
+      expect((await overview('?childHubId=local')).noCard.total.input).toBe(40);
+      expect((await overview('?childHubId=hub-child-1')).noCard.total.input).toBe(9);
+      expect((await overview()).noCard.total.input).toBe(49);
+    });
+
+    it("reads the history of the picked installations' picked projects only, never a crossed pair", async () => {
+      await post([
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40), { projectId: 'pa', remoteUrl: 'git@github.com:acme/a.git' }),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(9), { projectId: 'pb', remoteUrl: 'git@github.com:acme/b.git', installationId: 'inst-b', actor: BOB }),
+        // The crossed pairs, the day before the window: near enough to be read if the pairs were crossed.
+        noCard('2026-11-18', '2026-11-18T16:00:00.000Z', ncUsage(1), { projectId: 'pb', remoteUrl: 'git@github.com:acme/b.git' }),
+        noCard('2026-11-18', '2026-11-18T16:00:00.000Z', ncUsage(2), { projectId: 'pa', remoteUrl: 'git@github.com:acme/a.git', installationId: 'inst-b', actor: BOB }),
+      ]);
+      const all = vi.spyOn(db, 'all');
+      const body = await overview('?from=2026-11-19T00:00:00.000Z');
+      const historyRows = (await Promise.all(all.mock.calls
+        .map((c, i) => ({ sql: String(c[0]), result: all.mock.results[i].value }))
+        .filter(c => /type = \? AND installation_id = \?/.test(c.sql))
+        .map(c => c.result))).flat() as any[];
+      all.mockRestore();
+      expect(body.noCard.total.input).toBe(49);
+      expect(historyRows.map(r => `${r.installation_id}/${r.project_id}`).sort()).toEqual(['inst-a/pa', 'inst-b/pb']);
+    });
+
+    it('is never a PR', async () => {
+      await post([noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40))]);
+      expect((await prRows())).toEqual([]);
+    });
+
+    it('a window credits a day\'s total by its latest send, so windows that do not overlap add up to the whole', async () => {
+      await post([
+        noCard('2026-11-19', '2026-11-19T10:00:00.000Z', ncUsage(10), { occurredAt: '2026-11-19T09:00:00.000Z' }),
+        noCard('2026-11-19', '2026-11-19T21:00:00.000Z', ncUsage(30), { occurredAt: '2026-11-19T20:00:00.000Z' }),
+      ]);
+      const before = (await overview('?to=2026-11-19T12:00:00.000Z')).noCard.total.input;
+      const after = (await overview('?from=2026-11-19T12:00:00.000Z')).noCard.total.input;
+      expect([before, after]).toEqual([0, 30]);
+      expect((await overview()).noCard.total.input).toBe(30);
+    });
+
+    it('a total with no day or no usage is skipped and counted as malformed, not a failed request', async () => {
+      await post([
+        event({ type: 'usage.no-card', itemType: undefined, payload: { asOf: '2026-11-19T16:00:00.000Z', usage: ncUsage(5) } }),
+        event({ type: 'usage.no-card', itemType: undefined, payload: { day: '2026-11-19', asOf: '2026-11-19T16:00:00.000Z' } }),
+        noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(4), { projectId: 'p3' }),
+      ]);
+      const body = await overview();
+      expect(body.noCard.total.input).toBe(4);
+      expect(body.malformedEvents).toBe(2);
+    });
+
+    it('is zero, with empty breakdowns, when nothing was sent', async () => {
+      const body = await overview();
+      expect(body.noCard.total.input).toBe(0);
+      expect(body.noCard.byModel).toEqual([]);
+      expect(body.noCard.byDay).toEqual([]);
+    });
+  });
+
   describe('byPr', () => {
     const pr = (type: 'pr.opened' | 'pr.updated', itemId: string, prNumber: number, over: any = {}) =>
       event({ type, itemId, itemType: 'STORY', itemTitle: `Story ${itemId}`, payload: { prNumber, repo: 'acme/api', sizing: { epic: 0, story: 1, task: 2, bug: 0 }, model: 'claude-opus-5-5', harness: 'claude-code' }, ...over });
@@ -398,7 +587,7 @@ describe('GET /v1/usage/overview', () => {
         closed('s1', 80, { occurredAt: '2026-11-19T09:30:00.000Z' }),
         pr('pr.opened', 's1', 42),
       ]);
-      const rows = (await overview()).byPr;
+      const rows = (await prRows());
       expect(rows).toEqual([expect.objectContaining({
         repo: 'acme/api', pr_number: 42, item_id: 's1', item_title: 'Story s1',
         usage: expect.objectContaining({ cards: 3, total: expect.objectContaining({ input: 80 }) }),
@@ -411,7 +600,7 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 's1', 7, { occurredAt: '2026-11-19T11:00:00.000Z' }),
         pr('pr.updated', 's1', 7, { occurredAt: '2026-11-19T12:00:00.000Z' }),
       ]);
-      expect((await overview()).byPr).toHaveLength(1);
+      expect((await prRows())).toHaveLength(1);
     });
 
     it('an anchor card closed after the PR opened still gives the PR its usage', async () => {
@@ -419,12 +608,12 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 's1', 8, { occurredAt: '2026-11-19T08:00:00.000Z' }),
         closed('s1', 12, { occurredAt: '2026-11-19T09:00:00.000Z' }),
       ]);
-      expect((await overview()).byPr[0].usage.total.input).toBe(12);
+      expect((await prRows())[0].usage.total.input).toBe(12);
     });
 
     it('a PR whose anchor card is not closed yet has no usage (null), not a partial number', async () => {
       await post([step('s1', stepUsage(opus(99))), pr('pr.opened', 's1', 9)]);
-      expect((await overview()).byPr).toEqual([expect.objectContaining({ pr_number: 9, item_id: 's1', usage: null })]);
+      expect((await prRows())).toEqual([expect.objectContaining({ pr_number: 9, item_id: 's1', usage: null })]);
     });
 
     it('newest PR first, and two repos with the same PR number stay apart', async () => {
@@ -434,7 +623,7 @@ describe('GET /v1/usage/overview', () => {
         event({ type: 'pr.opened', itemId: 's2', occurredAt: '2026-11-19T11:00:00.000Z', remoteUrl: 'git@github.com:acme/web.git',
           payload: { prNumber: 5, repo: 'acme/web' } }),
       ]);
-      expect((await overview()).byPr.map((r: any) => [r.repo, r.pr_number, r.item_id])).toEqual([
+      expect((await prRows()).map((r: any) => [r.repo, r.pr_number, r.item_id])).toEqual([
         ['acme/web', 5, 's2'],
         ['acme/api', 5, 's1'],
       ]);
@@ -446,7 +635,7 @@ describe('GET /v1/usage/overview', () => {
         step('s1', stepUsage(opus(1)), { occurredAt: '2026-11-19T09:30:00.000Z', payload: { fromStatus: 'DONE', toStatus: 'WORK', usage: stepUsage(opus(1)) } }),
         pr('pr.opened', 's1', 11),
       ]);
-      expect((await overview()).byPr).toEqual([expect.objectContaining({ pr_number: 11, usage: null })]);
+      expect((await prRows())).toEqual([expect.objectContaining({ pr_number: 11, usage: null })]);
     });
 
     it("the PR's anchor is its latest registration, even when a filter hides that event", async () => {
@@ -455,7 +644,7 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 'A', 42, { occurredAt: '2026-11-19T10:00:00.000Z' }),
         pr('pr.updated', 'B', 42, { occurredAt: '2026-11-19T11:00:00.000Z', actor: BOB, installationId: 'inst-b' }),
       ]);
-      const rows = (await overview('?users=alice%40acme.com')).byPr;
+      const rows = (await prRows('?users=alice%40acme.com'));
       expect(rows).toEqual([expect.objectContaining({ pr_number: 42, item_id: 'B', opened_at: '2026-11-19T10:00:00.000Z' })]);
       expect(rows[0].usage.total.input).toBe(2);
     });
@@ -466,7 +655,7 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 'A', 77, { occurredAt: '2026-11-19T10:00:00.000Z', remoteUrl: 'git@github.com:alice/api.git' }),
         pr('pr.updated', 'B', 77, { occurredAt: '2026-11-19T11:00:00.000Z', remoteUrl: 'git@github.com:acme/api.git', actor: BOB, installationId: 'inst-b' }),
       ]);
-      const rows = (await overview('?users=alice%40acme.com')).byPr;
+      const rows = (await prRows('?users=alice%40acme.com'));
       expect(rows).toEqual([expect.objectContaining({ pr_number: 77, item_id: 'B' })]);
     });
 
@@ -477,9 +666,9 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 's1', 13),
       ]);
       await legacyTime('cl-bad', 'not-a-time');
-      const r = await supertest(app).get('/v1/usage/overview').set('Cookie', cookie);
+      const r = await supertest(app).get('/v1/usage/prs').set('Cookie', cookie);
       expect(r.status).toBe(200);
-      expect(r.body.byPr[0].usage.total.input).toBe(9);
+      expect(r.body.rows[0].usage.total.input).toBe(9);
       expect(r.body.malformedEvents).toBe(1);
     });
 
@@ -489,7 +678,7 @@ describe('GET /v1/usage/overview', () => {
         closed('s1', 2, { eventId: 'cl-b', occurredAt: '2026-11-19T09:00:00.000Z' }),
         pr('pr.opened', 's1', 12),
       ]);
-      const row = (await overview()).byPr[0];
+      const row = (await prRows())[0];
       expect(row.usage.total.input).toBe(2);
       expect(row.closed_at).toBe('2026-11-19T09:00:00.000Z');
     });
@@ -501,7 +690,7 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 'bobs', 2, { actor: BOB, installationId: 'inst-b' }),
         pr('pr.opened', 's1', 3),
       ]);
-      const nums = async (q: string) => (await overview(q)).byPr.map((r: any) => r.pr_number).sort();
+      const nums = async (q: string) => (await prRows(q)).map((r: any) => r.pr_number).sort();
       expect(await nums('?from=2026-11-01')).toEqual([2, 3]);
       expect(await nums('?from=2026-11-01&users=alice%40acme.com')).toEqual([3]);
     });

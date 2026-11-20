@@ -4,6 +4,22 @@ All notable changes to AgEnFK are documented here.
 
 ## [Unreleased]
 
+**Fixes** (#398)
+
+- **Each subagent's usage goes to its own card.** A Claude Code subagent runs with its parent's session id, so
+  parallel subagents of one session charged their usage to each other's cards, and to the parent's. In a session
+  with subagents, each transcript is now charged by its own gatekeeper and verify calls. A subagent counts toward
+  the first card it names from its first turn, and only a subagent that never names one (a reviewer, an explorer)
+  counts toward its parent's card. The parent counts toward its own card only, until one of its subagents names that
+  card: from then on the parent counts toward no card until it names one again. Turns read before the call that
+  decides their card are charged again when it is read. A session without subagents is charged as before.
+- **Stored usage is charged again once.** On upgrade, the server charges the stored turns of sessions with subagents
+  again by the new rule, and recomputes the step and close usage of each card that changed. A turn whose session
+  log is gone goes to no card, and it still counts for its project. The server log says what moved.
+- **The hub drops usage from versions before this fix.** The hub keeps the events, but it drops the usage that
+  versions older than 2.1.0-beta.21 send, and the usage from child hubs on those versions. On upgrade, it clears the
+  usage that it already stored from them, on SQLite and on Postgres.
+
 ## [2.1.0-beta.20] — 2026-11-20
 
 **Features** (#393)
@@ -34,7 +50,10 @@ All notable changes to AgEnFK are documented here.
 - **A Usage page on the hub.** `/usage` shows the tokens and the cost of the org over the filters: totals, cost and
   tokens per day, then by installation, person, harness and model, and PR. pi reports its cost; Claude Code and
   Codex are estimated from the public price table and marked "est.". `agenfk hub admin data usage-overview` reads
-  the same data. The hub counts each turn once: late turns, events in any order, reopened cards and a restored
+  the same data. The By PR table is served a page at a time: filter it by repository, PR number or card title and
+  status, sort it on the hub by any column, open a PR on its host from its link, and see who opened it
+  (`agenfk hub admin data usage-prs`). `GET /v1/usage/overview` no longer returns `byPr` or `prsTruncated`: the PR
+  list is `GET /v1/usage/prs`. The hub counts each turn once: late turns, events in any order, reopened cards and a restored
   backup do not count a turn twice.
 
 **Fixes**

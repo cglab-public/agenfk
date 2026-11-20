@@ -3,9 +3,10 @@ import { parentHttpAgents, type ParentResolve } from './guardedLookup.js';
 import type { DB } from '../../db.js';
 import {
   readParentBinding, markBindingRevoked, writeParentBinding, PARENT_BINDING_KEY,
-  type ParentBinding, type IdentityPolicy,
+  type ParentBinding,
 } from './parentBinding.js';
 import { recordAudit } from '../configAudit.js';
+import { codingFromWire, sameCoding } from './identityCoding.js';
 import { releaseParentFlows } from './parentFlows.js';
 import { invalidFlowDefinition } from '../flowDefinition.js';
 import { applyUpgradeDispatch, type UpgradeDispatch, type UpgradeFanoutResult } from './upgradeFanout.js';
@@ -434,17 +435,13 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
     return { ok: false, error: messageOf(err) };
   }
 
-  // The parent owns the identity policy; persist whatever it just told us so
-  // the next batch of forwarded events is stamped correctly. A parent that
-  // says nothing leaves the cached value alone.
-  const told = pong?.identityPolicy;
-  const recognised = told === 'keep' || told === 'pseudonymize';
-  if (recognised && told !== binding.identityPolicy) {
-    await writeParentBinding(db, secretKey, { ...binding, identityPolicy: told as IdentityPolicy });
+  const told = codingFromWire(pong);
+  if (told && !sameCoding(told, binding.identity)) {
+    await writeParentBinding(db, secretKey, { ...binding, identity: told });
     await recordAudit(db, {
       orgId: args.orgId ?? DEFAULT_ORG, actor: null, source: 'federation', ip: null, area: 'federation',
-      action: 'identity-policy.parent-update', target: 'identity policy',
-      before: { identityPolicy: binding.identityPolicy ?? null }, after: { identityPolicy: told },
+      action: 'identity-coding.parent-update', target: 'identity coding',
+      before: { identity: binding.identity }, after: { identity: told },
     });
   }
 

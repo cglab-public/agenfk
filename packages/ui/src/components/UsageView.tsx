@@ -12,8 +12,10 @@
  * with a bar in proportion to the largest. Steps that used nothing are folded
  * into one line rather than listed as rows of zeros.
  *
- * It must not overstate what it knows: reported cost is marked reported, the
- * board's own figure is marked estimated, a model it cannot price is named,
+ * It must not overstate what it knows: reported cost is marked reported, a
+ * figure AgEnFK priced is marked estimated - when the turns were used (stored
+ * with them, GH-397) or, for older turns with no stored price, at today's
+ * prices, which it says - a model it cannot price is named,
  * an incomplete count says so, and a card with no recorded turns says "not
  * measured" rather than showing a zero.
  */
@@ -21,7 +23,8 @@ import React from 'react';
 import { clsx } from 'clsx';
 import type { AgEnFKItem, UsageTotals } from '../types';
 import { useCardUsage } from '../useCardUsage';
-import { cardTotalOf, estimateCost, tokenMix, tokensOf, type PricesData, type TokenKind } from '../usage';
+import { cardTotalOf, costTotal, estimateCost, fallbackPricesLabel, tokenMix, tokensOf, type PricesData, type TokenKind } from '../usage';
+import { usePriceTable } from '../usePriceTable';
 import { formatCost } from '../utils';
 
 const n = (v: number) => v.toLocaleString('en-US');
@@ -96,10 +99,11 @@ export function UsageView({ itemId, item, prices }: {
   itemId: string | null;
   /** The card, when the caller already has it (the card modal). */
   item?: AgEnFKItem | null;
-  /** The board's price table, for estimating turns no harness priced. */
+  /** The price table for older turns with no stored price; read from the local server when not given. */
   prices?: PricesData | null;
 }): React.ReactElement {
   const { summary, children, isPending, isError } = useCardUsage(itemId, item);
+  const serverPrices = usePriceTable(prices === undefined);
 
   if (isError) {
     return <p role="alert" className="px-3 py-4 text-[11px] text-status-warn-text">Could not read this card&apos;s usage.</p>;
@@ -120,9 +124,10 @@ export function UsageView({ itemId, item, prices }: {
   }
 
   const t = summary.total;
-  const cost = estimateCost(summary.byModel, prices);
+  const table = prices === undefined ? serverPrices : prices;
+  const cost = estimateCost(summary.byModel, table);
   const estimated = cost.estimated > 0;
-  const costText = estimated ? `≈ ${formatCost(cost.reported + cost.estimated)}` : formatCost(cost.reported);
+  const costText = estimated ? `≈ ${formatCost(costTotal(cost))}` : formatCost(cost.reported);
   const mix = tokenMix(t);
 
   const usedSteps = summary.steps.filter((r) => r.live || r.total.turns > 0);
@@ -152,6 +157,14 @@ export function UsageView({ itemId, item, prices }: {
           {estimated && (
             <p className="mt-1 text-[11px] text-ink-tertiary">
               Estimated for {cost.estimatedModels.join(', ')} from public per-token prices — {cost.estimatedModels.length === 1 ? 'its logs record' : 'their logs record'} tokens, not cost.
+            </p>
+          )}
+          {cost.estimatedAtTurn > 0 && (
+            <p className="mt-1 text-[11px] text-ink-tertiary">{formatCost(cost.estimatedAtTurn)} priced when the turns were used.</p>
+          )}
+          {cost.estimatedToday > 0 && (
+            <p className="mt-1 text-[11px] text-ink-tertiary">
+              {formatCost(cost.estimatedToday)} of it at {fallbackPricesLabel(table)}: turns of {cost.todayModels.join(', ')} recorded before AgEnFK priced turns as they were used.
             </p>
           )}
           {cost.unpricedModels.length > 0 && (

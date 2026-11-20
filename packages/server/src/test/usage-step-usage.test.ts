@@ -22,10 +22,10 @@ describe('aggregateUsage', () => {
     const u = aggregateUsage([ev(), ev(), ev({ client: 'pi', model: 'qwen3.8', costUsd: 0.5 })]);
 
     expect(u.byModel).toEqual([
-      { client: 'claude-code', model: 'claude-opus-5-5', turns: 2, input: 20, cacheRead: 200, cacheWrite: 100, output: 40, reasoning: 0, costUsd: 0, unpricedTurns: 2 },
-      { client: 'pi', model: 'qwen3.8', turns: 1, input: 10, cacheRead: 100, cacheWrite: 50, output: 20, reasoning: 0, costUsd: 0.5, unpricedTurns: 0 },
+      { client: 'claude-code', model: 'claude-opus-5-5', turns: 2, input: 20, cacheRead: 200, cacheWrite: 100, output: 40, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 2 },
+      { client: 'pi', model: 'qwen3.8', turns: 1, input: 10, cacheRead: 100, cacheWrite: 50, output: 20, reasoning: 0, costUsd: 0.5, estimatedCostUsd: 0, unpricedTurns: 0 },
     ]);
-    expect(u.total).toEqual({ turns: 3, input: 30, cacheRead: 300, cacheWrite: 150, output: 60, reasoning: 0, costUsd: 0.5, unpricedTurns: 2 });
+    expect(u.total).toEqual({ turns: 3, input: 30, cacheRead: 300, cacheWrite: 150, output: 60, reasoning: 0, costUsd: 0.5, estimatedCostUsd: 0, unpricedTurns: 2 });
   });
 
   it('an event without the read/write split counts its cached input as cache reads (Codex)', () => {
@@ -33,8 +33,14 @@ describe('aggregateUsage', () => {
     expect(u.total).toMatchObject({ cacheRead: 70, cacheWrite: 0 });
   });
 
+  it('GH-397: sums the price AgEnFK put on each turn at ingestion, and a turn so priced is not unpriced', () => {
+    const u = aggregateUsage([ev({ estimatedCostUsd: 0.25 }), ev({ estimatedCostUsd: 0.5 }), ev(), ev({ client: 'pi', model: 'qwen3.8', costUsd: 0.1 })]);
+    expect(u.total).toMatchObject({ turns: 4, costUsd: 0.1, estimatedCostUsd: 0.75, unpricedTurns: 1 });
+    expect(u.byModel[0]).toMatchObject({ model: 'claude-opus-5-5', turns: 3, estimatedCostUsd: 0.75, unpricedTurns: 1 });
+  });
+
   it('nothing to sum is zero turns, not an error', () => {
-    expect(aggregateUsage([]).total).toEqual({ turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, unpricedTurns: 0 });
+    expect(aggregateUsage([]).total).toEqual({ turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 0 });
   });
 });
 
@@ -134,7 +140,7 @@ describe('describeUsage', () => {
   it('names the step, the turns and each token kind', () => {
     const line = describeUsage({
       step: 'IN_PROGRESS', to: 'REVIEW', enteredAt: 'a', leftAt: 'b', complete: true,
-      byModel: [], total: { turns: 4, input: 1200, cacheRead: 340000, cacheWrite: 5600, output: 8900, reasoning: 0, costUsd: 0, unpricedTurns: 4 },
+      byModel: [], total: { turns: 4, input: 1200, cacheRead: 340000, cacheWrite: 5600, output: 8900, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 4 },
     });
     expect(line).toMatch(/Usage in IN_PROGRESS/);
     expect(line).toMatch(/4 turns/);
@@ -147,16 +153,58 @@ describe('describeUsage', () => {
   it('shows the reported cost, and says when some turns are unpriced', () => {
     const line = describeUsage({
       step: 'S', to: 'T', enteredAt: 'a', leftAt: 'b', complete: true,
-      byModel: [], total: { turns: 3, input: 1, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0.4567, unpricedTurns: 1 },
+      byModel: [], total: { turns: 3, input: 1, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0.4567, estimatedCostUsd: 0, unpricedTurns: 1 },
     });
     expect(line).toMatch(/\$0\.46/);
     expect(line).toMatch(/1 turn unpriced/);
   });
 
+  it('GH-397: shows the cost AgEnFK estimated when the turns were used beside the reported cost, and the sum', () => {
+    const line = describeUsage({
+      step: 'S', to: 'T', enteredAt: 'a', leftAt: 'b', complete: true,
+      byModel: [], total: { turns: 3, input: 1, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0.4, estimatedCostUsd: 1.2, unpricedTurns: 0 },
+    });
+    expect(line).toMatch(/\$1\.60 cost/);
+    expect(line).toMatch(/\$0\.40 reported/);
+    expect(line).toMatch(/\$1\.20 est\. when used/);
+    expect(line).not.toMatch(/unpriced/);
+  });
+
+  it("GH-397: older turns with neither price are estimated at today's prices from the table at hand, said so, and not otherwise (review finding)", () => {
+    const old = { client: 'claude-code', model: 'claude-opus-5-5', turns: 1, input: 1_000_000, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 1 };
+    const u = { step: 'S', to: 'T', enteredAt: 'a', leftAt: 'b', complete: true, byModel: [old], total: { ...old } } as any;
+    const table = { prices: [{ id: 'claude-opus-5-5', input: 10, output: 50 }] };
+    expect(describeUsage(u, table)).toMatch(/\$10\.00 est\. at today's prices, 1 turn unpriced/);
+    expect(describeUsage(u)).not.toMatch(/today's prices/);
+    expect(describeCardUsage({ ...u, byStep: [], cards: 1 }, table)).toMatch(/\$10\.00 est\. at today's prices/);
+  });
+
+  it('GH-397: the cost line adds reported, priced-when-used and today-priced parts into one total (review finding)', () => {
+    const legacy = { client: 'claude-code', model: 'old-model', turns: 1, input: 1_000_000, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 1 };
+    const total = { turns: 3, input: 1_000_002, cacheRead: 0, cacheWrite: 0, output: 2, reasoning: 0, costUsd: 1, estimatedCostUsd: 2, unpricedTurns: 1 };
+    const u = { step: 'S', to: 'T', enteredAt: 'a', leftAt: 'b', complete: true, byModel: [legacy], total } as any;
+    const line = describeUsage(u, { prices: [{ id: 'old-model', input: 10, output: 50 }], fetchedAt: new Date().toISOString() });
+    expect(line).toMatch(/\$13\.00 cost \(\$1\.00 reported \+ \$2\.00 est\. when used \+ \$10\.00 est\. at today's prices\)/);
+  });
+
+  it('GH-397: a price table the server could not refresh for days is named by its date in the reply (review finding)', () => {
+    const legacy = { client: 'claude-code', model: 'old-model', turns: 1, input: 1_000_000, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 1 };
+    const u = { step: 'S', to: 'T', enteredAt: 'a', leftAt: 'b', complete: true, byModel: [legacy], total: { ...legacy } } as any;
+    const line = describeUsage(u, { prices: [{ id: 'old-model', input: 10, output: 50 }], fetchedAt: '2026-01-05T08:00:00.000Z' });
+    expect(line).toMatch(/\$10\.00 est\. at prices of 2026-01-05/);
+  });
+
+  it('GH-397: an older total with no estimatedCostUsd still describes its reported cost', () => {
+    const total: any = { turns: 1, input: 1, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0.4, unpricedTurns: 0 };
+    const line = describeUsage({ step: 'S', to: 'T', enteredAt: 'a', leftAt: 'b', complete: true, byModel: [], total });
+    expect(line).toMatch(/\$0\.40 reported/);
+    expect(line).not.toMatch(/NaN|est\./);
+  });
+
   it('says plainly when nothing was measured', () => {
     const line = describeUsage({
       step: 'S', to: 'T', enteredAt: 'a', leftAt: 'b', complete: true,
-      byModel: [], total: { turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, unpricedTurns: 0 },
+      byModel: [], total: { turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 0 },
     });
     expect(line).toMatch(/no usage recorded/i);
   });
@@ -164,14 +212,14 @@ describe('describeUsage', () => {
   it('flags an incomplete count', () => {
     const line = describeUsage({
       step: 'S', to: 'T', enteredAt: 'a', leftAt: 'b', complete: false,
-      byModel: [], total: { turns: 1, input: 1, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0, unpricedTurns: 1 },
+      byModel: [], total: { turns: 1, input: 1, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 1 },
     });
     expect(line).toMatch(/incomplete/i);
   });
 });
 
 describe('describeCardUsage', () => {
-  const total = { turns: 2, input: 5, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0, unpricedTurns: 2 };
+  const total = { turns: 2, input: 5, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 2 };
   it('flags a close total whose last step could not be read in time', () => {
     expect(describeCardUsage({ byModel: [], total, byStep: [], cards: 1, complete: false })).toMatch(/incomplete/i);
     expect(describeCardUsage({ byModel: [], total, byStep: [], cards: 1, complete: true })).not.toMatch(/incomplete/i);

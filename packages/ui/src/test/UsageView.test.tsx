@@ -19,12 +19,13 @@ import { WorktreePanel } from '../components/WorktreePanel';
 import { api } from '../api';
 import { guardTokens } from './helpers/tokenGuard';
 
-vi.mock('../api', () => ({ api: { getItem: vi.fn(), getTokenEvents: vi.fn(), listItems: vi.fn(), getGitStatus: vi.fn(), getFileDiff: vi.fn() } }));
+vi.mock('../api', () => ({ api: { getItem: vi.fn(), getTokenEvents: vi.fn(), listItems: vi.fn(), getGitStatus: vi.fn(), getFileDiff: vi.fn(), getPriceTable: vi.fn() } }));
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.listItems).mockResolvedValue([] as never);
   vi.mocked(api.getTokenEvents).mockResolvedValue([] as never);
+  vi.mocked(api.getPriceTable).mockResolvedValue(null as never);
 });
 afterEach(cleanup);
 guardTokens();
@@ -183,6 +184,70 @@ describe('UsageView', () => {
     wrap(<UsageView itemId="i1" />);
     const summary = await screen.findByRole('region', { name: 'Usage summary' });
     expect(within(summary).getByText(/not priced: mystery-1/i)).toBeDefined();
+  });
+});
+
+describe('cost priced when the turns were used (GH-397)', () => {
+  const opusRow = (t: Record<string, number>) => ({ client: 'claude-code', model: 'claude-opus-5-5', ...totals(t) });
+
+  it('adds the estimate stored with the turns to the reported cost, marked estimated, with no price table at all', async () => {
+    const t = { turns: 2, input: 1_000_000, estimatedCostUsd: 2.5 };
+    const p = { turns: 1, input: 10, costUsd: 0.5 };
+    vi.mocked(api.getItem).mockResolvedValue({ ...card, usageByStep: [row('IN_PROGRESS', 'REVIEW', { turns: 3, input: 1_000_010, costUsd: 0.5, estimatedCostUsd: 2.5 }, [opusRow(t), piModel(p)])] } as never);
+    wrap(<UsageView itemId="i1" />);
+    const summary = await screen.findByRole('region', { name: 'Usage summary' });
+    expect(within(summary).getByText('≈ $3.00')).toBeDefined();
+    expect(within(summary).getByText(/^estimated$/i)).toBeDefined();
+    expect(within(summary).getByText(/priced when the turns were used/i)).toBeDefined();
+    expect(within(summary).queryByText(/today's prices/i)).toBeNull();
+    expect(within(summary).queryByText(/not priced/i)).toBeNull();
+  });
+
+  it('a closed card shows its close total with the stored estimate', async () => {
+    const t = { turns: 2, input: 100, estimatedCostUsd: 1.25 };
+    vi.mocked(api.getItem).mockResolvedValue({ ...card, status: 'DONE', cardUsage: { atStatus: 'DONE', cards: 1, complete: true, byStep: [], total: totals(t), byModel: [opusRow(t)] } } as never);
+    wrap(<UsageView itemId="i1" />);
+    expect(within(await screen.findByRole('region', { name: 'Usage summary' })).getByText('≈ $1.25')).toBeDefined();
+  });
+
+  it('counts the stored estimate of the live turns of the current step', async () => {
+    vi.mocked(api.getItem).mockResolvedValue(card as never);
+    vi.mocked(api.getTokenEvents).mockResolvedValue([
+      { id: 'e', ts: '2026-11-19T10:30:00.000Z', client: 'claude-code', sessionId: 's', model: 'claude-opus-5-5', input: 5, cachedInput: 0, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, total: 6, estimatedCostUsd: 0.25 },
+    ] as never);
+    wrap(<UsageView itemId="i1" />);
+    const summary = await screen.findByRole('region', { name: 'Usage summary' });
+    // $0.75 reported in IN_PROGRESS + $0.25 estimated when the live turn was used.
+    await waitFor(() => expect(within(summary).getByText('≈ $1.00')).toBeDefined());
+  });
+
+  it("prices older turns with neither cost from the local server's price table, said to be at today's prices", async () => {
+    vi.mocked(api.getPriceTable).mockResolvedValue({ prices: [{ id: 'claude-opus-5-5', input: 10, output: 50 }], fetchedAt: new Date().toISOString() } as never);
+    const t = { turns: 1, unpricedTurns: 1, input: 1_000_000 };
+    vi.mocked(api.getItem).mockResolvedValue({ ...card, usageByStep: [row('IN_PROGRESS', 'REVIEW', t, [opusRow(t)])] } as never);
+    wrap(<UsageView itemId="i1" />);
+    const summary = await screen.findByRole('region', { name: 'Usage summary' });
+    await waitFor(() => expect(within(summary).getByText('≈ $10.00')).toBeDefined());
+    expect(within(summary).getByText(/\$10\.00 of it at today's prices/i)).toBeDefined();
+  });
+
+  it("a price table the server could not refresh for days is named by its date, not as today's (review finding)", async () => {
+    vi.mocked(api.getPriceTable).mockResolvedValue({ prices: [{ id: 'claude-opus-5-5', input: 10, output: 50 }], fetchedAt: '2026-01-05T08:00:00.000Z' } as never);
+    const t = { turns: 1, unpricedTurns: 1, input: 1_000_000 };
+    vi.mocked(api.getItem).mockResolvedValue({ ...card, usageByStep: [row('IN_PROGRESS', 'REVIEW', t, [opusRow(t)])] } as never);
+    wrap(<UsageView itemId="i1" />);
+    const summary = await screen.findByRole('region', { name: 'Usage summary' });
+    await waitFor(() => expect(within(summary).getByText(/\$10\.00 of it at prices of 2026-01-05/)).toBeDefined());
+    expect(within(summary).queryByText(/today's prices/i)).toBeNull();
+  });
+
+  it('the worktree panel prices the same usage the same way as the card modal', async () => {
+    vi.mocked(api.getGitStatus).mockResolvedValue({ changed: 0, staged: 0, files: [] } as never);
+    const t = { turns: 2, input: 1_000_000, estimatedCostUsd: 2.5 };
+    vi.mocked(api.getItem).mockResolvedValue({ ...card, usageByStep: [row('IN_PROGRESS', 'REVIEW', t, [opusRow(t)])] } as never);
+    wrap(<WorktreePanel itemId="i1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Usage/ }));
+    expect(within(await screen.findByRole('region', { name: 'Usage summary' })).getByText('≈ $2.50')).toBeDefined();
   });
 });
 

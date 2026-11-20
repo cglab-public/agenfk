@@ -24,11 +24,14 @@ import { parentUrlFromInviteToken, inviteExpiryFromToken } from '../auth/inviteT
 import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
 import {
   readParentBinding, writeParentBinding, clearParentBinding, assertHttpUrl,
-  releaseRequestedFlag, setReleaseRequestedFlag, readBindingStateUnverified, asIdentityPolicy,
+  releaseRequestedFlag, setReleaseRequestedFlag, readBindingStateUnverified,
 } from '../services/federation/parentBinding.js';
 import { outboxDepth } from '../services/federation/federationSync.js';
 import { releaseParentFlows } from '../services/federation/parentFlows.js';
-import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
+import {
+  IDENTITY_FIELDS, IDENTITY_COLUMNS, IDENTITY_SELECT, asFieldCoding, codingFromWire, effectiveIdentityCoding, settingFromRow,
+  type IdentityField, type FieldCoding,
+} from '../services/federation/identityCoding.js';
 import { httpFederationClient, type FederationClient } from '../services/federation/federationClient.js';
 import { publicHubUrl, requestOrigin } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
@@ -3059,7 +3062,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       try {
         await writeParentBinding(ctx.db, ctx.config.secretKey, {
           parentUrl, token: enrolled.token, childHubId: enrolled.childHubId,
-          identityPolicy: enrolled.identityPolicy,
+          identity: codingFromWire(enrolled),
         });
       } catch (err) {
         // The parent has already created the row and burnt the invite, so a
@@ -3097,9 +3100,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         state: binding.state,
         enrolledAt: binding.enrolledAt,
         outboxDepth: depth,
-        // What this hub is forwarding under right now. Without it a child
-        // admin cannot audit a control their own people are subject to.
-        identityPolicy: binding.identityPolicy,
+        identity: binding.identity,
         releaseRequested,
         // The UI disables Leave on this, and the route enforces it too.
         canLeave: binding.state === 'revoked',
@@ -3177,71 +3178,91 @@ export function adminRouter(ctx: HubServerContext): Router {
 
 
   /**
-   * The group's identity policy (CGLAB-184). Set it here or per child hub;
-   * the per-child value wins in either direction. `null` on a child means
-   * "follow the group". Without these routes the opt-out could only be
-   * enabled with a psql session, which is not a control anyone can operate.
+   * What child hubs code before they forward (GH-395): the person and the
+   * installation, each as written or coded. A group default per field, and
+   * per child hub an override per field (`null` follows the group). Nothing
+   * set is as written. Without these routes the setting could only be
+   * changed with a psql session, which is not a control anyone can operate.
    */
-  router.get('/federation/identity-policy', guard, async (req: Request, res: Response, next) => {
+  /** The fields a request names, each checked; a string is the reason it is refused. */
+  function identityChanges(body: unknown, allowNull: boolean): Partial<Record<IdentityField, FieldCoding | null>> | string {
+    const changes: Partial<Record<IdentityField, FieldCoding | null>> = {};
+    for (const f of IDENTITY_FIELDS) {
+      if (!body || typeof body !== 'object' || !(f in body)) continue;
+      const raw = (body as Record<string, unknown>)[f];
+      if (raw === null && allowNull) { changes[f] = null; continue; }
+      const v = asFieldCoding(raw);
+      if (!v) return `${f} must be 'as-written' or 'coded'${allowNull ? ', or null to follow the group' : ''}`;
+      changes[f] = v;
+    }
+    return Object.keys(changes).length > 0 ? changes : 'name at least one field: person or installation';
+  }
+
+  router.get('/federation/identity', guard, async (req: Request, res: Response, next) => {
     try {
       const orgId = req.session!.orgId;
-      const group = await ctx.db.get<{ identity_policy: string | null }>(
-        'SELECT identity_policy FROM org_settings WHERE org_id = ?', [orgId],
+      const groupRow = await ctx.db.get<Record<string, unknown>>(
+        `SELECT ${IDENTITY_SELECT} FROM org_settings WHERE org_id = ?`, [orgId],
       );
-      const children = await ctx.db.all<{ id: string; name: string; identity_policy: string | null }>(
-        'SELECT id, name, identity_policy FROM child_hubs WHERE org_id = ? AND detached_at IS NULL ORDER BY name ASC',
+      const children = await ctx.db.all<Record<string, unknown> & { id: string; name: string }>(
+        `SELECT id, name, ${IDENTITY_SELECT} FROM child_hubs WHERE org_id = ? AND detached_at IS NULL ORDER BY name ASC`,
         [orgId],
       );
-      const groupPolicy = asIdentityPolicy(group?.identity_policy ?? null);
+      const group = settingFromRow(groupRow);
       res.json({
-        groupPolicy,
-        childHubs: children.map(c => ({
-          id: c.id,
-          name: c.name,
-          policy: c.identity_policy === 'keep' || c.identity_policy === 'pseudonymize' ? c.identity_policy : null,
-          effective: effectiveIdentityPolicy(group?.identity_policy as any ?? null, c.identity_policy as any ?? null),
-        })),
+        group,
+        effective: effectiveIdentityCoding(group, null),
+        childHubs: children.map(c => {
+          const override = settingFromRow(c);
+          return { id: c.id, name: c.name, override, effective: effectiveIdentityCoding(group, override) };
+        }),
       });
     } catch (err) { next(err); }
   });
 
-  router.put('/federation/identity-policy', guard, async (req: Request, res: Response, next) => {
+  router.put('/federation/identity', guard, async (req: Request, res: Response, next) => {
     try {
       const orgId = req.session!.orgId;
-      const raw = req.body?.policy;
-      if (raw !== 'keep' && raw !== 'pseudonymize') {
-        res.status(400).json({ error: "policy must be 'keep' or 'pseudonymize'" });
-        return;
-      }
+      const changes = identityChanges(req.body, false);
+      if (typeof changes === 'string') { res.status(400).json({ error: changes }); return; }
+      const fields = Object.keys(changes) as IdentityField[];
+      const cols = fields.map(f => IDENTITY_COLUMNS[f]);
       await ctx.db.run(
-        `INSERT INTO org_settings (org_id, identity_policy) VALUES (?, ?)
-         ON CONFLICT(org_id) DO UPDATE SET identity_policy = excluded.identity_policy`,
-        [orgId, raw],
+        `INSERT INTO org_settings (org_id, ${cols.join(', ')}) VALUES (?, ${cols.map(() => '?').join(', ')})
+         ON CONFLICT(org_id) DO UPDATE SET ${cols.map(c => `${c} = excluded.${c}`).join(', ')}`,
+        [orgId, ...fields.map(f => changes[f])],
       );
-      console.log(`[FEDERATION] group identity policy for ${orgId} set to ${raw}`);
-      res.json({ groupPolicy: raw });
+      const group = settingFromRow(await ctx.db.get<Record<string, unknown>>(
+        `SELECT ${IDENTITY_SELECT} FROM org_settings WHERE org_id = ?`, [orgId],
+      ));
+      console.log(`[FEDERATION] group identity coding for ${orgId}: person ${group.person ?? 'as-written'}, installation ${group.installation ?? 'as-written'}`);
+      res.json({ group, effective: effectiveIdentityCoding(group, null) });
     } catch (err) { next(err); }
   });
 
-  router.put('/child-hubs/:id/identity-policy', guard, async (req: Request, res: Response, next) => {
+  router.put('/child-hubs/:id/identity', guard, async (req: Request, res: Response, next) => {
     try {
       const orgId = req.session!.orgId;
-      const raw = req.body?.policy;
-      // null clears the override and lets the group default apply again.
-      if (raw !== 'keep' && raw !== 'pseudonymize' && raw !== null) {
-        res.status(400).json({ error: "policy must be 'keep', 'pseudonymize' or null" });
-        return;
-      }
-      if (!(await findChildHub(orgId, String(req.params.id)))) {
+      const id = String(req.params.id);
+      const changes = identityChanges(req.body, true);
+      if (typeof changes === 'string') { res.status(400).json({ error: changes }); return; }
+      if (!(await findChildHub(orgId, id))) {
         res.status(404).json({ error: 'Unknown child hub' });
         return;
       }
+      const fields = Object.keys(changes) as IdentityField[];
       await ctx.db.run(
-        'UPDATE child_hubs SET identity_policy = ? WHERE id = ? AND org_id = ?',
-        [raw, req.params.id, orgId],
+        `UPDATE child_hubs SET ${fields.map(f => `${IDENTITY_COLUMNS[f]} = ?`).join(', ')} WHERE id = ? AND org_id = ?`,
+        [...fields.map(f => changes[f]), id, orgId],
       );
-      console.log(`[FEDERATION] identity policy for child hub ${req.params.id} set to ${raw ?? 'inherit'}`);
-      res.json({ id: req.params.id, policy: raw });
+      const override = settingFromRow(await ctx.db.get<Record<string, unknown>>(
+        `SELECT ${IDENTITY_SELECT} FROM child_hubs WHERE id = ? AND org_id = ?`, [id, orgId],
+      ));
+      const group = settingFromRow(await ctx.db.get<Record<string, unknown>>(
+        `SELECT ${IDENTITY_SELECT} FROM org_settings WHERE org_id = ?`, [orgId],
+      ));
+      console.log(`[FEDERATION] identity coding for child hub ${id}: person ${override.person ?? 'inherit'}, installation ${override.installation ?? 'inherit'}`);
+      res.json({ id, override, effective: effectiveIdentityCoding(group, override) });
     } catch (err) { next(err); }
   });
 

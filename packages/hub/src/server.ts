@@ -30,6 +30,7 @@ import { migrateOsUserKeys } from './services/migrateOsUserKeys.js';
 import { migrateChildPeopleNames } from './services/migrateChildPeopleNames.js';
 import { backfillUserKeyAliases } from './services/backfillUserKeyAliases.js';
 import { canonicaliseEventTimes } from './services/canonicaliseEventTimes.js';
+import { clearUnfixedUsage } from './services/unfixedUsage.js';
 import * as fs from 'fs';
 import * as pathMod from 'path';
 
@@ -302,7 +303,7 @@ export async function createHubApp(
   // Never fatal. After the osUser-key migration, never beside it: both rebuild
   // rollups in per-day transactions on the one SQLite connection, and run
   // together one's BEGIN lands inside the other's open transaction.
-  osUserKeysMigrated
+  const eventTimesCanonicalised = osUserKeysMigrated
     .then(() => canonicaliseEventTimes(db))
     .then((r) => {
       if (r.skipped || (r.eventsRewritten === 0 && r.unparseable === 0)) return;
@@ -312,6 +313,13 @@ export async function createHubApp(
       );
     })
     .catch((e) => console.error('[MIGRATION] event time canonicalisation failed:', (e as Error).message));
+  eventTimesCanonicalised
+    .then(() => clearUnfixedUsage(db))
+    .then((r) => {
+      if (r.skipped || r.eventsCleared === 0) return;
+      console.log(`[MIGRATION] Cleared the usage of ${r.eventsCleared} event(s) sent by agenfk versions before the subagent attribution fix (GH-398); the events are kept.`);
+    })
+    .catch((e) => console.error('[MIGRATION] clearing unfixed usage failed:', (e as Error).message));
 
   // Merges made before user_key_aliases existed carry no alias, so the guarantee
   // that a machine waking after the liveness window cannot resurrect a retired

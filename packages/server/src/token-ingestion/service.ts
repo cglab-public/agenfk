@@ -1,7 +1,8 @@
 import * as path from 'path';
-import type { StorageProvider } from '@agenfk/core';
+import type { PricesData, StorageProvider } from '@agenfk/core';
 import { ingestOnce, type IngestionSource } from './watcher';
-import { parseClaudeCodeJsonl } from './parsers/claude-code';
+import { parseClaudeCodeJsonl, hasSubagents } from './parsers/claude-code';
+import { reattributeSubagentUsage } from './reattribute';
 import { parseCodexJsonl } from './parsers/codex';
 import { parsePiJsonl } from './parsers/pi';
 
@@ -10,7 +11,8 @@ const jsonl = (rel: string) => rel.endsWith('.jsonl');
 /**
  * Where each harness keeps its session logs (GH-389). Claude Code's folder
  * also holds `<session>/subagents/agent-*.jsonl`, whose records carry the
- * parent's session id, so a subagent's usage goes to the parent's card.
+ * parent's session id and their own agentId. A session with that folder is
+ * charged by each transcript's own claims (GH-398).
  */
 export function defaultIngestionSources(
   home: string,
@@ -19,7 +21,7 @@ export function defaultIngestionSources(
   const claudeDir = env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, '.claude');
   const codexDir = env.CODEX_HOME?.trim() || path.join(home, '.codex');
   return [
-    { client: 'claude-code', rootDir: path.join(claudeDir, 'projects'), matches: jsonl, parser: parseClaudeCodeJsonl },
+    { client: 'claude-code', rootDir: path.join(claudeDir, 'projects'), matches: jsonl, parser: parseClaudeCodeJsonl, ownClaims: hasSubagents },
     { client: 'codex', rootDir: path.join(codexDir, 'sessions'), matches: jsonl, parser: parseCodexJsonl },
     { client: 'pi', rootDir: path.join(home, '.pi', 'agent', 'sessions'), matches: jsonl, parser: parsePiJsonl },
   ];
@@ -41,10 +43,12 @@ export interface UsageIngestion {
 }
 
 /**
- * Local token ingestion (GH-389). Per-turn events are written to the local
- * store only: this service has no hub hook, by design - per-turn forwarding is
+ * Local token ingestion (GH-389). Each turn its harness did not price is
+ * priced from `prices` as it is read (GH-397). Per-turn events are written to
+ * the local store only: this service has no hub hook, by design - per-turn forwarding is
  * what flooded the hub in beta.10 (BUG 9c27faf6). The hub sees usage only as
- * the per-transition totals the workflow attaches to its own events.
+ * the per-transition totals the workflow attaches to its own events, and the
+ * turns on no card as a few daily totals per project (usage/noCardUsage.ts).
  *
  * Passes never overlap: a flush asked for while a poll runs waits for it, so
  * the two cannot read the same appended bytes and race on the file's state.
@@ -57,6 +61,8 @@ export function createUsageIngestion(opts: {
   sources: IngestionSource[];
   intervalMs?: number;
   now?: () => Date;
+  /** GH-397: the price table turns the harness did not price are priced from at ingestion. */
+  prices?: () => Promise<PricesData | null>;
 }): UsageIngestion {
   const now = opts.now ?? (() => new Date());
   // Stored when ingestion is set up, not at its first pass: a log written
@@ -72,12 +78,16 @@ export function createUsageIngestion(opts: {
     return run;
   };
 
+  serial(() => reattributeSubagentUsage(opts.storage))
+    .catch((e: Error) => console.error('[USAGE] GH-398 re-attribution failed:', e.message));
+
   const pass = (fileFilter?: (client: string, abs: string, rel: string) => boolean) =>
     serial(async () => ingestOnce({
       storage: opts.storage,
       sources: opts.sources,
       attributeEvents: true,
       epoch: await getEpoch(),
+      ...(opts.prices ? { prices: opts.prices } : {}),
       ...(fileFilter ? { fileFilter } : {}),
     }));
 

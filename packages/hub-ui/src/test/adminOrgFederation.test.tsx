@@ -36,6 +36,9 @@ const routeData: Record<string, unknown> = {
   '/auth/me': { userId: 'admin@x', orgId: 'acme', role: 'admin' },
   '/auth/providers': { password: true, google: false, entra: false, requiresSetup: false },
   '/healthz': { ok: true, version: '1.1.19' },
+  '/v1/admin/federation/identity': {
+    group: { person: null, installation: null }, effective: { person: 'as-written', installation: 'as-written' }, childHubs: [],
+  },
   '/v1/admin/federation': { bound: false, outboxDepth: 0 },
   '/v1/admin/child-hubs': CHILD_HUBS,
   // What the admin overview reads when a test lands on /admin.
@@ -78,6 +81,13 @@ describe('Admin → Organization', () => {
     // and the sections are live, not headings over nothing
     expect(await screen.findByText('acme-emea')).toBeInTheDocument();
     expect(await screen.findByRole('textbox', { name: /join token/i })).toBeInTheDocument();
+  });
+
+  it('carries the identities forwarded to this hub on the same page', async () => {
+    renderAt('/admin/org');
+    expect(await screen.findByRole('heading', { name: /identities forwarded to this hub/i })).toBeInTheDocument();
+    expect(await screen.findByRole('combobox', { name: 'Group default: Person' })).toHaveValue('as-written');
+    expect(document.getElementById('identity-coding')).not.toBeNull();
   });
 
   it('no longer offers Child hubs and Parent hub as their own tabs', async () => {

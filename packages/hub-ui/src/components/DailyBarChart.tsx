@@ -16,6 +16,17 @@ export interface DailyBar {
 export interface BarSeries {
   label: string;
   color: string;
+  /** Drawn in stripes of its colour: a part of another kind than the solid ones beside it. */
+  pattern?: 'hatched';
+}
+
+/** How a part is painted, in the bar, the legend and the tooltip alike. */
+function fillStyle(s: BarSeries): { background: string; boxShadow?: string } {
+  if (s.pattern !== 'hatched') return { background: s.color };
+  return {
+    background: `repeating-linear-gradient(135deg, ${s.color} 0 3px, transparent 3px 6px)`,
+    boxShadow: `inset 0 0 0 1px ${s.color}`,
+  };
 }
 
 /**
@@ -24,6 +35,9 @@ export interface BarSeries {
  * different scale are two of these, never one chart with two axes. With
  * `series`, each bar stacks the parts of that one measure (tokens by type),
  * named in a legend; the parts add up to the bar, so the axis is unchanged.
+ * A `hatched` series is striped, in the bar, the legend and the tooltip: a
+ * part of another kind than the solid ones (usage on no card, which is every
+ * token type at once, on top of the types).
  *
  * - y-axis of nice ticks with a gridline each; `scale` turns the value into
  *   the whole units the ticks count in (cents for dollars), `format` writes a
@@ -102,7 +116,7 @@ export function DailyBarChart({ title, bars, format, tickFormat = format, scale 
           <ul aria-label={`${title} legend`} className="flex flex-wrap gap-x-3 gap-y-1 text-caption text-ink-secondary">
             {series.map(s => (
               <li key={s.label} className="inline-flex items-center gap-1.5">
-                <span aria-hidden="true" className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: s.color }} />
+                <span aria-hidden="true" data-pattern={s.pattern} className="inline-block w-2.5 h-2.5 rounded-sm" style={fillStyle(s)} />
                 {s.label}
               </li>
             ))}
@@ -153,12 +167,13 @@ export function DailyBarChart({ title, bars, format, tickFormat = format, scale 
                         <div
                           key={p.label}
                           data-series={p.label}
+                          data-pattern={p.pattern}
                           onMouseEnter={() => setActivePart(p.k)}
                           onMouseLeave={() => setActivePart(null)}
                           style={{
                             // A share of the bar, so the parts fill it exactly.
                             height: `${b.value > 0 ? (p.value / b.value) * 100 : 0}%`,
-                            background: p.color,
+                            ...fillStyle(p),
                             opacity: current === i && activePart != null && activePart !== p.k ? 0.55 : 1,
                           }}
                         />
@@ -199,7 +214,7 @@ export function DailyBarChart({ title, bars, format, tickFormat = format, scale 
                           data-active={on ? 'true' : undefined}
                           className={`flex items-center gap-1.5 ${on ? 'text-ink font-semibold' : 'text-ink-secondary'}`}
                         >
-                          <span className="inline-block w-2 h-2 rounded-sm" style={{ background: p.color }} />
+                          <span className="inline-block w-2 h-2 rounded-sm" data-pattern={p.pattern} style={fillStyle(p)} />
                           <span>{p.label}</span>
                           <span className="ml-auto pl-3 font-mono tabular-nums">{tickFormat(p.value)}</span>
                           <span className="w-9 text-right font-mono tabular-nums text-ink-tertiary">{share(p.value, shown.value)}</span>

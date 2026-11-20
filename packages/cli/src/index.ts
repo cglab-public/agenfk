@@ -2453,13 +2453,21 @@ program
   .option('--content <text>', 'Optional inline content')
   .action(async (id, options) => {
     try {
-      const { data: item } = await axios.get(`${API_URL}/items/${id}`);
+      // Resolve a short id the way `get` does: GET/PUT /items/:id match the EXACT id.
+      let itemId = id;
+      if (itemId.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const resolved = resolveItemIdPrefix(allItems, itemId);
+        if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); return; }
+        itemId = resolved.id;
+      }
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       const context = Array.isArray(item.context) ? [...item.context] : [];
       const entry: Record<string, unknown> = { id: randomUUID(), path: options.path };
       if (options.description !== undefined) entry.description = options.description;
       if (options.content !== undefined) entry.content = options.content;
       context.push(entry);
-      await axios.put(`${API_URL}/items/${id}`, { context });
+      await axios.put(`${API_URL}/items/${itemId}`, { context });
       console.log(chalk.green(`✓ Context "${options.path}" attached to item [${id}].`));
     } catch (error: any) {
       console.error(chalk.red('Error adding context:'), error.response?.data?.error || error.message);
@@ -3999,10 +4007,18 @@ program
   .option('--author <author>', 'Comment author', 'agent')
   .action(async (id, content, options) => {
     try {
-      const { data: item } = await axios.get(`${API_URL}/items/${id}`);
+      // Resolve a short id the way `get` does: GET/PUT /items/:id match the EXACT id.
+      let itemId = id;
+      if (itemId.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const resolved = resolveItemIdPrefix(allItems, itemId);
+        if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); return; }
+        itemId = resolved.id;
+      }
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       const comments = item.comments || [];
       comments.push({ id: randomUUID(), content, author: options.author, timestamp: new Date() });
-      await axios.put(`${API_URL}/items/${id}`, { comments });
+      await axios.put(`${API_URL}/items/${itemId}`, { comments });
       console.log(chalk.green('Comment added.'));
     } catch (error: any) {
       console.error(chalk.red('Error adding comment:'), error.response?.data?.error || error.message);
@@ -4267,10 +4283,18 @@ program
       process.exit(1);
     }
     try {
-      const { data: item } = await axios.get(`${API_URL}/items/${id}`);
+      // Resolve a short id the way `get` does: GET/PUT /items/:id match the EXACT id.
+      let itemId = id;
+      if (itemId.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const resolved = resolveItemIdPrefix(allItems, itemId);
+        if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); return; }
+        itemId = resolved.id;
+      }
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       const tests = item.tests || [];
       tests.push({ id: randomUUID(), command: options.command, output: options.output, status, executedAt: new Date() });
-      await axios.put(`${API_URL}/items/${id}`, { tests });
+      await axios.put(`${API_URL}/items/${itemId}`, { tests });
       console.log(chalk.green(`Test result logged: ${status}`));
     } catch (error: any) {
       console.error(chalk.red('Error logging test result:'), error.response?.data?.error || error.message);

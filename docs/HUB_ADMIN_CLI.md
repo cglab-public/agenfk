@@ -176,18 +176,18 @@ board without a command fails the build.
 | `agenfk hub admin federation join` | Join a parent hub with the token its admin gave you (`child-hubs invite` there), read from stdin |
 | `agenfk hub admin federation release-request` | Ask the parent to release this hub from the group |
 | `agenfk hub admin federation leave` | Leave the group once the parent has released this hub |
-| `agenfk hub admin federation identity-policy show` | The group policy and each child hub's |
-| `agenfk hub admin federation identity-policy set <policy>` | Set the group policy: keep or pseudonymize (keep needs --yes) |
+| `agenfk hub admin federation identity show` | The group default per field and each child hub's own |
+| `agenfk hub admin federation identity set` | Set the group default: --person and/or --installation, as-written or coded (as-written needs --yes) |
 | `agenfk hub admin child-hubs list` | Child hubs |
 | `agenfk hub admin child-hubs invite` | A single-use token another hub uses to join this one |
 | `agenfk hub admin child-hubs rename <id> <name>` | Rename a child hub |
 | `agenfk hub admin child-hubs detach <id>` | Remove a child hub from the group and revoke its keys |
-| `agenfk hub admin child-hubs identity-policy <id> <policy>` | A child hub's own identity policy: keep, pseudonymize, or inherit (keep and inherit need --yes) |
+| `agenfk hub admin child-hubs identity <id>` | A child hub's own coding: --person and/or --installation, as-written, coded or inherit (as-written and inherit need --yes) |
 | `agenfk hub admin jira show` | The JIRA app (the secret is never shown) |
 | `agenfk hub admin jira set` | Set the Atlassian app (a new app needs its secret) |
 | `agenfk hub admin jira disconnect-all` | Disconnect every person's JIRA account |
 | `agenfk hub admin events` | The fleet's events, newest first (the board's timeline) |
-| `agenfk hub admin data <query>` | The board's charts and lists as data. Queries: timeline (events, newest first (also `agenfk hub admin events`)); metrics (daily series and totals); histogram (events per bucket (--bucket)); adherence (workflow adherence); prs (the PR overview (--model, --pr)); users (people and their activity); people (people's names (takes no filters)); projects (repositories seen); event-types (event types seen); item-types (item types seen, with counts); child-hubs (child hubs with their event counts); usage (closed cards with their token usage); usage-overview (usage totals by installation, user, harness/model and PR) |
+| `agenfk hub admin data <query>` | The board's charts and lists as data. Queries: timeline (events, newest first (also `agenfk hub admin events`)); metrics (daily series and totals); histogram (events per bucket (--bucket)); adherence (workflow adherence); prs (the PR overview (--model, --pr)); users (people and their activity); people (people's names (takes no filters)); projects (repositories seen); event-types (event types seen); item-types (item types seen, with counts); child-hubs (child hubs with their event counts); usage (closed cards with their token usage); usage-overview (usage totals by installation, user, harness/model and day, with usage on no card); usage-prs (usage by PR, a page at a time (--repos, --search, --status, --sort, --dir, --page, --page-size)) |
 | `agenfk hub admin rollups recompute` | Rebuild the daily rollups the charts read (after a crash, or a merge that did not finish) |
 | `agenfk hub admin audit list` | Audit rows, newest first |
 | `agenfk hub admin audit export` | The audit log as CSV (the board's download) |

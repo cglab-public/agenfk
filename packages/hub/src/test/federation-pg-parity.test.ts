@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
-import { openPgMemDb } from '../db/postgres';
+import { openPgMemDb, migrateIdentityCodingColumns } from '../db/postgres';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { writeParentBinding } from '../services/federation/parentBinding';
@@ -890,48 +890,85 @@ describe('PG parity: the child side of a group upgrade (CGLAB-183, CGLAB-185)', 
   });
 });
 
-describe('PG parity: the identity policy that governs forwarded identities (CGLAB-184)', () => {
-  it('sets the group policy and a per-child override, on Postgres', async () => {
-    // The whole premise of the group is that a parent's policy governs how
-    // forwarded identities are shaped — and the WRITE half of it had zero
-    // Postgres execution. The group write is an upsert
-    // (`ON CONFLICT(org_id) DO UPDATE`), which is precisely the shape a
-    // dialect can get wrong, and until now the reads were only ever exercised
-    // against a NULL policy, so effectiveIdentityPolicy was tested on this
-    // backend in its default branch only.
+describe('PG parity: the per-field identity coding that governs forwarded identities (GH-395)', () => {
+  it('sets each field as a group default and a per-child override, serves it on the heartbeat and audits it, on Postgres', async () => {
     const { app, db, cookie } = await bootHubOnPg();
     const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
-    const { childHubId } = (await supertest(app).post('/v1/federation/enroll')
-      .send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-idp' } })).body;
+    const { childHubId, token } = (await supertest(app).post('/v1/federation/enroll')
+      .send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-idc' } })).body;
+    const group = () => db.get<any>('SELECT identity_person, identity_installation FROM org_settings WHERE org_id = ?', ['org']);
 
-    // Upsert with no row present…
-    expect((await supertest(app).put('/v1/admin/federation/identity-policy')
-      .set('Cookie', cookie).send({ policy: 'pseudonymize' })).status).toBe(200);
-    expect((await db.get<any>('SELECT identity_policy FROM org_settings WHERE org_id = ?', ['org']))
-      .identity_policy).toBe('pseudonymize');
+    expect((await supertest(app).put('/v1/admin/federation/identity').set('Cookie', cookie).send({ person: 'coded' })).status).toBe(200);
+    expect(await group()).toEqual({ identity_person: 'coded', identity_installation: null });
+    expect((await supertest(app).put('/v1/admin/federation/identity').set('Cookie', cookie).send({ installation: 'coded' })).status).toBe(200);
+    expect(await group()).toEqual({ identity_person: 'coded', identity_installation: 'coded' });
 
-    // …and again with one, which is the DO UPDATE arm.
-    expect((await supertest(app).put('/v1/admin/federation/identity-policy')
-      .set('Cookie', cookie).send({ policy: 'keep' })).status).toBe(200);
-    expect((await db.get<any>('SELECT identity_policy FROM org_settings WHERE org_id = ?', ['org']))
-      .identity_policy).toBe('keep');
+    expect((await supertest(app).put(`/v1/admin/child-hubs/${childHubId}/identity`)
+      .set('Cookie', cookie).send({ person: 'as-written', installation: null })).status).toBe(200);
+    expect(await db.get<any>('SELECT identity_person, identity_installation FROM child_hubs WHERE id = ?', [childHubId]))
+      .toEqual({ identity_person: 'as-written', identity_installation: null });
 
-    // The per-child override wins in BOTH directions, so it is set against a
-    // group default that differs from it.
-    expect((await supertest(app).put(`/v1/admin/child-hubs/${childHubId}/identity-policy`)
-      .set('Cookie', cookie).send({ policy: 'pseudonymize' })).status).toBe(200);
-    expect((await db.get<any>('SELECT identity_policy FROM child_hubs WHERE id = ?', [childHubId]))
-      .identity_policy).toBe('pseudonymize');
-
-    const read = await supertest(app).get('/v1/admin/federation/identity-policy').set('Cookie', cookie);
+    const read = await supertest(app).get('/v1/admin/federation/identity').set('Cookie', cookie);
     expect(read.status).toBe(200);
-    expect(read.body.groupPolicy).toBe('keep');
+    expect(read.body.group).toEqual({ person: 'coded', installation: 'coded' });
     const child = read.body.childHubs.find((c: any) => c.id === childHubId);
-    expect(child.policy).toBe('pseudonymize');
-    // The override wins over a DIFFERENT group default — the direction that
-    // proves it is an override rather than an escalation.
-    expect(child.effective).toBe('pseudonymize');
+    expect(child).toMatchObject({
+      override: { person: 'as-written', installation: null },
+      effective: { person: 'as-written', installation: 'coded' },
+    });
+    const ping = await supertest(app).post('/v1/federation/ping').set('Authorization', `Bearer ${token}`).send({});
+    expect(ping.body).toMatchObject({ identity: { person: 'as-written', installation: 'coded' }, identityPolicy: 'pseudonymize' });
 
+    const audit = await supertest(app).get('/v1/admin/audit?area=federation').set('Cookie', cookie);
+    const actions = audit.body.rows.map((r: any) => r.action);
+    expect(actions).toContain('identity-coding.update');
+    expect(actions).toContain('child-hub.identity-coding');
+    await db.close();
+  });
+
+  it("names a forwarded person only when the row and the parent both send the person as written, on Postgres", async () => {
+    const { app, db, cookie } = await bootHubOnPg();
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const child = (await supertest(app).post('/v1/federation/enroll').send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-n' } })).body;
+    const row = (eventId: string, userKey: string, identity: Record<string, string>) => ({
+      id: `o-${eventId}`, kind: 'event',
+      payload: { childHubId: child.childHubId, identity, identityPolicy: 'pseudonymize', event: {
+        eventId, orgId: 'org', installationId: 'anon:00000000000000aa', occurredAt: '2026-09-02T10:00:00.000Z', type: 'item.closed',
+        payload: {}, userKey, actor: { osUser: 'x', gitName: `Name of ${userKey}`, gitEmail: userKey },
+      } },
+    });
+    const deliver = (rows: unknown[]) => supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${child.token}`).send({ rows });
+    await deliver([
+      row('e1', 'hana@child.com', { person: 'as-written', installation: 'coded' }),
+      row('e2', 'ivan@child.com', { person: 'coded', installation: 'as-written' }),
+    ]);
+    await db.run('UPDATE child_hubs SET identity_person = ? WHERE id = ?', ['coded', child.childHubId]);
+    await deliver([row('e3', 'joe@child.com', { person: 'as-written', installation: 'as-written' })]);
+    const names = (await supertest(app).get('/v1/people/names').set('Cookie', cookie)).body.names;
+    expect(names).toEqual({ 'hana@child.com': 'Name of hana@child.com' });
+    await db.close();
+  });
+
+  it('adds the per-field columns to a deployed hub and resets an existing pseudonymize to as written, on Postgres', async () => {
+    const db = await openPgMemDb();
+    for (const t of ['child_hubs', 'org_settings']) {
+      await db.exec(`ALTER TABLE ${t} DROP COLUMN identity_person`);
+      await db.exec(`ALTER TABLE ${t} DROP COLUMN identity_installation`);
+      await db.exec(`ALTER TABLE ${t} ADD COLUMN identity_policy TEXT`);
+    }
+    const now = new Date().toISOString();
+    await db.run("INSERT INTO org_settings (org_id, identity_policy) VALUES ('org', 'pseudonymize')");
+    await db.run("INSERT INTO child_hubs (id, org_id, name, first_seen, last_seen, identity_policy) VALUES ('c1', 'org', 'c', ?, ?, 'pseudonymize')", [now, now]);
+
+    await migrateIdentityCodingColumns(db);
+    expect(await db.get<any>("SELECT identity_policy, identity_person, identity_installation FROM org_settings WHERE org_id = 'org'"))
+      .toEqual({ identity_policy: null, identity_person: null, identity_installation: null });
+    expect(await db.get<any>("SELECT identity_policy, identity_person, identity_installation FROM child_hubs WHERE id = 'c1'"))
+      .toEqual({ identity_policy: null, identity_person: null, identity_installation: null });
+
+    await db.run("UPDATE org_settings SET identity_person = 'coded' WHERE org_id = 'org'");
+    await migrateIdentityCodingColumns(db);
+    expect((await db.get<any>("SELECT identity_person FROM org_settings WHERE org_id = 'org'")).identity_person).toBe('coded');
     await db.close();
   });
 });

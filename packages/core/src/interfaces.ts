@@ -10,6 +10,7 @@ import {
   TokenEventQuery,
   IngestionState,
   SessionCardRow,
+  TranscriptClaimRow,
   AppSettings,
   TerminalSession,
   Pr,
@@ -114,6 +115,24 @@ export interface StorageProvider extends AgEnFKPlugin {
   endSessionCards(itemId: string, at: string): Promise<void>;
   /** Every (client, session) that has a row on the card: whose logs to flush before counting its usage. */
   sessionsForItem(itemId: string): Promise<Array<{ client: string; sessionId: string }>>;
+  /** GH-398: a transcript claimed a card at `at`; false when the same claim was already recorded. */
+  recordTranscriptClaim(row: TranscriptClaimRow): Promise<boolean>;
+  /**
+   * The transcript's latest claim at or before `ts`, or null when it has none
+   * yet. itemId is null when the card was closed after that claim, and, for
+   * the session's own transcript (agentId ''), when one of its subagents
+   * claimed the same card after it: the parent handed the card over.
+   */
+  transcriptCardAt(client: string, sessionId: string, agentId: string, ts: string): Promise<{ itemId: string | null; projectId?: string } | null>;
+  /** GH-398: the transcript's earliest claim, or null when it has made none. */
+  firstTranscriptClaim(client: string, sessionId: string, agentId: string): Promise<{ itemId: string; projectId?: string; at: string } | null>;
+  /** GH-398: the card closed at `at`; it ends every transcript claim made on it before then. */
+  recordCardClose(itemId: string, at: string): Promise<void>;
+  /** GH-398: charge a stored turn to another card, or to none (null). The project changes only when given. */
+  setTokenEventItem(id: string, itemId: string | null, projectId?: string | null): Promise<void>;
+  /** A value kept beside the ingestion epoch (one-off migration markers), or null. */
+  getIngestionMeta(key: string): Promise<string | null>;
+  setIngestionMeta(key: string, value: string): Promise<void>;
   /** The time usage ingestion was first switched on: `now` the first time, the stored value after. */
   ensureIngestionEpoch(now: string): Promise<string>;
 
@@ -332,6 +351,8 @@ export type HubEventType =
   | 'command.approved'
   | 'comment.added'
   | 'test.logged'
+  // A project's usage on no card for one local day, as a running total the hub replaces (GH-394).
+  | 'usage.no-card'
   // Legacy inbound-only event. Spokes no longer emit this, and Hub skips it
   // during ingest so token consumption is not stored.
   | LegacyHubEventType

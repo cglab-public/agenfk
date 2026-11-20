@@ -9,6 +9,8 @@ export interface DataColumn<T> {
   /** Present = sortable. */
   /** null: the row has no value here, so it sorts last whichever way the column is sorted. */
   sortValue?: (row: T) => string | number | null;
+  /** Sortable by whoever serves the rows (`serverSort`), with no value to sort by here. */
+  sortable?: boolean;
   /** Direction of the first click on this header (default ascending); counts
    *  and dates usually want 'desc'. Declared, not guessed from the data. */
   firstDir?: Dir;
@@ -17,7 +19,7 @@ export interface DataColumn<T> {
   className?: string;
 }
 
-type Dir = 'asc' | 'desc';
+export type Dir = 'asc' | 'desc';
 
 /** A viewport-filling table never gets shorter than this, however short the window. */
 export const FILL_VIEWPORT_MIN = 240;
@@ -81,21 +83,30 @@ function useFillViewport(on: boolean) {
  * table for assistive tech (aria-label, not a <caption>: each table already
  * sits under a visible heading that says the same). `fillViewport` ends the
  * rows at the bottom of the window and scrolls them there, under a header that
- * stays put; the page no longer grows with the list.
+ * stays put; the page no longer grows with the list. `pinned` rows follow the
+ * others, outside the sort and the search (a "Not on a card" line under the
+ * people it is not one of). `serverSort` hands the sort to whoever serves the
+ * rows (a paged list): the headers show and change it, the rows stay in the
+ * order they came.
  */
-export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, search, minWidth, rowHover = false, fillViewport = false }: {
+export function DataTable<T>({ caption, columns, rows, pinned = [], rowKey, defaultSort, serverSort, search, minWidth, rowHover = false, fillViewport = false }: {
   caption: string;
   columns: DataColumn<T>[];
   rows: T[];
+  pinned?: T[];
   rowKey: (row: T) => string;
   defaultSort?: { key: string; dir: Dir };
+  serverSort?: { key: string; dir: Dir; onChange: (sort: { key: string; dir: Dir }) => void };
   search?: { label: string; placeholder?: string; matches: (row: T, query: string) => boolean };
   minWidth?: number;
   /** On only where a row is itself a target: a hover promises a click. */
   rowHover?: boolean;
   fillViewport?: boolean;
 }) {
-  const [sort, setSort] = useState<{ key: string; dir: Dir } | null>(defaultSort ?? null);
+  // Under serverSort the rows come sorted: nothing is sorted here, so no local sort is ever set.
+  const [localSort, setLocalSort] = useState<{ key: string; dir: Dir } | null>(serverSort ? null : defaultSort ?? null);
+  const sort = serverSort ? { key: serverSort.key, dir: serverSort.dir } : localSort;
+  const sortable = (col: DataColumn<T>) => !!col.sortValue || (!!serverSort && !!col.sortable);
   const [query, setQuery] = useState('');
   const searchId = useId();
   const fill = useFillViewport(fillViewport);
@@ -103,10 +114,10 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
   const shown = useMemo(() => {
     const q = query.trim();
     const filtered = search && q ? rows.filter(r => search.matches(r, q)) : rows;
-    const col = sort && columns.find(c => c.key === sort.key);
+    const col = localSort && columns.find(c => c.key === localSort.key);
     if (!col?.sortValue) return filtered;
     const value = col.sortValue;
-    const sign = sort!.dir === 'asc' ? 1 : -1;
+    const sign = localSort!.dir === 'asc' ? 1 : -1;
     // Index tiebreak keeps the sort stable whatever the engine does.
     return filtered
       .map((row, i) => ({ row, i, v: value(row) }))
@@ -118,13 +129,19 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
         return c !== 0 ? c * sign : a.i - b.i;
       })
       .map(x => x.row);
-  }, [rows, columns, sort, search, query]);
+  }, [rows, columns, localSort, search, query]);
 
+  const cells = (row: T) => columns.map(col => (
+    <td key={col.key} className={cn('px-3 py-3 first:pl-5 last:pr-5', col.align === 'right' && 'text-right', col.className)}>
+      {col.render(row)}
+    </td>
+  ));
+
+  const next = (prev: { key: string; dir: Dir } | null, col: DataColumn<T>) =>
+    (prev?.key === col.key ? { key: col.key, dir: prev.dir === 'asc' ? 'desc' as const : 'asc' as const } : { key: col.key, dir: col.firstDir ?? 'asc' });
   const toggle = (col: DataColumn<T>) => {
-    setSort(prev => {
-      if (prev?.key === col.key) return { key: col.key, dir: prev.dir === 'asc' ? 'desc' : 'asc' };
-      return { key: col.key, dir: col.firstDir ?? 'asc' };
-    });
+    if (serverSort) serverSort.onChange(next(sort, col));
+    else setLocalSort(prev => next(prev, col));
   };
 
   return (
@@ -151,7 +168,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
             <tr className="eyebrow text-left font-mono text-ink-tertiary">
               {columns.map(col => {
                 const active = sort?.key === col.key;
-                const ariaSort = col.sortValue ? (active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none') : undefined;
+                const ariaSort = sortable(col) ? (active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none') : undefined;
                 const Icon = !active ? ArrowUpDown : sort!.dir === 'asc' ? ArrowUp : ArrowDown;
                 return (
                   <th
@@ -160,7 +177,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
                     aria-sort={ariaSort}
                     className={cn('px-3 py-2 font-semibold first:pl-5 last:pr-5', col.align === 'right' && 'text-right', fillViewport && 'sticky top-0 z-10 bg-surface', col.className)}
                   >
-                    {col.sortValue ? (
+                    {sortable(col) ? (
                       <button
                         type="button"
                         onClick={() => toggle(col)}
@@ -181,13 +198,10 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
           </thead>
           <tbody className="divide-y divide-border-soft">
             {shown.map(row => (
-              <tr key={rowKey(row)} className={cn(rowHover && 'hover:bg-accent-fill/50 transition-colors')}>
-                {columns.map(col => (
-                  <td key={col.key} className={cn('px-3 py-3 first:pl-5 last:pr-5', col.align === 'right' && 'text-right', col.className)}>
-                    {col.render(row)}
-                  </td>
-                ))}
-              </tr>
+              <tr key={rowKey(row)} className={cn(rowHover && 'hover:bg-accent-fill/50 transition-colors')}>{cells(row)}</tr>
+            ))}
+            {pinned.map(row => (
+              <tr key={rowKey(row)} data-pinned="true" className="bg-canvas/40">{cells(row)}</tr>
             ))}
           </tbody>
         </table>
