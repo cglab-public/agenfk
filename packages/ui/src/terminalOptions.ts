@@ -57,11 +57,58 @@ export function bufferBytes(cols: number, rows: number): number {
   return BYTES_PER_CELL * cols * (SCROLLBACK_LINES + rows);
 }
 
+/**
+ * The font size range Settings offers (INFRA-425).
+ *
+ * The same bounds the desktop enforces in main/appearance.ts. Repeated rather
+ * than imported because the renderer bundle and the main process are separate
+ * artifacts with no shared package between them; main is the one that refuses.
+ */
+export const TERMINAL_FONT_SIZE_MIN = 8;
+export const TERMINAL_FONT_SIZE_MAX = 32;
+
+/**
+ * The terminal font (INFRA-425).
+ *
+ * The bundled JetBrains Mono first: index.css already imports it through
+ * @fontsource-variable, so it is there on every machine and offline. Without
+ * this line xterm used its own default stack, which is DejaVu Sans Mono on
+ * Linux and Courier New on Windows — the "remote desktop" look next to the
+ * same program in Windows Terminal.
+ *
+ * Then the best monospace each OS ships, in case the bundle failed to load:
+ * Cascadia Mono and Consolas (Windows), Menlo (macOS), DejaVu Sans Mono
+ * (most Linux), and the generic family last.
+ */
+export const TERMINAL_FONT_FAMILY =
+  "'JetBrains Mono Variable', 'Cascadia Mono', Consolas, Menlo, 'DejaVu Sans Mono', monospace";
+
+/** The face `document.fonts.load` is asked for before the terminal re-measures. */
+export const TERMINAL_FONT_FACE = "'JetBrains Mono Variable'";
+
 /** The options every terminal in this app is built with. */
 export const TERMINAL_OPTIONS: ITerminalOptions = {
   // A pty writes bare LF. Without this every line stair-steps.
   convertEol: true,
+  fontFamily: TERMINAL_FONT_FAMILY,
+  // The size a terminal gets until somebody chooses one in Settings > Appearance.
   fontSize: 12,
   cursorBlink: true,
   scrollback: SCROLLBACK_LINES,
 };
+
+/**
+ * The options for a terminal at the stored font size.
+ *
+ * `undefined` is the normal case before the preferences have loaded, and a
+ * browser has none at all; both get the default rather than waiting. Clamped
+ * here as well as refused in main, because an older preload can still answer
+ * with whatever is in the file.
+ */
+export function terminalOptionsFor(fontSize: number | undefined): ITerminalOptions {
+  // Always a copy: the caller may hand it to xterm, and the shared object is
+  // the one every other terminal is built from.
+  if (typeof fontSize !== 'number' || !Number.isFinite(fontSize)) return { ...TERMINAL_OPTIONS };
+  const size = Math.round(Math.min(TERMINAL_FONT_SIZE_MAX, Math.max(TERMINAL_FONT_SIZE_MIN, fontSize)));
+  return { ...TERMINAL_OPTIONS, fontSize: size };
+}

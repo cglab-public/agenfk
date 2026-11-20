@@ -936,6 +936,13 @@ describe('AppShell — the title bar in full screen and over the terminal', () =
     expect(tabs.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('names the card\'s project in the terminal header (INFRA-425)', async () => {
+    // The header always rendered `project / title`; nothing ever set the
+    // project, so it read the title alone. The card is in project p1.
+    await openTerminal();
+    await waitFor(() => expect(screen.getByTestId('terminal-header').textContent).toContain('agenfk / Some work'));
+  });
+
   it('keeps every control in the tab strip clickable', async () => {
     // A drag region swallows clicks. The strip is now one, so every tab, close
     // and new-terminal button in it has to opt back out.
