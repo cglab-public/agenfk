@@ -1260,4 +1260,31 @@ describe('PG parity: card usage (GH-389)', () => {
       ['c2', '2026-11-19T11:00:00.000Z', 3, 0.5],
     ]);
   });
+
+  it('GET /v1/usage/overview sums step usage by installation, user, model and PR the same as SQLite', async () => {
+    const total = (input: number) => ({ turns: 1, input, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0.5, unpricedTurns: 0 });
+    const usage = (input: number) => ({ byModel: [{ client: 'pi', model: 'qwen3.8:27b', ...total(input) }], total: total(input) });
+    const base = (eventId: string, type: string, itemId: string, at: string, payload: any, who = 'alice', inst = 'inst-1') => ({
+      eventId, installationId: inst, orgId: 'org', occurredAt: at, type, itemId, itemType: 'STORY', itemTitle: `S-${itemId}`,
+      actor: { osUser: who, gitName: who, gitEmail: `${who}@acme.com` }, projectId: 'p1', payload,
+    });
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+      base('o1', 'step.transitioned', 'c1', '2026-11-19T10:00:00.000Z', { toStatus: 'REVIEW', usage: usage(2) }),
+      base('o2', 'step.transitioned', 'c2', '2026-11-19T11:00:00.000Z', { toStatus: 'REVIEW', usage: usage(30) }, 'bob', 'inst-2'),
+      base('o3', 'item.closed', 'c1', '2026-11-19T12:00:00.000Z', { toStatus: 'DONE', usage: { ...usage(5), byStep: [], cards: 1, own: usage(5) } }),
+      base('o4', 'pr.opened', 'c1', '2026-11-19T13:00:00.000Z', { prNumber: 4, repo: 'acme/api' }),
+    ] });
+    expect(r.status).toBe(200);
+
+    const res = await supertest(fx.app).get('/v1/usage/overview?from=2026-11-01').set('Cookie', fx.cookie);
+
+    expect(res.status).toBe(200);
+    // c1's close recovers 3 turns' worth its step missed (own 5 - step 2).
+    expect(res.body.total).toEqual(expect.objectContaining({ input: 35, costUsd: 1 }));
+    expect(res.body.recoveredAtClose).toEqual(expect.objectContaining({ input: 3 }));
+    expect(res.body.byInstallation.map((x: any) => [x.installation_id, x.cards, x.total.input])).toEqual([['inst-2', 1, 30], ['inst-1', 1, 5]]);
+    expect(res.body.byUser.map((x: any) => [x.user_key, x.total.input])).toEqual([['bob@acme.com', 30], ['alice@acme.com', 5]]);
+    expect(res.body.byModel).toEqual([expect.objectContaining({ client: 'pi', model: 'qwen3.8:27b', input: 35, costUsd: 1 })]);
+    expect(res.body.byPr.map((x: any) => [x.repo, x.pr_number, x.opened_at, x.closed_at, x.usage.total.input])).toEqual([['acme/api', 4, '2026-11-19T13:00:00.000Z', '2026-11-19T12:00:00.000Z', 5]]);
+  });
 });

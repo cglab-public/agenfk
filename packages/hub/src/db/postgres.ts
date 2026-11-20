@@ -1036,6 +1036,8 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
+  // GH-389 usage overview: a card's steps and closes, by card.
+  await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_org_item_type ON events(org_id, item_id, type)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key)");
 
   // BUG ab9b39d3: backs the Admin -> Flows lookup of the latest remote_url per

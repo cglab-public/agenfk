@@ -143,6 +143,21 @@ export async function computeStepUsage(args: StepUsageDeps & {
  * turn ingested after its step was counted is not lost), broken down by the
  * card's own steps.
  */
+/**
+ * The card's own usage to date, from its stored turns (its descendants' not
+ * included). Every step.transitioned carries it, so the hub can add a card up
+ * from cumulative snapshots: a turn ingested after its step was counted is in
+ * the next snapshot, and a snapshot never counts a turn twice.
+ */
+export async function computeOwnUsage(
+  storage: { queryTokenEvents(q: { itemId: string }): Promise<TokenEvent[]> },
+  itemId: string,
+): Promise<UsageSummary & { asOf: string }> {
+  // Stamped before the read: the snapshot holds at least every turn stored by then.
+  const asOf = new Date().toISOString();
+  return { ...aggregateUsage(await storage.queryTokenEvents({ itemId })), asOf };
+}
+
 export async function computeCardUsage(
   storage: {
     getItem(id: string): Promise<any>;
@@ -165,7 +180,12 @@ export async function computeCardUsage(
     for (const child of all) if (child.parentId === ids[i] && !ids.includes(child.id)) ids.push(child.id);
   }
   const events: TokenEvent[] = [];
-  for (const id of ids) events.push(...await storage.queryTokenEvents({ itemId: id }));
+  let ownCount = 0;
+  const asOf = new Date().toISOString();
+  for (const id of ids) {
+    events.push(...await storage.queryTokenEvents({ itemId: id }));
+    if (id === item.id) ownCount = events.length;
+  }
   const rows = [...((item.usageByStep ?? []) as StepUsage[]), ...(pendingStep ? [pendingStep] : [])];
   const byStep = rows.map((u) => ({ step: u.step, total: u.total }));
   // A descendant that closed with turns missing makes this total incomplete too (review finding).
@@ -174,6 +194,10 @@ export async function computeCardUsage(
     .every((c: any) => c.cardUsage?.complete !== false);
   return {
     ...aggregateUsage(events), byStep, cards: ids.length,
+    // The card's own turns, without its descendants': the hub sums cards one
+    // by one, and a parent's whole total would count its children again.
+    // asOf orders a card's snapshots on the hub (by read, not by emission).
+    own: { ...aggregateUsage(events.slice(0, ownCount)), asOf },
     complete: complete && descendantsComplete,
     ...(atStatus ? { atStatus } : {}),
   };

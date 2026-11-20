@@ -91,6 +91,23 @@ describe('usage of the step a card leaves', () => {
     expect(moved.payload.usage.byModel[0]).toMatchObject({ client: 'claude-code', model: 'claude-opus-5-5', turns: 2 });
   });
 
+  it("step.transitioned also carries the card's own usage to date, for the hub to reconcile late turns", async () => {
+    const c = await cardAt('IN_PROGRESS');
+    await turn(c.id, { input: 5 });
+    await turn('someone-else', { input: 1000 });
+    await validate(c.id); // IN_PROGRESS -> REVIEW
+    await agent().put(`/items/${c.id}`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ status: 'IN_PROGRESS' });
+    await turn(c.id, { input: 6 });
+    await validate(c.id); // IN_PROGRESS -> REVIEW again
+
+    const moved = await outbox(c.id, 'step.transitioned');
+    expect(moved.map((m: any) => m.payload.usage.own.total.input)).toEqual([5, 5, 11]);
+    expect(moved.at(-1).payload.usage.own.byModel[0]).toMatchObject({ client: 'claude-code', model: 'claude-opus-5-5', input: 11 });
+    // A snapshot for the hub only: the card's stored step rows stay per step.
+    const rows = (await agent().get(`/items/${c.id}`)).body.usageByStep;
+    expect(rows.every((r: any) => r.own === undefined)).toBe(true);
+  });
+
   it('a step with no recorded turns still records a zero row, so "measured nothing" is visible', async () => {
     const c = await cardAt('IN_PROGRESS');
     await validate(c.id);

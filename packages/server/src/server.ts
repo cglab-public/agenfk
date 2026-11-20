@@ -39,8 +39,8 @@ import { requeueDeadletter, readDeadletterIndicator, RequeueRewriteFailed } from
 import { defaultDeadletterPath } from "./hub/flusher.js";
 import { resolveActor } from "./hub/identity";
 import { createUsageIngestion, defaultIngestionSources, type UsageIngestion } from "./token-ingestion/service.js";
-import { computeCardUsage, computeStepUsage, describeCardUsage, describeUsage } from "./usage/stepUsage.js";
-import type { CardUsage, StepUsage } from "@agenfk/core";
+import { computeCardUsage, computeOwnUsage, computeStepUsage, describeCardUsage, describeUsage } from "./usage/stepUsage.js";
+import type { CardUsage, StepUsage, UsageSummary } from "@agenfk/core";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -2174,7 +2174,7 @@ function recordMoveEvents(item: { id: string; projectId: string; type: string },
     type: 'step.transitioned',
     projectId: item.projectId,
     itemId: item.id,
-    payload: { fromStatus: from, toStatus: to, itemType: item.type, ...transitionStamp(from, to, flow), ...hubUsage(usage.step) },
+    payload: { fromStatus: from, toStatus: to, itemType: item.type, ...transitionStamp(from, to, flow), ...hubUsage(usage.step, usage.own) },
   });
   if (isCompletionStep(to, flow) && !isCompletionStep(from, flow)) {
     // GH-389: a closed card stops collecting usage; the sessions on it are on none until they pick another.
@@ -2207,7 +2207,11 @@ async function prepareMoveUsage(itemId: string, from: string, to: string, flow: 
   const step = await computeMoveStep(itemId, from, to);
   const closing = isCompletionStep(to, flow) && !isCompletionStep(from, flow);
   const card = closing ? await computeMoveCard(itemId, step, to) : null;
-  return { step, card, closing };
+  // After the step's flush, so the snapshot holds every turn read so far. A
+  // closing move takes ONE snapshot for its step and its close: two reads could
+  // straddle an ingest and show the hub a close below its step - a "restore".
+  const own = !step ? null : closing && card?.own ? card.own : await computeMoveOwn(itemId);
+  return { step, card, closing, own };
 }
 
 /** What a move adds to the card, against the card as stored now. */
@@ -2283,8 +2287,20 @@ interface MoveUsage {
   card: CardUsage | null;
   /** The move closes the card: its total is replaced, and nothing under it may be open. */
   closing?: boolean;
+  /** The card's own usage to date, for the hub only (never stored on the card). */
+  own?: (UsageSummary & { asOf?: string }) | null;
 }
 const NO_USAGE: MoveUsage = { step: null, card: null };
+
+/** GH-389: the card's own usage to date. Never throws. */
+async function computeMoveOwn(itemId: string): Promise<(UsageSummary & { asOf?: string }) | null> {
+  try {
+    return await computeOwnUsage(storage, itemId);
+  } catch (e) {
+    console.error(`[USAGE] could not compute the own usage of ${itemId}: ${(e as Error).message}`);
+    return null;
+  }
+}
 
 /** GH-389: a closing card's usage, its descendants' included. Never throws. */
 async function computeMoveCard(itemId: string, step: StepUsage | null, closesIn: string): Promise<CardUsage | null> {
@@ -2319,11 +2335,15 @@ async function computeMoveStep(itemId: string, from: string, to: string): Promis
   }
 }
 
-/** The usage a step.transitioned event carries: the step's totals, never per-turn data. */
-function hubUsage(usage: StepUsage | null): { usage?: Omit<StepUsage, 'step' | 'to'> } {
+/**
+ * The usage a step.transitioned event carries: the step's totals, and the
+ * card's own usage to date (a cumulative snapshot the hub reconciles with),
+ * never per-turn data.
+ */
+function hubUsage(usage: StepUsage | null, own?: UsageSummary | null): { usage?: Omit<StepUsage, 'step' | 'to'> & { own?: UsageSummary } } {
   if (!usage) return {};
   const { step: _step, to: _to, ...rest } = usage;
-  return { usage: rest };
+  return { usage: { ...rest, ...(own ? { own } : {}) } };
 }
 
 /** The verify reply's usage lines: the step it left, and the whole card when it closed. */

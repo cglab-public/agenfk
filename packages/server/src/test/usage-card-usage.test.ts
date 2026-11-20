@@ -52,6 +52,13 @@ describe('computeCardUsage', () => {
     ]);
   });
 
+  it("carries the card's own usage apart from its descendants, for the hub to sum without double counting", async () => {
+    const u = await computeCardUsage(storage(items, events), 'story');
+    expect(u!.own!.total.input).toBe(12);
+    expect(u!.own!.total.turns).toBe(1);
+    expect(u!.own!.byModel).toEqual([expect.objectContaining({ client: 'claude-code', model: 'claude-opus-5-5', input: 12 })]);
+  });
+
   it('a leaf card is just itself', async () => {
     const u = await computeCardUsage(storage(items, events), 'sub');
     expect(u!.total.input).toBe(10000);

@@ -88,6 +88,32 @@ describe('card usage on close', () => {
     expect(closed.payload.usage.byStep[0].step).toBe('WORK');
   });
 
+  it("a closing move's step and close carry ONE own snapshot, even when a turn is ingested between their reads", async () => {
+    const id = await make(await project(), 'TASK');
+    await turn(id, 100);
+    // Ingestion advances between the move's reads of the card's turns: the
+    // hub would see the close's snapshot below the step's and read a restore.
+    const real = storage.queryTokenEvents.bind(storage);
+    let reads = 0;
+    const spy = vi.spyOn(storage, 'queryTokenEvents').mockImplementation(async (q: any) => {
+      const out = await real(q);
+      if (q?.itemId === id && ++reads === 2) await turn(id, 10);
+      return out;
+    });
+    try {
+      expect((await verify(id)).status).toBe(200);
+    } finally { spy.mockRestore(); }
+
+    const closed = await closedEvent(id);
+    const db: any = (storage as any)['database'];
+    const step = (db.prepare('SELECT payload FROM hub_outbox ORDER BY rowid').all() as { payload: string }[])
+      .map(r => JSON.parse(r.payload)).filter(e => e.itemId === id && e.type === 'step.transitioned').at(-1);
+    expect(step.payload.usage.own).toEqual(closed.payload.usage.own);
+    // When it was read: the hub orders a card's snapshots by this, not by when
+    // their events were emitted (a slow route can emit an older one later).
+    expect(Number.isFinite(Date.parse(closed.payload.usage.own.asOf))).toBe(true);
+  });
+
   it('a parent closed by the roll-up carries its children usage', async () => {
     const projectId = await project();
     const parent = await make(projectId, 'STORY');

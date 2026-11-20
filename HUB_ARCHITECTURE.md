@@ -1070,6 +1070,8 @@ is the guard.
 | GET | `/v1/item-types` | session | Distinct item types + counts honouring current filters. |
 | GET | `/v1/users` | session | Active users + last-seen + counts. |
 | GET | `/v1/metrics` | session | Aggregate counters. |
+| GET | `/v1/usage/cards` | session | Closed cards with their token usage (latest `item.closed` `payload.usage` per card). |
+| GET | `/v1/usage/overview` | session | Usage over the board filters, by installation, user, harness/model, PR and day (`byDay`, the viewer's days via `tz`/`tzOffsetMin`). Every `step.transitioned` and `item.closed` carries the card's own usage to date (`usage.own`, descendants excluded); the hub keeps a ledger per card over its whole history, ordered by when each snapshot was read (`own.asOf`), and credits each in-window event with what its snapshot adds (late turns land once, in any event order, across reopens; after a snapshot drops - a restored backup - spend is credited again from the next snapshot). Steps from older versions count as deltas; their closes (subtree totals) are never summed. A card's current step is not on the hub until it moves. Reports `unmeasuredSteps`, `incompleteSteps`, `recoveredAtClose`, `malformedEvents`, `truncated`, `prsTruncated`. PR usage = anchor card's latest close (card + subtree), `null` while open or after a step left the closed status; a PR is its repo + number, its anchor the latest registration across the org. |
 
 ### 8.6 Admin (`/v1/admin/*`, all session+admin)
 

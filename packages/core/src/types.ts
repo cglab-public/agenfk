@@ -375,6 +375,15 @@ export interface CardUsage extends UsageSummary {
   byStep: Array<{ step: string; total: UsageTotals }>;
   /** The card plus its descendants. */
   cards: number;
+  /**
+   * The card's own usage, without its descendants'. The hub adds cards up one
+   * by one, so it reads this rather than the subtree total. Absent from
+   * versions before it was sent.
+   */
+  own?: UsageSummary & {
+    /** When the snapshot was read: the hub orders a card's snapshots by it. */
+    asOf?: string;
+  };
   /** False when a closing step's session logs (its own or a descendant's) could not be read in time. */
   complete?: boolean;
   /**

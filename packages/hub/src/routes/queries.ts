@@ -5,7 +5,7 @@ import { recomputeRollups } from '../rollup.js';
 import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
 import { isKnownTimeZone, rebucketToZone, subHourShift, zoneOffsetMin } from '../queries/histogram-zone.js';
 import { coerceMetricsRow, coerceMetricsTotals } from '../queries/metrics-coerce.js';
-import { aggregatePrOverview, clampTzOffsetMin, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
+import { aggregatePrOverview, clampTzOffsetMin, dayKeyer, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
 import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
@@ -16,6 +16,7 @@ import { asyncRoute } from '../util/asyncRoute.js';
 import { prUrlFor } from '../util/remoteUrl.js';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
+import { UsageGroup, tokenWeight, installationLabel, chunks, zeroTotals, addTotals, modelsOf, summaryFromModels, CardLedger } from '../util/usageGroup.js';
 
 /**
  * A query parameter that is not the shape the route reads. Express parses
@@ -71,6 +72,10 @@ interface EventFilters {
 
 /** At most this many closes are read per request; the reply says when it hit it. */
 const USAGE_CARDS_LIMIT = 5000;
+/** At most this many step events are summed per overview; the reply says when it hit it. */
+const USAGE_OVERVIEW_LIMIT = 50000;
+/** At most this many PRs are listed per overview. */
+const USAGE_PRS_LIMIT = 1000;
 
 function readEventFilters(req: Request): EventFilters {
   return {
@@ -425,6 +430,246 @@ export function queriesRouter(ctx: HubServerContext): Router {
       });
     }
     res.json({ cards, truncated: rows.length === USAGE_CARDS_LIMIT });
+  }));
+
+  /**
+   * GH-389 follow-up: the org's usage over the board filters, by installation,
+   * by user, by harness/model and by PR.
+   *
+   * Usage reaches the hub on a card's step changes and its close, and counts
+   * when it arrives. Each of those events carries the card's own usage to
+   * date (usage.own; descendants excluded): the hub keeps a ledger per card
+   * and credits each event with what its snapshot has beyond what the card
+   * already recorded (CardLedger). A turn ingested late is in the next
+   * snapshot; none is counted twice, whatever the order of a step and its
+   * close or a reopen. Steps from versions before the snapshot are deltas;
+   * their closes carry the subtree total, which is never summed. A card's
+   * current step is not on the hub until it moves. A step with no usage is
+   * unmeasured, not zero. A PR's usage is its anchor card's latest close
+   * (card + subtree), null while that card is open. ?types= is ignored.
+   */
+  router.get('/usage/overview', guard, asyncRoute(async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const base = readEventFilters(req);
+    const parse = (raw: string): any => { try { return JSON.parse(raw); } catch { return null; } };
+    const timeOf = (v: unknown) => new Date(v as any).getTime();
+    const iso = (v: unknown) => new Date(v as any).toISOString();
+    // Ingest has stored any string as a timestamp: a row that does not parse is
+    // skipped and counted, never a failed request.
+    const validTime = (v: unknown) => Number.isFinite(timeOf(v));
+    // One count per event, however many of the reads below meet it.
+    const malformed = new Set<string>();
+    const usable = (r: { event_id: unknown; occurred_at: unknown }) => {
+      if (validTime(r.occurred_at)) return true;
+      malformed.add(String(r.event_id));
+      return false;
+    };
+    const USAGE_TYPES = ['step.transitioned', 'item.closed'];
+
+    const all = new UsageGroup();
+    const byInstallation = new Map<string, UsageGroup>();
+    const byUser = new Map<string, UsageGroup>();
+    // The timeline: each credit on the viewer's day (an IANA zone, else an offset, else UTC).
+    const dayOf = dayKeyer(singleValue(req, 'tz'), readTzOffsetMin(req));
+    const byDay = new Map<string, UsageGroup>();
+    const credit = (r: { installation_id: unknown; user_key: unknown; item_id: string | null; occurred_at: unknown }, usage: unknown) => {
+      all.add(r.item_id, usage);
+      const day = dayOf(iso(r.occurred_at));
+      if (!byDay.has(day)) byDay.set(day, new UsageGroup());
+      byDay.get(day)!.add(r.item_id, usage);
+      const inst = String(r.installation_id);
+      if (!byInstallation.has(inst)) byInstallation.set(inst, new UsageGroup());
+      byInstallation.get(inst)!.add(r.item_id, usage);
+      const user = String(r.user_key);
+      if (!byUser.has(user)) byUser.set(user, new UsageGroup());
+      byUser.get(user)!.add(r.item_id, usage);
+    };
+
+    // 1. The usage events in the window.
+    const winF = applyEventFilters(orgId, { ...base, types: USAGE_TYPES });
+    const winRows = await ctx.db.all<any>(
+      `SELECT event_id, type, installation_id, user_key, item_id, occurred_at, payload
+         FROM events WHERE ${winF.where.join(' AND ')}
+        ORDER BY occurred_at DESC, event_id DESC
+        LIMIT ?`,
+      [...winF.params, USAGE_OVERVIEW_LIMIT + 1],
+    );
+    const truncated = winRows.length > USAGE_OVERVIEW_LIMIT;
+    const inWindow = new Map<string, any>();
+    let measured = 0;
+    let unmeasured = 0;
+    let incomplete = 0;
+    for (const r of winRows.slice(0, USAGE_OVERVIEW_LIMIT)) {
+      if (!usable(r)) continue;
+      const usage = parse(r.payload)?.payload?.usage;
+      if (r.type === 'step.transitioned') {
+        if (!usage || typeof usage !== 'object') { unmeasured++; continue; }
+        measured++;
+        if (usage.complete === false) incomplete++;
+      }
+      if (!usage || typeof usage !== 'object') continue;
+      // No card to keep a ledger for: a delta is all the hub can credit.
+      if (!r.item_id) { if (r.type === 'step.transitioned') credit(r, summaryFromModels(modelsOf(usage))); continue; }
+      inWindow.set(String(r.event_id), r);
+    }
+
+    // 2. Each card's ledger over its whole history, crediting only the events
+    //    in the window. The whole history, past the window's end too: an event
+    //    emitted after the window can precede one inside it in read order
+    //    (own.asOf), and disjoint windows must add up to the whole.
+    const cardIds = [...new Set([...inWindow.values()].map(r => r.item_id as string))];
+    const history: any[] = [];
+    for (const ids of chunks(cardIds)) {
+      history.push(...await ctx.db.all<any>(
+        `SELECT event_id, type, item_id, occurred_at, payload FROM events
+          WHERE org_id = ? AND type IN ('step.transitioned', 'item.closed') AND item_id IN (${ids.map(() => '?').join(',')})`,
+        [orgId, ...ids],
+      ));
+    }
+    const rank = (t: string) => (t === 'item.closed' ? 1 : 0);
+    for (let i = history.length - 1; i >= 0; i--) if (!usable(history[i])) history.splice(i, 1);
+    // A snapshot's place is when it was READ (own.asOf): a move reads its card
+    // only after the previous move saved, so read order is the card's order,
+    // while emission order is not (a slow route can emit an older snapshot
+    // late). Older versions sent no asOf; their emission time stands in.
+    for (const h of history) {
+      h.usage = parse(h.payload)?.payload?.usage;
+      const asOf = timeOf(h.usage?.own?.asOf);
+      h.order = Number.isFinite(asOf) ? asOf : timeOf(h.occurred_at);
+    }
+    history.sort((x, y) => String(x.item_id).localeCompare(String(y.item_id))
+      || x.order - y.order
+      || rank(x.type) - rank(y.type)
+      || String(x.event_id).localeCompare(String(y.event_id)));
+    const ledgers = new Map<string, CardLedger>();
+    const recovered = zeroTotals();
+    for (const h of history) {
+      const usage = h.usage;
+      if (!usage || typeof usage !== 'object') continue;
+      let ledger = ledgers.get(h.item_id);
+      if (!ledger) { ledger = new CardLedger(); ledgers.set(h.item_id, ledger); }
+      let credited;
+      if (usage.own) credited = ledger.addSnapshot(modelsOf(usage.own));
+      else if (h.type === 'step.transitioned') credited = ledger.addDelta(modelsOf(usage));
+      else continue; // an older close: its total is the subtree's
+      const row = inWindow.get(String(h.event_id));
+      if (!row || credited.length === 0) continue;
+      const sum = summaryFromModels(credited);
+      if (h.type === 'item.closed') addTotals(recovered, sum.total);
+      credit(row, sum);
+    }
+
+    const instIds = [...byInstallation.keys()];
+    const identities = new Map<string, any>();
+    for (const ids of chunks(instIds)) {
+      const found = await ctx.db.all<any>(
+        `SELECT id, git_name, git_email, os_user FROM installations WHERE org_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
+        [orgId, ...ids],
+      );
+      for (const f of found) identities.set(f.id, f);
+    }
+    const ordered = (m: Map<string, UsageGroup>, key: string, extra: (id: string) => Record<string, unknown> = () => ({})) =>
+      [...m.entries()]
+        .sort(([a, ga], [b, gb]) => tokenWeight(gb.total) - tokenWeight(ga.total) || a.localeCompare(b))
+        .map(([id, g]) => ({ [key]: id, ...extra(id), cards: g.cards, total: g.total, byModel: g.byModel() }));
+
+    // 3. PRs. The filters pick which PRs (one registered or updated in the
+    //    window, by the people chosen); each PR's anchor and opening date come
+    //    from its whole history, so a filter cannot resurrect an old anchor.
+    const prKey = (p: any): string | null => {
+      const repo = typeof p?.repo === 'string' ? p.repo : null;
+      const num = Number(p?.prNumber);
+      return repo && Number.isInteger(num) ? `${repo.toLowerCase()}#${num}` : null;
+    };
+    const prsF = applyEventFilters(orgId, { ...base, types: ['pr.opened', 'pr.updated'] });
+    const picked = new Set<string>();
+    for (const r of await ctx.db.all<any>(
+      `SELECT payload FROM events WHERE ${prsF.where.join(' AND ')} AND item_id IS NOT NULL`, prsF.params,
+    )) {
+      const k = prKey(parse(r.payload)?.payload);
+      if (k) picked.add(k);
+    }
+    type Pr = { repo: string; pr_number: number; item_id: string; item_type: string | null; item_title: string | null; opened_at: string; closed_at: string | null; usage: unknown };
+    const prs = new Map<string, Pr>();
+    if (picked.size > 0) {
+      // A PR is known by its repo and number, not by the remote of the card it
+      // was registered from (a fork and its upstream name one PR), so its
+      // history is read across the org's PR events - a handful per PR.
+      const prHistory = (await ctx.db.all<any>(
+        `SELECT event_id, occurred_at, item_id, item_type, item_title, payload FROM events
+          WHERE org_id = ? AND type IN ('pr.opened', 'pr.updated') AND item_id IS NOT NULL`,
+        [orgId],
+      )).filter(usable);
+      prHistory.sort((x, y) => timeOf(x.occurred_at) - timeOf(y.occurred_at)
+        || String(x.event_id).localeCompare(String(y.event_id)));
+      for (const r of prHistory) {
+        const p = parse(r.payload)?.payload;
+        const k = prKey(p);
+        if (!k || !picked.has(k)) continue;
+        const prev = prs.get(k);
+        prs.set(k, {
+          repo: p.repo, pr_number: Number(p.prNumber), item_id: r.item_id,
+          item_type: r.item_type ?? prev?.item_type ?? null,
+          item_title: r.item_title ?? prev?.item_title ?? null,
+          opened_at: prev?.opened_at ?? iso(r.occurred_at), closed_at: null, usage: null,
+        });
+      }
+    }
+    const sortedPrs = [...prs.values()].sort((a, b) => b.opened_at.localeCompare(a.opened_at) || a.repo.localeCompare(b.repo));
+    const prsTruncated = sortedPrs.length > USAGE_PRS_LIMIT;
+    const prList = sortedPrs.slice(0, USAGE_PRS_LIMIT);
+
+    // Each anchor's latest close (later event id at one instant), unless a
+    // step moved the card after it: a reopened card's close no longer stands.
+    const anchors = [...new Set(prList.map(p => p.item_id))];
+    const closes = new Map<string, { at: number; id: string; status: string; usage: unknown }>();
+    const leftAt = new Map<string, Array<{ at: number; from: string | undefined }>>();
+    for (const ids of chunks(anchors)) {
+      const found = await ctx.db.all<any>(
+        `SELECT item_id, type, occurred_at, event_id, payload FROM events
+          WHERE org_id = ? AND type IN ('item.closed', 'step.transitioned') AND item_id IN (${ids.map(() => '?').join(',')})`,
+        [orgId, ...ids],
+      );
+      for (const f of found) {
+        if (!usable(f)) continue;
+        const at = new Date(f.occurred_at).getTime();
+        const p = parse(f.payload)?.payload;
+        if (f.type === 'step.transitioned') {
+          if (!leftAt.has(f.item_id)) leftAt.set(f.item_id, []);
+          leftAt.get(f.item_id)!.push({ at, from: p?.fromStatus });
+          continue;
+        }
+        const prev = closes.get(f.item_id);
+        if (prev && (prev.at > at || (prev.at === at && prev.id > String(f.event_id)))) continue;
+        closes.set(f.item_id, { at, id: String(f.event_id), status: p?.toStatus ?? 'DONE', usage: p?.usage ?? null });
+      }
+    }
+    for (const p of prList) {
+      const c = closes.get(p.item_id);
+      // Reopened: a step left the closed status after the close. The closing
+      // step itself (into that status) never counts, whatever its clock says.
+      if (!c || (leftAt.get(p.item_id) ?? []).some(m => m.from === c.status && m.at >= c.at)) continue;
+      p.closed_at = new Date(c.at).toISOString();
+      p.usage = c.usage;
+    }
+
+    res.json({
+      total: all.total,
+      cards: all.cards,
+      steps: measured,
+      unmeasuredSteps: unmeasured,
+      incompleteSteps: incomplete,
+      recoveredAtClose: recovered,
+      byInstallation: ordered(byInstallation, 'installation_id', id => ({ label: installationLabel(identities.get(id)) })),
+      byUser: ordered(byUser, 'user_key'),
+      byModel: all.byModel(),
+      byPr: prList,
+      byDay: [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b))
+        .map(([day, g]) => ({ day, cards: g.cards, total: g.total, byModel: g.byModel() })),
+      truncated,
+      prsTruncated,
+      malformedEvents: malformed.size,
+    });
   }));
 
   router.get('/metrics', guard, asyncRoute(async (req: Request, res: Response) => {
