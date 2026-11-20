@@ -60,7 +60,7 @@ describe('events and fleet data', () => {
     for (const [cmd, route] of [
       ['metrics', '/v1/metrics'], ['adherence', '/v1/adherence'], ['item-types', '/v1/item-types'], ['users', '/v1/users'],
       ['child-hubs', '/v1/child-hubs'], ['prs', '/v1/prs/overview'], ['histogram', '/v1/histogram'],
-      ['timeline', '/v1/timeline'], ['usage', '/v1/usage/cards'], ['usage-overview', '/v1/usage/overview'],
+      ['timeline', '/v1/timeline'], ['usage', '/v1/usage/cards'], ['usage-overview', '/v1/usage/overview'], ['usage-prs', '/v1/usage/prs'],
     ] as const) {
       const fromCli = await hub.json(['hub', 'admin', 'data', cmd, '--from', '2026-10-02']);
       expect(fromCli, cmd).toEqual((await board(`${route}?from=2026-10-02`)).body);
@@ -115,6 +115,31 @@ describe('events and fleet data', () => {
       expect(fromCli, flags.join(' ')).toEqual(fromBoard);
       expect(fromCli.events, flags.join(' ')).toHaveLength(expected);
     }
+  });
+
+  it('`data usage-prs` reads the By PR table a page at a time, with its own filters and sort, as the board does (GH-396)', async () => {
+    const key = await issueApiKey(hub.ctx.db, 'org', 'cards', { installationId: 'inst-2' });
+    const onCard = (n: number, repo: string, title: string) => ({
+      ...pr(n, 'alice@acme.com', 'model-a', `2026-10-0${n}T12:00:00Z`), eventId: `card-${n}`, installationId: 'inst-2',
+      itemId: `card-${n}`, itemType: 'TASK', itemTitle: title, payload: { prNumber: n, repo },
+    });
+    expect((await supertest(hub.server).post('/v1/events').set('Authorization', `Bearer ${key}`).send({ events: [
+      onCard(4, 'acme/api', 'Fix login'), onCard(5, 'acme/web', 'Page the table'), onCard(6, 'acme/web', 'Sort the table'),
+    ] })).status).toBeLessThan(300);
+    const fromCli = await hub.json(['hub', 'admin', 'data', 'usage-prs', '--repos', 'acme/web', '--search', 'table',
+      '--status', 'open', '--sort', 'card', '--dir', 'asc', '--page', '1', '--page-size', '1']);
+    const fromBoard = (await board('/v1/usage/prs?repos=acme%2Fweb&q=table&status=open&sort=card&dir=asc&page=1&pageSize=1')).body;
+    expect(fromCli).toEqual(fromBoard);
+    expect(fromCli.total).toBe(2);
+    expect(fromCli.rows.map((r: any) => r.pr_number)).toEqual([5]);
+    hub.clear();
+    await hub.run(['hub', 'admin', 'data', 'usage-prs', '--csv']);
+    const lines = hub.out().trim().split('\n');
+    expect(lines[0]).toMatch(/(^|,)pr_number(,|$)/);
+    expect(lines).toHaveLength(4);
+    hub.clear();
+    await expect(hub.run(['hub', 'admin', 'data', 'usage-overview', '--sort', 'cost'])).rejects.toThrow(/exit 1/);
+    expect(hub.err()).toMatch(/usage-overview does not read --sort/);
   });
 
   it('repeats list filters and passes model filters on the PR overview', async () => {

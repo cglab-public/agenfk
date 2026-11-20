@@ -50,7 +50,10 @@ All notable changes to AgEnFK are documented here.
 - **A Usage page on the hub.** `/usage` shows the tokens and the cost of the org over the filters: totals, cost and
   tokens per day, then by installation, person, harness and model, and PR. pi reports its cost; Claude Code and
   Codex are estimated from the public price table and marked "est.". `agenfk hub admin data usage-overview` reads
-  the same data. The hub counts each turn once: late turns, events in any order, reopened cards and a restored
+  the same data. The By PR table is served a page at a time: filter it by repository, PR number or card title and
+  status, sort it on the hub by any column, open a PR on its host from its link, and see who opened it
+  (`agenfk hub admin data usage-prs`). `GET /v1/usage/overview` no longer returns `byPr` or `prsTruncated`: the PR
+  list is `GET /v1/usage/prs`. The hub counts each turn once: late turns, events in any order, reopened cards and a restored
   backup do not count a turn twice.
 
 **Fixes**

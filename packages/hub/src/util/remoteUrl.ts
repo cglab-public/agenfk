@@ -82,3 +82,24 @@ export function prUrlFor(
   }
   return null;
 }
+
+/**
+ * GH-396: the link to a PR in the /usage By PR table. The PR lives in the
+ * repository its registration names (`owner/repo`, the base repository), which
+ * is not always the remote of the card it was registered from (a fork names
+ * the same PR), so the slug decides owner and repo. The remote decides only
+ * the host: a project on any host but github.com gets no link, since that
+ * platform's PR URL cannot be derived. No remote: github.com, as
+ * remoteUrlFromRepo assumes.
+ */
+export function prLinkFor(
+  remoteUrl: string | null | undefined,
+  repoSlug: string | null | undefined,
+  prNumber: number | string | null | undefined,
+): string | null {
+  if (remoteUrl && remoteUrl.trim()) {
+    const m = remoteUrl.trim().replace(REMOTE_URL_NOISE_RE, '').toLowerCase().match(PARSE_REMOTE_RE);
+    if (!m || m[1] !== 'github.com') return null;
+  }
+  return prUrlFor(null, repoSlug, prNumber);
+}

@@ -75,6 +75,12 @@ describe('GET /v1/usage/overview', () => {
     expect(r.status).toBe(200);
     return r.body;
   };
+  /** GH-396: the PR list moved off the overview to its own paged endpoint. */
+  const prRows = async (q = '') => {
+    const r = await supertest(app).get(`/v1/usage/prs${q}`).set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    return r.body.rows;
+  };
 
   beforeEach(async () => {
     db = await openSqliteDb(':memory:');
@@ -98,7 +104,7 @@ describe('GET /v1/usage/overview', () => {
     expect(body.byInstallation).toEqual([]);
     expect(body.byUser).toEqual([]);
     expect(body.byModel).toEqual([]);
-    expect(body.byPr).toEqual([]);
+    expect(await prRows()).toEqual([]);
     expect(body.byDay).toEqual([]);
   });
 
@@ -243,7 +249,7 @@ describe('GET /v1/usage/overview', () => {
       ]);
       const body = await overview();
       expect(body.total.input).toBe(100);
-      expect(body.byPr[0].usage.total.input).toBe(100);
+      expect((await prRows())[0].usage.total.input).toBe(100);
     });
 
     it('turns recovered at a close are not counted again by the step that reopens the card', async () => {
@@ -367,7 +373,6 @@ describe('GET /v1/usage/overview', () => {
     const body = await overview();
     expect(body.incompleteSteps).toBe(1);
     expect(body.truncated).toBe(false);
-    expect(body.prsTruncated).toBe(false);
   });
 
   it('applies the board filters (time window, people, projects)', async () => {
@@ -503,7 +508,7 @@ describe('GET /v1/usage/overview', () => {
 
     it('is never a PR', async () => {
       await post([noCard('2026-11-19', '2026-11-19T16:00:00.000Z', ncUsage(40))]);
-      expect((await overview()).byPr).toEqual([]);
+      expect((await prRows())).toEqual([]);
     });
 
     it('a window credits a day\'s total by its latest send, so windows that do not overlap add up to the whole', async () => {
@@ -548,7 +553,7 @@ describe('GET /v1/usage/overview', () => {
         closed('s1', 80, { occurredAt: '2026-11-19T09:30:00.000Z' }),
         pr('pr.opened', 's1', 42),
       ]);
-      const rows = (await overview()).byPr;
+      const rows = (await prRows());
       expect(rows).toEqual([expect.objectContaining({
         repo: 'acme/api', pr_number: 42, item_id: 's1', item_title: 'Story s1',
         usage: expect.objectContaining({ cards: 3, total: expect.objectContaining({ input: 80 }) }),
@@ -561,7 +566,7 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 's1', 7, { occurredAt: '2026-11-19T11:00:00.000Z' }),
         pr('pr.updated', 's1', 7, { occurredAt: '2026-11-19T12:00:00.000Z' }),
       ]);
-      expect((await overview()).byPr).toHaveLength(1);
+      expect((await prRows())).toHaveLength(1);
     });
 
     it('an anchor card closed after the PR opened still gives the PR its usage', async () => {
@@ -569,12 +574,12 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 's1', 8, { occurredAt: '2026-11-19T08:00:00.000Z' }),
         closed('s1', 12, { occurredAt: '2026-11-19T09:00:00.000Z' }),
       ]);
-      expect((await overview()).byPr[0].usage.total.input).toBe(12);
+      expect((await prRows())[0].usage.total.input).toBe(12);
     });
 
     it('a PR whose anchor card is not closed yet has no usage (null), not a partial number', async () => {
       await post([step('s1', stepUsage(opus(99))), pr('pr.opened', 's1', 9)]);
-      expect((await overview()).byPr).toEqual([expect.objectContaining({ pr_number: 9, item_id: 's1', usage: null })]);
+      expect((await prRows())).toEqual([expect.objectContaining({ pr_number: 9, item_id: 's1', usage: null })]);
     });
 
     it('newest PR first, and two repos with the same PR number stay apart', async () => {
@@ -584,7 +589,7 @@ describe('GET /v1/usage/overview', () => {
         event({ type: 'pr.opened', itemId: 's2', occurredAt: '2026-11-19T11:00:00.000Z', remoteUrl: 'git@github.com:acme/web.git',
           payload: { prNumber: 5, repo: 'acme/web' } }),
       ]);
-      expect((await overview()).byPr.map((r: any) => [r.repo, r.pr_number, r.item_id])).toEqual([
+      expect((await prRows()).map((r: any) => [r.repo, r.pr_number, r.item_id])).toEqual([
         ['acme/web', 5, 's2'],
         ['acme/api', 5, 's1'],
       ]);
@@ -596,7 +601,7 @@ describe('GET /v1/usage/overview', () => {
         step('s1', stepUsage(opus(1)), { occurredAt: '2026-11-19T09:30:00.000Z', payload: { fromStatus: 'DONE', toStatus: 'WORK', usage: stepUsage(opus(1)) } }),
         pr('pr.opened', 's1', 11),
       ]);
-      expect((await overview()).byPr).toEqual([expect.objectContaining({ pr_number: 11, usage: null })]);
+      expect((await prRows())).toEqual([expect.objectContaining({ pr_number: 11, usage: null })]);
     });
 
     it("the PR's anchor is its latest registration, even when a filter hides that event", async () => {
@@ -605,7 +610,7 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 'A', 42, { occurredAt: '2026-11-19T10:00:00.000Z' }),
         pr('pr.updated', 'B', 42, { occurredAt: '2026-11-19T11:00:00.000Z', actor: BOB, installationId: 'inst-b' }),
       ]);
-      const rows = (await overview('?users=alice%40acme.com')).byPr;
+      const rows = (await prRows('?users=alice%40acme.com'));
       expect(rows).toEqual([expect.objectContaining({ pr_number: 42, item_id: 'B', opened_at: '2026-11-19T10:00:00.000Z' })]);
       expect(rows[0].usage.total.input).toBe(2);
     });
@@ -616,7 +621,7 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 'A', 77, { occurredAt: '2026-11-19T10:00:00.000Z', remoteUrl: 'git@github.com:alice/api.git' }),
         pr('pr.updated', 'B', 77, { occurredAt: '2026-11-19T11:00:00.000Z', remoteUrl: 'git@github.com:acme/api.git', actor: BOB, installationId: 'inst-b' }),
       ]);
-      const rows = (await overview('?users=alice%40acme.com')).byPr;
+      const rows = (await prRows('?users=alice%40acme.com'));
       expect(rows).toEqual([expect.objectContaining({ pr_number: 77, item_id: 'B' })]);
     });
 
@@ -627,9 +632,9 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 's1', 13),
       ]);
       await legacyTime('cl-bad', 'not-a-time');
-      const r = await supertest(app).get('/v1/usage/overview').set('Cookie', cookie);
+      const r = await supertest(app).get('/v1/usage/prs').set('Cookie', cookie);
       expect(r.status).toBe(200);
-      expect(r.body.byPr[0].usage.total.input).toBe(9);
+      expect(r.body.rows[0].usage.total.input).toBe(9);
       expect(r.body.malformedEvents).toBe(1);
     });
 
@@ -639,7 +644,7 @@ describe('GET /v1/usage/overview', () => {
         closed('s1', 2, { eventId: 'cl-b', occurredAt: '2026-11-19T09:00:00.000Z' }),
         pr('pr.opened', 's1', 12),
       ]);
-      const row = (await overview()).byPr[0];
+      const row = (await prRows())[0];
       expect(row.usage.total.input).toBe(2);
       expect(row.closed_at).toBe('2026-11-19T09:00:00.000Z');
     });
@@ -651,7 +656,7 @@ describe('GET /v1/usage/overview', () => {
         pr('pr.opened', 'bobs', 2, { actor: BOB, installationId: 'inst-b' }),
         pr('pr.opened', 's1', 3),
       ]);
-      const nums = async (q: string) => (await overview(q)).byPr.map((r: any) => r.pr_number).sort();
+      const nums = async (q: string) => (await prRows(q)).map((r: any) => r.pr_number).sort();
       expect(await nums('?from=2026-11-01')).toEqual([2, 3]);
       expect(await nums('?from=2026-11-01&users=alice%40acme.com')).toEqual([3]);
     });

@@ -8,7 +8,7 @@
  * the board uses) and labelled so. What the hub cannot see is said on the page.
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { estimateCost, parsePrices, PRICES_URL, type CostView, type PricedModelUsage, type PricesData } from '@agenfk/flow-editor';
 import { api } from '../api';
@@ -16,6 +16,7 @@ import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
 import { describeFilters } from '../filterSummary';
 import { ChipRow, DataTable, Page, PageHeader, PeriodControl, QueryState, StatTile } from '../components/ui';
+import type { Dir } from '../components/ui/DataTable';
 import { shortRemote } from '../components/facetSearch';
 import { PersonName } from '../components/PersonName';
 import { usePeopleNames } from '../hooks/usePeopleNames';
@@ -45,8 +46,31 @@ interface Group { cards: number; total: Totals; byModel: ModelRow[] }
 interface PrRow {
   repo: string; pr_number: number; item_id: string; item_type: string | null; item_title: string | null;
   opened_at: string; closed_at: string | null;
+  /** Who opened the PR (a user_key; under federation person coding, its code). */
+  created_by: string | null;
+  /** The PR on its host, when the hub can derive it. */
+  url: string | null;
   usage: { total: Totals; byModel: ModelRow[]; cards?: number } | null;
 }
+/** GH-396: one page of the By PR table, from GET /v1/usage/prs. */
+interface PrPage {
+  rows: PrRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  sort: string;
+  dir: Dir;
+  /** The repositories of every PR the board filters pick, for the repository filter. */
+  repos: string[];
+  /** Under a cost sort, PRs with turns priced by estimate but no stored estimate, counted at reported cost; else null. */
+  costWithoutEstimate: number | null;
+}
+const PR_PAGE_SIZE = 25;
+const PR_STATUSES = [
+  { value: '', label: 'All' },
+  { value: 'closed', label: 'Card closed (usage counted)' },
+  { value: 'open', label: 'Card open (usage not counted yet)' },
+] as const;
 export interface UsageOverview {
   total: Totals;
   cards: number;
@@ -57,12 +81,10 @@ export interface UsageOverview {
   byInstallation: Array<Group & { installation_id: string; label: string | null }>;
   byUser: Array<Group & { user_key: string }>;
   byModel: ModelRow[];
-  byPr: PrRow[];
   byDay: Array<Group & { day: string }>;
   /** GH-394: usage on no card, in `total` and in none of the card breakdowns. Absent from an older hub. */
   noCard?: NoCardUsage;
   truncated: boolean;
-  prsTruncated: boolean;
 }
 interface Usage { total: Totals; byModel: ModelRow[] }
 interface NoCardUsage extends Usage {
@@ -176,6 +198,159 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
+/** One sortable PR column the hub sorts by. */
+function prCol(key: string, header: ReactNode, render: (r: PrRow) => ReactNode, right = false) {
+  return { key, header, render, sortable: true, ...(right ? { align: 'right' as const, firstDir: 'desc' as const } : {}) };
+}
+
+/**
+ * GH-396: the By PR table, served by GET /v1/usage/prs one page at a time.
+ * Its repository, text and status filters, its sort (every column, on the
+ * hub) and its paging are its own; the page's filters (`filterQs`) apply too.
+ */
+function PrUsageTable({ filterQs, nameOf, prices }: {
+  filterQs: string;
+  nameOf: (userKey: string) => string | undefined;
+  prices: PricesData | undefined;
+}) {
+  const repoSel = useToggleSet([]);
+  const [search, setSearch] = useState('');
+  const [query, setQuery] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setQuery(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+  const [status, setStatus] = useState('');
+  const [sort, setSort] = useState<{ key: string; dir: Dir }>({ key: 'opened', dir: 'desc' });
+  const filtersKey = [filterQs, [...repoSel.set].sort().join(','), query, status, sort.key, sort.dir].join('\u0000');
+  // Any change but the page itself starts again from page 1, and stays there if the change is undone.
+  const [paged, setPaged] = useState({ key: filtersKey, page: 1 });
+  if (paged.key !== filtersKey) setPaged({ key: filtersKey, page: 1 });
+  const page = paged.key === filtersKey ? paged.page : 1;
+  const goTo = (n: number) => setPaged({ key: filtersKey, page: n });
+
+  const qs = useMemo(() => {
+    const p = new URLSearchParams(filterQs);
+    if (repoSel.set.size) p.set('repos', [...repoSel.set].join(','));
+    if (query) p.set('q', query);
+    if (status) p.set('status', status);
+    p.set('sort', sort.key);
+    p.set('dir', sort.dir);
+    p.set('page', String(page));
+    p.set('pageSize', String(PR_PAGE_SIZE));
+    return p.toString();
+  }, [filterQs, repoSel.set, query, status, sort, page]);
+  const prs = useQuery<PrPage>({
+    queryKey: ['usage-prs', qs],
+    queryFn: async () => (await api.get(`/v1/usage/prs?${qs}`)).data,
+    placeholderData: keepPreviousData,
+  });
+  const d = prs.data;
+  const filtered = repoSel.set.size > 0 || !!query || !!status;
+  const pages = d ? Math.max(1, Math.ceil(d.total / d.pageSize)) : 1;
+  // While another page loads, the one shown is the previous answer: no paging from it.
+  const settled = !prs.isPlaceholderData;
+  // The hub clamps a page past the end (the list shrank): page on from the page it served.
+  const at = settled && d ? d.page : page;
+  const unestimated = d?.costWithoutEstimate ?? 0;
+
+  const columns = [
+    prCol('pr', 'PR', r => {
+      const label = `${r.repo}#${r.pr_number}`;
+      return r.url
+        ? <a href={r.url} target="_blank" rel="noopener noreferrer" className="font-mono text-small text-accent-ink hover:underline">{label}</a>
+        : <span className="font-mono text-small text-ink">{label}</span>;
+    }),
+    prCol('card', 'Card', r => <span className="text-body text-ink break-words">{r.item_title ?? r.item_id}</span>),
+    prCol('createdBy', 'Created by', r => (r.created_by ? <PersonName name={nameOf(r.created_by)} userKey={r.created_by} /> : null)),
+    prCol('tokens', 'Tokens', r => (r.usage ? <Tokens t={r.usage.total} /> : <span className="text-caption text-ink-tertiary">not closed yet</span>), true),
+    ...TOKEN_TYPES.map(type => prCol(type.key, type.label, r => (r.usage ? <TokenCount n={r.usage.total[type.key]} /> : null), true)),
+    prCol('cost', (
+      <span>
+        Cost
+        {unestimated > 0 && <span className="ml-1 normal-case font-normal">{`(${plural(unestimated, 'PR', 'PRs')}: reported only)`}</span>}
+      </span>
+    ), r => (r.usage ? <Cost byModel={r.usage.byModel ?? []} prices={prices} /> : null), true),
+  ];
+
+  return (
+    <Section title="By PR">
+      <p className="px-4 pt-3 text-caption text-ink-tertiary">
+        A PR's usage is its card's, sub-cards included, as of the card's close.
+      </p>
+      <div className="px-4 pt-3 flex flex-wrap items-end gap-4">
+        {(d?.repos.length ?? 0) > 0 && (
+          <FacetMultiselect
+            label="Repository"
+            options={d!.repos}
+            selected={repoSel.set}
+            onToggle={repoSel.toggle}
+            onClear={repoSel.clear}
+            inlineThreshold={6}
+            placeholder="Search repositories…"
+          />
+        )}
+        <label className="flex flex-col gap-1 text-caption text-ink-secondary">
+          <span>Search</span>
+          <input
+            type="search"
+            aria-label="Search by PR number or card title"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="PR number or card title"
+            className="rounded-lg border border-border-soft bg-surface px-2 py-1.5 text-small text-ink placeholder:text-ink-tertiary"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-caption text-ink-secondary">
+          <span>Status</span>
+          <select
+            value={status}
+            onChange={e => setStatus(e.target.value)}
+            className="rounded-lg border border-border-soft bg-surface px-2 py-1.5 text-small text-ink"
+          >
+            {PR_STATUSES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+      </div>
+      {!d ? (
+        <p className="px-4 py-4 text-body text-ink-tertiary">{prs.isError ? 'The PRs could not be loaded.' : 'Loading PRs…'}</p>
+      ) : d.total === 0 ? (
+        <p className="px-4 py-4 text-body text-ink-tertiary">
+          {filtered ? 'No PR matches these filters.' : 'No PR was opened or updated in this window.'}
+        </p>
+      ) : (
+        <>
+          <DataTable
+            caption="Usage by PR"
+            minWidth={1100}
+            rows={d.rows}
+            rowKey={r => `${r.repo}#${r.pr_number}`}
+            serverSort={{ key: sort.key, dir: sort.dir, onChange: setSort }}
+            columns={columns}
+          />
+          <div className="px-5 py-3 flex flex-wrap items-center justify-between gap-3 border-t border-border-soft text-caption text-ink-secondary">
+            <span>{`${((d.page - 1) * d.pageSize + 1).toLocaleString()}–${Math.min(d.page * d.pageSize, d.total).toLocaleString()} of ${plural(d.total, 'PR', 'PRs')}`}</span>
+            <span className="inline-flex items-center gap-2">
+              <button type="button" aria-label="Previous page" disabled={!settled || at <= 1} onClick={() => goTo(at - 1)}
+                className="px-2.5 py-1 rounded-lg border border-border-soft hover:border-accent disabled:opacity-50 disabled:cursor-not-allowed">Previous</button>
+              <span>{`Page ${d.page} of ${pages}`}</span>
+              <button type="button" aria-label="Next page" disabled={!settled || at >= pages} onClick={() => goTo(at + 1)}
+                className="px-2.5 py-1 rounded-lg border border-border-soft hover:border-accent disabled:opacity-50 disabled:cursor-not-allowed">Next</button>
+            </span>
+          </div>
+          {unestimated > 0 && (
+            <p className="px-5 pb-3 text-caption text-ink-tertiary">
+              {unestimated === 1
+                ? '1 PR has no cost estimate stored with its usage (recorded before estimates were stored), so it sorts by reported cost only, though its Cost shows the browser\'s estimate.'
+                : `${unestimated.toLocaleString()} PRs have no cost estimate stored with their usage (recorded before estimates were stored), so they sort by reported cost only, though their Cost shows the browser's estimate.`}
+            </p>
+          )}
+        </>
+      )}
+    </Section>
+  );
+}
+
 export function UsagePage() {
   const filters = useUrlFilters({ keys: USAGE_FILTER_KEYS, storageKey: 'agenfk-hub:usage:filters' });
   const fp = filters.params;
@@ -250,6 +425,12 @@ export function UsagePage() {
   }, [itemTypes.data]);
 
   const priceTable = prices.data;
+  // The By PR table reads the same filters; its days are not the viewer's, so no zone.
+  const prFilterQs = useMemo(() => {
+    const p = new URLSearchParams(qs);
+    p.delete('tz');
+    return p.toString();
+  }, [qs]);
   const costCol = <T,>(models: (r: T) => ModelRow[]) => ({
     key: 'cost', header: 'Cost', align: 'right' as const, firstDir: 'desc' as const,
     sortValue: (r: T) => { const c = estimateCost(models(r), priceTable); return c.reported + c.estimated; },
@@ -334,8 +515,8 @@ export function UsagePage() {
         query={overview}
         label="usage"
         // Empty only when there is also nothing to warn about: a window of unmeasured steps says so.
-        isEmpty={d => tokensOf(d.total) === 0 && d.total.turns === 0 && d.byPr.length === 0
-          && !d.unmeasuredSteps && !d.incompleteSteps && !d.truncated && !d.prsTruncated}
+        isEmpty={d => tokensOf(d.total) === 0 && d.total.turns === 0
+          && !d.unmeasuredSteps && !d.incompleteSteps && !d.truncated}
         empty={(
           <div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-body text-ink-tertiary">
             No usage was recorded in this window.
@@ -362,7 +543,6 @@ export function UsagePage() {
           if (d.unmeasuredSteps > 0) notes.push(`${plural(d.unmeasuredSteps, 'step change', 'step changes')} came from versions that did not report usage, and are not counted.`);
           if (d.incompleteSteps > 0) notes.push(`${plural(d.incompleteSteps, 'step change', 'step changes')}: its session logs could not be read in time; turns found later are added at the card's next step change or close.`);
           if (d.truncated) notes.push('Too many step changes in this window: only the newest were added up. Narrow the window or the filters.');
-          if (d.prsTruncated) notes.push('Only the newest 1,000 PRs are listed.');
           return (
             <>
               <section aria-label="Totals" className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -483,38 +663,12 @@ export function UsagePage() {
                 />
               </Section>
 
-              <Section title="By PR">
-                <p className="px-4 pt-3 text-caption text-ink-tertiary">
-                  A PR's usage is its card's, sub-cards included, as of the card's close.
-                </p>
-                {d.byPr.length === 0 ? (
-                  <p className="px-4 pb-4 text-body text-ink-tertiary">No PR was opened or updated in this window.</p>
-                ) : (
-                  <DataTable
-                  caption="Usage by PR"
-                  minWidth={960}
-                  rows={d.byPr}
-                  rowKey={r => `${r.repo}#${r.pr_number}`}
-                  columns={[
-                    { key: 'pr', header: 'PR', sortValue: r => r.opened_at,
-                      render: r => <span className="font-mono text-small text-ink">{`${r.repo}#${r.pr_number}`}</span> },
-                    { key: 'card', header: 'Card', sortValue: r => r.item_title ?? r.item_id,
-                      render: r => <span className="text-body text-ink break-words">{r.item_title ?? r.item_id}</span> },
-                    { key: 'tokens', header: 'Tokens', align: 'right', firstDir: 'desc', sortValue: r => (r.usage ? tokensOf(r.usage.total) : null),
-                      render: r => (r.usage ? <Tokens t={r.usage.total} /> : <span className="text-caption text-ink-tertiary">not closed yet</span>) },
-                    ...typeCols<PrRow>(r => r.usage?.total ?? null),
-                    { key: 'cost', header: 'Cost', align: 'right', firstDir: 'desc',
-                      sortValue: r => { if (!r.usage) return null; const c = estimateCost(r.usage.byModel ?? [], priceTable); return c.reported + c.estimated; },
-                      render: r => (r.usage ? <Cost byModel={r.usage.byModel ?? []} prices={priceTable} /> : null) },
-                  ]}
-                />
-                )}
-              </Section>
             </>
           );
         }}
       </QueryState>
 
+      <PrUsageTable filterQs={prFilterQs} nameOf={nameOf} prices={priceTable} />
     </Page>
   );
 }

@@ -14,7 +14,8 @@ import {
 /** `agenfk hub admin data <query>` -> the board route it reads. */
 /** The board's event filters, which every query but `people` reads. */
 const EVENT = ['from', 'to', 'users', 'types', 'projects', 'itemTypes', 'childHub'] as const;
-type FilterKey = typeof EVENT[number] | 'model' | 'pr' | 'bucket' | 'tz' | 'tzOffset' | 'limit' | 'offset' | 'before';
+type FilterKey = typeof EVENT[number] | 'model' | 'pr' | 'bucket' | 'tz' | 'tzOffset' | 'limit' | 'offset' | 'before'
+  | 'repos' | 'search' | 'status' | 'sort' | 'dir' | 'page' | 'pageSize';
 /**
  * Each query, the route it reads, and the filters that route actually APPLIES
  * (packages/hub/src/routes/queries.ts) - several parse the board's filters and
@@ -23,7 +24,8 @@ type FilterKey = typeof EVENT[number] | 'model' | 'pr' | 'bucket' | 'tz' | 'tzOf
  */
 const QUERIES: Record<string, { route: string; about: string; filters: readonly FilterKey[] }> = {
   usage: { route: '/v1/usage/cards', about: 'closed cards with their token usage', filters: ['from', 'to', 'users', 'projects', 'itemTypes', 'childHub'] },
-  'usage-overview': { route: '/v1/usage/overview', about: 'usage totals by installation, user, harness/model, PR and day, with usage on no card', filters: ['from', 'to', 'users', 'projects', 'itemTypes', 'childHub', 'tz', 'tzOffset'] },
+  'usage-overview': { route: '/v1/usage/overview', about: 'usage totals by installation, user, harness/model and day, with usage on no card', filters: ['from', 'to', 'users', 'projects', 'itemTypes', 'childHub', 'tz', 'tzOffset'] },
+  'usage-prs': { route: '/v1/usage/prs', about: 'usage by PR, a page at a time (--repos, --search, --status, --sort, --dir, --page, --page-size)', filters: ['from', 'to', 'users', 'projects', 'itemTypes', 'childHub', 'repos', 'search', 'status', 'sort', 'dir', 'page', 'pageSize'] },
   timeline: { route: '/v1/timeline', about: 'events, newest first (also `agenfk hub admin events`)', filters: [...EVENT, 'limit', 'offset', 'before'] },
   metrics: { route: '/v1/metrics', about: 'daily series and totals', filters: EVENT },
   histogram: { route: '/v1/histogram', about: 'events per bucket (--bucket)', filters: [...EVENT, 'bucket', 'tz', 'tzOffset'] },
@@ -44,6 +46,7 @@ const FLAG_OF: Record<FilterKey, string> = {
   from: '--from', to: '--to', users: '--users', types: '--types', projects: '--projects', itemTypes: '--item-types',
   childHub: '--child-hub', model: '--model', pr: '--pr', bucket: '--bucket', tz: '--tz', tzOffset: '--tz-offset',
   limit: '--limit', offset: '--offset', before: '--before',
+  repos: '--repos', search: '--search', status: '--status', sort: '--sort', dir: '--dir', page: '--page', pageSize: '--page-size',
 };
 covers(...Object.values(QUERIES).map(q => `GET ${q.route}`));
 
@@ -51,6 +54,7 @@ interface FilterOpts {
   from?: string; to?: string; users?: string; types?: string; projects?: string; itemTypes?: string;
   childHub?: string; model?: string; pr?: string; bucket?: string; tz?: string; tzOffset?: string;
   limit?: string; offset?: string; before?: string; json?: boolean; csv?: boolean;
+  repos?: string; search?: string; status?: string; sort?: string; dir?: string; page?: string; pageSize?: string;
 }
 
 /** The board's filters, as options. Lists are comma-separated, the way the board sends them. */
@@ -71,6 +75,13 @@ function withFilters(cmd: Command): Command {
     .option('--limit <n>', 'Page size (timeline)')
     .option('--offset <n>', 'Page offset (timeline)')
     .option('--before <cursor>', 'Page before (timeline)')
+    .option('--repos <list>', 'PR repositories, owner/repo (comma-separated; usage-prs)')
+    .option('--search <text>', 'A PR number or part of a card title (usage-prs)')
+    .option('--status <s>', 'closed (usage counted) or open (usage-prs)')
+    .option('--sort <key>', 'opened, pr, card, createdBy, tokens, input, cacheRead, cacheWrite, output or cost (usage-prs)')
+    .option('--dir <d>', 'asc or desc (usage-prs)')
+    .option('--page <n>', 'Page number, from 1 (usage-prs)')
+    .option('--page-size <n>', 'Rows per page, at most 100 (usage-prs)')
     .option('--json', 'Print as JSON (the default)')
     .option('--csv', 'Print list rows as CSV');
 }
@@ -80,6 +91,7 @@ function paramsOf(o: FilterOpts): Record<string, string | undefined> {
     from: o.from, to: o.to, users: o.users, types: o.types, projects: o.projects, itemTypes: o.itemTypes,
     childHubId: o.childHub, model: o.model, pr: o.pr, bucket: o.bucket, tz: o.tz, tzOffsetMin: o.tzOffset,
     limit: o.limit, offset: o.offset, before: o.before,
+    repos: o.repos, q: o.search, status: o.status, sort: o.sort, dir: o.dir, page: o.page, pageSize: o.pageSize,
   };
 }
 
@@ -96,10 +108,12 @@ const csvCell = (v: unknown): string => {
   return /[",\r\n]|^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-/** The rows of a result: the result itself when it is a list, else its one list field. */
+/** The rows of a result: the result itself when it is a list, else its `rows`, else its one list field. */
 function rowsOf(data: unknown): unknown[] | null {
   if (Array.isArray(data)) return data;
   if (data && typeof data === 'object') {
+    const rows = (data as { rows?: unknown }).rows;
+    if (Array.isArray(rows)) return rows;
     const lists = Object.values(data).filter(Array.isArray);
     if (lists.length === 1) return lists[0] as unknown[];
   }
