@@ -78,6 +78,13 @@ const curl = (name: string, url: string, extra = '') => `echo "${name} $(curl -s
 /** Raw TCP to 1.1.1.1:80, as bash opens it, printing the first bytes of any answer: `raw-tcp HTTP/1.1` or `raw-tcp `. */
 const RAW_TCP = `echo "raw-tcp $(timeout 10 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80 && printf "GET / HTTP/1.0\\r\\nHost: one.one.one.one\\r\\n\\r\\n" >&3 && head -c 8 <&3' 2>/dev/null | tr -dc 'A-Za-z0-9/.' ; echo)"`;
 const line = (out: string[], name: string) => out.find((l) => l.startsWith(`${name} `)) ?? `${name} (missing)`;
+/**
+ * An allowed host ANSWERED: a real HTTP status and curl's rc 0. Not 200 - the
+ * test proves the sandbox let the connection through, and api.github.com
+ * answers unauthenticated calls from shared CI runner IPs with 403 once their
+ * rate limit is spent (BUG 1f0d91d9). A refused host gets 000 and a non-zero rc.
+ */
+const answered = (name: string) => new RegExp(`^${name} [1-5]\\d\\d rc=0$`);
 
 // CI requires it (AGENFK_REQUIRE_SMOLVM_TESTS=1): a run that would skip it all is a failure there, not a pass.
 it.runIf(process.env.AGENFK_REQUIRE_SMOLVM_TESTS === '1' && !enabled)('the conformance suite can run here (smolvm, the built decider, the base image)', () => {
@@ -119,7 +126,7 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
       // Raw TCP, as bash opens it: nothing comes back, whatever the guest's own stack said about the connect.
       RAW_TCP,
     ].join('; '));
-    expect(line(r.out, 'allowed')).toMatch(/^allowed 200 rc=0$/);
+    expect(line(r.out, 'allowed')).toMatch(answered('allowed'));
     for (const name of ['unlisted', 'ip-literal', 'metadata']) expect(line(r.out, name), name).toMatch(new RegExp(`^${name} 000 rc=[1-9]`));
     expect(line(r.out, 'raw-tcp')).toBe('raw-tcp ');
     expect(r.decisions.some((d) => d.decision === 'allow' && d.host === 'api.github.com')).toBe(true);
@@ -260,7 +267,7 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
       fs.writeFileSync(go, '');
       await launched.exited;
       const out = fs.readFileSync(outFile, 'utf8').split('\n').filter(Boolean);
-      expect(line(out, 'before')).toMatch(/^before 200 rc=0$/);
+      expect(line(out, 'before')).toMatch(answered('before'));
       expect(line(out, 'after')).toMatch(/^after 000 rc=[1-9]/);
       expect(line(out, 'lookup')).toBe('lookup refused');
     } finally {
@@ -354,7 +361,7 @@ describe.skipIf(!enabled)('Airlock conformance on the real smolvm (AGENFK_SMOLVM
     const spec = buildSandboxSpec(normalizeAirlockPolicy({ mode: 'enforce', hosts: { allow: ['api.github.com'] } }),
       session({ purpose: 'command', serverPort: 0, serverUrl: undefined, piAgentDir: undefined }));
     const r = await inMachine(spec, [curl('allowed', 'https://api.github.com/zen'), curl('relay', `http://${GATEWAY}:${relayPort}/`), 'echo "env ${AGENFK_API_URL:-none}"'].join('; '));
-    expect(line(r.out, 'allowed')).toMatch(/^allowed 200 rc=0$/);
+    expect(line(r.out, 'allowed')).toMatch(answered('allowed'));
     expect(line(r.out, 'relay')).toMatch(/^relay 000 rc=[1-9]/);
     expect(line(r.out, 'env')).toBe('env none');
     expect(relaySeen).toBe(0);

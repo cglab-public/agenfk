@@ -22,6 +22,8 @@ type FilterKey = typeof EVENT[number] | 'model' | 'pr' | 'bucket' | 'tz' | 'tzOf
  * rather than sent: an unfiltered answer must not pass for a filtered one.
  */
 const QUERIES: Record<string, { route: string; about: string; filters: readonly FilterKey[] }> = {
+  usage: { route: '/v1/usage/cards', about: 'closed cards with their token usage', filters: ['from', 'to', 'users', 'projects', 'itemTypes', 'childHub'] },
+  'usage-overview': { route: '/v1/usage/overview', about: 'usage totals by installation, user, harness/model, PR and day', filters: ['from', 'to', 'users', 'projects', 'itemTypes', 'childHub', 'tz', 'tzOffset'] },
   timeline: { route: '/v1/timeline', about: 'events, newest first (also `agenfk hub admin events`)', filters: [...EVENT, 'limit', 'offset', 'before'] },
   metrics: { route: '/v1/metrics', about: 'daily series and totals', filters: EVENT },
   histogram: { route: '/v1/histogram', about: 'events per bucket (--bucket)', filters: [...EVENT, 'bucket', 'tz', 'tzOffset'] },

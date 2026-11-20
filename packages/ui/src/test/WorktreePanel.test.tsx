@@ -17,7 +17,12 @@ import { WorktreePanel } from '../components/WorktreePanel';
 import { api } from '../api';
 import { guardTokens } from './helpers/tokenGuard';
 
-vi.mock('../api', () => ({ api: { getGitStatus: vi.fn(), getFileDiff: vi.fn() } }));
+vi.mock('../api', () => ({ api: {
+  getGitStatus: vi.fn(), getFileDiff: vi.fn(),
+  // GH-389: the Usage tab's label reads the card's usage.
+  getItem: vi.fn(async () => ({ id: 'i1', status: 'TODO', createdAt: '2026-11-19T00:00:00.000Z', usageByStep: [] })),
+  getTokenEvents: vi.fn(async () => []),
+} }));
 
 // Call history does not reset on its own, and one test here asserts that the
 // api was NOT called — which passes or fails on whatever ran before it.
@@ -72,7 +77,8 @@ describe('what it shows', () => {
     renderPanel();
     await screen.findByText('a.ts');
     const tabs = screen.getAllByRole('tab');
-    expect(tabs.map(t => t.textContent)).toEqual(['Changed (2)', 'Staged (1)']);
+    // GH-389 / #385: a third tab, the card's AI usage ("Usage" alone while nothing is recorded).
+    expect(tabs.map(t => t.textContent)).toEqual(['Changed (2)', 'Staged (1)', 'Usage']);
     // Exactly one showing: a tablist with none selected describes nothing.
     expect(tabs.filter(t => t.getAttribute('aria-selected') === 'true')).toHaveLength(1);
   });

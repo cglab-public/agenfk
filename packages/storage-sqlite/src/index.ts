@@ -14,6 +14,7 @@ import {
   TokenEvent,
   TokenEventQuery,
   IngestionState,
+  SessionCardRow,
   AppSettings,
   DEFAULT_APP_SETTINGS,
   isLegalSettingValue,
@@ -445,6 +446,19 @@ export class SQLiteStorageProvider implements StorageProvider {
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         PRIMARY KEY (flow_id, revision)
       );
+      CREATE TABLE IF NOT EXISTS session_cards (
+        client TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        item_id TEXT,
+        project_id TEXT,
+        at TEXT NOT NULL,
+        at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_cards_lookup ON session_cards(client, session_id, at_ms);
+      CREATE TABLE IF NOT EXISTS ingestion_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS ingestion_state (
         source_path TEXT PRIMARY KEY,
         last_offset INTEGER NOT NULL,
@@ -557,6 +571,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     this.createAirlockCoverageTable();
     this.migrateFlowsTable();
     this.migrateTerminalSessionsTable();
+    this.migrateTokenEventsTable();
     this.backfillFlowRevisions();
   }
 
@@ -742,6 +757,36 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (!columns.includes('auto_approve')) {
       this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0');
     }
+  }
+
+  /**
+   * GH-389: per-turn usage keeps cache reads and writes apart, the cost a
+   * harness reported, and a dedup key that is unique per client across files
+   * (Claude Code repeats a message in a session log and its subagent log).
+   * Rows from before have NULL in all four, which the partial index ignores.
+   * Ingestion state gains the parser's saved context.
+   */
+  private migrateTokenEventsTable(): void {
+    const cols = (this.database.prepare('PRAGMA table_info(token_events)').all() as { name: string }[]).map((c) => c.name);
+    if (!cols.includes('cache_read')) this.database.exec('ALTER TABLE token_events ADD COLUMN cache_read INTEGER');
+    if (!cols.includes('cache_write')) this.database.exec('ALTER TABLE token_events ADD COLUMN cache_write INTEGER');
+    if (!cols.includes('cost_usd')) this.database.exec('ALTER TABLE token_events ADD COLUMN cost_usd REAL');
+    if (!cols.includes('dedup_key')) this.database.exec('ALTER TABLE token_events ADD COLUMN dedup_key TEXT');
+    if (!cols.includes('source_file')) this.database.exec('ALTER TABLE token_events ADD COLUMN source_file TEXT');
+    // The offset dedup key names the FILE too: a replaced file at the same
+    // path starts its offsets over, and its turns are not the old file's
+    // (review finding). Rebuilt once on a database from before.
+    const dedup = this.database.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_token_events_dedup'").get() as { sql: string } | undefined;
+    if (!dedup || !dedup.sql.includes('source_file')) {
+      this.database.exec('DROP INDEX IF EXISTS idx_token_events_dedup');
+      this.database.exec("CREATE UNIQUE INDEX idx_token_events_dedup ON token_events(client, source_path, COALESCE(source_file, ''), source_offset)");
+    }
+    this.database.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_token_events_dedup_key ON token_events(client, dedup_key) WHERE dedup_key IS NOT NULL',
+    );
+    const stateCols = (this.database.prepare('PRAGMA table_info(ingestion_state)').all() as { name: string }[]).map((c) => c.name);
+    if (!stateCols.includes('parser_state')) this.database.exec('ALTER TABLE ingestion_state ADD COLUMN parser_state TEXT');
+    if (!stateCols.includes('file_id')) this.database.exec('ALTER TABLE ingestion_state ADD COLUMN file_id TEXT');
   }
 
   /** GH-294 T5: a table created before denials gains their columns (CREATE TABLE IF NOT EXISTS never adds one). */
@@ -1134,8 +1179,9 @@ export class SQLiteStorageProvider implements StorageProvider {
       `INSERT INTO token_events
         (id, ts, client, session_id, turn_id, model,
          input, cached_input, output, reasoning, total,
-         item_id, project_id, source_path, source_offset)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         item_id, project_id, source_path, source_offset,
+         cache_read, cache_write, cost_usd, dedup_key, source_file)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       event.id,
       event.ts,
@@ -1152,6 +1198,11 @@ export class SQLiteStorageProvider implements StorageProvider {
       event.projectId ?? null,
       event.sourcePath,
       event.sourceOffset,
+      event.cacheRead ?? null,
+      event.cacheWrite ?? null,
+      event.costUsd ?? null,
+      event.dedupKey ?? null,
+      event.sourceFile ?? null,
     );
   }
 
@@ -1166,7 +1217,8 @@ export class SQLiteStorageProvider implements StorageProvider {
     let sql =
       `SELECT id, ts, client, session_id, turn_id, model,
               input, cached_input, output, reasoning, total,
-              item_id, project_id, source_path, source_offset
+              item_id, project_id, source_path, source_offset,
+              cache_read, cache_write, cost_usd, dedup_key
          FROM token_events`;
     if (where.length) sql += ' WHERE ' + where.join(' AND ');
     sql += ' ORDER BY ts ASC';
@@ -1188,6 +1240,10 @@ export class SQLiteStorageProvider implements StorageProvider {
       projectId: r.project_id ?? undefined,
       sourcePath: r.source_path,
       sourceOffset: r.source_offset,
+      cacheRead: r.cache_read ?? undefined,
+      cacheWrite: r.cache_write ?? undefined,
+      costUsd: r.cost_usd ?? undefined,
+      dedupKey: r.dedup_key ?? undefined,
     }));
   }
 
@@ -1533,24 +1589,77 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async getIngestionState(sourcePath: string): Promise<IngestionState | null> {
     const row = this.database.prepare(
-      'SELECT source_path, last_offset, last_run_at FROM ingestion_state WHERE source_path = ?'
-    ).get(sourcePath) as { source_path: string; last_offset: number; last_run_at: string } | undefined;
+      'SELECT source_path, last_offset, last_run_at, parser_state, file_id FROM ingestion_state WHERE source_path = ?'
+    ).get(sourcePath) as { source_path: string; last_offset: number; last_run_at: string; parser_state: string | null; file_id: string | null } | undefined;
     if (!row) return null;
     return {
       sourcePath: row.source_path,
       lastOffset: row.last_offset,
       lastRunAt: row.last_run_at,
+      ...(row.parser_state != null ? { parserState: row.parser_state } : {}),
+      ...(row.file_id != null ? { fileId: row.file_id } : {}),
     };
   }
 
   async setIngestionState(state: IngestionState): Promise<void> {
     this.database.prepare(
-      `INSERT INTO ingestion_state (source_path, last_offset, last_run_at)
-       VALUES (?, ?, ?)
+      `INSERT INTO ingestion_state (source_path, last_offset, last_run_at, parser_state, file_id)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(source_path) DO UPDATE SET
          last_offset = excluded.last_offset,
-         last_run_at = excluded.last_run_at`
-    ).run(state.sourcePath, state.lastOffset, state.lastRunAt);
+         last_run_at = excluded.last_run_at,
+         parser_state = excluded.parser_state,
+         file_id = excluded.file_id`
+    ).run(state.sourcePath, state.lastOffset, state.lastRunAt, state.parserState ?? null, state.fileId ?? null);
+  }
+
+  // ── Observability: session-to-card journal (GH-389) ───────────────────────
+  // Compared by instant (at_ms), not as text: turn timestamps come from
+  // several harnesses and need not share an offset or precision.
+
+  async recordSessionCard(row: SessionCardRow): Promise<void> {
+    const atMs = Date.parse(row.at);
+    if (!Number.isFinite(atMs)) throw new Error(`recordSessionCard: unparseable time ${row.at}`);
+    this.database.prepare(
+      'INSERT INTO session_cards (client, session_id, item_id, project_id, at, at_ms) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(row.client, row.sessionId, row.itemId, row.projectId ?? null, row.at, atMs);
+  }
+
+  async sessionCardAt(client: string, sessionId: string, ts: string): Promise<{ itemId: string | null; projectId?: string } | null> {
+    const tMs = Date.parse(ts);
+    if (!Number.isFinite(tMs)) return null;
+    const row = this.database.prepare(
+      `SELECT item_id, project_id FROM session_cards
+        WHERE client = ? AND session_id = ? AND at_ms <= ?
+        ORDER BY at_ms DESC, rowid DESC LIMIT 1`
+    ).get(client, sessionId, tMs) as { item_id: string | null; project_id: string | null } | undefined;
+    if (!row) return null;
+    return { itemId: row.item_id ?? null, ...(row.project_id ? { projectId: row.project_id } : {}) };
+  }
+
+  async endSessionCards(itemId: string, at: string): Promise<void> {
+    const atMs = Date.parse(at);
+    if (!Number.isFinite(atMs)) throw new Error(`endSessionCards: unparseable time ${at}`);
+    this.database.prepare(
+      `INSERT INTO session_cards (client, session_id, item_id, project_id, at, at_ms)
+       SELECT s.client, s.session_id, NULL, s.project_id, ?, ?
+         FROM session_cards s
+        WHERE s.item_id = ?
+          AND s.rowid = (SELECT t.rowid FROM session_cards t
+                          WHERE t.client = s.client AND t.session_id = s.session_id
+                          ORDER BY t.at_ms DESC, t.rowid DESC LIMIT 1)`
+    ).run(at, atMs, itemId);
+  }
+
+  async sessionsForItem(itemId: string): Promise<Array<{ client: string; sessionId: string }>> {
+    return (this.database.prepare(
+      'SELECT DISTINCT client, session_id FROM session_cards WHERE item_id = ?'
+    ).all(itemId) as Array<{ client: string; session_id: string }>).map((r) => ({ client: r.client, sessionId: r.session_id }));
+  }
+
+  async ensureIngestionEpoch(now: string): Promise<string> {
+    this.database.prepare("INSERT INTO ingestion_meta (key, value) VALUES ('epoch', ?) ON CONFLICT(key) DO NOTHING").run(now);
+    return (this.database.prepare("SELECT value FROM ingestion_meta WHERE key = 'epoch'").get() as { value: string }).value;
   }
 
   // ── Observability: PR registration ─────────────────────────────────────────

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput, VerifyRunEntry } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
+import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput, VerifyRunEntry, TokenEvent } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 import { API_URL } from './apiUrl';
 import type { AirlockHostListsDto } from './airlockHostText';
 
@@ -289,6 +289,11 @@ export const api = {
   /** 3aea49f1: every verify running now, across projects. */
   getVerifyRuns: async (): Promise<VerifyRunEntry[]> => {
     const { data } = await axios.get(`${API_URL}/verify-runs`);
+    return Array.isArray(data) ? data : [];
+  },
+  /** GH-389: turns ingested for a card, e.g. those of the step it is in now. */
+  getTokenEvents: async (params: { itemId: string; since?: string }): Promise<TokenEvent[]> => {
+    const { data } = await axios.get(`${API_URL}/token-events`, { params });
     return Array.isArray(data) ? data : [];
   },
   getItem: async (id: string) => {

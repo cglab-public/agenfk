@@ -4,17 +4,28 @@ import type { Project, TokenEvent, IngestionState, StorageProvider } from '@agen
 import { findActiveItemAt } from './attribution';
 
 /**
- * Parser signature: given the new (un-ingested) text content from a file,
- * the file path, and the byte offset where this slice starts, return the
- * TokenEvents to insert. Each parser is responsible for its own per-client
- * format (Codex, Claude Code, etc.) and for setting `sourceOffset` on each
- * event to the byte offset of the record within the file (so the dedup
- * unique index in storage rejects double-inserts on retry).
+ * What a parser may carry from one pass to the next. The watcher saves
+ * `state` as JSON on the file's ingestion state and hands it back on the next
+ * pass, so a parser that needs context from earlier lines (Codex's session
+ * id and running totals, pi's session header) can resume mid-file instead of
+ * the watcher re-reading a file that can be tens of megabytes.
+ */
+export interface ParserContext {
+  state?: unknown;
+}
+
+/**
+ * Parser signature: given the text of a slice of a session log, the file path
+ * and the byte offset where the slice starts, return the TokenEvents to
+ * insert, with `sourceOffset` set to each record's byte offset in the file.
+ * `ctx.state` is what the parser saved after its previous pass (undefined on
+ * a fresh start); it may replace it with whatever it needs next time.
  */
 export type SessionLogParser = (
   text: string,
   sourcePath: string,
   baseOffset: number,
+  ctx?: ParserContext,
 ) => TokenEvent[];
 
 export interface ProcessFileResult {
@@ -22,18 +33,72 @@ export interface ProcessFileResult {
   nextState: IngestionState;
 }
 
+/** How a pass over a file starts, given what was saved after the last one. */
+interface PassPlan {
+  /** Bytes before this are already ingested. */
+  start: number;
+  /** Where the parser must start reading for context (0 when rebuilding). */
+  parseFrom: number;
+  state: unknown;
+}
+
+function planPass(prior: IngestionState | null, fileSize: number, fileId?: string): PassPlan {
+  if (!prior || prior.lastOffset > fileSize) return { start: 0, parseFrom: 0, state: undefined }; // new or truncated
+  // Another file now at this path (review finding): its bytes and its session are not the old one's.
+  if (fileId && prior.fileId && prior.fileId !== fileId) return { start: 0, parseFrom: 0, state: undefined };
+  if (prior.parserState !== undefined) {
+    try {
+      const state = JSON.parse(prior.parserState);
+      return { start: prior.lastOffset, parseFrom: prior.lastOffset, state: state ?? undefined };
+    } catch { /* unreadable: rebuild below */ }
+  }
+  // Saved before parser state existed (or unreadable): rebuild context from
+  // the top once; only events at or after lastOffset are new.
+  return { start: prior.lastOffset, parseFrom: 0, state: undefined };
+}
+
 /**
- * Pure-logic core of the watcher. Compares prior ingestion state against the
- * file's current contents and returns the new events plus the next state.
- *
- * - First run (no prior state): parse the entire file from offset 0.
- * - Normal append: parse the full file for parser context, return only events
- *   at or after lastOffset.
- * - File truncation/rotation (currentSize < lastOffset): treat as a fresh
- *   file, parse from 0.
- *
- * No I/O is performed here — caller passes the current contents in. Tests
- * exercise this directly without touching the filesystem.
+ * The pass itself, over `buf`, which holds the file's bytes from `bufStart`
+ * on. Only COMPLETE lines are consumed: a line still being written is left
+ * for the next pass, because skipping past it would lose that turn for good.
+ */
+function processBytes(
+  sourcePath: string,
+  buf: Buffer,
+  bufStart: number,
+  plan: PassPlan,
+  parser: SessionLogParser,
+): ProcessFileResult & { parsedTo: number } {
+  const lastNewline = buf.lastIndexOf(0x0a);
+  // How far the parser read (the last complete line in `buf`), and how far
+  // the file counts as ingested: never back behind what earlier passes took.
+  const parsedTo = lastNewline === -1 ? bufStart : bufStart + lastNewline + 1;
+  const end = Math.max(plan.start, parsedTo);
+  const from = plan.parseFrom - bufStart;
+  const text = parsedTo > plan.parseFrom ? buf.subarray(from, parsedTo - bufStart).toString('utf8') : '';
+  const ctx: ParserContext = { state: plan.state };
+  const events = text
+    ? parser(text, sourcePath, plan.parseFrom, ctx).filter((ev) => ev.sourceOffset >= plan.start)
+    : [];
+  return {
+    events,
+    parsedTo,
+    nextState: {
+      sourcePath,
+      lastOffset: end,
+      lastRunAt: new Date().toISOString(),
+      // Always written, "null" included: its presence is what says the next
+      // pass may resume at lastOffset rather than rebuild from the top.
+      parserState: JSON.stringify(ctx.state ?? null),
+    },
+  };
+}
+
+/**
+ * Pure-logic core of the watcher over a file's whole contents: compares the
+ * prior ingestion state with them and returns the new events plus the next
+ * state. No I/O; the runtime path reads only the appended bytes instead (see
+ * ingestFile), with the same semantics.
  */
 export function processFile(
   sourcePath: string,
@@ -41,22 +106,9 @@ export function processFile(
   priorState: IngestionState | null,
   parser: SessionLogParser,
 ): ProcessFileResult {
-  const totalBytes = Buffer.byteLength(currentContents, 'utf8');
-  const lastOffset = priorState?.lastOffset ?? 0;
-  const startOffset = lastOffset > totalBytes ? 0 : lastOffset; // truncation
-  // Parse the full file so parsers can use session-level metadata that may
-  // appear before the newly appended byte range; then keep only new events.
-  const events = currentContents.length
-    ? parser(currentContents, sourcePath, 0).filter((ev) => ev.sourceOffset >= startOffset)
-    : [];
-  return {
-    events,
-    nextState: {
-      sourcePath,
-      lastOffset: totalBytes,
-      lastRunAt: new Date().toISOString(),
-    },
-  };
+  const buf = Buffer.from(currentContents, 'utf8');
+  const { events, nextState } = processBytes(sourcePath, buf, 0, planPass(priorState, buf.length), parser);
+  return { events, nextState };
 }
 
 // ── Runtime poller (wraps processFile + storage) ─────────────────────────────
@@ -82,22 +134,34 @@ export interface IngestionPollerOptions {
   intervalMs?: number;
   /** Attribute events to the matching project root and active item. */
   attributeEvents?: boolean;
+  /**
+   * ISO time ingestion was first switched on. A file last written before it
+   * is fast-forwarded to its end without being parsed: those sessions predate
+   * the session-to-card journal, so none of their usage could be attributed,
+   * and the backlog runs to gigabytes. Turns before it in a file that is still
+   * being written are dropped for the same reason.
+   */
+  epoch?: string;
+  /** Bytes read per chunk of a file (default 4 MiB); a longer line is read whole. */
+  chunkBytes?: number;
+  /** Limit the pass to some files (flush: only the sessions being counted). */
+  fileFilter?: (client: string, absPath: string, relPath: string) => boolean;
   /** Called for each TokenEvent successfully written to storage. */
   onEvent?: (ev: TokenEvent) => void;
 }
 
 /**
- * Walks a directory recursively and yields absolute paths matching `predicate`.
- * Used at runtime by the poller; not invoked by the pure tests.
+ * Walks a directory recursively and returns absolute paths matching
+ * `predicate`. Asynchronous: the session folders hold thousands of files and
+ * this runs on the server's event loop every poll.
  */
-export function listSourceFiles(rootDir: string, predicate: (rel: string) => boolean): string[] {
-  if (!fs.existsSync(rootDir)) return [];
+export async function listSourceFiles(rootDir: string, predicate: (rel: string) => boolean): Promise<string[]> {
   const out: string[] = [];
   const stack: string[] = [rootDir];
   while (stack.length) {
     const dir = stack.pop()!;
     let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of entries) {
       const abs = path.join(dir, e.name);
       const rel = path.relative(rootDir, abs);
@@ -108,57 +172,157 @@ export function listSourceFiles(rootDir: string, predicate: (rel: string) => boo
   return out;
 }
 
+const DEFAULT_CHUNK_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Which file, and which generation of it, is at the path: device:inode#n.
+ * A truncated file keeps its inode but starts its offsets over, so it is a new
+ * generation (review finding): its turns must not collide with the old
+ * contents' offsets in the dedup index.
+ */
+function fileGeneration(prior: IngestionState | null, inode: string, size: number): string {
+  const [priorInode, priorGen] = (prior?.fileId ?? '').split('#');
+  if (priorInode !== inode) return `${inode}#0`;
+  const gen = Number(priorGen) || 0;
+  return prior && prior.lastOffset > size ? `${inode}#${gen + 1}` : `${inode}#${gen}`;
+}
+
+/**
+ * One file's pass, reading only what it needs: nothing when the file has not
+ * grown, only the appended bytes when the parser's state was saved, the whole
+ * file only to rebuild context or start a new one - and never all at once.
+ *
+ * It reads in chunks and yields each chunk's result for the caller to store
+ * before the next is read (review finding): a session log runs to tens of
+ * megabytes, and reading one whole, then parsing it in one go, held the
+ * server's event loop and all of it in memory. A chunk ends at its last
+ * complete line; a line longer than a chunk is read whole.
+ */
+async function* ingestFile(
+  abs: string,
+  parser: SessionLogParser,
+  storage: StorageProvider,
+  epochMs: number | null,
+  chunkBytes: number,
+): AsyncGenerator<ProcessFileResult> {
+  let stat: fs.Stats;
+  try { stat = await fs.promises.stat(abs); } catch { return; }
+  const prior = await storage.getIngestionState(abs);
+  const fileId = fileGeneration(prior, `${stat.dev}:${stat.ino}`, stat.size);
+  const sameFile = !prior?.fileId || prior.fileId === fileId;
+  if (prior && sameFile && prior.lastOffset === stat.size) return;
+
+  if (epochMs !== null && stat.mtimeMs < epochMs) {
+    // Dropping any parser state makes a later append rebuild context first.
+    await storage.setIngestionState({ sourcePath: abs, lastOffset: stat.size, lastRunAt: new Date().toISOString(), fileId });
+    return;
+  }
+
+  let plan = planPass(prior, stat.size, fileId);
+  // Starting over (truncated or replaced): record that now, before anything is
+  // read. A file cut to nothing, or to half a line, consumes no line this pass,
+  // and an unsaved reset would let the next pass resume at the OLD offset once
+  // the file grows past it, skipping its new beginning (review finding).
+  if (prior && plan.start === 0 && prior.lastOffset > 0) {
+    await storage.setIngestionState({ sourcePath: abs, lastOffset: 0, lastRunAt: new Date().toISOString(), fileId });
+  }
+  let fh: fs.promises.FileHandle;
+  try { fh = await fs.promises.open(abs, 'r'); } catch { return; }
+  try {
+    let size = chunkBytes;
+    while (plan.parseFrom < stat.size) {
+      const length = Math.min(size, stat.size - plan.parseFrom);
+      const buf = Buffer.alloc(length);
+      const { bytesRead } = await fh.read(buf, 0, length, plan.parseFrom);
+      const atEnd = plan.parseFrom + bytesRead >= stat.size;
+      const result = processBytes(abs, buf.subarray(0, bytesRead), plan.parseFrom, plan, parser);
+      if (result.parsedTo === plan.parseFrom) {
+        if (atEnd || bytesRead === 0) return; // only a line still being written is left
+        size *= 2; // a line longer than the chunk: read more of it
+        continue;
+      }
+      size = chunkBytes;
+      const next = result.nextState.parserState ? JSON.parse(result.nextState.parserState) : undefined;
+      // Rebuilding context ahead of the old offset: nothing there is new, and a
+      // state saved now would claim context the parser has not reached yet.
+      if (result.parsedTo >= plan.start) {
+        yield { events: result.events, nextState: { ...result.nextState, fileId } };
+      }
+      plan = { start: plan.start, parseFrom: result.parsedTo, state: next ?? undefined };
+      if (atEnd) return;
+    }
+  } finally {
+    await fh.close();
+  }
+}
+
 /**
  * Single ingestion pass: scan all sources, ingest any new bytes, return the
  * total number of events written.
  */
 export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> {
   let written = 0;
+  const epochMs = opts.epoch ? Date.parse(opts.epoch) : null;
   for (const source of opts.sources) {
-    const files = listSourceFiles(source.rootDir, source.matches);
+    const files = await listSourceFiles(source.rootDir, source.matches);
     for (const abs of files) {
-      let contents: string;
-      try { contents = fs.readFileSync(abs, 'utf8'); } catch { continue; }
-      const prior = await opts.storage.getIngestionState(abs);
-      const result = processFile(abs, contents, prior, source.parser);
+      if (opts.fileFilter && !opts.fileFilter(source.client, abs, path.relative(source.rootDir, abs))) continue;
+      for await (const result of ingestFile(abs, source.parser, opts.storage, Number.isFinite(epochMs) ? epochMs : null, opts.chunkBytes ?? DEFAULT_CHUNK_BYTES)) {
       // Tag every event with the source's client name (parsers may not know it).
       for (const ev of result.events) {
+        // A session running across the epoch: its earlier turns predate the
+        // journal as much as an old file does, and are dropped the same way.
+        // One format for every harness: the store compares times as text.
+        const tsMs = Date.parse(ev.ts);
+        if (Number.isFinite(tsMs)) ev.ts = new Date(tsMs).toISOString();
+        if (epochMs !== null && Number.isFinite(epochMs) && Date.parse(ev.ts) < epochMs) continue;
         ev.client = source.client as any;
+        if (result.nextState.fileId) ev.sourceFile = result.nextState.fileId;
         if (opts.attributeEvents) await attributeTokenEvent(opts.storage, ev);
         try {
           await opts.storage.insertTokenEvent(ev);
           written++;
           opts.onEvent?.(ev);
         } catch {
-          // Most likely a duplicate via the unique (client, source_path, source_offset)
-          // index — safe to ignore on poll-overlap.
+          // A duplicate: the same record on poll overlap (client, source_path,
+          // source_offset), or the same turn already ingested from another
+          // file (client, dedup_key). Either way it is already counted.
         }
       }
       await opts.storage.setIngestionState(result.nextState);
+      // Let the server answer requests between chunks.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      }
     }
   }
   return written;
 }
 
-export function startIngestionPoller(opts: IngestionPollerOptions): () => void {
-  const intervalMs = opts.intervalMs ?? 30_000;
-  let stopped = false;
-  const tick = async () => {
-    if (stopped) return;
-    try { await ingestOnce(opts); } catch (e) {
-      console.error('[TOKEN_INGESTION] tick failed:', (e as Error).message);
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
-  };
-  let timer: NodeJS.Timeout = setTimeout(tick, intervalMs);
-  return () => { stopped = true; clearTimeout(timer); };
-}
-
-async function attributeTokenEvent(storage: StorageProvider, ev: TokenEvent): Promise<void> {
+/**
+ * Charge a turn to a project and, when it can be known, a card (GH-389).
+ *
+ * A turn with a session id goes to the card the session-to-card journal says
+ * that session was on at the turn's time: the gatekeeper and verify write it,
+ * and a closed card ends it. No row (the session had not reached a card yet)
+ * or an ended row means no card, only the project. The older guess - the card
+ * in the project activated most recently - charged one agent's turns to
+ * another's card whenever two worked in one project, so it is kept only for a
+ * turn with no session id at all.
+ */
+export async function attributeTokenEvent(storage: StorageProvider, ev: TokenEvent): Promise<void> {
   const project = await findProjectForCwd(storage, ev.cwd);
-  if (!project) return;
+  if (project) ev.projectId = project.id;
 
-  ev.projectId = project.id;
+  if (ev.sessionId) {
+    const row = await storage.sessionCardAt(ev.client, ev.sessionId, ev.ts);
+    if (row?.itemId) {
+      ev.itemId = row.itemId;
+      if (row.projectId) ev.projectId = row.projectId;
+    }
+    return;
+  }
+
+  if (!project) return;
   const flow = project.flowId ? await storage.getFlow(project.flowId) : null;
   const items = await storage.listItems({ projectId: project.id });
   const itemId = findActiveItemAt(items, flow, ev.ts);

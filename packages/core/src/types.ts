@@ -104,14 +104,25 @@ export interface TokenEvent {
   turnId?: string;
   model: string;
   input: number;
-  cachedInput: number;
+  cachedInput: number;        // cacheRead + cacheWrite, kept for older readers
+  cacheRead?: number;         // input served from the prompt cache
+  cacheWrite?: number;        // input written to the prompt cache
   output: number;
   reasoning: number;
   total: number;
+  /** Cost the harness itself reported for the turn (pi does), in USD. */
+  costUsd?: number;
+  /**
+   * Identity of the turn across files, unique per client (Claude Code's
+   * message.id: the same message can be in a session log and its subagent log).
+   */
+  dedupKey?: string;
   itemId?: string;            // attribution (most-recent active item at ts)
   projectId?: string;
   cwd?: string;                // ingestion-only metadata used before attribution
   sourcePath: string;         // absolute path of the session log file
+  /** Which file was at sourcePath (device:inode): a replaced file's offsets are a new file's. */
+  sourceFile?: string;
   sourceOffset: number;       // byte/line offset within the file (dedup key)
 }
 
@@ -330,10 +341,90 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   maxConcurrentSuiteRuns: 0,
 };
 
+/**
+ * GH-389: token usage summed over a set of turns. `costUsd` is only what the
+ * harnesses reported themselves (pi does); `unpricedTurns` counts the turns
+ * without it, which a reader prices from model and tokens.
+ */
+export interface UsageTotals {
+  turns: number;
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  reasoning: number;
+  costUsd: number;
+  unpricedTurns: number;
+}
+
+export interface ModelUsage extends UsageTotals {
+  client: string;
+  model: string;
+}
+
+export interface UsageSummary {
+  byModel: ModelUsage[];
+  total: UsageTotals;
+}
+
+/**
+ * GH-389: a card's usage when it closed: every turn charged to it and to its
+ * descendants, broken down by the card's own steps.
+ */
+export interface CardUsage extends UsageSummary {
+  byStep: Array<{ step: string; total: UsageTotals }>;
+  /** The card plus its descendants. */
+  cards: number;
+  /**
+   * The card's own usage, without its descendants'. The hub adds cards up one
+   * by one, so it reads this rather than the subtree total. Absent from
+   * versions before it was sent.
+   */
+  own?: UsageSummary & {
+    /** When the snapshot was read: the hub orders a card's snapshots by it. */
+    asOf?: string;
+  };
+  /** False when a closing step's session logs (its own or a descendant's) could not be read in time. */
+  complete?: boolean;
+  /**
+   * The step the card closed in. The total describes the card only while it is
+   * still there: a card reopened by any route (verify, PUT, bulk, unarchive)
+   * no longer matches, and readers fall back to its step rows.
+   */
+  atStatus?: string;
+}
+
+/** GH-389: the usage of one stay in a step, recorded when the card left it. */
+export interface StepUsage extends UsageSummary {
+  step: string;
+  to: string;
+  enteredAt: string;
+  leftAt: string;
+  /** False when the session logs could not be flushed in time: later turns may be missing. */
+  complete: boolean;
+}
+
+/** GH-389: one entry of the session-to-card journal token attribution reads. */
+export interface SessionCardRow {
+  client: string;
+  sessionId: string;
+  itemId: string | null;
+  projectId?: string | null;
+  at: string;
+}
+
 export interface IngestionState {
   sourcePath: string;
   lastOffset: number;
   lastRunAt: string;
+  /**
+   * JSON the parser saved after its last pass (session id, model, running
+   * totals...), so the next pass can start at lastOffset instead of re-reading
+   * the file. Absent on states written before it existed.
+   */
+  parserState?: string;
+  /** Identity of the file the state was taken from (device:inode): a different file at the path starts over. */
+  fileId?: string;
 }
 
 // ── Agent Runs: orchestrated worker transcripts per item ────────────────────
@@ -621,6 +712,13 @@ export interface BaseItem {
   tests?: TestRecord[];
   /** Server-written only; PUT /items/:id never accepts it (CGLAB-379). */
   stepRecords?: StepRecord[];
+  /**
+   * GH-389: the usage of each step this card left, one row per state change
+   * (a re-entered step gets a new row). Server-written only.
+   */
+  usageByStep?: StepUsage[];
+  /** GH-389: the card's usage (with its descendants') when it closed. Server-written only. */
+  cardUsage?: CardUsage;
   /** The last verify's check results (CGLAB-380). Server-written only. */
   lastChecks?: { step: string; at: string; blocked: boolean; results: StepCheckResult[] };
   history?: HistoryRecord[];

@@ -60,7 +60,7 @@ describe('events and fleet data', () => {
     for (const [cmd, route] of [
       ['metrics', '/v1/metrics'], ['adherence', '/v1/adherence'], ['item-types', '/v1/item-types'], ['users', '/v1/users'],
       ['child-hubs', '/v1/child-hubs'], ['prs', '/v1/prs/overview'], ['histogram', '/v1/histogram'],
-      ['timeline', '/v1/timeline'],
+      ['timeline', '/v1/timeline'], ['usage', '/v1/usage/cards'], ['usage-overview', '/v1/usage/overview'],
     ] as const) {
       const fromCli = await hub.json(['hub', 'admin', 'data', cmd, '--from', '2026-10-02']);
       expect(fromCli, cmd).toEqual((await board(`${route}?from=2026-10-02`)).body);
