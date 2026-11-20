@@ -334,6 +334,7 @@ describe('GET /v1/prs/overview — ?pr= search', () => {
       .get('/v1/prs/overview?from=2026-05-04T00:00:00Z').set('Cookie', cookie);
     expect(r.body.totals.prs).toBe(1);
     expect(r.body.previous).not.toBeNull();
-    expect(r.body.period.from).toBe('2026-05-04T00:00:00Z');
+    // The bound comes back in the stored form, as it is compared (GH-391).
+    expect(r.body.period.from).toBe('2026-05-04T00:00:00.000Z');
   });
 });

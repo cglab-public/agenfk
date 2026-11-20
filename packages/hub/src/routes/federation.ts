@@ -13,6 +13,7 @@ import { issueFederationKey, requireFederationKey } from '../auth/federationKey.
 import { publicHubUrl } from '../util/publicUrl.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { MAX_CHILD_HUB_NAME_LEN, validChildHubName } from '../util/childHubRow.js';
+import { canonicalOccurredAt } from '../util/occurredAt.js';
 
 // Hub federation, parent side (CGLAB-181). A child hub enrolls by redeeming an
 // admin-issued invite of kind 'child-hub', then heartbeats and polls for
@@ -472,7 +473,11 @@ export function federationRouter(ctx: HubServerContext): Router {
           if (!e || typeof e !== 'object') { reject('invalid_event'); continue; }
           if (typeof e.eventId !== 'string' || !e.eventId) { reject('invalid_event'); continue; }
           if (typeof e.type !== 'string' || !e.type) { reject('invalid_event'); continue; }
-          if (typeof e.occurredAt !== 'string' || !e.occurredAt) { reject('invalid_event'); continue; }
+          // One stored form, as /v1/events stores it (GH-391): the day below and
+          // every window query read it as text on SQLite.
+          const occurredAt = canonicalOccurredAt(e.occurredAt);
+          if (!occurredAt) { reject('invalid_event'); continue; }
+          e.occurredAt = occurredAt;
 
           const userKey = resolveAliasKey(str(e.userKey) ?? 'unknown', aliases);
           // The hidden-people control filters PEOPLE. A dispatch report is

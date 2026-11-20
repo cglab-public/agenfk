@@ -29,6 +29,7 @@ import { startFederationSync } from './services/federation/federationSync.js';
 import { migrateOsUserKeys } from './services/migrateOsUserKeys.js';
 import { migrateChildPeopleNames } from './services/migrateChildPeopleNames.js';
 import { backfillUserKeyAliases } from './services/backfillUserKeyAliases.js';
+import { canonicaliseEventTimes } from './services/canonicaliseEventTimes.js';
 import * as fs from 'fs';
 import * as pathMod from 'path';
 
@@ -279,7 +280,7 @@ export async function createHubApp(
   // than silent: it can SPLIT a key that two machines shared, which changes what
   // the dashboards show — deliberately, since those were never one person.
   // Never fatal: a hub that cannot migrate must still serve.
-  migrateOsUserKeys(db)
+  const osUserKeysMigrated = migrateOsUserKeys(db)
     .then((r) => {
       if (r.skipped || r.eventsRewritten === 0) return;
       console.log(
@@ -295,6 +296,22 @@ export async function createHubApp(
   migrateChildPeopleNames(db)
     .then((r) => { if (!r.skipped && r.named > 0) console.log(`[MIGRATION] Recorded names for ${r.named} forwarded event(s) from child hubs.`); })
     .catch((e) => console.error('[MIGRATION] child-hub names backfill failed:', (e as Error).message));
+
+  // Event times stored before ingest canonicalised them (GH-391): on SQLite they
+  // filter and sort as text, apart from the same instant in the stored form.
+  // Never fatal. After the osUser-key migration, never beside it: both rebuild
+  // rollups in per-day transactions on the one SQLite connection, and run
+  // together one's BEGIN lands inside the other's open transaction.
+  osUserKeysMigrated
+    .then(() => canonicaliseEventTimes(db))
+    .then((r) => {
+      if (r.skipped || (r.eventsRewritten === 0 && r.unparseable === 0)) return;
+      console.log(
+        `[MIGRATION] Rewrote ${r.eventsRewritten} event time(s) to the stored UTC form`
+        + `${r.unparseable > 0 ? `; ${r.unparseable} could not be read and were kept as they are` : ''}.`,
+      );
+    })
+    .catch((e) => console.error('[MIGRATION] event time canonicalisation failed:', (e as Error).message));
 
   // Merges made before user_key_aliases existed carry no alias, so the guarantee
   // that a machine waking after the liveness window cannot resurrect a retired

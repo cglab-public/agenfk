@@ -1288,3 +1288,48 @@ describe('PG parity: card usage (GH-389)', () => {
     expect(res.body.byPr.map((x: any) => [x.repo, x.pr_number, x.opened_at, x.closed_at, x.usage.total.input])).toEqual([['acme/api', 4, '2026-11-19T13:00:00.000Z', '2026-11-19T12:00:00.000Z', 5]]);
   });
 });
+
+/**
+ * GH-391 (BUG 4f507284): one instant, one answer on both databases. Postgres
+ * compares TIMESTAMPTZ instants, so it was always right here; the scenario is
+ * the SQLite one from events-canonical-time.test.ts, and the two must agree.
+ */
+describe('PG parity: canonical occurredAt (GH-391)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  it('orders and windows offset and no-millisecond timestamps by instant, as SQLite now does', async () => {
+    const base = (eventId: string, occurredAt: string) => ({
+      eventId, installationId: 'inst-1', orgId: 'org', occurredAt, type: 'item.created', itemId: eventId,
+      actor: { osUser: 'alice', gitName: 'Alice', gitEmail: 'alice@acme.com' }, projectId: 'p1', payload: {},
+    });
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+      base('a-offset', '2026-11-19T09:30:00-03:00'),
+      base('b-ten', '2026-11-19T10:00:00Z'),
+      base('c-eleven', '2026-11-19T11:00:00.000Z'),
+      base('junk', 'yesterday-ish'),
+    ] });
+    expect(r.body).toMatchObject({ ingested: 3, rejected: 1 });
+    expect(r.body.rejections).toEqual([{ eventId: 'junk', reason: 'invalid' }]);
+
+    const all = await supertest(fx.app).get('/v1/timeline').set('Cookie', fx.cookie);
+    expect(all.body.events.map((e: any) => e.event_id)).toEqual(['a-offset', 'c-eleven', 'b-ten']);
+    const from = await supertest(fx.app)
+      .get(`/v1/timeline?from=${encodeURIComponent('2026-11-19T10:00:00Z')}`).set('Cookie', fx.cookie);
+    expect(from.body.events.map((e: any) => e.event_id).sort()).toEqual(['a-offset', 'b-ten', 'c-eleven']);
+    const offFrom = await supertest(fx.app)
+      .get(`/v1/timeline?from=${encodeURIComponent('2026-11-19T08:00:00-03:00')}`).set('Cookie', fx.cookie);
+    expect(offFrom.body.events.map((e: any) => e.event_id).sort()).toEqual(['a-offset', 'c-eleven']);
+  });
+
+  it('the boot migration leaves a Postgres hub alone: its column already holds instants', async () => {
+    const { canonicaliseEventTimes } = await import('../services/canonicaliseEventTimes');
+    await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+      { eventId: 'p1e', installationId: 'inst-1', orgId: 'org', occurredAt: '2026-11-19T10:00:00.000Z', type: 'item.created',
+        actor: { osUser: 'alice', gitName: 'Alice', gitEmail: 'alice@acme.com' }, payload: {} },
+    ] });
+    const res = await canonicaliseEventTimes(fx.db, { force: true });
+    expect(res).toEqual({ skipped: false, eventsRewritten: 0, unparseable: 0, daysRecomputed: 0 });
+  });
+});

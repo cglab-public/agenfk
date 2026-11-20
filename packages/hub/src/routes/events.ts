@@ -10,6 +10,7 @@ import { recordAirlockLearningProposal } from '../services/airlockLearning.js';
 import { isAirlockDatasetEvent, recordAirlockDataset } from '../services/airlockDataset.js';
 import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
+import { canonicalOccurredAt } from '../util/occurredAt.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
 import { isEmailShapedKey } from '../util/userKey.js';
 import { isOnboardingKeyLabel } from '../util/keyLabel.js';
@@ -56,7 +57,10 @@ function isValidEvent(e: any): e is HubEvent {
     typeof e.eventId === 'string' && e.eventId.length > 0 &&
     typeof e.installationId === 'string' &&
     typeof e.orgId === 'string' &&
-    typeof e.occurredAt === 'string' &&
+    // A time that parses (GH-391): one that does not would sort and filter
+    // differently on SQLite (text) and Postgres (instants), and on Postgres it
+    // failed the whole batch's insert.
+    canonicalOccurredAt(e.occurredAt) !== null &&
     typeof e.type === 'string' &&
     e.actor && typeof e.actor.osUser === 'string' &&
     typeof e.payload === 'object'
@@ -331,6 +335,8 @@ export function eventsRouter(ctx: HubServerContext): Router {
     await ctx.db.transaction(async () => {
       for (const e of events) {
         if (!isValidEvent(e)) { rejected++; rejections.push({ eventId: eventIdOf(e), reason: 'invalid' }); continue; }
+        // Stored in one form, so both databases order and window it alike (GH-391).
+        e.occurredAt = canonicalOccurredAt(e.occurredAt)!;
         // The tenancy watermark: the event's org must match the token's org.
         if (e.orgId !== orgId) { rejected++; rejections.push({ eventId: e.eventId, reason: 'org_mismatch' }); continue; }
         if (keyInstallation && e.installationId !== keyInstallation) { rejected++; rejections.push({ eventId: e.eventId, reason: 'foreign_installation' }); continue; }
@@ -338,8 +344,8 @@ export function eventsRouter(ctx: HubServerContext): Router {
         // An Airlock report is ordered by its own time (HUB-2): one dated further ahead of
         // this hub's clock than the allowed skew would freeze every later report out.
         if ((e.type === 'airlock.policy-applied' || e.type === 'airlock.policy-refused') && !reportTimeOf(e.occurredAt)) {
-          const reason = Number.isFinite(Date.parse(e.occurredAt)) ? 'future_dated' : 'invalid';
-          rejected++; rejections.push({ eventId: e.eventId, reason }); continue;
+          // It parsed (isValidEvent), so the only way to fail here is the skew.
+          rejected++; rejections.push({ eventId: e.eventId, reason: 'future_dated' }); continue;
         }
         if (e.type === 'tokens.logged') { skipped++; continue; }
         // Resolve BEFORE the hidden check: hiding applies to the person, so a
