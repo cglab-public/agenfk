@@ -1186,28 +1186,36 @@ async function migrate(adapter: HubDb): Promise<void> {
 
   // auth_config.google_hosted_domains: the Workspace domains a Google sign-in's
   // hd claim must match (INFRA-463, phase 0).
+  // IF NOT EXISTS on the INFRA-463 columns: a deploy starts two tasks at once,
+  // and the one whose probe ran before the other's ALTER must not fail its boot.
   const acCols = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='auth_config'"
   );
   if (!new Set(acCols.map(c => c.column_name)).has('google_hosted_domains')) {
-    await adapter.exec("ALTER TABLE auth_config ADD COLUMN google_hosted_domains TEXT");
+    await adapter.exec("ALTER TABLE auth_config ADD COLUMN IF NOT EXISTS google_hosted_domains TEXT");
   }
   // auth_config.join_mode and entra_required_role (INFRA-463, phase 1a).
   if (!new Set(acCols.map(c => c.column_name)).has('join_mode')) {
-    await adapter.exec("ALTER TABLE auth_config ADD COLUMN join_mode TEXT NOT NULL DEFAULT 'off'");
+    await adapter.exec("ALTER TABLE auth_config ADD COLUMN IF NOT EXISTS join_mode TEXT NOT NULL DEFAULT 'off'");
   }
   if (!new Set(acCols.map(c => c.column_name)).has('entra_required_role')) {
-    await adapter.exec("ALTER TABLE auth_config ADD COLUMN entra_required_role TEXT");
+    await adapter.exec("ALTER TABLE auth_config ADD COLUMN IF NOT EXISTS entra_required_role TEXT");
   }
   // Case-insensitive email uniqueness, as in db/sqlite.ts.
-  try { await adapter.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users (lower(email))'); }
-  catch (e: any) { console.warn(`[HUB] users: emails that differ only in case exist, case-insensitive uniqueness not enforced (${e?.message ?? e})`); }
+  const emailIndex = 'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users (lower(email))';
+  try { await adapter.exec(emailIndex); }
+  catch {
+    // Two starts building it together: the loser fails on the catalog once the
+    // winner has committed. A second try then finds the index; real duplicates fail again.
+    try { await adapter.exec(emailIndex); }
+    catch (e: any) { console.warn(`[HUB] users: emails that differ only in case exist, case-insensitive uniqueness not enforced (${e?.message ?? e})`); }
+  }
   // users.join_source, as in db/sqlite.ts.
   const userCols = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='users'"
   );
   if (!new Set(userCols.map(c => c.column_name)).has('join_source')) {
-    await adapter.exec("ALTER TABLE users ADD COLUMN join_source TEXT");
+    await adapter.exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS join_source TEXT");
   }
 
   // flows.org_available — org-available flag.
