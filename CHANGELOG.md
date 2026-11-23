@@ -2,6 +2,18 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.1.0-beta.24] — 2026-11-23
+
+Beta, cumulative over 2.1.0-beta.23: everything in 2.1.0-beta.23, plus the changes below.
+
+**Usage & Pricing**
+
+- **Antigravity (`agy`) usage token & cost support** (#411, #412). Local token ingestion now scans Antigravity CLI (`~/.gemini/antigravity-cli/brain`, override `AGY_DATA_DIR`) and IDE (`~/.gemini/antigravity/brain`, override `ANTIGRAVITY_DATA_DIR`) transcripts (`PLANNER_RESPONSE` records), resolves workspace `cwd` from `conversation_summaries.db`, attributes turns via confirmed AgEnFK tool-call claims, and strips effort suffixes (`-minimal`, `-low`, `-medium`, `-high`, `-xhigh`) when pricing models from the public price table. Adds `'agy'` to client whitelists, UI `Antigravity` label, and Hub `HARNESS_NAMES`.
+
+**Hub**
+
+- **Airlock marked as Preview in Hub UI** (#407, #412). Marks the Airlock section and admin views with a Preview badge and banner in the Hub UI.
+
 ## [2.1.0-beta.23] — 2026-11-23
 
 Beta, cumulative over 2.1.0-beta.22: everything in 2.1.0-beta.22, plus the changes below.
