@@ -11,7 +11,19 @@
  */
 export function sameHubUrl(a: unknown, b: unknown): boolean {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const x = a.trim().replace(/\/+$/, '');
-  const y = b.trim().replace(/\/+$/, '');
+  const x = stripTrailingSlashes(a.trim());
+  const y = stripTrailingSlashes(b.trim());
   return x !== '' && x === y;
+}
+
+/**
+ * Drops every trailing slash in one pass from the end. Not `/\/+$/`: on a long
+ * run of slashes that does not end the string, a backtracking engine rescans
+ * the run from every start position, and these values come from a hand-edited
+ * hub.json, a managed file or a DNS record.
+ */
+export function stripTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47 /* '/' */) end--;
+  return s.slice(0, end);
 }

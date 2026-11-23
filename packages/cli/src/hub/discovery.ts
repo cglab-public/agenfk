@@ -20,6 +20,7 @@ import * as path from 'path';
 import { promises as dns } from 'dns';
 import { execFile } from 'child_process';
 import axios from 'axios';
+import { stripTrailingSlashes } from '@agenfk/core';
 
 /** Upper bound for every network call discovery makes (DNS and /healthz). */
 export const DISCOVERY_TIMEOUT_MS = 3000;
@@ -124,7 +125,7 @@ export async function discoverHub(partial: Partial<DiscoveryDeps> = {}): Promise
 
   /** https-only plus the /healthz identity check. Returns the normalised URL or null. */
   const accept = async (raw: string, label: string): Promise<string | null> => {
-    const url = raw.trim().replace(/\/+$/, '');
+    const url = stripTrailingSlashes(raw.trim());
     let parsed: URL;
     try {
       parsed = new URL(url);

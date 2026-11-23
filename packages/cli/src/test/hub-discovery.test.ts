@@ -155,6 +155,15 @@ describe('accept(): normalising what a source names', () => {
     expect(r.url).toBeNull();
     expect(r.reasons.some(x => /is not a URL/.test(x))).toBe(true);
   });
+
+  it('a long slash run in a named URL is normalised in linear time', async () => {
+    // 3 s with a backtracking /\/+$/ at this length; the value can come from a managed file or a DNS record.
+    const hostile = `https://env.example.com${'/'.repeat(100_000)}x`;
+    const started = performance.now();
+    const r = await discoverHub(fakeDeps({ env: { AGENFK_HUB_URL: hostile } }));
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(r.url).toBeNull();
+  });
 });
 
 describe('managed config file: path per platform', () => {
