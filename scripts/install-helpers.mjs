@@ -503,7 +503,7 @@ export async function offerHubSignIn({
   homedir = () => os.homedir(),
   exists = (p) => existsSync(p),
   importModule = (p) => import(pathToFileURL(p).href),
-  spawn = (cmd, args, opts) => spawnSync(cmd, args, opts),
+  spawn = (cmd, args, opts) => spawnSync(cmd, args, { ...opts, windowsHide: true }),
   ask,
   print = console.log,
 } = {}) {
