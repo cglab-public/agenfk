@@ -38,6 +38,8 @@ export interface UserRow {
   active: number;
   created_at: string;
   last_login_at: string | null;
+  /** 'jit' when a first SSO sign-in created the row; null when an admin did. */
+  join_source?: 'jit' | null;
 }
 
 export function hashPassword(plain: string): string {

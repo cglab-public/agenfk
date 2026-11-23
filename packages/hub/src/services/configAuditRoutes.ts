@@ -62,7 +62,7 @@ const flowSnap: Snapshot = async (db, orgId, p) => {
 };
 // password_hash rides along so a reset reads "[secret: changed]"; recordAudit never stores it.
 const userSnap: Snapshot = async (db, orgId, p) =>
-  (await db.get('SELECT id, email, name, role, active, provider, password_hash FROM users WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
+  (await db.get('SELECT id, email, name, role, active, provider, provider_subject, password_hash FROM users WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
 const authConfigSnap: Snapshot = async (db, orgId) => (await db.get('SELECT * FROM auth_config WHERE org_id = ?', [orgId])) ?? null;
 const registrySnap: Snapshot = async (db, orgId) =>
   (await db.get('SELECT registry_repo, registry_branch, registry_token_enc FROM org_settings WHERE org_id = ?', [orgId])) ?? null;

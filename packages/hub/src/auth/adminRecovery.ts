@@ -68,7 +68,8 @@ export async function redeemAdminRecoveryToken(db: DB, orgId: string, token: unk
   await db.transaction(async () => {
     const consumed = await db.run('DELETE FROM admin_recovery_tokens WHERE token_hash = ?', [tokenHash]);
     if (consumed.changes !== 1) return;   // another request spent it first
-    await db.run("UPDATE users SET password_hash = ?, provider = 'password' WHERE id = ?", [hashPassword(password), user!.id]);
+    // The subject goes too, so the next SSO sign-in binds the row again.
+    await db.run("UPDATE users SET password_hash = ?, provider = 'password', provider_subject = NULL WHERE id = ?", [hashPassword(password), user!.id]);
     spent = true;
   });
   return spent ? { user: user! } : refused;

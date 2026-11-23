@@ -78,9 +78,11 @@ export function AdminLayout() {
 
 interface AuthConfig {
   passwordEnabled: boolean; googleEnabled: boolean; entraEnabled: boolean;
-  google: { clientId: string; clientSecretSet: boolean };
-  entra: { tenantId: string; clientId: string; clientSecretSet: boolean };
+  google: { clientId: string; clientSecretSet: boolean; hostedDomains?: string[]; hostedDomainsUnreadable?: boolean };
+  entra: { tenantId: string; clientId: string; clientSecretSet: boolean; requiredRole?: string | null };
   emailAllowlist: string[];
+  emailAllowlistUnreadable?: boolean;
+  joinMode?: 'off' | 'auto';
 }
 
 const inputCls = controlClass;
@@ -142,6 +144,15 @@ export function AdminAuth() {
           <Field label="Client secret">
             <input className={inputCls} type="password" placeholder={c.google.clientSecretSet ? '•••••• (leave blank to keep)' : 'GOCSPX-…'} value={c.google.clientSecret ?? ''} onChange={(e) => setDraft({ ...draft, google: { ...c.google, clientSecret: e.target.value } })} />
           </Field>
+          <Field label="Workspace domains" className="sm:col-span-2">
+            <input className={`${inputCls} font-mono text-small`} placeholder="acme.com, eu.acme.com"
+                   defaultValue={(c.google.hostedDomains ?? []).join(', ')}
+                   onBlur={(e) => setDraft({ ...draft, google: { ...c.google, hostedDomains: e.target.value.split(',').map(s => s.trim()).filter(Boolean) } })} />
+            <span className="mt-1 block text-small text-ink-tertiary">Only accounts of these Google Workspace domains may sign in. Leave empty to accept any Google account.</span>
+            {c.google.hostedDomainsUnreadable && (
+              <span role="alert" className="mt-1 block text-small text-status-danger-text font-medium">The Workspace domains stored on this hub are unreadable, so nobody can sign in with Google. Saving this field replaces them.</span>
+            )}
+          </Field>
         </div>
         )}
       </section>
@@ -160,7 +171,7 @@ export function AdminAuth() {
         {c.entraEnabled && (
         <div className="mt-4 grid sm:grid-cols-2 gap-3">
           <Field label="Tenant ID">
-            <input className={inputCls} placeholder="common, organizations, or tenant GUID" value={c.entra.tenantId} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, tenantId: e.target.value } })} />
+            <input className={inputCls} placeholder="Directory (tenant) ID, a GUID" value={c.entra.tenantId} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, tenantId: e.target.value } })} />
           </Field>
           <Field label="Client ID">
             <input className={inputCls} placeholder="application (client) ID" value={c.entra.clientId} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, clientId: e.target.value } })} />
@@ -168,7 +179,25 @@ export function AdminAuth() {
           <Field label="Client secret" className="sm:col-span-2">
             <input className={inputCls} type="password" placeholder={c.entra.clientSecretSet ? '•••••• (leave blank to keep)' : 'client secret value'} value={c.entra.clientSecret ?? ''} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, clientSecret: e.target.value } })} />
           </Field>
+          <Field label="Required app role" className="sm:col-span-2">
+            <input className={`${inputCls} font-mono`} placeholder="AgEnFK.Member" value={c.entra.requiredRole ?? ''} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, requiredRole: e.target.value } })} />
+          </Field>
+          <p className="sm:col-span-2 text-small text-ink-tertiary">The value of the app role assigned to the group that may join. With automatic join, a token without it creates nobody, and a member created that way needs it on every sign-in.</p>
         </div>
+        )}
+      </section>
+
+      <section className={cardCls}>
+        <h3 className="text-body font-semibold text-ink">Joining</h3>
+        <p className="mt-1 text-small text-ink-tertiary">Automatic: a first Google or Entra sign-in that passes the checks on this page creates a viewer. Entra also needs the required app role; Google needs Workspace domains.</p>
+        <Field label="Join mode" className="mt-3">
+          <select className={inputCls} value={c.joinMode ?? 'off'} onChange={(e) => setDraft({ ...draft, joinMode: e.target.value })}>
+            <option value="off">Off: only invited people sign in</option>
+            <option value="auto">Automatic: first sign-in creates a viewer</option>
+          </select>
+        </Field>
+        {c.joinMode === 'auto' && c.googleEnabled && (c.google.hostedDomains ?? []).length === 0 && (
+          <p role="status" className="mt-2 text-small text-status-warn-text">Google creates nobody until a Workspace domain is set: without one, any Google account would pass.</p>
         )}
       </section>
 
@@ -180,6 +209,9 @@ export function AdminAuth() {
                placeholder='acme.com, *.subsidiary.com'
                defaultValue={c.emailAllowlist.join(', ')}
                onBlur={(e) => setDraft({ ...draft, emailAllowlist: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
+        {c.emailAllowlistUnreadable && (
+          <p role="alert" className="mt-2 text-small text-status-danger-text font-medium">The allowlist stored on this hub is unreadable, so nobody can sign in with Google or Entra. Saving this field replaces it; an empty list admits every address.</p>
+        )}
       </section>
 
       <div className="flex items-center gap-3">
@@ -540,11 +572,24 @@ const PROVIDER_BADGE: Record<string, string> = {
   entra:    'bg-canvas text-ink-secondary border-border-soft',
 };
 
+/** What deleting a user does to their sign-in, under the hub's join mode (undefined while unknown). */
+function deleteConsequence(joinMode: 'off' | 'auto' | undefined): string {
+  const permanence = 'The account cannot be undone or restored. Their history on the dashboards stays.';
+  if (joinMode === 'off') return `They can no longer sign in. ${permanence}`;
+  if (joinMode === 'auto') return `Automatic join is on: if they still pass the Sign-in checks, their next Google or Entra sign-in creates a new account. To keep them out, deactivate them instead. ${permanence}`;
+  return permanence;
+}
+
 export function AdminUsers() {
   const qc = useQueryClient();
   const { confirm, dialog } = useConfirm();
   const users = useQuery<UserRow[]>({ queryKey: ['admin-users'], queryFn: async () => (await api.get('/v1/admin/users')).data });
   const me = useQuery<{ userId: string }>({ queryKey: ['auth-me'], queryFn: async () => (await api.get('/auth/me')).data });
+  // Under automatic join, neither leaving someone uninvited nor deleting them
+  // keeps them out. Until the mode is known the page promises neither way.
+  const authCfg = useQuery<AuthConfig>({ queryKey: ['auth-config'], queryFn: async () => (await api.get('/v1/admin/auth-config')).data });
+  // A hub that reports no join mode predates it, and such a hub creates nobody.
+  const joinMode = authCfg.data ? (authCfg.data.joinMode ?? 'off') : undefined;
   const invite = useMutation({
     mutationFn: (body: any) => api.post('/v1/admin/users/invite', body),
     onSuccess: () => {
@@ -579,7 +624,11 @@ export function AdminUsers() {
       <section className={`${cardCls} max-w-form`}>
         <header>
           <h3 className="text-body font-semibold text-ink">Invite user</h3>
-          <p className="mt-0.5 text-small text-ink-tertiary">Only invited users can sign in — SSO does not auto-create accounts. Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.</p>
+          <p className="mt-0.5 text-small text-ink-tertiary">
+            {joinMode === 'off' && <>Only invited users can sign in — SSO does not auto-create accounts. </>}
+            {joinMode === 'auto' && <>Automatic join is on: a first Google or Entra sign-in that passes the Sign-in checks creates a viewer. Invite people who need admin, a password, or access before they sign in. </>}
+            Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.
+          </p>
         </header>
         <form
           className="mt-4 grid sm:grid-cols-12 gap-3"
@@ -677,6 +726,23 @@ export function AdminUsers() {
                   </td>
                   <td className="px-2 py-2.5">
                     <span className={`px-2 py-0.5 rounded-md text-caption font-mono border ${PROVIDER_BADGE[u.provider] ?? PROVIDER_BADGE.password}`}>{u.provider}</span>
+                    {u.provider !== 'password' && u.id !== me.data?.userId && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (await confirm({
+                            title: `Reset ${u.email}'s sign-in?`,
+                            body: `Their account is unlinked from its ${u.provider} identity. Their next sign-in links it again, to whichever identity carries this email then, but only while the provider is switched on and the address passes the allowlist; otherwise they cannot sign in until that changes. Any password stored on the account is removed. Role and history stay; existing sessions do too, so deactivate the user first if they have left.`,
+                            confirmLabel: 'Reset sign-in',
+                          })) update.mutate({ id: u.id, resetSignIn: true });
+                        }}
+                        disabled={update.isPending}
+                        aria-label={`Reset sign-in for ${u.email}`}
+                        className="ml-2 text-caption font-semibold text-ink-tertiary hover:text-ink disabled:opacity-50"
+                      >
+                        Reset
+                      </button>
+                    )}
                   </td>
                   <td className="px-2 py-2.5">
                     <select
@@ -701,7 +767,7 @@ export function AdminUsers() {
                         onClick={async () => {
                           if (await confirm({
                             title: `Delete ${u.email}?`,
-                            body: 'They can no longer sign in, and the account cannot be undone or restored. Their history on the dashboards stays.',
+                            body: deleteConsequence(joinMode),
                             confirmLabel: 'Delete user',
                           })) remove.mutate(u.id);
                         }}

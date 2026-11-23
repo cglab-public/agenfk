@@ -1177,6 +1177,11 @@ work out your hub's public origin first (`AGENFK_HUB_PUBLIC_URL`, e.g.
    - Paste the client ID and client secret. The secret is encrypted with
      `AGENFK_HUB_SECRET_KEY` (AES-256-GCM) before persisting; only the
      decrypted form ever leaves memory during the OIDC exchange.
+   - Set **Workspace domains** (`acme.com`, `eu.acme.com`) to accept only
+     accounts of those Google Workspace domains. The hub checks Google's
+     `hd` claim, which a consumer account does not carry; the domain of the
+     email address does not prove Workspace membership. Leave it empty to
+     accept any Google account.
    - Optionally tighten the **email allowlist** (`acme.com`,
      `*.subsidiary.com`, or specific addresses).
    - Save.
@@ -1223,15 +1228,19 @@ design).
    email. Adding the optional claim avoids surprises.
 5. **In the hub** (**Admin → Auth**):
    - Toggle **Microsoft Entra** on.
-   - **Tenant ID**: paste the Directory (tenant) ID from step 1, or
-     `organizations` for any work/school tenant, or `common` for any
-     account (only if your "Supported account types" allows it).
+   - **Tenant ID**: paste the Directory (tenant) ID from step 1, a GUID,
+     or one of the tenant's verified domains (`contoso.onmicrosoft.com`).
+     The hub refuses `organizations`, `common` and `consumers`: their
+     discovery document names the issuer as a `{tenantid}` template, so no
+     token verifies against it, and nothing would say which tenant a
+     sign-in belongs to. Every sign-in's `tid` claim is checked against
+     the tenant the discovery document's issuer names.
    - **Client ID**: the Application (client) ID.
    - **Client secret**: the *Value* you copied from step 3.
    - Optionally restrict the email allowlist.
    - Save.
 6. **Invite users** the same way as for Google. The user-lookup gate is
-   provider-agnostic.
+   provider-agnostic. Or let them join on their own (section 11.4).
 
 Things that commonly go wrong: registering the wrong tenant id (Directory
 ID vs Application ID — these are easy to swap); using *Secret ID* instead
@@ -1248,10 +1257,58 @@ After provider config + invite:
    **Sign in with Microsoft** buttons (only the providers you enabled).
 2. Click → IdP consent → redirected back to
    `/auth/{google,entra}/callback?code=…&state=…`.
-3. Hub validates state cookie + exchanges the code, runs the allowlist,
-   then `findInvitedSsoUser`. If they're invited, a session cookie is set
-   and they land on `/`. If not, **403 "Account not invited — ask your
-   admin to invite you first"** — no session cookie, no row created.
+3. Hub validates state cookie + exchanges the code, checks the tenant
+   (Entra `tid`) or the Workspace domain (Google `hd`), runs the
+   allowlist, then `findInvitedSsoUser`. If they're invited, a session
+   cookie is set and they land on `/`. If not, **403 "Account not invited —
+   ask your admin to invite you first"** — no session cookie, no row
+   created.
+4. The first sign-in binds the invited row to the provider's immutable
+   subject (Entra `oid`, Google `sub`) and writes a `user.sso_bind` entry to
+   the audit log. A row already bound is matched by that subject only,
+   never by email: an address reused after its owner left gets **403 "This
+   email belongs to an account linked to another sign-in identity"**. If
+   the binding should move, an admin uses **Reset** next to the provider in
+   **Admin → Users**; the person's next sign-in links the account again,
+   keeping its id, role and history. The reset also removes any password
+   stored on the account, so an old one cannot come back with it. It does
+   not end existing sessions: deactivate a user who has left first. The hub
+   refuses (409) a reset of an account on email and password, which has
+   nothing to unlink. Admin recovery (`AGENFK_HUB_RESET_ADMIN_EMAIL`) unlinks
+   the recovered admin the same way.
+
+### 11.4 Automatic join
+
+With **Admin → Sign-in → Joining** set to *Automatic*, a first sign-in that
+finds no row creates the member instead of answering "Account not invited".
+The member gets the `viewer` role, is bound to the provider's subject from
+the start, and the audit log records `user.jit_create`. Invited rows, rows
+bound to another identity and deactivated rows behave as in 11.3; join mode
+never recreates a deactivated member.
+
+For Entra the gate is a group, set up once in the Entra admin center:
+
+1. In the app registration, **App roles → Create app role**: allowed member
+   types *Users/Groups*, value `AgEnFK.Member` (any value without spaces).
+2. In **Enterprise applications** → the app → **Properties**, set
+   *Assignment required* to *Yes*. Under **Users and groups**, assign the
+   group that may join (CG/lab: `agenfk`, filled at onboarding) to that role.
+3. In the hub, put the role value in **Microsoft Entra → Required app role**
+   and set **Join mode** to *Automatic*. The hub refuses to save automatic
+   join with Entra on and no required role.
+
+Entra itself refuses a person outside the group (`AADSTS50105`). The hub
+also checks the token's `roles` claim for the required role, so an app whose
+assignment requirement was switched off still creates nobody. Removing a
+person from the group blocks their next sign-in; it does not end a session
+they already hold. Deleting the member in **Admin → Users** is not enough on
+its own: while they are still in the group, their next sign-in creates them
+again as a viewer. To take someone out, remove them from the group or
+deactivate their row; a deactivated row is never recreated.
+
+For Google, automatic join needs at least one Workspace domain under
+**Google → Workspace domains**: without one every Google account passes the
+`hd` check, so the hub creates nobody.
 
 ---
 

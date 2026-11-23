@@ -242,7 +242,7 @@ describe('PUT /auth-config refuses a save that leaves no way to sign in', () => 
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
     await ctx.db.run('UPDATE auth_config SET password_enabled = 0, google_enabled = 1, google_client_id = NULL WHERE org_id = ?', ['org']);
     const r = await supertest(server).put('/v1/admin/auth-config').set('Cookie', cookie)
-      .send({ entraEnabled: true, entra: { tenantId: 'common', clientId: 'app' } });
+      .send({ entraEnabled: true, entra: { tenantId: '0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0', clientId: 'app' } });
     expect(r.status).toBe(200);
   });
 

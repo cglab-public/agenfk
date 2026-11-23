@@ -104,7 +104,9 @@ const SCHEMA_SQLITE = `
     role TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_login_at TEXT
+    last_login_at TEXT,
+    -- 'jit' when a first SSO sign-in created the row; NULL when an admin did.
+    join_source TEXT
   );
 
   CREATE TABLE IF NOT EXISTS device_codes (
@@ -335,7 +337,10 @@ const SCHEMA_SQLITE = `
     entra_tenant_id TEXT,
     entra_client_id TEXT,
     entra_client_secret_enc TEXT,
-    email_allowlist TEXT
+    email_allowlist TEXT,
+    google_hosted_domains TEXT,
+    join_mode TEXT NOT NULL DEFAULT 'off',
+    entra_required_role TEXT
   );
 
   -- Per-org registry choice (CGLAB-138). An admin of a hub-connected company
@@ -1159,6 +1164,27 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!akHave.has('os_user'))         raw.exec("ALTER TABLE api_keys ADD COLUMN os_user TEXT");
   if (!akHave.has('git_name'))        raw.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");
   if (!akHave.has('git_email'))       raw.exec("ALTER TABLE api_keys ADD COLUMN git_email TEXT");
+
+  // auth_config.google_hosted_domains: the Workspace domains a Google sign-in's
+  // hd claim must match (INFRA-463, phase 0).
+  const acCols = raw.prepare("PRAGMA table_info(auth_config)").all() as Array<{ name: string }>;
+  if (!new Set(acCols.map(c => c.name)).has('google_hosted_domains')) raw.exec("ALTER TABLE auth_config ADD COLUMN google_hosted_domains TEXT");
+  // auth_config.join_mode and entra_required_role: whether a first SSO sign-in
+  // creates the member, and the Entra app role it needs (INFRA-463, phase 1a).
+  if (!new Set(acCols.map(c => c.name)).has('join_mode')) raw.exec("ALTER TABLE auth_config ADD COLUMN join_mode TEXT NOT NULL DEFAULT 'off'");
+  if (!new Set(acCols.map(c => c.name)).has('entra_required_role')) raw.exec("ALTER TABLE auth_config ADD COLUMN entra_required_role TEXT");
+  // users.email is UNIQUE as typed, but sign-in matches it case-insensitively;
+  // with automatic join two first sign-ins could otherwise create Bob@ and bob@.
+  // A hub that already holds such a pair keeps working without the index.
+  try { raw.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users(lower(email))'); }
+  catch (e: any) { console.warn(`[HUB] users: emails that differ only in case exist, case-insensitive uniqueness not enforced (${e?.message ?? e})`); }
+  // One row per provider identity, so two first sign-ins for the same subject
+  // cannot both create a member. A hub that already holds a duplicate keeps working without it.
+  try { raw.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_provider_subject ON users(provider, provider_subject) WHERE provider_subject IS NOT NULL AND provider <> 'password'"); }
+  catch (e: any) { console.warn(`[HUB] users: duplicate provider subjects exist, provider subject uniqueness not enforced (${e?.message ?? e})`); }
+  // users.join_source: how the row came to be, so a member a first sign-in
+  // created keeps answering to the app role (INFRA-463, phase 1a).
+  if (!new Set(userCols.map(c => c.name)).has('join_source')) raw.exec("ALTER TABLE users ADD COLUMN join_source TEXT");
 
   // flow_assignments multi-scope migration. Pre-existing tables had PK
   // (org_id, scope). New PK is (org_id, scope, target_id). SQLite can't

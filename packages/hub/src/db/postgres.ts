@@ -95,7 +95,9 @@ const SCHEMA_PG = `
     role TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_login_at TIMESTAMPTZ
+    last_login_at TIMESTAMPTZ,
+    -- 'jit' when a first SSO sign-in created the row; NULL when an admin did.
+    join_source TEXT
   );
 
   CREATE TABLE IF NOT EXISTS device_codes (
@@ -326,7 +328,10 @@ const SCHEMA_PG = `
     entra_tenant_id TEXT,
     entra_client_id TEXT,
     entra_client_secret_enc TEXT,
-    email_allowlist TEXT
+    email_allowlist TEXT,
+    google_hosted_domains TEXT,
+    join_mode TEXT NOT NULL DEFAULT 'off',
+    entra_required_role TEXT
   );
 
   -- Per-org registry choice (CGLAB-138). Mirrors the SQLite table; see the
@@ -975,6 +980,11 @@ export async function migrateIdentityCodingColumns(adapter: Pick<HubDb, 'all' | 
 
 async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec(SCHEMA_PG);
+  await migrate(adapter);
+}
+
+/** What a start does after the schema: the changes a database made by an older build still needs. */
+async function migrate(adapter: HubDb): Promise<void> {
   await adapter.exec("DELETE FROM events WHERE type = 'tokens.logged'");
   await adapter.exec("DELETE FROM rollups_daily");
   // Backfill columns on pre-existing event tables. Use information_schema so
@@ -1174,6 +1184,48 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   if (!akHave.has('git_name'))        await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");
   if (!akHave.has('git_email'))       await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_email TEXT");
 
+  // auth_config.google_hosted_domains: the Workspace domains a Google sign-in's
+  // hd claim must match (INFRA-463, phase 0).
+  // IF NOT EXISTS on the INFRA-463 columns: a deploy starts two tasks at once,
+  // and the one whose probe ran before the other's ALTER must not fail its boot.
+  const acCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='auth_config'"
+  );
+  if (!new Set(acCols.map(c => c.column_name)).has('google_hosted_domains')) {
+    await adapter.exec("ALTER TABLE auth_config ADD COLUMN IF NOT EXISTS google_hosted_domains TEXT");
+  }
+  // auth_config.join_mode and entra_required_role (INFRA-463, phase 1a).
+  if (!new Set(acCols.map(c => c.column_name)).has('join_mode')) {
+    await adapter.exec("ALTER TABLE auth_config ADD COLUMN IF NOT EXISTS join_mode TEXT NOT NULL DEFAULT 'off'");
+  }
+  if (!new Set(acCols.map(c => c.column_name)).has('entra_required_role')) {
+    await adapter.exec("ALTER TABLE auth_config ADD COLUMN IF NOT EXISTS entra_required_role TEXT");
+  }
+  // Case-insensitive email uniqueness, as in db/sqlite.ts.
+  const emailIndex = 'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users (lower(email))';
+  try { await adapter.exec(emailIndex); }
+  catch {
+    // Two starts building it together: the loser fails on the catalog once the
+    // winner has committed. A second try then finds the index; real duplicates fail again.
+    try { await adapter.exec(emailIndex); }
+    catch (e: any) { console.warn(`[HUB] users: emails that differ only in case exist, case-insensitive uniqueness not enforced (${e?.message ?? e})`); }
+  }
+  // One row per provider identity, as in db/sqlite.ts.
+  const subjectIndex = "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_provider_subject ON users (provider, provider_subject) WHERE provider_subject IS NOT NULL AND provider <> 'password'";
+  try { await adapter.exec(subjectIndex); }
+  catch {
+    // Two starts building it together, as for the email index above.
+    try { await adapter.exec(subjectIndex); }
+    catch (e: any) { console.warn(`[HUB] users: duplicate provider subjects exist, provider subject uniqueness not enforced (${e?.message ?? e})`); }
+  }
+  // users.join_source, as in db/sqlite.ts.
+  const userCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='users'"
+  );
+  if (!new Set(userCols.map(c => c.column_name)).has('join_source')) {
+    await adapter.exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS join_source TEXT");
+  }
+
   // flows.org_available — org-available flag.
   const flowCols = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='flows'"
@@ -1235,6 +1287,16 @@ export async function openPgDb(connectionString: string): Promise<HubDb> {
  */
 export function __createPgAdapterForTest(pool: unknown): HubDb {
   return new PgAdapter({ pool: pool as Pool });
+}
+
+/**
+ * Test-only: run the migrations again on an open database, as a restart does
+ * on a hub that already has its tables. CREATE TABLE IF NOT EXISTS never adds
+ * a column there; only this path shows whether an ALTER does. The schema
+ * itself is left out because pg-mem cannot run it a second time.
+ */
+export async function __migrateForTest(adapter: HubDb): Promise<void> {
+  await migrate(adapter);
 }
 
 export async function openPgMemDb(): Promise<HubDb> {

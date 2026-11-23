@@ -86,12 +86,17 @@ describe('users', () => {
   });
 
   it('two accounts differing only in case: the exact one is used, an inexact one is refused', async () => {
-    await supertest(hub.server).post('/v1/admin/users/invite').set('Cookie', hub.cookie).send({ email: 'Alice@x', role: 'viewer' });
-    await supertest(hub.server).post('/v1/admin/users/invite').set('Cookie', hub.cookie).send({ email: 'alice@x', role: 'viewer' });
+    // The hub now refuses a second account that differs only in case; a hub
+    // that already held such a pair opens without that index and keeps them.
+    expect((await board('post', '/v1/admin/users/invite').send({ email: 'Alice@x', role: 'viewer' })).status).toBe(201);
+    expect((await board('post', '/v1/admin/users/invite').send({ email: 'alice@x', role: 'viewer' })).status).toBe(409);
+    await hub.ctx.db.run('DROP INDEX idx_users_email_lower');
+    const legacyRow = (id: string) => hub.ctx.db.run("INSERT INTO users (id, org_id, email, provider, role) VALUES (?, 'org', 'alice@x', 'password', 'viewer')", [id]);
+    await legacyRow('legacy-lower-1');
     await hub.run(['hub', 'admin', 'users', 'delete', 'alice@x', '--yes']);
     expect(await userRow('alice@x')).toBeUndefined();
     expect(await userRow('Alice@x')).toBeTruthy();
-    await supertest(hub.server).post('/v1/admin/users/invite').set('Cookie', hub.cookie).send({ email: 'alice@x', role: 'viewer' });
+    await legacyRow('legacy-lower-2');
     hub.clear();
     await expect(hub.run(['hub', 'admin', 'users', 'delete', 'ALICE@X', '--yes'])).rejects.toThrow(/exit 1/);
     expect(hub.err()).toMatch(/differ only in case/);
@@ -185,11 +190,23 @@ describe('sign-in', () => {
   });
 
   it('sets an Entra client with its secret from stdin', async () => {
+    const tenant = '0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0';
     await withStdin('entra-secret', () => hub.run([
-      'hub', 'admin', 'sign-in', 'set', '--entra-tenant-id', 'tid', '--entra-client-id', 'ecid', '--entra-client-secret-stdin',
+      'hub', 'admin', 'sign-in', 'set', '--entra-tenant-id', tenant, '--entra-client-id', 'ecid', '--entra-client-secret-stdin',
     ]));
     const cfg = (await board('get', '/v1/admin/auth-config')).body;
-    expect(cfg.entra).toEqual({ tenantId: 'tid', clientId: 'ecid', clientSecretSet: true });
+    // The CLI sets no app role: a partial save leaves it as it was, unset.
+    expect(cfg.entra).toEqual({ tenantId: tenant, clientId: 'ecid', clientSecretSet: true, requiredRole: null });
+    expect(cfg.joinMode).toBe('off');
+  });
+
+  it('passes the hub\'s refusal of a tenant that names no single tenant, and changes nothing', async () => {
+    for (const [tenantId, reason] of [['common', /aliases are not supported/], ['tid', /GUID .*or a verified domain/]] as const) {
+      hub.clear();
+      await expect(hub.run(['hub', 'admin', 'sign-in', 'set', '--entra-tenant-id', tenantId])).rejects.toThrow(/exit 1/);
+      expect(hub.err()).toMatch(reason);
+    }
+    expect((await board('get', '/v1/admin/auth-config')).body.entra.tenantId).toBe('');
   });
 
   it('refuses an empty secret on stdin, and changes nothing', async () => {

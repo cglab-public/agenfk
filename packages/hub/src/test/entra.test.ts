@@ -108,6 +108,17 @@ describe('Entra OIDC flow', () => {
     expect(r.headers.location).toContain('client_id=app-client-id');
   });
 
+  it('start refuses a stored multi-tenant alias instead of redirecting to Microsoft', async () => {
+    await enableEntra(ctx.db);
+    await ctx.db.run("UPDATE auth_config SET entra_tenant_id = 'common' WHERE org_id = 'org'");
+    // No implementation would let a regressed guard reach the real network.
+    const getSpy = vi.spyOn(axios, 'get').mockRejectedValue(new Error('no network'));
+    const r = await supertest(__server).get('/auth/entra/start').redirects(0);
+    expect(r.status).toBe(403);
+    expect(r.body.error).toMatch(/aliases are not supported/i);
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+
   it('callback rejects bad state', async () => {
     await enableEntra(ctx.db);
     const r = await supertest(__server).get('/auth/entra/callback?code=x&state=wrong');
@@ -128,7 +139,7 @@ describe('Entra OIDC flow', () => {
     };
     const getSpy = vi.spyOn(axios, 'get').mockResolvedValue({ data: discovery } as any);
     const postSpy = vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt.token' } } as any);
-    mockClaims = { oid: 'entra-oid-1', email: 'bob@acme.com' };
+    mockClaims = { tid: 'tenant-uuid', oid: 'entra-oid-1', email: 'bob@acme.com' };
 
     const start = await supertest(__server).get('/auth/entra/start').redirects(0);
     const stateCookie = start.headers['set-cookie']?.[0];
@@ -160,7 +171,7 @@ describe('Entra OIDC flow', () => {
     };
     vi.spyOn(axios, 'get').mockResolvedValue({ data: discovery } as any);
     vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt.token' } } as any);
-    mockClaims = { oid: 'entra-stranger', email: 'stranger@acme.com' };
+    mockClaims = { tid: 'tenant-uuid', oid: 'entra-stranger', email: 'stranger@acme.com' };
 
     const start = await supertest(__server).get('/auth/entra/start').redirects(0);
     const stateCookie = start.headers['set-cookie']?.[0];
@@ -173,5 +184,158 @@ describe('Entra OIDC flow', () => {
     expect(cb.body.error).toMatch(/not invited/i);
     const count = await ctx.db.get<{ c: number | string }>('SELECT COUNT(*) AS c FROM users');
     expect(Number(count?.c ?? 0)).toBe(0);
+  });
+});
+
+/**
+ * Phase 0 of the Hub auto-join epic (INFRA-463). Sign-in must bind to an
+ * immutable identity inside the configured tenant before sign-in is ever
+ * allowed to create users: email and preferred_username are display claims
+ * (Microsoft identity platform, "claims validation"), and a token's tenant is
+ * its tid, not whatever the discovery URL happened to name.
+ */
+describe('Entra sign-in binds to the configured tenant and an immutable subject', () => {
+  let ctx: any;
+  const discovery = {
+    authorization_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/authorize',
+    token_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/token',
+    jwks_uri: 'https://login.microsoftonline.com/tenant-uuid/discovery/v2.0/keys',
+    issuer: 'https://login.microsoftonline.com/tenant-uuid/v2.0',
+  };
+
+  // The tenant the discovery document names in its issuer is the tenant the
+  // token's tid must match: for a GUID it is that GUID, for a verified domain
+  // (contoso.onmicrosoft.com) it is the tenant behind the domain.
+  const signIn = async (claims: any, issuerTenant = 'tenant-uuid', afterStart?: () => Promise<void>) => {
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: { ...discovery, issuer: `https://login.microsoftonline.com/${issuerTenant}/v2.0` },
+    } as any);
+    vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt.token' } } as any);
+    mockClaims = claims;
+    const start = await supertest(__server).get('/auth/entra/start').redirects(0);
+    const stateCookie = start.headers['set-cookie']?.[0];
+    const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
+    await afterStart?.();
+    return supertest(__server)
+      .get(`/auth/entra/callback?code=abc&state=${state}`)
+      .set('Cookie', stateCookie!)
+      .redirects(0);
+  };
+  const invite = (email: string) => ctx.db.run(
+    'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)',
+    ['u-pre', 'org', email, null, 'password', 'viewer'],
+  );
+  const sessionSet = (r: any) => (r.headers['set-cookie'] ?? []).some((c: string) => c.startsWith('agenfk_hub_session='));
+  const ssoBindRows = () => ctx.db.all<any>("SELECT * FROM config_audit WHERE action = 'user.sso_bind'");
+
+  beforeEach(async () => {
+    cleanup();
+    _resetEntraDiscoveryCache();
+    const out = await createHubApp({ dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org' });
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = out.app.listen(0);
+    ctx = out.ctx;
+    vi.restoreAllMocks();
+    await enableEntra(ctx.db);
+  });
+
+  afterEach(async () => {
+    await drainApp(__server);
+    await ctx.db.close();
+    cleanup();
+  });
+
+  it('refuses a token issued in another tenant and binds nothing', async () => {
+    await invite('bob@acme.com');
+    const r = await signIn({ tid: 'other-tenant', oid: 'entra-oid-1', email: 'bob@acme.com' });
+    expect(r.status).toBe(403);
+    expect(r.body.error).toMatch(/tenant/i);
+    expect(sessionSet(r)).toBe(false);
+    const row = await ctx.db.get<any>('SELECT provider, provider_subject FROM users WHERE id = ?', ['u-pre']);
+    expect(row.provider).toBe('password');
+    expect(row.provider_subject).toBeNull();
+  });
+
+  it('refuses a token that carries no tid claim', async () => {
+    await invite('bob@acme.com');
+    const r = await signIn({ oid: 'entra-oid-1', email: 'bob@acme.com' });
+    expect(r.status).toBe(403);
+    expect(r.body.error).toMatch(/tenant/i);
+  });
+
+  it('compares the tenant case-insensitively, since Entra GUIDs are not case-significant', async () => {
+    await ctx.db.run("UPDATE auth_config SET entra_tenant_id = 'AAAAAAAA-1111-2222-3333-444444444444' WHERE org_id = 'org'");
+    await invite('bob@acme.com');
+    const r = await signIn({ tid: 'aaaaaaaa-1111-2222-3333-444444444444', oid: 'entra-oid-1', email: 'bob@acme.com' }, 'AAAAAAAA-1111-2222-3333-444444444444');
+    expect(r.status).toBe(302);
+    expect(sessionSet(r)).toBe(true);
+  });
+
+  it('accepts a tid claim written in upper case', async () => {
+    await invite('bob@acme.com');
+    const r = await signIn({ tid: 'TENANT-UUID', oid: 'entra-oid-1', email: 'bob@acme.com' });
+    expect(r.status).toBe(302);
+  });
+
+  it('accepts a tenant stored as a verified domain, matching tid to the tenant its issuer names', async () => {
+    const guid = 'aaaaaaaa-1111-2222-3333-444444444444';
+    await ctx.db.run("UPDATE auth_config SET entra_tenant_id = 'contoso.onmicrosoft.com' WHERE org_id = 'org'");
+    await invite('bob@acme.com');
+    const ok = await signIn({ tid: guid, oid: 'entra-oid-1', email: 'bob@acme.com' }, guid);
+    expect(ok.status).toBe(302);
+  });
+
+  it('refuses another tenant when the tenant is stored as a verified domain', async () => {
+    await ctx.db.run("UPDATE auth_config SET entra_tenant_id = 'contoso.onmicrosoft.com' WHERE org_id = 'org'");
+    await invite('bob@acme.com');
+    const r = await signIn({ tid: 'bbbbbbbb-1111-2222-3333-444444444444', oid: 'entra-oid-1', email: 'bob@acme.com' }, 'aaaaaaaa-1111-2222-3333-444444444444');
+    expect(r.status).toBe(403);
+    expect(r.body.error).toMatch(/different tenant/i);
+  });
+
+  it('refuses sign-in while the stored tenant is a multi-tenant alias (organizations, common)', async () => {
+    await invite('bob@acme.com');
+    // /start now refuses an alias, so the state cookie comes from a sign-in
+    // begun before the tenant was changed to one (a row saved by an older build).
+    const r = await signIn({ tid: 'aaaaaaaa-1111-2222-3333-444444444444', oid: 'entra-oid-1', email: 'bob@acme.com' }, 'tenant-uuid', async () => {
+      await ctx.db.run("UPDATE auth_config SET entra_tenant_id = 'organizations' WHERE org_id = 'org'");
+    });
+    expect(r.status).toBe(403);
+    expect(r.body.error).toMatch(/aliases are not supported/i);
+  });
+
+  it('never rebinds by email a row already bound to another Entra subject', async () => {
+    // The address was reused: the person who held it left, and a new account
+    // now carries the same email. The old row and its role must not move.
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ['u-old', 'org', 'bob@acme.com', null, 'entra', 'entra-oid-old', 'admin'],
+    );
+    const r = await signIn({ tid: 'tenant-uuid', oid: 'entra-oid-new', email: 'bob@acme.com' });
+    expect(r.status).toBe(403);
+    expect(sessionSet(r)).toBe(false);
+    const row = await ctx.db.get<any>('SELECT provider, provider_subject, role FROM users WHERE id = ?', ['u-old']);
+    expect(row.provider_subject).toBe('entra-oid-old');
+    expect(row.role).toBe('admin');
+  });
+
+  it('records user.sso_bind, provider before and after, when a sign-in first binds an invited row', async () => {
+    await invite('bob@acme.com');
+    const r = await signIn({ tid: 'tenant-uuid', oid: 'entra-oid-1', email: 'bob@acme.com' });
+    expect(r.status).toBe(302);
+    const rows = await ssoBindRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].org_id).toBe('org');
+    expect(rows[0].area).toBe('users');
+    expect(rows[0].target).toContain('bob@acme.com');
+    expect(JSON.parse(rows[0].before_json)).toMatchObject({ provider: 'password' });
+    expect(JSON.parse(rows[0].after_json)).toMatchObject({ provider: 'entra', providerSubject: 'entra-oid-1' });
+  });
+
+  it('writes no second user.sso_bind row when an already bound user signs in again', async () => {
+    await invite('bob@acme.com');
+    expect((await signIn({ tid: 'tenant-uuid', oid: 'entra-oid-1', email: 'bob@acme.com' })).status).toBe(302);
+    expect((await signIn({ tid: 'tenant-uuid', oid: 'entra-oid-1', email: 'bob@acme.com' })).status).toBe(302);
+    expect(await ssoBindRows()).toHaveLength(1);
   });
 });
