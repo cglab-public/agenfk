@@ -326,7 +326,8 @@ const SCHEMA_PG = `
     entra_tenant_id TEXT,
     entra_client_id TEXT,
     entra_client_secret_enc TEXT,
-    email_allowlist TEXT
+    email_allowlist TEXT,
+    google_hosted_domains TEXT
   );
 
   -- Per-org registry choice (CGLAB-138). Mirrors the SQLite table; see the
@@ -1173,6 +1174,15 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   if (!akHave.has('os_user'))         await adapter.exec("ALTER TABLE api_keys ADD COLUMN os_user TEXT");
   if (!akHave.has('git_name'))        await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");
   if (!akHave.has('git_email'))       await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_email TEXT");
+
+  // auth_config.google_hosted_domains: the Workspace domains a Google sign-in's
+  // hd claim must match (INFRA-463, phase 0).
+  const acCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='auth_config'"
+  );
+  if (!new Set(acCols.map(c => c.column_name)).has('google_hosted_domains')) {
+    await adapter.exec("ALTER TABLE auth_config ADD COLUMN google_hosted_domains TEXT");
+  }
 
   // flows.org_available — org-available flag.
   const flowCols = await adapter.all<{ column_name: string }>(

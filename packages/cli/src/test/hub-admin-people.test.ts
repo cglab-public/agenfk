@@ -185,11 +185,21 @@ describe('sign-in', () => {
   });
 
   it('sets an Entra client with its secret from stdin', async () => {
+    const tenant = '0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0';
     await withStdin('entra-secret', () => hub.run([
-      'hub', 'admin', 'sign-in', 'set', '--entra-tenant-id', 'tid', '--entra-client-id', 'ecid', '--entra-client-secret-stdin',
+      'hub', 'admin', 'sign-in', 'set', '--entra-tenant-id', tenant, '--entra-client-id', 'ecid', '--entra-client-secret-stdin',
     ]));
     const cfg = (await board('get', '/v1/admin/auth-config')).body;
-    expect(cfg.entra).toEqual({ tenantId: 'tid', clientId: 'ecid', clientSecretSet: true });
+    expect(cfg.entra).toEqual({ tenantId: tenant, clientId: 'ecid', clientSecretSet: true });
+  });
+
+  it('passes the hub\'s refusal of a tenant that names no single tenant, and changes nothing', async () => {
+    for (const [tenantId, reason] of [['common', /aliases are not supported/], ['tid', /GUID .*or a verified domain/]] as const) {
+      hub.clear();
+      await expect(hub.run(['hub', 'admin', 'sign-in', 'set', '--entra-tenant-id', tenantId])).rejects.toThrow(/exit 1/);
+      expect(hub.err()).toMatch(reason);
+    }
+    expect((await board('get', '/v1/admin/auth-config')).body.entra.tenantId).toBe('');
   });
 
   it('refuses an empty secret on stdin, and changes nothing', async () => {

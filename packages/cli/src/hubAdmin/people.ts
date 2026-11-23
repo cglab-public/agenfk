@@ -232,7 +232,7 @@ export function registerPeopleCommands(admin: Command): void {
     .option('--google-client-id <id>', 'Google OAuth client id')
     .option('--google-client-secret-stdin', 'Read the Google client secret from stdin')
     .option('--entra <on|off>', 'Microsoft Entra sign-in')
-    .option('--entra-tenant-id <id>', 'Entra tenant id')
+    .option('--entra-tenant-id <id>', 'Entra Directory (tenant) ID, or a verified domain of the tenant')
     .option('--entra-client-id <id>', 'Entra client id')
     .option('--entra-client-secret-stdin', 'Read the Entra client secret from stdin')
     .option('--allowlist <list>', 'Comma-separated emails or domains allowed to sign in with SSO')

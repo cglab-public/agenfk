@@ -1,0 +1,81 @@
+/**
+ * Phase 0 of the Hub auto-join epic (INFRA-463): the bind of an invited row
+ * is conditional on the row still being unbound. When the UPDATE loses, the
+ * row may have been bound by a concurrent callback for the SAME identity
+ * (a double-submitted redirect): that sign-in gets the user, not a refusal.
+ */
+import { describe, it, expect } from 'vitest';
+import { findInvitedSsoUser } from '../auth/oauth';
+
+const invited = { id: 'u-1', org_id: 'org', email: 'bob@acme.com', name: null, password_hash: null, provider: 'password', provider_subject: null, role: 'viewer', active: 1 };
+
+/** A DB whose bind UPDATE always loses, with the row bound to `boundTo` by then. */
+function racingDb(boundTo: { provider: string; subject: string }) {
+  let bySubjectReads = 0;
+  return {
+    get: async (sql: string, params: any[]) => {
+      if (sql.includes('provider_subject = ?')) {
+        bySubjectReads++;
+        // First read: nobody bound yet. After the lost UPDATE: the winner's row.
+        if (bySubjectReads === 1) return undefined;
+        return params[0] === boundTo.provider && params[1] === boundTo.subject
+          ? { ...invited, provider: boundTo.provider, provider_subject: boundTo.subject }
+          : undefined;
+      }
+      if (sql.includes('lower(email)')) return invited;
+      return undefined;
+    },
+    run: async () => ({ changes: 0 }),
+    all: async () => [],
+  } as any;
+}
+
+describe('findInvitedSsoUser when the conditional bind loses a race', () => {
+  it('returns the user when the winner bound the same identity', async () => {
+    const r = await findInvitedSsoUser(racingDb({ provider: 'entra', subject: 'oid-1' }), 'org', { provider: 'entra', subject: 'oid-1', email: 'bob@acme.com' });
+    expect('user' in r && r.user.provider_subject).toBe('oid-1');
+  });
+
+  it('refuses when the winner bound another identity', async () => {
+    const r = await findInvitedSsoUser(racingDb({ provider: 'entra', subject: 'oid-other' }), 'org', { provider: 'entra', subject: 'oid-1', email: 'bob@acme.com' });
+    expect(r).toEqual({ refused: 'bound-elsewhere' });
+  });
+});
+
+/** A DB whose bind UPDATE wins, capturing the config_audit insert. */
+function bindingDb(row: Record<string, unknown>) {
+  const audits: any[][] = [];
+  return {
+    audits,
+    db: {
+      get: async (sql: string) => (sql.includes('lower(email)') ? row : undefined),
+      run: async (sql: string, params: any[]) => {
+        if (sql.includes('INSERT INTO config_audit')) { audits.push(params); return { changes: 1 }; }
+        return { changes: 1 };
+      },
+      all: async () => [],
+    } as any,
+  };
+}
+
+describe('findInvitedSsoUser audit of the bind', () => {
+  // A row recovered to a password account by an older build still carries the
+  // subject it had; the audit must say which identity the bind replaced.
+  it('records the subject a recovered row still carried in before_json', async () => {
+    const { db, audits } = bindingDb({ ...invited, provider: 'password', provider_subject: 'oid-old' });
+    const r = await findInvitedSsoUser(db, 'org', { provider: 'entra', subject: 'oid-new', email: 'bob@acme.com' });
+    expect('user' in r).toBe(true);
+    expect(audits).toHaveLength(1);
+    // [id, org, at, userId, email, source, ip, area, action, target, before_json, after_json, link]
+    expect(audits[0][8]).toBe('user.sso_bind');
+    expect(JSON.parse(audits[0][10])).toEqual({ provider: 'password', providerSubject: 'oid-old' });
+    expect(JSON.parse(audits[0][11])).toEqual({ provider: 'entra', providerSubject: 'oid-new' });
+  });
+
+  // The bind comes from the SSO callback, not from a person on the board.
+  it('records the bind as coming from sso, not the board', async () => {
+    const { db, audits } = bindingDb({ ...invited });
+    await findInvitedSsoUser(db, 'org', { provider: 'entra', subject: 'oid-new', email: 'bob@acme.com' });
+    expect(audits[0][5]).toBe('sso');
+  });
+});

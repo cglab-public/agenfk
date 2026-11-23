@@ -16,7 +16,7 @@ export interface AuditRowView {
   at: string;
   actorUserId: string | null;
   actorEmail: string | null;
-  source: 'board' | 'cli' | 'api-key' | 'federation' | 'system';
+  source: 'board' | 'cli' | 'api-key' | 'federation' | 'system' | 'sso';
   ip: string | null;
   area: string;
   action: string;
@@ -42,7 +42,7 @@ export const AUDIT_AREAS: Array<{ value: string; label: string }> = [
   { value: 'jira', label: 'JIRA' },
   { value: 'org', label: 'Organization' },
 ];
-const SOURCE_LABEL: Record<string, string> = { board: 'Board', cli: 'CLI', 'api-key': 'API key', federation: 'Federation', system: 'System' };
+const SOURCE_LABEL: Record<string, string> = { board: 'Board', cli: 'CLI', 'api-key': 'API key', federation: 'Federation', system: 'System', sso: 'Sign-in' };
 
 const show = (v: unknown) => (v === undefined ? '—' : typeof v === 'string' ? v : JSON.stringify(v));
 

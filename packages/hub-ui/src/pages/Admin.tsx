@@ -78,9 +78,10 @@ export function AdminLayout() {
 
 interface AuthConfig {
   passwordEnabled: boolean; googleEnabled: boolean; entraEnabled: boolean;
-  google: { clientId: string; clientSecretSet: boolean };
+  google: { clientId: string; clientSecretSet: boolean; hostedDomains?: string[]; hostedDomainsUnreadable?: boolean };
   entra: { tenantId: string; clientId: string; clientSecretSet: boolean };
   emailAllowlist: string[];
+  emailAllowlistUnreadable?: boolean;
 }
 
 const inputCls = controlClass;
@@ -142,6 +143,15 @@ export function AdminAuth() {
           <Field label="Client secret">
             <input className={inputCls} type="password" placeholder={c.google.clientSecretSet ? '•••••• (leave blank to keep)' : 'GOCSPX-…'} value={c.google.clientSecret ?? ''} onChange={(e) => setDraft({ ...draft, google: { ...c.google, clientSecret: e.target.value } })} />
           </Field>
+          <Field label="Workspace domains" className="sm:col-span-2">
+            <input className={`${inputCls} font-mono text-small`} placeholder="acme.com, eu.acme.com"
+                   defaultValue={(c.google.hostedDomains ?? []).join(', ')}
+                   onBlur={(e) => setDraft({ ...draft, google: { ...c.google, hostedDomains: e.target.value.split(',').map(s => s.trim()).filter(Boolean) } })} />
+            <span className="mt-1 block text-small text-ink-tertiary">Only accounts of these Google Workspace domains may sign in. Leave empty to accept any Google account.</span>
+            {c.google.hostedDomainsUnreadable && (
+              <span role="alert" className="mt-1 block text-small text-status-danger-text font-medium">The Workspace domains stored on this hub are unreadable, so nobody can sign in with Google. Saving this field replaces them.</span>
+            )}
+          </Field>
         </div>
         )}
       </section>
@@ -160,7 +170,7 @@ export function AdminAuth() {
         {c.entraEnabled && (
         <div className="mt-4 grid sm:grid-cols-2 gap-3">
           <Field label="Tenant ID">
-            <input className={inputCls} placeholder="common, organizations, or tenant GUID" value={c.entra.tenantId} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, tenantId: e.target.value } })} />
+            <input className={inputCls} placeholder="Directory (tenant) ID, a GUID" value={c.entra.tenantId} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, tenantId: e.target.value } })} />
           </Field>
           <Field label="Client ID">
             <input className={inputCls} placeholder="application (client) ID" value={c.entra.clientId} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, clientId: e.target.value } })} />
@@ -180,6 +190,9 @@ export function AdminAuth() {
                placeholder='acme.com, *.subsidiary.com'
                defaultValue={c.emailAllowlist.join(', ')}
                onBlur={(e) => setDraft({ ...draft, emailAllowlist: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
+        {c.emailAllowlistUnreadable && (
+          <p role="alert" className="mt-2 text-small text-status-danger-text font-medium">The allowlist stored on this hub is unreadable, so nobody can sign in with Google or Entra. Saving this field replaces it; an empty list admits every address.</p>
+        )}
       </section>
 
       <div className="flex items-center gap-3">
@@ -677,6 +690,23 @@ export function AdminUsers() {
                   </td>
                   <td className="px-2 py-2.5">
                     <span className={`px-2 py-0.5 rounded-md text-caption font-mono border ${PROVIDER_BADGE[u.provider] ?? PROVIDER_BADGE.password}`}>{u.provider}</span>
+                    {u.provider !== 'password' && u.id !== me.data?.userId && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (await confirm({
+                            title: `Reset ${u.email}'s sign-in?`,
+                            body: `Their account is unlinked from its ${u.provider} identity. Their next sign-in links it again, to whichever identity carries this email then, but only while the provider is switched on and the address passes the allowlist; otherwise they cannot sign in until that changes. Any password stored on the account is removed. Role and history stay; existing sessions do too, so deactivate the user first if they have left.`,
+                            confirmLabel: 'Reset sign-in',
+                          })) update.mutate({ id: u.id, resetSignIn: true });
+                        }}
+                        disabled={update.isPending}
+                        aria-label={`Reset sign-in for ${u.email}`}
+                        className="ml-2 text-caption font-semibold text-ink-tertiary hover:text-ink disabled:opacity-50"
+                      >
+                        Reset
+                      </button>
+                    )}
                   </td>
                   <td className="px-2 py-2.5">
                     <select

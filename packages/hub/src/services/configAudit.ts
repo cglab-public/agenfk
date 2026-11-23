@@ -12,7 +12,7 @@ import type { DB } from '../db.js';
  */
 
 /** Where a change came from. */
-export type AuditSource = 'board' | 'api-key' | 'cli' | 'federation' | 'system';
+export type AuditSource = 'board' | 'api-key' | 'cli' | 'federation' | 'system' | 'sso';
 
 export interface AuditEntry {
   orgId: string;
