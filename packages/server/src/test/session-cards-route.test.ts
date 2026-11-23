@@ -79,6 +79,13 @@ describe('POST /session-cards', () => {
     const res = await agent().post('/session-cards').set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ client: 'pi', sessionId: 'sess-x', itemId: 'nope' });
     expect(res.status).toBe(404);
   });
+
+  it('accepts agy as a valid session-card client', async () => {
+    const c = await card();
+    const res = await agent().post('/session-cards').set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ client: 'agy', sessionId: 'conv-agy-1', itemId: c.id });
+    expect(res.status).toBe(204);
+    expect(await storage.sessionCardAt('agy', 'conv-agy-1', now())).toEqual({ itemId: c.id, projectId: c.projectId });
+  });
 });
 
 describe('verify records the caller session', () => {

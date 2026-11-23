@@ -42,20 +42,38 @@ function memStorage() {
 }
 
 describe('defaultIngestionSources', () => {
-  it('reads Claude Code, Codex and pi session folders under the home directory', () => {
+  it('reads Claude Code, Codex, pi and agy (CLI + IDE) session folders under the home directory', () => {
     const roots = defaultIngestionSources('/home/u', {}).map((s) => [s.client, s.rootDir]);
     expect(roots).toEqual([
       ['claude-code', path.join('/home/u', '.claude', 'projects')],
       ['codex', path.join('/home/u', '.codex', 'sessions')],
       ['pi', path.join('/home/u', '.pi', 'agent', 'sessions')],
+      ['agy', path.join('/home/u', '.gemini', 'antigravity-cli', 'brain')],
+      ['agy', path.join('/home/u', '.gemini', 'antigravity', 'brain')],
     ]);
   });
 
-  it('honours CLAUDE_CONFIG_DIR and CODEX_HOME', () => {
-    const roots = Object.fromEntries(defaultIngestionSources('/home/u', { CLAUDE_CONFIG_DIR: '/cfg/claude', CODEX_HOME: '/cfg/codex' })
-      .map((s) => [s.client, s.rootDir]));
-    expect(roots['claude-code']).toBe(path.join('/cfg/claude', 'projects'));
-    expect(roots.codex).toBe(path.join('/cfg/codex', 'sessions'));
+  it('honours CLAUDE_CONFIG_DIR, CODEX_HOME, AGY_DATA_DIR and ANTIGRAVITY_DATA_DIR', () => {
+    const sources = defaultIngestionSources('/home/u', {
+      CLAUDE_CONFIG_DIR: '/cfg/claude',
+      CODEX_HOME: '/cfg/codex',
+      AGY_DATA_DIR: '/cfg/agy-cli',
+      ANTIGRAVITY_DATA_DIR: '/cfg/agy-ide',
+    });
+    expect(sources.find((s) => s.client === 'claude-code')?.rootDir).toBe(path.join('/cfg/claude', 'projects'));
+    expect(sources.find((s) => s.client === 'codex')?.rootDir).toBe(path.join('/cfg/codex', 'sessions'));
+    expect(sources.filter((s) => s.client === 'agy').map((s) => s.rootDir)).toEqual([
+      path.join('/cfg/agy-cli', 'brain'),
+      path.join('/cfg/agy-ide', 'brain'),
+    ]);
+  });
+
+  it('the agy sources match only <convId>/.system_generated/logs/transcript.jsonl', () => {
+    const agy = defaultIngestionSources('/home/u', {}).find((s) => s.client === 'agy')!;
+    expect(agy.matches(path.join('conv-1', '.system_generated', 'logs', 'transcript.jsonl'))).toBe(true);
+    expect(agy.matches(path.join('conv-1', '.system_generated', 'logs', 'transcript_full.jsonl'))).toBe(false);
+    expect(agy.matches(path.join('conv-1', '.system_generated', 'logs', 'chunks', 'chunk-0.jsonl'))).toBe(false);
+    expect(agy.matches(path.join('conv-1', 'notes.md'))).toBe(false);
   });
 
   it('the Claude Code source takes subagent logs too, and only .jsonl files', () => {
