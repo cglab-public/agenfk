@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { DatabaseSync } from 'node:sqlite';
 import type { TokenEvent, IngestionState } from '@agenfk/core';
 import { parseAgyJsonl, resolveAgyCwd } from '../token-ingestion/parsers/agy';
@@ -201,15 +202,16 @@ describe('resolveAgyCwd & end-to-end ingestion with pricing and card attribution
   });
 
   it('resolves workspace_uris (including URL-encoded spaces) from conversation_summaries.db', () => {
+    const repoPath = path.join(root, 'my repo', 'agenfk');
     const db = new DatabaseSync(path.join(cliDir, 'conversation_summaries.db'));
     db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, workspace_uris TEXT NOT NULL)');
     db.prepare('INSERT INTO conversation_summaries VALUES (?, ?)').run(
       CONV_ID,
-      JSON.stringify(['file:///Users/daniel/my%20repo/agenfk']),
+      JSON.stringify([pathToFileURL(repoPath).href]),
     );
     db.close();
 
-    expect(resolveAgyCwd(transcriptPath, CONV_ID)).toBe('/Users/daniel/my repo/agenfk');
+    expect(resolveAgyCwd(transcriptPath, CONV_ID)).toBe(repoPath);
   });
 
   it('returns undefined gracefully when conversation_summaries.db is absent and retries on later passes', () => {
@@ -221,26 +223,28 @@ describe('resolveAgyCwd & end-to-end ingestion with pricing and card attribution
     expect(e1[0].cwd).toBeUndefined();
 
     // DB appears before the next pass
+    const lateRepo = path.join(root, 'late-repo');
     const db = new DatabaseSync(path.join(cliDir, 'conversation_summaries.db'));
     db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, workspace_uris TEXT NOT NULL)');
     db.prepare('INSERT INTO conversation_summaries VALUES (?, ?)').run(
       CONV_ID,
-      JSON.stringify(['file:///Users/daniel/late-repo']),
+      JSON.stringify([pathToFileURL(lateRepo).href]),
     );
     db.close();
 
     const e2 = parseAgyJsonl(plannerLine({ step_index: 2 }) + '\n', transcriptPath, 200, ctx);
-    expect(e2[0].cwd).toBe('/Users/daniel/late-repo');
+    expect(e2[0].cwd).toBe(lateRepo);
   });
 
   it('ingests agy transcript via defaultIngestionSources, prices gemini-4-neon-medium, and attributes to claimed card', async () => {
     const cardId = 'e83fdf88-a2a0-49e3-bbd3-6a67335affe6';
     const projectId = 'proj-1';
+    const repoRoot = path.join(root, 'repo', 'agenfk');
     const db = new DatabaseSync(path.join(cliDir, 'conversation_summaries.db'));
     db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, workspace_uris TEXT NOT NULL)');
     db.prepare('INSERT INTO conversation_summaries VALUES (?, ?)').run(
       CONV_ID,
-      JSON.stringify(['file:///repo/agenfk']),
+      JSON.stringify([pathToFileURL(repoRoot).href]),
     );
     db.close();
 
@@ -282,7 +286,7 @@ describe('resolveAgyCwd & end-to-end ingestion with pricing and card attribution
       async insertTokenEvent(ev: TokenEvent) { inserted.push(ev); },
       async getIngestionState(p: string) { return states[p] ?? null; },
       async setIngestionState(s: IngestionState) { states[s.sourcePath] = s; },
-      async listProjects() { return [{ id: projectId, projectRoot: '/repo/agenfk' }]; },
+      async listProjects() { return [{ id: projectId, projectRoot: repoRoot }]; },
       async getItem(id: string) { return id === cardId ? { id: cardId, projectId } : null; },
       async listItems() { return [{ id: cardId, projectId }]; },
       async sessionCardAt() { return null; },
@@ -316,7 +320,7 @@ describe('resolveAgyCwd & end-to-end ingestion with pricing and card attribution
     });
 
     expect(written).toBe(2);
-    expect(inserted[0].cwd).toBe('/repo/agenfk');
+    expect(inserted[0].cwd).toBe(repoRoot);
     expect(inserted[0].projectId).toBe(projectId);
     expect(inserted[0].estimatedCostUsd).toBeCloseTo(3);
     // Second turn falls after the workflow_gatekeeper claim and is attributed to cardId
