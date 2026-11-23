@@ -1178,6 +1178,10 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   // A hub that already holds such a pair keeps working without the index.
   try { raw.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users(lower(email))'); }
   catch (e: any) { console.warn(`[HUB] users: emails that differ only in case exist, case-insensitive uniqueness not enforced (${e?.message ?? e})`); }
+  // One row per provider identity, so two first sign-ins for the same subject
+  // cannot both create a member. A hub that already holds a duplicate keeps working without it.
+  try { raw.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_provider_subject ON users(provider, provider_subject) WHERE provider_subject IS NOT NULL AND provider <> 'password'"); }
+  catch (e: any) { console.warn(`[HUB] users: duplicate provider subjects exist, provider subject uniqueness not enforced (${e?.message ?? e})`); }
   // users.join_source: how the row came to be, so a member a first sign-in
   // created keeps answering to the app role (INFRA-463, phase 1a).
   if (!new Set(userCols.map(c => c.name)).has('join_source')) raw.exec("ALTER TABLE users ADD COLUMN join_source TEXT");

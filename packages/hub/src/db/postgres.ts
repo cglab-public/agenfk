@@ -1210,6 +1210,14 @@ async function migrate(adapter: HubDb): Promise<void> {
     try { await adapter.exec(emailIndex); }
     catch (e: any) { console.warn(`[HUB] users: emails that differ only in case exist, case-insensitive uniqueness not enforced (${e?.message ?? e})`); }
   }
+  // One row per provider identity, as in db/sqlite.ts.
+  const subjectIndex = "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_provider_subject ON users (provider, provider_subject) WHERE provider_subject IS NOT NULL AND provider <> 'password'";
+  try { await adapter.exec(subjectIndex); }
+  catch {
+    // Two starts building it together, as for the email index above.
+    try { await adapter.exec(subjectIndex); }
+    catch (e: any) { console.warn(`[HUB] users: duplicate provider subjects exist, provider subject uniqueness not enforced (${e?.message ?? e})`); }
+  }
   // users.join_source, as in db/sqlite.ts.
   const userCols = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='users'"

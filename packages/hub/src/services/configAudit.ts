@@ -100,8 +100,12 @@ export function redactPair(before: unknown, after: unknown): { before: unknown; 
 let seq = 0;
 const auditId = (at: string) => `${at}-${(seq++ % 1e9).toString().padStart(9, '0')}-${randomUUID().slice(0, 8)}`;
 
-/** Appends one row. Never throws into the change it records: a failed write is logged, not fatal. */
-export async function recordAudit(db: DB, e: AuditEntry): Promise<void> {
+/**
+ * Appends one row. By default it never throws into the change it records: a
+ * failed write is logged, not fatal. With `rethrow` the failure surfaces, for a
+ * caller that makes the change and its entry one transaction.
+ */
+export async function recordAudit(db: DB, e: AuditEntry, opts: { rethrow?: boolean } = {}): Promise<void> {
   const { before, after } = redactPair(e.before ?? null, e.after ?? null);
   const at = e.at ?? new Date().toISOString();
   try {
@@ -113,6 +117,7 @@ export async function recordAudit(db: DB, e: AuditEntry): Promise<void> {
         after === null || after === undefined ? null : JSON.stringify(after), e.link ?? null],
     );
   } catch (err) {
+    if (opts.rethrow) throw err;
     console.error(`[HUB] Could not record the audit row for ${e.action}:`, (err as Error).message);
   }
 }
