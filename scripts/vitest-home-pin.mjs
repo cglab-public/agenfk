@@ -18,6 +18,11 @@
  * sandbox HOME into every child's C environ and wraps the run with the
  * home-integrity sentinel.
  *
+ * OUTSIDE THE PIN: git also reads the files that GIT_CONFIG_GLOBAL and
+ * GIT_CONFIG_SYSTEM name, and the system file (/etc/gitconfig). The pin moves
+ * HOME and XDG_CONFIG_HOME only, so a shell that exports either variable
+ * still points git at the developer's file.
+ *
  * The original home is exposed as AGENFK_REAL_HOME for the tests that verify
  * the pin itself (packages/server/src/test/home-isolation.test.ts).
  *
