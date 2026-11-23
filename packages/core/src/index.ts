@@ -32,6 +32,7 @@ export * from './fileCommand';
 export * from './commandPaths';
 export * from './privateFile';
 export * from './hubDeadletter';
+export * from './hubUrl';
 export * from './releaseChannel';
 export * from './commandFacts';
 export * from './airlock';

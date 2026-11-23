@@ -2,7 +2,7 @@
  * Hub discovery (INFRA-463): find the corporate Hub without being told.
  *
  * Sources, in order:
- *   flag (--url) > env (AGENFK_HUB_URL) > managed file (written by MDM)
+ *   env (AGENFK_HUB_URL) > managed file (written by MDM)
  *   > user file (~/.agenfk/hub.json) > DNS TXT _agenfk-hub.<git email domain>
  *
  * A candidate counts only over https and only when GET <url>/healthz answers
@@ -11,6 +11,7 @@
  * readable managed file, a readable user file) is final: if its Hub is
  * refused, discovery stops there, so taking that Hub down cannot steer the
  * login to a lower source. A DNS candidate must sit on the email's domain.
+ * `hub login --url` does not come through here: the flag is taken as given.
  * No source carries a secret: identity still comes from `agenfk hub login`.
  */
 import * as fs from 'fs';
@@ -23,11 +24,10 @@ import axios from 'axios';
 /** Upper bound for every network call discovery makes (DNS and /healthz). */
 export const DISCOVERY_TIMEOUT_MS = 3000;
 
+/** 'flag' is never produced by discoverHub; `hub login --url` records it. */
 export type HubSource = 'flag' | 'env' | 'managed' | 'user' | 'dns';
 
 export interface DiscoveryDeps {
-  /** Value of `--url`, when given. */
-  flagUrl?: string;
   env: Record<string, string | undefined>;
   platform: NodeJS.Platform;
   homedir: () => string;
@@ -168,13 +168,7 @@ export async function discoverHub(partial: Partial<DiscoveryDeps> = {}): Promise
     return null;
   };
 
-  // 1. --url
-  if (deps.flagUrl) {
-    const url = await accept(deps.flagUrl, '--url');
-    if (url) return { url, source: 'flag', reasons };
-  }
-
-  // 2. AGENFK_HUB_URL (empty counts as unset). Final once set.
+  // 1. AGENFK_HUB_URL (empty counts as unset). Final once set.
   const envUrl = deps.env.AGENFK_HUB_URL?.trim();
   if (envUrl) {
     const url = await accept(envUrl, 'AGENFK_HUB_URL');
@@ -183,7 +177,7 @@ export async function discoverHub(partial: Partial<DiscoveryDeps> = {}): Promise
     reasons.push('AGENFK_HUB_URL: not set');
   }
 
-  // 3. Managed file
+  // 2. Managed file
   const managedPath = managedConfigPath(deps.platform, deps.env);
   const managed = await readJson(managedPath);
   if (managed) {
@@ -199,7 +193,7 @@ export async function discoverHub(partial: Partial<DiscoveryDeps> = {}): Promise
     }
   }
 
-  // 4. ~/.agenfk/hub.json
+  // 3. ~/.agenfk/hub.json
   const userPath = path.join(deps.homedir(), '.agenfk', 'hub.json');
   const user = await readJson(userPath);
   if (user) {
@@ -212,7 +206,7 @@ export async function discoverHub(partial: Partial<DiscoveryDeps> = {}): Promise
     }
   }
 
-  // 5. DNS TXT _agenfk-hub.<domain of git user.email>
+  // 4. DNS TXT _agenfk-hub.<domain of git user.email>
   let email: string | null;
   try {
     email = await deps.gitEmail();

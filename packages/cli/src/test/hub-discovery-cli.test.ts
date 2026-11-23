@@ -54,24 +54,27 @@ async function run(args: string[]): Promise<void> {
   await makeProgram().parseAsync(args, { from: 'user' });
 }
 
-/** Every GET healthy; /internal/hub/status answers a quiet outbox. */
-function routeGets(): void {
+/**
+ * Every GET healthy; /internal/hub/status answers a quiet outbox. `pingOrg` is
+ * the orgId /v1/ping reports (a real Hub always reports one).
+ */
+function routeGets(pingOrg?: string): void {
   mockGet.mockImplementation(async (url: string) => {
     if (url.endsWith('/healthz')) return { status: 200, data: { ok: true, service: 'agenfk-hub' } };
-    if (url.endsWith('/v1/ping')) return { status: 200, data: { ok: true } };
+    if (url.endsWith('/v1/ping')) return { status: 200, data: pingOrg === undefined ? { ok: true } : { ok: true, orgId: pingOrg } };
     if (url.includes('/internal/hub/status')) return { status: 200, data: { enabled: true, outboxDepth: 0, orgs: {} } };
     throw new Error(`unexpected GET ${url}`);
   });
 }
 
 /** Device flow approves at once, for whichever hub was contacted. */
-function routeDeviceFlow(): void {
+function routeDeviceFlow(approvedHubUrl: string | undefined = DISCOVERED): void {
   mockPost.mockImplementation(async (url: string) => {
     if (url.endsWith('/hub/device/start')) {
       return { status: 200, data: { deviceCode: 'dc', userCode: 'UC-1', verificationUri: `${DISCOVERED}/hub/device`, interval: 1 } };
     }
     if (url.includes('/hub/device/poll')) {
-      return { status: 200, data: { status: 'approved', token: 'tok-dev', orgId: 'acme', hubUrl: DISCOVERED } };
+      return { status: 200, data: { status: 'approved', token: 'tok-dev', orgId: 'acme', ...(approvedHubUrl === undefined ? {} : { hubUrl: approvedHubUrl }) } };
     }
     if (url.includes('/internal/hub/')) return { status: 200, data: { changed: true, rewritten: 0 } };
     throw new Error(`unexpected POST ${url}`);
@@ -132,7 +135,7 @@ describe('hub login with no --url uses discovery', () => {
 
   it('legacy --token path: pings the discovered hub and records the source', async () => {
     mockDiscover.mockResolvedValue({ url: DISCOVERED, source: 'managed', orgId: 'acme', reasons: [] });
-    routeGets();
+    routeGets('acme');
     mockPost.mockResolvedValue({ status: 200, data: { rewritten: 0, changed: false } });
     await run(['hub', 'login', '--token', 'tok', '--org', 'acme']);
     expect(mockGet.mock.calls.map(c => String(c[0]))).toContain(`${DISCOVERED}/v1/ping`);
@@ -169,6 +172,84 @@ describe('hub login with no --url uses discovery', () => {
     expect(mockDiscover).not.toHaveBeenCalled();
     expect(JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8')))
       .toEqual({ url: 'https://explicit.example.com', token: 'tok', orgId: 'acme', source: 'flag' });
+  });
+});
+
+/** Review of PR #414, finding 2: the org a discovered source names is checked against the Hub's own answer. */
+describe('hub login --token with a discovered org checks it against /v1/ping', () => {
+  const written = () => fs.existsSync(HUB_CONFIG);
+
+  it('refuses, and writes no hub.json, when the Hub answers for another org', async () => {
+    mockDiscover.mockResolvedValue({ url: DISCOVERED, source: 'managed', orgId: 'acme', reasons: [] });
+    routeGets('other-org');
+    mockPost.mockResolvedValue({ status: 200, data: { rewritten: 0, changed: false } });
+    await expect(run(['hub', 'login', '--token', 'tok'])).rejects.toThrow('exit 1');
+    expect(out(errSpy)).toContain('Refusing login: hub reports orgId=other-org but the discovered source (managed) says orgId=acme.');
+    expect(written()).toBe(false);
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it('refuses a Hub whose ping carries no orgId, as hub repoint does', async () => {
+    mockDiscover.mockResolvedValue({ url: DISCOVERED, source: 'managed', orgId: 'acme', reasons: [] });
+    routeGets();
+    mockPost.mockResolvedValue({ status: 200, data: { rewritten: 0, changed: false } });
+    await expect(run(['hub', 'login', '--token', 'tok'])).rejects.toThrow('exit 1');
+    expect(out(errSpy)).toContain('hub reports orgId=undefined');
+    expect(written()).toBe(false);
+  });
+
+  it('an explicit --org is not checked against the Hub (today\'s behaviour)', async () => {
+    mockDiscover.mockResolvedValue({ url: DISCOVERED, source: 'managed', orgId: 'acme', reasons: [] });
+    routeGets('other-org');
+    mockPost.mockResolvedValue({ status: 200, data: { rewritten: 0, changed: false } });
+    await run(['hub', 'login', '--token', 'tok', '--org', 'typed']);
+    expect(JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'))).toMatchObject({ orgId: 'typed' });
+  });
+
+  it('proceeds when the Hub answers for the same org', async () => {
+    mockDiscover.mockResolvedValue({ url: DISCOVERED, source: 'managed', orgId: 'acme', reasons: [] });
+    routeGets('acme');
+    mockPost.mockResolvedValue({ status: 200, data: { rewritten: 0, changed: false } });
+    await run(['hub', 'login', '--token', 'tok']);
+    expect(JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'))).toMatchObject({ orgId: 'acme', source: 'managed' });
+  });
+
+  it('proceeds when the discovered source names no org', async () => {
+    mockDiscover.mockResolvedValue({ url: DISCOVERED, source: 'dns', reasons: [] });
+    routeGets('whatever-the-hub-says');
+    mockPost.mockResolvedValue({ status: 200, data: { rewritten: 0, changed: false } });
+    await run(['hub', 'login', '--token', 'tok', '--org', 'acme']);
+    expect(JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'))).toMatchObject({ orgId: 'acme', source: 'dns' });
+  });
+});
+
+/** Review of PR #414, finding 5: the source stays true only while the URL does (as join does). */
+describe('hub login device flow: source follows the approved hubUrl', () => {
+  const saved = () => JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'));
+
+  it('records no source when the Hub approves under another hubUrl', async () => {
+    mockDiscover.mockResolvedValue({ url: DISCOVERED, source: 'dns', orgId: 'acme', reasons: [] });
+    routeGets();
+    routeDeviceFlow('https://other.acme.com');
+    await run(['hub', 'login', '--no-open']);
+    expect(saved().url).toBe('https://other.acme.com');
+    expect(saved()).not.toHaveProperty('source');
+  });
+
+  it('keeps the source when the approved hubUrl is the discovered one, with a trailing slash', async () => {
+    mockDiscover.mockResolvedValue({ url: DISCOVERED, source: 'dns', orgId: 'acme', reasons: [] });
+    routeGets();
+    routeDeviceFlow(`${DISCOVERED}/`);
+    await run(['hub', 'login', '--no-open']);
+    expect(saved()).toMatchObject({ url: DISCOVERED, source: 'dns' });
+  });
+
+  it('keeps the source when the Hub names no hubUrl', async () => {
+    mockDiscover.mockResolvedValue({ url: DISCOVERED, source: 'managed', orgId: 'acme', reasons: [] });
+    routeGets();
+    routeDeviceFlow(undefined);
+    await run(['hub', 'login', '--no-open']);
+    expect(saved()).toMatchObject({ url: DISCOVERED, source: 'managed' });
   });
 });
 
@@ -225,7 +306,7 @@ describe('hub.json source across the commands that rewrite it', () => {
 
   it('--token without --org uses the org the discovered source names', async () => {
     mockDiscover.mockResolvedValue({ url: DISCOVERED, source: 'managed', orgId: 'acme-from-mdm', reasons: [] });
-    routeGets();
+    routeGets('acme-from-mdm');
     mockPost.mockResolvedValue({ status: 200, data: { rewritten: 0, changed: false } });
     await run(['hub', 'login', '--token', 'tok']);
     expect(saved()).toMatchObject({ url: DISCOVERED, orgId: 'acme-from-mdm', source: 'managed' });
@@ -252,6 +333,19 @@ describe('hub.json source across the commands that rewrite it', () => {
     });
     await run(['hub', 'join', 'invite-token']).catch(() => { /* exit after write is fine */ });
     expect(saved()).toMatchObject({ url: DISCOVERED, token: 'tok-new', source: 'dns' });
+  });
+
+  it('repoint to another URL drops the recorded source, which named the old URL', async () => {
+    seed({ url: DISCOVERED, token: 'tok-12345678', orgId: 'acme', source: 'managed' });
+    mockGet.mockImplementation(async (url: string) => {
+      if (url.endsWith('/healthz')) return { status: 200, data: { ok: true, service: 'agenfk-hub' } };
+      if (url.endsWith('/v1/ping')) return { status: 200, data: { ok: true, orgId: 'acme' } };
+      return { status: 200, data: {} };
+    });
+    mockPost.mockResolvedValue({ status: 200, data: { changed: true, rewritten: 0 } });
+    await run(['hub', 'repoint', '--url', 'https://new.acme.com', '--no-restart']).catch(() => { /* exit after write is fine */ });
+    expect(saved().url).toBe('https://new.acme.com');
+    expect(saved()).not.toHaveProperty('source');
   });
 
   it('repoint keeps the recorded source', async () => {

@@ -22,11 +22,27 @@ afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
 const read = () => JSON.parse(fs.readFileSync(hubConfigPath(), 'utf8'));
 
 describe('writeHubConfigFile', () => {
-  it('keeps the source recorded in the file it replaces', () => {
+  it('keeps the source recorded in the file it replaces when the URL is unchanged', () => {
+    fs.mkdirSync(path.dirname(hubConfigPath()), { recursive: true });
+    fs.writeFileSync(hubConfigPath(), JSON.stringify({ url: 'https://acme.com', token: 't', orgId: 'o', source: 'dns' }));
+    writeHubConfigFile({ url: 'https://acme.com', token: 't2', orgId: 'o' });
+    expect(read()).toEqual({ url: 'https://acme.com', token: 't2', orgId: 'o', source: 'dns' });
+  });
+
+  // Changed contract (PR #414 review, finding 6): the source names where the
+  // URL was learnt, so a new URL has no recorded source.
+  it('drops the source when the rewrite changes the URL', () => {
     fs.mkdirSync(path.dirname(hubConfigPath()), { recursive: true });
     fs.writeFileSync(hubConfigPath(), JSON.stringify({ url: 'https://old.acme.com', token: 't', orgId: 'o', source: 'dns' }));
     writeHubConfigFile({ url: 'https://new.acme.com', token: 't2', orgId: 'o' });
-    expect(read()).toEqual({ url: 'https://new.acme.com', token: 't2', orgId: 'o', source: 'dns' });
+    expect(read()).toEqual({ url: 'https://new.acme.com', token: 't2', orgId: 'o' });
+  });
+
+  it('rewrites a hand-damaged file whose url is not a string, and drops its source', () => {
+    fs.mkdirSync(path.dirname(hubConfigPath()), { recursive: true });
+    fs.writeFileSync(hubConfigPath(), JSON.stringify({ url: 123, token: 't', orgId: 'o', source: 'dns' }));
+    expect(() => writeHubConfigFile({ url: 'https://new.acme.com', token: 't2', orgId: 'o' })).not.toThrow();
+    expect(read()).toEqual({ url: 'https://new.acme.com', token: 't2', orgId: 'o' });
   });
 
   it('writes no source when there was no file, or the file had none', () => {

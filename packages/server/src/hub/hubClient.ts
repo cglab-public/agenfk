@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { HubEvent } from '@agenfk/core';
+import { HubEvent, sameHubUrl } from '@agenfk/core';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { HubConfig, RecordEventInput } from './types.js';
 import { resolveActor } from './identity.js';
@@ -44,15 +44,16 @@ export function hubConfirmedAbsent(): boolean {
 
 /**
  * Rewrite hub.json for the server (an admin repoint campaign). It keeps the
- * `source` the CLI recorded (INFRA-463): a repoint moves the URL, not where
- * the URL was first learnt, and `agenfk hub status` reports that source.
+ * `source` the CLI recorded (INFRA-463) while the URL stays the same one: a new
+ * URL was not learnt from that source, so it drops it.
  */
 export function writeHubConfigFile(cfg: HubConfig): void {
   const target = hubConfigPath();
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  let source: unknown;
-  try { source = JSON.parse(fs.readFileSync(target, 'utf8'))?.source; } catch { /* no prior file */ }
-  const out = typeof source === 'string' ? { ...cfg, source } : cfg;
+  let prior: any;
+  try { prior = JSON.parse(fs.readFileSync(target, 'utf8')); } catch { /* no prior file */ }
+  const out = typeof prior?.source === 'string' && sameHubUrl(prior.url, cfg.url)
+    ? { ...cfg, source: prior.source } : cfg;
   fs.writeFileSync(target, JSON.stringify(out, null, 2), { mode: 0o600 });
   try { fs.chmodSync(target, 0o600); } catch { /* best effort */ }
 }

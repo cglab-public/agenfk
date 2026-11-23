@@ -1,8 +1,8 @@
 /**
  * Story 76da75ea (INFRA-463): the CLI finds the Hub without being told.
  *
- * discoverHub() walks five sources, first match wins:
- *   flag (--url) > env (AGENFK_HUB_URL) > managed file (MDM) > ~/.agenfk/hub.json
+ * discoverHub() walks four sources, first match wins:
+ *   env (AGENFK_HUB_URL) > managed file (MDM) > ~/.agenfk/hub.json
  *   > DNS TXT _agenfk-hub.<git email domain>
  * A candidate counts only over https and only when GET <url>/healthz answers
  * service=agenfk-hub. A malformed source is reported in `reasons` and skipped,
@@ -12,6 +12,7 @@
  * real filesystem, /etc, the home directory, DNS or the network.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as path from 'path';
 import {
   discoverHub,
   managedConfigPath,
@@ -22,7 +23,8 @@ import {
 
 const HOME = '/home/dev';
 const LINUX_MANAGED = '/etc/agenfk/managed.json';
-const USER_FILE = '/home/dev/.agenfk/hub.json';
+// discoverHub builds this with path.join, so the key must follow the host's separator.
+const USER_FILE = path.join(HOME, '.agenfk', 'hub.json');
 const TXT_NAME = '_agenfk-hub.acme.com';
 
 function enoent(p: string): Error {
@@ -35,7 +37,6 @@ function enoent(p: string): Error {
  * record list resolveTxt returns per name (node's string[][] shape).
  */
 function fakeDeps(opts: {
-  flagUrl?: string;
   env?: Record<string, string | undefined>;
   platform?: NodeJS.Platform;
   files?: Record<string, string>;
@@ -50,7 +51,6 @@ function fakeDeps(opts: {
   const healthy = new Set(opts.healthy ?? []);
   return {
     calls,
-    flagUrl: opts.flagUrl,
     env: opts.env ?? {},
     platform: opts.platform ?? 'linux',
     homedir: () => HOME,
@@ -85,7 +85,6 @@ afterEach(() => {
 
 describe('precedence: first healthy source wins, in the order the card fixes', () => {
   const ALL = {
-    flagUrl: 'https://flag.example.com',
     env: { AGENFK_HUB_URL: 'https://env.example.com' },
     files: {
       [LINUX_MANAGED]: managed({ hubUrl: 'https://managed.example.com', orgId: 'org-managed' }),
@@ -94,35 +93,29 @@ describe('precedence: first healthy source wins, in the order the card fixes', (
     gitEmail: 'dev@acme.com',
     txt: { [TXT_NAME]: [['v=agenfk1; url=https://hub.acme.com; org=org-dns']] },
     healthy: [
-      'https://flag.example.com', 'https://env.example.com', 'https://managed.example.com',
+      'https://env.example.com', 'https://managed.example.com',
       'https://user.example.com', 'https://hub.acme.com',
     ],
   };
 
-  it('the --url flag beats every other source', async () => {
-    const deps = fakeDeps(ALL);
-    const r = await discoverHub(deps);
-    expect(r).toMatchObject({ url: 'https://flag.example.com', source: 'flag' });
-  });
-
-  it('AGENFK_HUB_URL wins when there is no flag', async () => {
-    const r = await discoverHub(fakeDeps({ ...ALL, flagUrl: undefined }));
+  it('AGENFK_HUB_URL wins over the managed file, the user file and DNS', async () => {
+    const r = await discoverHub(fakeDeps(ALL));
     expect(r).toMatchObject({ url: 'https://env.example.com', source: 'env' });
   });
 
   it('the managed file wins over the user file and DNS', async () => {
-    const r = await discoverHub(fakeDeps({ ...ALL, flagUrl: undefined, env: {} }));
+    const r = await discoverHub(fakeDeps({ ...ALL, env: {} }));
     expect(r).toMatchObject({ url: 'https://managed.example.com', source: 'managed', orgId: 'org-managed' });
   });
 
   it('~/.agenfk/hub.json wins over DNS', async () => {
     const files = { [USER_FILE]: ALL.files[USER_FILE] };
-    const r = await discoverHub(fakeDeps({ ...ALL, flagUrl: undefined, env: {}, files }));
+    const r = await discoverHub(fakeDeps({ ...ALL, env: {}, files }));
     expect(r).toMatchObject({ url: 'https://user.example.com', source: 'user' });
   });
 
   it('DNS is the last resort', async () => {
-    const r = await discoverHub(fakeDeps({ ...ALL, flagUrl: undefined, env: {}, files: {} }));
+    const r = await discoverHub(fakeDeps({ ...ALL, env: {}, files: {} }));
     expect(r).toMatchObject({ url: 'https://hub.acme.com', source: 'dns', orgId: 'org-dns' });
   });
 
@@ -136,7 +129,7 @@ describe('precedence: first healthy source wins, in the order the card fixes', (
   it('a higher source that matched means lower sources are not probed (no needless network)', async () => {
     const deps = fakeDeps(ALL);
     await discoverHub(deps);
-    expect(deps.calls.health).toEqual(['https://flag.example.com/healthz']);
+    expect(deps.calls.health).toEqual(['https://env.example.com/healthz']);
     expect(deps.calls.txt).toEqual([]);
   });
 
@@ -149,9 +142,18 @@ describe('precedence: first healthy source wins, in the order the card fixes', (
     expect(r).toMatchObject({ url: 'https://user.example.com', source: 'user' });
   });
 
+});
+
+describe('accept(): normalising what a source names', () => {
   it('strips a trailing slash from the accepted URL', async () => {
-    const r = await discoverHub(fakeDeps({ flagUrl: 'https://flag.example.com/', healthy: ['https://flag.example.com'] }));
-    expect(r).toMatchObject({ url: 'https://flag.example.com', source: 'flag' });
+    const r = await discoverHub(fakeDeps({ env: { AGENFK_HUB_URL: 'https://env.example.com/' }, healthy: ['https://env.example.com'] }));
+    expect(r).toMatchObject({ url: 'https://env.example.com', source: 'env' });
+  });
+
+  it('a non-URL value is refused, not thrown', async () => {
+    const r = await discoverHub(fakeDeps({ env: { AGENFK_HUB_URL: 'hub.acme.com' } }));
+    expect(r.url).toBeNull();
+    expect(r.reasons.some(x => /is not a URL/.test(x))).toBe(true);
   });
 });
 
@@ -410,7 +412,6 @@ describe('https only', () => {
   });
 
   it.each([
-    ['flag', { flagUrl: 'http://flag.example.com', healthy: ['http://flag.example.com'] }],
     ['env', { env: { AGENFK_HUB_URL: 'http://env.example.com' }, healthy: ['http://env.example.com'] }],
     ['managed', { files: { [LINUX_MANAGED]: managed({ hubUrl: 'http://managed.example.com' }) }, healthy: ['http://managed.example.com'] }],
     ['user', { files: { [USER_FILE]: userFile('http://user.example.com') }, healthy: ['http://user.example.com'] }],
@@ -438,20 +439,16 @@ describe('https only', () => {
     expect(deps.calls.read).not.toContain(USER_FILE);
   });
 
-  it('a non-URL value is refused, not thrown', async () => {
-    const r = await discoverHub(fakeDeps({ flagUrl: 'hub.acme.com' }));
-    expect(r.url).toBeNull();
-  });
 });
 
 describe('health check: /healthz must answer service=agenfk-hub', () => {
   it('probes <url>/healthz with a timeout no longer than 3 s', async () => {
     const seen: number[] = [];
-    const deps = fakeDeps({ flagUrl: 'https://flag.example.com', healthy: ['https://flag.example.com'] });
+    const deps = fakeDeps({ env: { AGENFK_HUB_URL: 'https://env.example.com' }, healthy: ['https://env.example.com'] });
     const get = deps.httpGet;
     deps.httpGet = async (url, o) => { seen.push(o.timeoutMs); return get(url, o); };
     await discoverHub(deps);
-    expect(deps.calls.health).toEqual(['https://flag.example.com/healthz']);
+    expect(deps.calls.health).toEqual(['https://env.example.com/healthz']);
     expect(seen).toHaveLength(1);
     expect(seen[0]).toBeGreaterThan(0);
     expect(seen[0]).toBeLessThanOrEqual(3000);
@@ -481,7 +478,7 @@ describe('health check: /healthz must answer service=agenfk-hub', () => {
   it('a 3xx or 4xx /healthz is refused even when it claims service=agenfk-hub', async () => {
     for (const status of [302, 404]) {
       const r = await discoverHub(fakeDeps({
-        flagUrl: 'https://flag.example.com',
+        env: { AGENFK_HUB_URL: 'https://env.example.com' },
         health: async () => ({ status, data: { service: 'agenfk-hub' } }),
       }));
       expect(r.url).toBeNull();
@@ -490,23 +487,25 @@ describe('health check: /healthz must answer service=agenfk-hub', () => {
 
   it('a non-200 /healthz is refused', async () => {
     const r = await discoverHub(fakeDeps({
-      flagUrl: 'https://flag.example.com',
+      env: { AGENFK_HUB_URL: 'https://env.example.com' },
       health: async () => ({ status: 503, data: { service: 'agenfk-hub' } }),
     }));
     expect(r.url).toBeNull();
   });
 
-  it('an unreachable /healthz is refused, reported, and the next source is tried', async () => {
-    const r = await discoverHub(fakeDeps({
-      flagUrl: 'https://down.example.com',
-      env: { AGENFK_HUB_URL: 'https://env.example.com' },
+  it('an unreachable /healthz is refused and reported, and the env URL that named it stops discovery', async () => {
+    const deps = fakeDeps({
+      env: { AGENFK_HUB_URL: 'https://down.example.com' },
+      files: { [USER_FILE]: userFile('https://user.example.com') },
       health: async (url) => {
         if (url.startsWith('https://down.example.com')) throw new Error('ECONNREFUSED');
         return { status: 200, data: { service: 'agenfk-hub' } };
       },
-    }));
-    expect(r).toMatchObject({ url: 'https://env.example.com', source: 'env' });
-    expect(r.reasons.some(x => x.includes('https://down.example.com'))).toBe(true);
+    });
+    const r = await discoverHub(deps);
+    expect(r.url).toBeNull();
+    expect(r.reasons.some(x => x.includes('https://down.example.com') && /ECONNREFUSED/.test(x))).toBe(true);
+    expect(deps.calls.read).not.toContain(USER_FILE);
   });
 });
 
@@ -525,18 +524,19 @@ describe('no network call blocks longer than 3 s', () => {
     expect(r.reasons.some(x => x.includes(TXT_NAME) && /time(d)? ?out/i.test(x))).toBe(true);
   });
 
-  it('a health probe that never answers is abandoned after 3 s and the next source is tried', async () => {
+  it('a health probe that never answers is abandoned after 3 s and reported', async () => {
     vi.useFakeTimers();
     const deps = fakeDeps({
-      flagUrl: 'https://hang.example.com',
-      env: { AGENFK_HUB_URL: 'https://env.example.com' },
-      health: (url) => url.startsWith('https://hang.example.com')
-        ? new Promise(() => { /* never */ })
-        : Promise.resolve({ status: 200, data: { service: 'agenfk-hub' } }),
+      env: { AGENFK_HUB_URL: 'https://hang.example.com' },
+      health: () => new Promise(() => { /* never */ }),
     });
-    const p = discoverHub(deps);
-    await vi.advanceTimersByTimeAsync(3000);
+    let settled = false;
+    const p = discoverHub(deps).then((r) => { settled = true; return r; });
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
     const r = await p;
-    expect(r).toMatchObject({ url: 'https://env.example.com', source: 'env' });
+    expect(r.url).toBeNull();
+    expect(r.reasons.some(x => x.includes('https://hang.example.com') && /time(d)? ?out/i.test(x))).toBe(true);
   });
 });

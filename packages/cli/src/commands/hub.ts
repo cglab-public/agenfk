@@ -13,6 +13,7 @@ import {
   parseDeadletterLines,
   deadletterReasonOf,
   deadletterIndicator,
+  sameHubUrl,
   indicatorHint,
   refusalHint,
   validateRequeueFilters,
@@ -527,7 +528,10 @@ export function registerHubCommands(program: Command): void {
 
       // Legacy path — explicit token + org, no browser.
       if (opts.token) {
-        if (!opts.org && discoveredOrg) opts.org = discoveredOrg;
+        // Only an org taken from discovery is checked against the Hub below;
+        // one typed with --org stays the operator's word, as before.
+        const orgFromDiscovery = !opts.org && !!discoveredOrg;
+        if (orgFromDiscovery) opts.org = discoveredOrg;
         if (!opts.org) {
           console.error(chalk.red('--org is required when using --token.'));
           process.exit(1);
@@ -537,14 +541,22 @@ export function registerHubCommands(program: Command): void {
         if (!await isHubEndpoint(cfg.url, 'hub login')) {
           process.exit(1);
         }
+        let ping: any;
         try {
-          await axios.get(`${cfg.url}/v1/ping`, {
+          ping = (await axios.get(`${cfg.url}/v1/ping`, {
             headers: { Authorization: `Bearer ${cfg.token}`, 'X-Installation-Id': 'cli-login' },
             timeout: 10_000,
-          });
+          })).data;
         } catch (e: any) {
           console.error(chalk.red(`Hub /v1/ping failed: ${e?.response?.status ?? ''} ${e?.message}`));
           console.error(chalk.gray('Refusing to write hub.json — fix the URL/token and try again.'));
+          process.exit(1);
+        }
+        // Same rule as `hub repoint`: the Hub's own answer decides, so an older
+        // Hub whose ping carries no orgId is refused too.
+        if (orgFromDiscovery && ping?.orgId !== cfg.orgId) {
+          console.error(chalk.red(`Refusing login: hub reports orgId=${ping?.orgId} but the discovered source (${source}) says orgId=${cfg.orgId}.`));
+          console.error(chalk.gray('  Nothing was written. Confirm the org with your administrator, or pass --org.'));
           process.exit(1);
         }
         writeHubConfig(cfg);
@@ -628,7 +640,9 @@ export function registerHubCommands(program: Command): void {
       // hub returning hubUrl=evil.example would otherwise persist an
       // unverified endpoint and start streaming this org's events and
       // token there (CGLAB-117 story 4).
-      const cfg: HubConfig = { url: String(approved.hubUrl ?? url).replace(/\/$/, ''), token: String(approved.token), orgId: String(approved.orgId), source };
+      const cfg: HubConfig = { url: String(approved.hubUrl ?? url).replace(/\/$/, ''), token: String(approved.token), orgId: String(approved.orgId) };
+      // The recorded source only stays true while the URL does (as in join).
+      if (sameHubUrl(cfg.url, url)) cfg.source = source;
       if (!await isHubEndpoint(cfg.url, 'hub login')) {
         process.exit(1);
       }
@@ -681,7 +695,7 @@ export function registerHubCommands(program: Command): void {
           );
           const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
           // The recorded source only stays true while the URL does.
-          if (existing?.source && existing.url === cfg.url) cfg.source = existing.source;
+          if (existing?.source && sameHubUrl(existing.url, cfg.url)) cfg.source = existing.source;
           // Same gate as login: the redeemed response's hubUrl is
           // server-supplied and must identify as agenfk-hub BEFORE the
           // joined token is persisted against it (CGLAB-117 story 4).
@@ -845,7 +859,8 @@ export function registerHubCommands(program: Command): void {
         token: opts.token ? String(opts.token) : existing.token,
         orgId: opts.orgId ? String(opts.orgId) : existing.orgId,
       };
-      if (existing.source) candidate.source = existing.source;
+      // The source names where the old URL was learnt: a new URL has none.
+      if (existing.source && sameHubUrl(existing.url, candidate.url)) candidate.source = existing.source;
       if (candidate.url === existing.url && candidate.orgId === existing.orgId && candidate.token === existing.token) {
         console.log(chalk.gray('Nothing to change — supply at least one of --url, --org-id, --token.'));
         return;
