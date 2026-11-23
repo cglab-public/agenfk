@@ -695,7 +695,7 @@ export function AdminUsers() {
                         onClick={async () => {
                           if (await confirm({
                             title: `Reset ${u.email}'s sign-in?`,
-                            body: `Their account is unlinked from its ${u.provider} identity. Their next sign-in links it again, to whichever identity carries this email then. Any password stored on the account is removed. Role and history stay; existing sessions do too, so deactivate the user first if they have left.`,
+                            body: `Their account is unlinked from its ${u.provider} identity. Their next sign-in links it again, to whichever identity carries this email then, but only while the provider is switched on and the address passes the allowlist; otherwise they cannot sign in until that changes. Any password stored on the account is removed. Role and history stay; existing sessions do too, so deactivate the user first if they have left.`,
                             confirmLabel: 'Reset sign-in',
                           })) update.mutate({ id: u.id, resetSignIn: true });
                         }}

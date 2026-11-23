@@ -86,6 +86,27 @@ describe('Entra tenant id', () => {
     expect(r.body.entra.tenantId).toBe(TENANT);
   });
 
+  it('clears the stored tenant when the tenant id is null', async () => {
+    await put({ entra: { tenantId: TENANT } });
+    const r = await put({ entra: { tenantId: null } });
+    expect(r.status).toBe(200);
+    const row = await ctx.db.get<any>('SELECT entra_tenant_id FROM auth_config WHERE org_id = ?', ['org']);
+    expect(row.entra_tenant_id).toBeNull();
+  });
+
+  it('refuses a null tenant id that would leave Entra, the only method, unusable', async () => {
+    // Password sign-in goes off, so log in once and reuse the session.
+    const cookie = await loginAs(app, 'admin@acme.com', 'longenough1');
+    const putAs = (body: any) => supertest(server).put('/v1/admin/auth-config').set('Cookie', cookie).send(body);
+    const on = await putAs({ passwordEnabled: false, entraEnabled: true, entra: { tenantId: TENANT, clientId: 'app', clientSecret: 'shh' } });
+    expect(on.status).toBe(200);
+    const r = await putAs({ entra: { tenantId: null } });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/no admin/i);
+    const row = await ctx.db.get<any>('SELECT entra_tenant_id FROM auth_config WHERE org_id = ?', ['org']);
+    expect(row.entra_tenant_id).toBe(TENANT);
+  });
+
   it('still accepts clearing the tenant id', async () => {
     const r = await put({ entra: { tenantId: '' } });
     expect(r.status).toBe(200);

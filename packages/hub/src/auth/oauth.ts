@@ -147,6 +147,9 @@ export async function findInvitedSsoUser(
     return { user: existing };
   }
 
+  // Not scoped to orgId on purpose: users.email is UNIQUE across the whole
+  // table and the hub creates one org, so an org filter adds nothing. The
+  // subject lookup above is unscoped because the hub creates one org.
   const byEmail = await db.get<UserRow>(
     'SELECT * FROM users WHERE lower(email) = lower(?)',
     [identity.email],
@@ -176,12 +179,12 @@ export async function findInvitedSsoUser(
   await recordAudit(db, {
     orgId,
     actor: { userId: byEmail.id, email: byEmail.email },
-    source: 'board',
+    source: 'sso',
     ip,
     area: 'users',
     action: 'user.sso_bind',
     target: `user ${byEmail.email}`,
-    before: { provider: byEmail.provider, providerSubject: null },
+    before: { provider: byEmail.provider, providerSubject: byEmail.provider_subject ?? null },
     after: { provider: identity.provider, providerSubject: identity.subject },
   });
   return { user: { ...byEmail, provider: identity.provider, provider_subject: identity.subject, name: nextName } };

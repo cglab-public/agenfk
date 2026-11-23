@@ -56,6 +56,15 @@ describe('Reset sign-in in the Users table', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/v1/admin/users/u-sso', { resetSignIn: true }));
   });
 
+  it('says the next sign-in needs the provider on and the address allowed', async () => {
+    mount();
+    const row = (await screen.findByText('bob@acme.com')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: /reset sign-in for bob@acme.com/i }));
+    const said = await answerConfirm(false);
+    expect(said).toMatch(/provider is switched on/i);
+    expect(said).toMatch(/allowlist/i);
+  });
+
   it('sends nothing when the admin cancels', async () => {
     mount();
     const row = (await screen.findByText('bob@acme.com')).closest('tr') as HTMLElement;

@@ -41,3 +41,41 @@ describe('findInvitedSsoUser when the conditional bind loses a race', () => {
     expect(r).toEqual({ refused: 'bound-elsewhere' });
   });
 });
+
+/** A DB whose bind UPDATE wins, capturing the config_audit insert. */
+function bindingDb(row: Record<string, unknown>) {
+  const audits: any[][] = [];
+  return {
+    audits,
+    db: {
+      get: async (sql: string) => (sql.includes('lower(email)') ? row : undefined),
+      run: async (sql: string, params: any[]) => {
+        if (sql.includes('INSERT INTO config_audit')) { audits.push(params); return { changes: 1 }; }
+        return { changes: 1 };
+      },
+      all: async () => [],
+    } as any,
+  };
+}
+
+describe('findInvitedSsoUser audit of the bind', () => {
+  // A row recovered to a password account by an older build still carries the
+  // subject it had; the audit must say which identity the bind replaced.
+  it('records the subject a recovered row still carried in before_json', async () => {
+    const { db, audits } = bindingDb({ ...invited, provider: 'password', provider_subject: 'oid-old' });
+    const r = await findInvitedSsoUser(db, 'org', { provider: 'entra', subject: 'oid-new', email: 'bob@acme.com' });
+    expect('user' in r).toBe(true);
+    expect(audits).toHaveLength(1);
+    // [id, org, at, userId, email, source, ip, area, action, target, before_json, after_json, link]
+    expect(audits[0][8]).toBe('user.sso_bind');
+    expect(JSON.parse(audits[0][10])).toEqual({ provider: 'password', providerSubject: 'oid-old' });
+    expect(JSON.parse(audits[0][11])).toEqual({ provider: 'entra', providerSubject: 'oid-new' });
+  });
+
+  // The bind comes from the SSO callback, not from a person on the board.
+  it('records the bind as coming from sso, not the board', async () => {
+    const { db, audits } = bindingDb({ ...invited });
+    await findInvitedSsoUser(db, 'org', { provider: 'entra', subject: 'oid-new', email: 'bob@acme.com' });
+    expect(audits[0][5]).toBe('sso');
+  });
+});

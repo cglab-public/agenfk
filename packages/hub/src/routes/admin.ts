@@ -259,7 +259,8 @@ export function adminRouter(ctx: HubServerContext): Router {
       if ('error' in domains) return res.status(400).json({ error: domains.error });
       setField('google_hosted_domains', JSON.stringify(domains.list));
     }
-    if (b.entra?.tenantId !== undefined && b.entra?.tenantId !== null) {
+    if (b.entra?.tenantId === null) setField('entra_tenant_id', null);
+    else if (b.entra?.tenantId !== undefined) {
       if (typeof b.entra.tenantId !== 'string') return res.status(400).json({ error: 'The Entra tenant must be text' });
       const tenant = b.entra.tenantId.trim();
       if (tenant && isEntraTenantAlias(tenant)) return res.status(400).json({ error: ENTRA_ALIAS_REFUSAL });
