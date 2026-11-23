@@ -6336,7 +6336,7 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
 
 app.get("/token-events", asyncHandler(async (req: any, res: any) => {
   const { itemId, projectId, client, since, until, limit } = req.query as Record<string, string | undefined>;
-  const ALLOWED_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi']);
+  const ALLOWED_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi', 'agy']);
   if (client && !ALLOWED_CLIENTS.has(client)) {
     return res.status(400).json({ error: `Invalid client '${client}'. Must be one of: ${[...ALLOWED_CLIENTS].join(', ')}` });
   }
@@ -6431,7 +6431,7 @@ app.post("/active-work", asyncHandler(async (req: any, res: any) => {
  * card (handleValidate below). Only clients whose session logs are ingested
  * mean anything here; the id is a plain identifier, never a path.
  */
-const SESSION_CARD_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi']);
+const SESSION_CARD_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi', 'agy']);
 const SESSION_CARD_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 /** Why a (client, session) pair cannot go in the journal, or null when it can. */

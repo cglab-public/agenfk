@@ -28,7 +28,8 @@ export type TokenClient =
   | 'gemini'
   | 'cursor'
   | 'opencode'
-  | 'pi';
+  | 'pi'
+  | 'agy';
 
 /**
  * The agents a terminal can be opened with.

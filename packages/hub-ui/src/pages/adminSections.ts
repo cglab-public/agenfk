@@ -5,7 +5,7 @@
 import type { LucideIcon } from 'lucide-react';
 import { ShieldCheck, KeyRound, Users, GitBranch, ArrowUpCircle, Server, ArrowRightLeft, UserCheck, Tags, Ticket, Building2, ScrollText, FolderGit2, ShieldAlert } from 'lucide-react';
 
-export interface AdminSection { to: string; label: string; icon: LucideIcon }
+export interface AdminSection { to: string; label: string; icon: LucideIcon; badge?: string }
 export interface AdminGroup { id: string; label: string; sections: AdminSection[] }
 
 export const ADMIN_GROUPS: AdminGroup[] = [
@@ -27,7 +27,7 @@ export const ADMIN_GROUPS: AdminGroup[] = [
       { to: 'upgrades', label: 'Upgrades', icon: ArrowUpCircle },
       { to: 'flows', label: 'Flows', icon: GitBranch },
       { to: 'repos', label: 'Repositories', icon: FolderGit2 },
-      { to: 'airlock', label: 'Airlock', icon: ShieldAlert },
+      { to: 'airlock', label: 'Airlock', icon: ShieldAlert, badge: 'Preview' },
       { to: 'models', label: 'Models', icon: Tags },
     ],
   },
