@@ -80,6 +80,7 @@ beforeAll(async () => {
     })) as never,
     resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
     emit: (_windowId, channel) => { sent.add(channel); },
+    killTree: () => {},
   });
   await registry.spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
   push('\u001b]0;⣾ Editing a file\u0007hello');
