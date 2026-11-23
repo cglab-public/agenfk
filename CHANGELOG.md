@@ -2,6 +2,16 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.1.0-beta.23] — 2026-11-23
+
+Beta, cumulative over 2.1.0-beta.22: everything in 2.1.0-beta.22, plus the changes below.
+
+**Hub**
+
+- **Filter dropdowns are no longer cut off** (#405, #406). The Project (git remote) dropdown on Usage, Org, the user
+  page, PR overview and Flow adherence was clipped at the bottom of the filter panel, so only the first project
+  showed. It now opens over the content below, with an opaque background.
+
 ## [2.1.0-beta.22] — 2026-11-20
 
 Beta, cumulative over 2.1.0-beta.21: everything in 2.1.0-beta.21, plus the changes below.
