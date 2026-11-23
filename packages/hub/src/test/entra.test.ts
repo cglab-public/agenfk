@@ -108,6 +108,17 @@ describe('Entra OIDC flow', () => {
     expect(r.headers.location).toContain('client_id=app-client-id');
   });
 
+  it('start refuses a stored multi-tenant alias instead of redirecting to Microsoft', async () => {
+    await enableEntra(ctx.db);
+    await ctx.db.run("UPDATE auth_config SET entra_tenant_id = 'common' WHERE org_id = 'org'");
+    // No implementation would let a regressed guard reach the real network.
+    const getSpy = vi.spyOn(axios, 'get').mockRejectedValue(new Error('no network'));
+    const r = await supertest(__server).get('/auth/entra/start').redirects(0);
+    expect(r.status).toBe(403);
+    expect(r.body.error).toMatch(/aliases are not supported/i);
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+
   it('callback rejects bad state', async () => {
     await enableEntra(ctx.db);
     const r = await supertest(__server).get('/auth/entra/callback?code=x&state=wrong');
@@ -195,7 +206,7 @@ describe('Entra sign-in binds to the configured tenant and an immutable subject'
   // The tenant the discovery document names in its issuer is the tenant the
   // token's tid must match: for a GUID it is that GUID, for a verified domain
   // (contoso.onmicrosoft.com) it is the tenant behind the domain.
-  const signIn = async (claims: any, issuerTenant = 'tenant-uuid') => {
+  const signIn = async (claims: any, issuerTenant = 'tenant-uuid', afterStart?: () => Promise<void>) => {
     vi.spyOn(axios, 'get').mockResolvedValue({
       data: { ...discovery, issuer: `https://login.microsoftonline.com/${issuerTenant}/v2.0` },
     } as any);
@@ -204,6 +215,7 @@ describe('Entra sign-in binds to the configured tenant and an immutable subject'
     const start = await supertest(__server).get('/auth/entra/start').redirects(0);
     const stateCookie = start.headers['set-cookie']?.[0];
     const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
+    await afterStart?.();
     return supertest(__server)
       .get(`/auth/entra/callback?code=abc&state=${state}`)
       .set('Cookie', stateCookie!)
@@ -282,9 +294,12 @@ describe('Entra sign-in binds to the configured tenant and an immutable subject'
   });
 
   it('refuses sign-in while the stored tenant is a multi-tenant alias (organizations, common)', async () => {
-    await ctx.db.run("UPDATE auth_config SET entra_tenant_id = 'organizations' WHERE org_id = 'org'");
     await invite('bob@acme.com');
-    const r = await signIn({ tid: 'aaaaaaaa-1111-2222-3333-444444444444', oid: 'entra-oid-1', email: 'bob@acme.com' });
+    // /start now refuses an alias, so the state cookie comes from a sign-in
+    // begun before the tenant was changed to one (a row saved by an older build).
+    const r = await signIn({ tid: 'aaaaaaaa-1111-2222-3333-444444444444', oid: 'entra-oid-1', email: 'bob@acme.com' }, 'tenant-uuid', async () => {
+      await ctx.db.run("UPDATE auth_config SET entra_tenant_id = 'organizations' WHERE org_id = 'org'");
+    });
     expect(r.status).toBe(403);
     expect(r.body.error).toMatch(/aliases are not supported/i);
   });

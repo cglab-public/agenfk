@@ -109,6 +109,10 @@ export function entraRouter(ctx: HubServerContext): Router {
     if (!cfg?.entra_enabled || !cfg.entra_tenant_id || !cfg.entra_client_id) {
       return res.status(404).json({ error: 'Entra sign-in is not enabled' });
     }
+    // The callback refuses this tenant, so do not send anyone to Microsoft first.
+    if (isEntraTenantAlias(cfg.entra_tenant_id)) {
+      return res.status(403).json({ error: ENTRA_ALIAS_REFUSAL });
+    }
     let disc;
     try { disc = await getDiscovery(cfg.entra_tenant_id); }
     catch (e: any) { return res.status(502).json({ error: 'Entra discovery failed', detail: e?.message }); }
