@@ -9,7 +9,7 @@
  * cheerfully log that it adopted an AgEnFK server.
  */
 import { describe, it, expect } from 'vitest';
-import { isAgenfkServer, servesUiBundle, type HttpResponse } from '../main/probes.js';
+import { isAgenfkServer, readServerIdentity, servesUiBundle, type HttpResponse } from '../main/probes.js';
 
 /** Answers every path with the same response. Used by servesUiBundle tests. */
 const respond = (r: HttpResponse | null) => async () => r;
@@ -134,5 +134,69 @@ describe('isAgenfkServer — the banner check', () => {
         ? { status: 200, contentType: 'application/json', body: '{"version":"1.1.18"}' }
         : null;
     expect(await isAgenfkServer(3000, halfDead)).toBe(false);
+  });
+});
+
+/**
+ * BUG cdae6039: which server is this, and on which database?
+ *
+ * Identity alone let the Windows app adopt a beta.35 server running in WSL and
+ * forwarded to localhost: it was AgEnFK, so the window loaded that server's
+ * stale UI. The version and the database it serves are what the adopt
+ * decision needs, and /db/status has published dbPath since long before the
+ * versions that are still out there.
+ */
+describe('readServerIdentity', () => {
+  const server = (routes: Record<string, HttpResponse | null>) =>
+    async (_port: number, path: string): Promise<HttpResponse | null> =>
+      path in routes ? routes[path] : null;
+
+  const WSL_DB = '/home/eduardo/.agenfk-system/data/agenfk.sqlite';
+
+  it('reads the version and the database path of an AgEnFK server', async () => {
+    const get = server({
+      '/version': json('{"version":"2.0.0-beta.35"}'),
+      '/': json(BANNER),
+      '/db/status': json(JSON.stringify({ dbType: 'sqlite', dbPath: WSL_DB })),
+    });
+    expect(await readServerIdentity(3000, get)).toEqual({ version: '2.0.0-beta.35', dbPath: WSL_DB });
+  });
+
+  it('is null for something that is not AgEnFK, so it is never a candidate', async () => {
+    const get = server({
+      '/version': json('{"version":"2.4.0"}'),
+      '/': json('{"service":"someone-else"}'),
+      '/db/status': json(JSON.stringify({ dbPath: WSL_DB })),
+    });
+    expect(await readServerIdentity(3000, get)).toBeNull();
+  });
+
+  it('leaves dbPath null when /db/status does not answer', async () => {
+    const get = server({
+      '/version': json('{"version":"2.0.0-beta.46"}'),
+      '/': json(BANNER),
+    });
+    expect(await readServerIdentity(3000, get)).toEqual({ version: '2.0.0-beta.46', dbPath: null });
+  });
+
+  it('leaves dbPath null when /db/status answers without a usable path', async () => {
+    for (const body of ['{"dbType":"sqlite"}', '{"dbPath":42}', '{"dbPath":"  "}', '{not json']) {
+      const get = server({
+        '/version': json('{"version":"2.0.0-beta.46"}'),
+        '/': json(BANNER),
+        '/db/status': json(body),
+      });
+      expect(await readServerIdentity(3000, get)).toEqual({ version: '2.0.0-beta.46', dbPath: null });
+    }
+  });
+
+  it('leaves dbPath null when /db/status fails', async () => {
+    const get = server({
+      '/version': json('{"version":"2.0.0-beta.46"}'),
+      '/': json(BANNER),
+      // A path in the body must not count when the status says it failed.
+      '/db/status': { ...json(JSON.stringify({ dbPath: WSL_DB })), status: 500 },
+    });
+    expect(await readServerIdentity(3000, get)).toEqual({ version: '2.0.0-beta.46', dbPath: null });
   });
 });
