@@ -149,15 +149,23 @@ describe('the probe, run for real under sh', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  // A 'u-' marker is made unique per test run, so a shell leaked by an aborted run (whose
+  // directory is gone) can never answer for this one.
+  const stamp = new Map<string, string>();
+  const mark = (m: string) => {
+    if (!m.startsWith('u-')) return m;
+    if (!stamp.has(m)) stamp.set(m, `${m}-${process.pid}-${Date.now()}`);
+    return stamp.get(m) as string;
+  };
   const run = (args: string[], env: NodeJS.ProcessEnv = {}) =>
-    execFileSync('/bin/sh', ['-c', COCKPIT_PROBE_SCRIPT, 'cockpit', ...args], {
+    execFileSync('/bin/sh', ['-c', COCKPIT_PROBE_SCRIPT, 'cockpit', mark(args[0]), ...args.slice(1)], {
       cwd: dir, encoding: 'utf8', env: { ...process.env, HOME: dir, ...env },
     });
   const probe = (session: string, mode = 'scan', prof = '-', kube = '-') => parseCockpitProbe(run([session, mode, prof, kube]));
 
   /** A terminal's shell: the oldest process carrying the marker, standing in `where`. */
   const shellIn = async (session: string, where: string, env: NodeJS.ProcessEnv = {}) => {
-    marked = spawn('/bin/sh', ['-c', 'sleep 30'], { cwd: where, env: { ...process.env, AGENFK_SESSION: session, ...env } });
+    marked = spawn('/bin/sh', ['-c', 'sleep 30'], { cwd: where, env: { ...process.env, AGENFK_SESSION: mark(session), ...env } });
     await new Promise(r => setTimeout(r, 200));
   };
   const gitInit = (where: string, branch: string) => {
@@ -168,29 +176,40 @@ describe('the probe, run for real under sh', () => {
   };
 
   it.skipIf(process.platform !== 'linux')('reads the branch and a dirty tree', async () => {
-    await shellIn('sess-git', dir);
+    await shellIn('u-git', dir);
     execFileSync('git', ['init', '-q', '-b', 'feat/x'], { cwd: dir });
     fs.writeFileSync(path.join(dir, 'a'), '1');
     execFileSync('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', 'add', 'a'], { cwd: dir });
     execFileSync('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '-qm', 'a'], { cwd: dir });
     fs.writeFileSync(path.join(dir, 'a'), '2');
-    expect(probe('sess-git').git).toMatchObject({ branch: 'feat/x', dirty: true });
+    expect(probe('u-git').git).toMatchObject({ branch: 'feat/x', dirty: true });
   });
 
   it.skipIf(process.platform !== 'linux')('counts an untracked file as dirty, and a clean tree as clean', async () => {
-    await shellIn('sess-untracked', dir);
+    await shellIn('u-untracked', dir);
     gitInit(dir, 'main');
-    expect(probe('sess-untracked').git).toMatchObject({ branch: 'main', dirty: false });
+    expect(probe('u-untracked').git).toMatchObject({ branch: 'main', dirty: false });
     fs.writeFileSync(path.join(dir, 'new-file'), 'x');
-    expect(probe('sess-untracked').git).toMatchObject({ branch: 'main', dirty: true });
+    expect(probe('u-untracked').git).toMatchObject({ branch: 'main', dirty: true });
+  });
+
+  it.skipIf(process.platform !== 'linux')('never runs a command a repository\'s own config names (core.fsmonitor, hooks)', async () => {
+    gitInit(dir, 'main');
+    const marker = path.join(dir, 'RAN');
+    const hook = path.join(dir, 'hook.sh');
+    fs.writeFileSync(hook, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+    execFileSync('git', ['config', 'core.fsmonitor', hook], { cwd: dir });
+    await shellIn('u-fsm', dir);
+    expect(probe('u-fsm').git).toMatchObject({ branch: 'main' });
+    expect(fs.existsSync(marker)).toBe(false);
   });
 
   it.skipIf(process.platform !== 'linux')('follows the shell\'s current directory, not the one the terminal started in', async () => {
     const sub = path.join(dir, 'sub');
     fs.mkdirSync(sub);
     gitInit(sub, 'in-sub');
-    await shellIn('sess-cd', sub);
-    const got = probe('sess-cd');
+    await shellIn('u-cd', sub);
+    const got = probe('u-cd');
     expect(got.git).toMatchObject({ branch: 'in-sub' });
     // The start directory stays what agents name their project directories by.
     expect(got.cwd).toBe(fs.realpathSync(dir));
@@ -208,41 +227,41 @@ describe('the probe, run for real under sh', () => {
   });
 
   it.skipIf(process.platform !== 'linux')('reads the Terraform workspace', async () => {
-    await shellIn('sess-tf', dir);
+    await shellIn('u-tf', dir);
     fs.mkdirSync(path.join(dir, '.terraform'));
     fs.writeFileSync(path.join(dir, '.terraform', 'environment'), 'stg\n');
-    expect(probe('sess-tf').tf).toBe('stg');
+    expect(probe('u-tf').tf).toBe('stg');
   });
 
   it.skipIf(process.platform !== 'linux')('lets TF_WORKSPACE win over the environment file, as Terraform does', async () => {
-    await shellIn('sess-tfw', dir, { TF_WORKSPACE: 'prod' });
+    await shellIn('u-tfw', dir, { TF_WORKSPACE: 'prod' });
     fs.mkdirSync(path.join(dir, '.terraform'));
     fs.writeFileSync(path.join(dir, '.terraform', 'environment'), 'stg\n');
-    expect(probe('sess-tfw').tf).toBe('prod');
+    expect(probe('u-tfw').tf).toBe('prod');
   });
 
   it.skipIf(process.platform !== 'linux')('reads the environment file under TF_DATA_DIR', async () => {
-    await shellIn('sess-tfd', dir, { TF_DATA_DIR: path.join(dir, 'custom-data') });
+    await shellIn('u-tfd', dir, { TF_DATA_DIR: path.join(dir, 'custom-data') });
     fs.mkdirSync(path.join(dir, 'custom-data'));
     fs.writeFileSync(path.join(dir, 'custom-data', 'environment'), 'qa\n');
     fs.mkdirSync(path.join(dir, '.terraform'));
     fs.writeFileSync(path.join(dir, '.terraform', 'environment'), 'stg\n');
-    expect(probe('sess-tfd').tf).toBe('qa');
+    expect(probe('u-tfd').tf).toBe('qa');
   });
 
   it.skipIf(process.platform !== 'linux')('takes the TF_WORKSPACE the shell reported, which sees an export typed at a prompt', async () => {
-    await shellIn('sess-tfr', dir, { TF_WORKSPACE: 'stale-start-value' });
+    await shellIn('u-tfr', dir, { TF_WORKSPACE: 'stale-start-value' });
     fs.mkdirSync(path.join(dir, '.terraform'));
     fs.writeFileSync(path.join(dir, '.terraform', 'environment'), 'stg\n');
-    const reported = (tfw: string, tfd = '-') => parseCockpitProbe(run(['sess-tfr', 'reported', '-', '-', tfw, tfd]));
+    const reported = (tfw: string, tfd = '-') => parseCockpitProbe(run(['u-tfr', 'reported', '-', '-', tfw, tfd]));
     expect(reported('prod').tf).toBe('prod');
     // Reported empty: the shell has no TF_WORKSPACE, so the file speaks.
     expect(reported('-').tf).toBe('stg');
   });
 
   it.skipIf(process.platform !== 'linux')('refuses a workspace name that is not a word', async () => {
-    await shellIn('sess-tfx', dir);
-    expect(parseCockpitProbe(run(['sess-tfx', 'reported', '-', '-', 'a b;rm -rf ~', '-'])).tf).toBeNull();
+    await shellIn('u-tfx', dir);
+    expect(parseCockpitProbe(run(['u-tfx', 'reported', '-', '-', 'a b;rm -rf ~', '-'])).tf).toBeNull();
   });
 
   it.skipIf(process.platform !== 'linux')('takes AWS_PROFILE from the terminal\'s own process found by its marker, and only that', async () => {

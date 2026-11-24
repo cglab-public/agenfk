@@ -64,6 +64,10 @@ export const COCKPIT_PROBE_SCRIPT = [
   // The shell's CURRENT directory, not the one the terminal started in. Not
   // established (no shell found, a deleted directory): git and Terraform stay
   // unknown rather than describe a directory the shell may have left.
+  // Every git call: the repository is whatever directory the shell stands in
+  // (an extracted archive included), and its own config must not run a command
+  // (core.fsmonitor) or a hook on a poll nobody asked for. Ownership checks stay.
+  "g() { git -c core.fsmonitor=false -c core.hooksPath=/dev/null --no-optional-locks \"$@\"; }",
   "tracked=0",
   "if [ -n \"$shell\" ]; then",
   "  t=$(readlink \"/proc/$shell/cwd\" 2>/dev/null)",
@@ -71,11 +75,11 @@ export const COCKPIT_PROBE_SCRIPT = [
   "fi",
   "if [ \"$tracked\" = 1 ]; then",
   "  printf \"track=1\\n\"",
-  "  if b=$(git symbolic-ref --short HEAD 2>/dev/null); then",
+  "  if b=$(g symbolic-ref --short HEAD 2>/dev/null); then",
   // status, not diff: an untracked file is a dirty tree too. No optional
   // locks, so a probe never makes the person's own `git commit` wait.
-  "    if [ -n \"$(git --no-optional-locks status --porcelain --untracked-files=normal --ignore-submodules 2>/dev/null | head -n 1)\" ]; then d=1; else d=0; fi",
-  "    ab=$(git rev-list --left-right --count \"@{u}...HEAD\" 2>/dev/null) || ab=\"\"",
+  "    if [ -n \"$(g status --porcelain --untracked-files=normal --ignore-submodules 2>/dev/null | head -n 1)\" ]; then d=1; else d=0; fi",
+  "    ab=$(g rev-list --left-right --count \"@{u}...HEAD\" 2>/dev/null) || ab=\"\"",
   "    printf \"git=%s\\t%s\\t%s\\n\" \"$b\" \"$d\" \"$ab\"",
   "  fi",
   // Terraform's own order: TF_WORKSPACE, else the file under TF_DATA_DIR. The
