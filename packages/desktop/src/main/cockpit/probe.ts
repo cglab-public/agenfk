@@ -79,14 +79,15 @@ export const COCKPIT_PROBE_SCRIPT = [
   "  if b=$(g symbolic-ref --short HEAD 2>/dev/null); then",
   // status, not diff: an untracked file is a dirty tree too. But status runs the
   // repository's clean/process filters on any file it must compare, and the
-  // shell may stand in a checkout nobody vetted: only the directory the terminal
-  // was opened on, or one inside it, is asked. Elsewhere dirty is '?' (unknown).
-  // Branch and ahead/behind run no filters, hooks or fsmonitor.
-  "    cur=$(pwd -P); base=${start%/}",
-  "    case \"$cur\" in",
-  "      \"$base\"|\"$base\"/*) if [ -n \"$(g status --porcelain --untracked-files=normal --ignore-submodules 2>/dev/null | head -n 1)\" ]; then d=1; else d=0; fi ;;",
-  "      *) d='?' ;;",
-  "    esac",
+  // shell may have walked into a checkout nobody vetted ($HOME is a start
+  // directory too). So it is asked only in the repository the terminal was
+  // opened in - the one the cockpit always read. Anywhere else dirty is '?'
+  // (unknown). rev-parse, symbolic-ref and rev-list run no filters, hooks or
+  // fsmonitor.
+  "    top_cur=$(g rev-parse --show-toplevel 2>/dev/null); top_start=$(cd \"$start\" && g rev-parse --show-toplevel 2>/dev/null)",
+  "    if [ -n \"$top_cur\" ] && [ \"$top_cur\" = \"$top_start\" ]; then",
+  "      if [ -n \"$(g status --porcelain --untracked-files=normal --ignore-submodules 2>/dev/null | head -n 1)\" ]; then d=1; else d=0; fi",
+  "    else d='?'; fi",
   "    ab=$(g rev-list --left-right --count \"@{u}...HEAD\" 2>/dev/null) || ab=\"\"",
   "    printf \"git=%s\\t%s\\t%s\\n\" \"$b\" \"$d\" \"$ab\"",
   "  fi",

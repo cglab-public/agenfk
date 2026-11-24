@@ -214,41 +214,48 @@ describe('the probe, run for real under sh', () => {
     return marker;
   };
 
-  it.skipIf(process.platform !== 'linux')('never runs a clean filter a repository names: outside the start directory the dirty mark is unknown', async () => {
-    // Outside `dir`, where the terminal started: a checkout the shell walked into.
-    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-cockpit-elsewhere-'));
+  /** The probe as a terminal that STARTED in `start` would run it. */
+  const startedIn = (start: string, session: string) =>
+    parseCockpitProbe(execFileSync('/bin/sh', ['-c', COCKPIT_PROBE_SCRIPT, 'cockpit', mark(session), 'scan', '-', '-', '?', '?'], {
+      cwd: start, encoding: 'utf8', env: { ...process.env, HOME: dir },
+    }));
+
+  it.skipIf(process.platform !== 'linux')('never runs a clean filter in a repository under a non-repository start directory ($HOME)', async () => {
+    const repo = path.join(dir, 'Downloads-evil');
+    fs.mkdirSync(repo);
     gitInit(repo, 'evil-branch');
     fs.writeFileSync(path.join(repo, 'a'), 'changed');
     const marker = evilFilter(repo);
-    // The terminal started in `dir`, not in the repository the shell then walked into.
     await shellIn('u-flt', repo);
-    const got = probe('u-flt');
-    try {
-      expect(got.git).toMatchObject({ branch: 'evil-branch', dirty: null });
-      expect(fs.existsSync(marker)).toBe(false);
-    } finally {
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
+    expect(startedIn(dir, 'u-flt').git).toMatchObject({ branch: 'evil-branch', dirty: null });
+    expect(fs.existsSync(marker)).toBe(false);
   });
 
-  it.skipIf(process.platform !== 'linux')('still checks dirty in the start directory and below it, and not in a sibling that shares its prefix', async () => {
+  it.skipIf(process.platform !== 'linux')('never runs a clean filter of a repository nested in the start repository', async () => {
+    const outer = path.join(dir, 'outer');
+    const nested = path.join(outer, 'vendor', 'evil');
+    fs.mkdirSync(nested, { recursive: true });
+    gitInit(outer, 'main');
+    gitInit(nested, 'nested-branch');
+    fs.writeFileSync(path.join(nested, 'a'), 'changed');
+    const marker = evilFilter(nested);
+    await shellIn('u-nest', nested);
+    expect(startedIn(outer, 'u-nest').git).toMatchObject({ branch: 'nested-branch', dirty: null });
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it.skipIf(process.platform !== 'linux')('still knows dirty anywhere inside the start repository', async () => {
     const repo = path.join(dir, 'repo');
     const below = path.join(repo, 'pkg');
-    const sibling = path.join(dir, 'repo2');
-    for (const d of [repo, sibling]) { fs.mkdirSync(d); gitInit(d, 'main'); fs.writeFileSync(path.join(d, 'a'), 'changed'); }
-    fs.mkdirSync(below);
-    const startedIn = (start: string, session: string) =>
-      parseCockpitProbe(execFileSync('/bin/sh', ['-c', COCKPIT_PROBE_SCRIPT, 'cockpit', mark(session), 'scan', '-', '-', '?', '?'], {
-        cwd: start, encoding: 'utf8', env: { ...process.env, HOME: dir },
-      }));
-    await shellIn('u-in', repo);
-    expect(startedIn(repo, 'u-in').git?.dirty).toBe(true);
-    marked?.kill();
+    fs.mkdirSync(below, { recursive: true });
+    gitInit(repo, 'main');
+    fs.writeFileSync(path.join(repo, 'untracked'), 'x');
     await shellIn('u-below', below);
-    expect(startedIn(repo, 'u-below').git?.dirty).toBe(true);
+    expect(startedIn(repo, 'u-below').git).toMatchObject({ branch: 'main', dirty: true });
     marked?.kill();
-    await shellIn('u-sib', sibling);
-    expect(startedIn(repo, 'u-sib').git).toMatchObject({ branch: 'main', dirty: null });
+    fs.rmSync(path.join(repo, 'untracked'));
+    await shellIn('u-in', repo);
+    expect(startedIn(repo, 'u-in').git).toMatchObject({ branch: 'main', dirty: false });
   });
 
   it.skipIf(process.platform !== 'linux')('follows the shell\'s current directory, not the one the terminal started in', async () => {
