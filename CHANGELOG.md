@@ -2,6 +2,38 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.1.0] — 2026-11-23
+
+Stable. Everything in 2.1.0-beta.1 to 2.1.0-beta.24, plus the fixes below. The sections under each beta describe the
+changes in detail.
+
+**Highlights since 2.0.0**
+
+- **Usage and cost per card.** AgEnFK reads Claude Code, Codex, pi and Antigravity session logs and charges each turn
+  to its card, subagents included. The card's Usage tab and the hub's `/usage` page show tokens and cost by step,
+  model, person, harness and PR.
+- **Airlock (Preview).** An egress and action shield that runs pi, OpenCode, Claude Code and Codex in a smolvm
+  microVM under the org's policy, with model keys and logins held on the host.
+- **CI receipts (RFC-002).** Verify once on a laptop, and skip the same job in CI.
+- **`agenfk hub admin`.** About 110 commands that cover every admin page of the hub.
+- **Whole-database SQLite backups**, `agenfk db vacuum`, and a fuller `agenfk db status`.
+
+**Breaking changes since 2.0.0**
+
+- The CLI needs Node `^22.13.0` or `>=23.5.0`.
+- A command refuses positional arguments it does not take: quote each value of several words.
+- Backups are `.sqlite` snapshots, not JSON.
+- Install the hub and its clients together: a 2.1 hub drops the usage that clients older than 2.1.0-beta.21 send.
+- `AGENFK_HUB_SYNC_INTERVAL_MS` and `AGENFK_HUB_SYNC_FIRST_DELAY_MS` replace the four hub sync interval variables.
+  `GET /v1/usage/overview` no longer returns `byPr`: use `GET /v1/usage/prs`.
+- A custom Airlock image named by a policy needs util-linux `setsid` 2.31 or later.
+
+**Fixes**
+
+- **`agenfk tokens --client` accepts `agy` and `pi`** (#413, #415).
+- **The desktop PTY tests no longer send real signals to fake process ids** (#416). They could stop the CI runner
+  in the middle of a run.
+
 ## [2.1.0-beta.24] — 2026-11-23
 
 Beta, cumulative over 2.1.0-beta.23: everything in 2.1.0-beta.23, plus the changes below.
