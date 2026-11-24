@@ -8,7 +8,7 @@
  * is tested without spawning processes or booting Electron.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { resolveServer, ServerUnavailableError } from '../main/serverLifecycle.js';
+import { resolveServer, ServerUnavailableError, DatabaseOwnerError } from '../main/serverLifecycle.js';
 
 /** A probe that answers true only for the ports listed. */
 const probeFor = (...live: number[]) =>
@@ -188,6 +188,37 @@ describe('resolveServer — spawning our own', () => {
     expect(result.port).toBe(3000);
   });
 
+  it('finds its own server through the unfiltered reader, wherever it bound (PR #359 review)', async () => {
+    // AGENFK_PORT=3100 with 3100-3186 busy: the server binds 3187, outside the
+    // 16 ports the adopt filter keeps. The post-spawn poll must still find it.
+    let started = false;
+    const spawn = vi.fn(() => { started = true; });
+    const result = await resolveServer({
+      readPort: () => null,
+      readSpawnedPort: () => (started ? 3187 : null),
+      probe: async (p: number) => started && p === 3187,
+      spawn,
+      waitMs: 0,
+      attempts: 3,
+    });
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(result.adopted).toBe(false);
+    expect(result.port).toBe(3187);
+  });
+
+  it('polls readPort after spawning when no separate reader is given', async () => {
+    let started = false;
+    const result = await resolveServer({
+      readPort: () => (started ? 3005 : null),
+      probe: async (p: number) => started && p === 3005,
+      spawn: () => { started = true; },
+      waitMs: 0,
+    });
+
+    expect(result.port).toBe(3005);
+  });
+
   it('spawns when the port file is stale and nothing answers there', async () => {
     // Classic leftover: the file survived a crash, the process did not.
     let started = false;
@@ -275,5 +306,99 @@ describe('resolveServer — failure', () => {
       waitMs: 0,
       attempts: 3,
     })).rejects.toThrow(/ENOENT/);
+  });
+});
+
+describe('resolveServer — a published server outside the adopt range (PR #359 review)', () => {
+  // AGENFK_PORT=3100: the range is 3100-3115, while `agenfk up` published 3000
+  // on the default database. The desktop would open that same SQLite file.
+  const configured = { fallbackPorts: Array.from({ length: 16 }, (_, i) => 3100 + i), waitMs: 0, adoptAttempts: 1 };
+
+  it('adopts it when it holds the database the desktop would use', async () => {
+    const spawn = vi.fn();
+    const result = await resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      databaseOwner: async () => 'same',
+      spawn,
+    });
+    expect(result).toMatchObject({ port: 3000, adopted: true });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses to start a second server when it cannot tell whose database that is', async () => {
+    const spawn = vi.fn();
+    const run = resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      databaseOwner: async () => 'unknown',
+      spawn,
+    });
+    await expect(run).rejects.toBeInstanceOf(DatabaseOwnerError);
+    await expect(run).rejects.toThrow(/3000/);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('starts its own server when that one is on another database', async () => {
+    let started = false;
+    const result = await resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      readSpawnedPort: () => (started ? 3100 : null),
+      probe: async p => p === 3000 || (started && p === 3100),
+      databaseOwner: async () => 'different',
+      spawn: () => { started = true; },
+    });
+    expect(result).toMatchObject({ port: 3100, adopted: false });
+  });
+
+  it('does not ask about a published server that is inside the range', async () => {
+    const databaseOwner = vi.fn(async () => 'different' as const);
+    const result = await resolveServer({
+      ...configured,
+      readPort: () => 3103,
+      probe: probeFor(3103),
+      databaseOwner,
+      spawn: vi.fn(),
+    });
+    expect(result.port).toBe(3103);
+    expect(databaseOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not ask about a published port nothing answers on', async () => {
+    let started = false;
+    const databaseOwner = vi.fn(async () => 'unknown' as const);
+    const result = await resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      readSpawnedPort: () => (started ? 3100 : null),
+      probe: async p => started && p === 3100,
+      databaseOwner,
+      spawn: () => { started = true; },
+    });
+    expect(result.port).toBe(3100);
+    expect(databaseOwner).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveServer — the server it started (PR #359 review)', () => {
+  it('never takes the shared port file for its own server while the child has not bound', async () => {
+    // The file still names the server we declined to adopt; it answers, ours
+    // does not yet. The poll must wait for the child's own port.
+    let childPort: number | null = null;
+    let polls = 0;
+    const result = await resolveServer({
+      readPort: () => 3000,
+      readSpawnedPort: () => { polls++; if (polls === 3) childPort = 3100; return childPort; },
+      probe: async p => p === 3000 || p === childPort,
+      databaseOwner: async () => 'different',
+      fallbackPorts: [3100],
+      adoptAttempts: 1,
+      spawn: () => {},
+      waitMs: 0,
+    });
+    expect(result).toMatchObject({ port: 3100, adopted: false });
   });
 });

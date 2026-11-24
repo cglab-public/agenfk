@@ -125,3 +125,18 @@ export async function servesUiBundle(port: number, get: HttpGet = httpGet): Prom
   const res = await get(port, '/', { Accept: 'text/html,application/xhtml+xml' });
   return !!res && res.status === 200 && res.contentType.includes('text/html');
 }
+
+/**
+ * The database path a server reports, or null when it does not say. Absent
+ * and unreadable both mean "unknown" to the caller, never "different".
+ */
+export async function readServerDbPath(port: number, get: HttpGet = httpGet): Promise<string | null> {
+  const res = await get(port, '/db/status');
+  if (!res || res.status !== 200) return null;
+  try {
+    const parsed = JSON.parse(res.body);
+    return typeof parsed?.dbPath === 'string' && parsed.dbPath ? parsed.dbPath : null;
+  } catch {
+    return null;
+  }
+}
