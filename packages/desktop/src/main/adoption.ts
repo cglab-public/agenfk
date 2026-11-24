@@ -77,8 +77,9 @@ export function makeJudge(deps: JudgeDeps): (port: number) => Promise<AdoptVerdi
 }
 
 /**
- * What stat said about a path: the file it names, null when the path reaches
- * no file, or 'no-answer' when stat did not return in time.
+ * What stat said about a path: the file it names, null when no file is there
+ * (ENOENT, ENOTDIR), or 'no-answer' when stat did not return in time or failed
+ * for any other reason (EACCES, EIO, a dropped share): doubt, not absence.
  */
 export type FileAnswer = { id: string } | null | 'no-answer';
 
@@ -105,7 +106,10 @@ export function statWithin(
     timer.unref?.();
     stat(p).then(
       s => { clearTimeout(timer); resolve({ id: `${s.dev}:${s.ino}` }); },
-      () => { clearTimeout(timer); resolve(null); },
+      (e: NodeJS.ErrnoException) => {
+        clearTimeout(timer);
+        resolve(e?.code === 'ENOENT' || e?.code === 'ENOTDIR' ? null : 'no-answer');
+      },
     );
   });
 }
@@ -181,10 +185,20 @@ export async function sameDatabase(
   const local = platform === 'win32'
     ? /^[a-zA-Z]:[\\/]/.test(serverLocal)
     : serverLocal.startsWith('/');
-  if (!local) return 'different';
+  if (!local) {
+    // An absolute path in another filesystem's spelling is a file this app
+    // cannot open. A relative one names nothing until it is resolved against
+    // a directory the server knew: that is doubt, not proof.
+    const foreign = platform === 'win32'
+      ? /^[\\/]/.test(serverLocal)
+      : /^([a-zA-Z]:[\\/]|[\\/]{2})/.test(serverLocal);
+    return foreign ? 'different' : 'unknown';
+  }
+  const appLocal = canonical(appPath, platform);
+  if (!(platform === 'win32' ? /^[a-zA-Z]:[\\/]/.test(appLocal) : appLocal.startsWith('/'))) return 'unknown';
 
-  const [server, app] = await Promise.all([fileId(serverLocal), fileId(canonical(appPath, platform))]);
-  // A stat that never returned is no proof of another file.
+  const [server, app] = await Promise.all([fileId(serverLocal), fileId(appLocal)]);
+  // A stat that failed or never returned is no proof of another file.
   if (server === 'no-answer' || app === 'no-answer') return 'unknown';
   return !!server && !!app && server.id === app.id ? 'same' : 'different';
 }

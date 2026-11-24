@@ -8,7 +8,7 @@
  * serverLifecycle exists to prevent). A server on ANOTHER database is not the
  * app's to share, so a version mismatch there means: start our own.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -269,6 +269,44 @@ describe('sameDatabase', () => {
   });
 });
 
+describe('sameDatabase with paths it cannot resolve (PR #360 review)', () => {
+  const stats = vi.fn();
+  beforeEach(() => stats.mockReset());
+
+  it('is unknown, not different, for a relative path the server reports', async () => {
+    // AGENFK_DB_PATH=data/agenfk.sqlite is legal; /db/status echoes it as is.
+    expect(await sameDatabase('data/agenfk.sqlite', MAC_DB, 'darwin', stats)).toBe('unknown');
+    expect(await sameDatabase('./agenfk.sqlite', WSL_DB, 'linux', stats)).toBe('unknown');
+    expect(await sameDatabase('data\\agenfk.sqlite', WIN_DB, 'win32', stats)).toBe('unknown');
+    expect(stats).not.toHaveBeenCalled();
+  });
+
+  it('is unknown when the app path is relative', async () => {
+    expect(await sameDatabase(WSL_DB, 'data/agenfk.sqlite', 'linux', stats)).toBe('unknown');
+    expect(stats).not.toHaveBeenCalled();
+  });
+
+  it('is same for a relative and an absolute spelling that are already equal after the server resolves them', async () => {
+    expect(await sameDatabase(WSL_DB, WSL_DB.replace('/.agenfk/', '/./.agenfk/'), 'linux', stats)).toBe('same');
+  });
+
+  it('is unknown when stat fails with an error other than a missing file', async () => {
+    const eacces = (p: string) => (p === WSL_DB ? ('no-answer' as const) : { id: 'f2' });
+    expect(await sameDatabase(WSL_DB, '/other/agenfk.sqlite', 'linux', eacces)).toBe('unknown');
+    expect(await sameDatabase('/other/agenfk.sqlite', WSL_DB, 'linux', eacces)).toBe('unknown');
+  });
+
+  it('is different when both files exist and are two files', async () => {
+    expect(await sameDatabase(WSL_DB, '/other/agenfk.sqlite', 'linux', files({ [WSL_DB]: 'a', '/other/agenfk.sqlite': 'b' })))
+      .toBe('different');
+  });
+
+  it('still calls a Windows drive path foreign on Linux-style platforms only when it cannot map', async () => {
+    expect(await sameDatabase('\\\\host\\share\\agenfk.sqlite', MAC_DB, 'darwin', stats)).toBe('different');
+    expect(stats).not.toHaveBeenCalled();
+  });
+});
+
 describe('versionMismatchNotice', () => {
   const notice = versionMismatchNotice({
     serverVersion: '2.0.0-beta.35', appVersion: '2.0.0-beta.46', database: 'same',
@@ -314,9 +352,20 @@ describe('statWithin', () => {
     expect(await fileId('/x')).toEqual({ id: '7:42' });
   });
 
-  it('is null when stat fails, as for a path that reaches no file', async () => {
-    const fileId = statWithin(async () => { throw new Error('ENOENT'); }, 50);
-    expect(await fileId('/x')).toBeNull();
+  it('is null when no file is there', async () => {
+    for (const code of ['ENOENT', 'ENOTDIR']) {
+      const fileId = statWithin(async () => { throw Object.assign(new Error(code), { code }); }, 50);
+      expect(await fileId('/x'), code).toBeNull();
+    }
+  });
+
+  it('is no-answer, not null, when stat fails for any other reason', async () => {
+    // A permission error or a dropped share says nothing about whether the
+    // file is there; "null" would read as another database.
+    for (const code of ['EACCES', 'EIO', 'ETIMEDOUT', undefined]) {
+      const fileId = statWithin(async () => { throw Object.assign(new Error('stat failed'), { code }); }, 50);
+      expect(await fileId('/x'), String(code)).toBe('no-answer');
+    }
   });
 
   it('gives up on a stat that does not return in time', async () => {
