@@ -409,6 +409,51 @@ describe('ReleaseReminder', () => {
     expect(screen.getByText(/New Release Available/i)).toBeDefined();
   });
 
+  // GH-421: the badge lives in the board's sticky header, whose backdrop-blur makes
+  // it the containing block for position:fixed. A modal left inside it is centred on
+  // the header and runs off the top of the window, so the dialog must leave the subtree.
+  it('renders the modal outside the header that holds the badge', async () => {
+    vi.mocked(api.getLatestRelease).mockResolvedValue(releaseWithTier());
+    render(
+      <header data-testid="board-header" className="backdrop-blur sticky top-0">
+        <ReleaseReminder />
+      </header>,
+      { wrapper: wrapper(makeQueryClient()) },
+    );
+    fireEvent.click(await screen.findByTitle(/New release available/i));
+    const dialog = await screen.findByRole('dialog', { name: /New Release Available/i });
+    expect(screen.getByTestId('board-header').contains(dialog)).toBe(false);
+    // The panel's backdrop overlay is a direct child of <body>.
+    expect(dialog.parentElement?.parentElement).toBe(document.body);
+  });
+
+  // GH-421: portalled to the end of <body>, the dialog is no longer next to the badge in
+  // tab order, so it takes focus on open, closes on Escape and hands focus back on close.
+  it('moves focus into the dialog, closes on Escape and returns focus to the badge', async () => {
+    vi.mocked(api.getLatestRelease).mockResolvedValue(releaseWithTier());
+    render(<ReleaseReminder />, { wrapper: wrapper(makeQueryClient()) });
+    const badge = await screen.findByTitle(/New release available/i);
+    badge.focus();
+    fireEvent.click(badge);
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(badge);
+  });
+
+  // GH-421: Tailwind Typography wraps inline code in literal backticks via ::before/::after.
+  it('turns off the typography backticks around inline code in the release notes', async () => {
+    vi.mocked(api.getLatestRelease).mockResolvedValue({ ...releaseWithTier(), body: 'Run `agenfk db vacuum`.' });
+    render(<ReleaseReminder />, { wrapper: wrapper(makeQueryClient()) });
+    fireEvent.click(await screen.findByTitle(/New release available/i));
+    const code = await screen.findByText('agenfk db vacuum');
+    expect(code.tagName).toBe('CODE');
+    const prose = code.closest('.prose') as HTMLElement;
+    expect(prose.className).toMatch(/(?:^|\s)prose-code:before:content-none(?:\s|$)/);
+    expect(prose.className).toMatch(/(?:^|\s)prose-code:after:content-none(?:\s|$)/);
+  });
+
   it('should dismiss and hide when Dismiss button is clicked', async () => {
     (api.getLatestRelease as any).mockResolvedValue({
       version: '2.0.0',
