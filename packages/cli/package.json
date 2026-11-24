@@ -24,7 +24,7 @@
   },
   "devDependencies": {
     "@types/inquirer": "^9.0.7",
-    "@types/node": "^22.13.0"
+    "@types/node": "^22.20.5"
   },
   "keywords": [
     "agenfk",
