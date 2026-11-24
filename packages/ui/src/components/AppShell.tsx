@@ -2315,6 +2315,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           })()}
           listAgents={listAgentsFromBridge}
           refreshAgents={refreshAgentsFromBridge}
+          // A card's worktree sits on its project root's filesystem, so the root
+          // says whether this terminal runs on Windows or in WSL.
+          directory={allProjects.find((p: { id: string; projectRoot?: string }) => p.id === (pending.projectId ?? activeProjectId))?.projectRoot}
           // Shift, never clear: dismissing ONE question must not throw away the
           // rest of the wave. Clearing here was the single-slot habit surviving
           // the queue - and it fails in the direction that loses work silently.

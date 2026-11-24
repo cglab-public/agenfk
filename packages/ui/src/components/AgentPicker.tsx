@@ -56,16 +56,17 @@ const isLinuxDir = (p: string): boolean => p.startsWith('/');
 
 /**
  * Whether `agent` can launch for `directory`, and when only one side has it,
- * where. Without a directory both sides must agree, or the row would offer an
- * agent the launch then refuses.
+ * where. Without a directory the row stays selectable and only hints where.
  */
 function reach(agent: AgentInfo, directory?: string): { ok: boolean; only?: 'WSL' | 'Windows' } {
   const a = agent.availability;
   if (!a || a.wsl === null) return { ok: agent.installed };
   if (directory) return { ok: isLinuxDir(directory) ? a.wsl : a.windows };
   if (a.windows && a.wsl) return { ok: true };
-  if (a.wsl) return { ok: false, only: 'WSL' };
-  if (a.windows) return { ok: false, only: 'Windows' };
+  // No project to say where it runs: stay selectable, as before, and hint where
+  // it lives. The launch refuses a mismatch with its own message.
+  if (a.wsl) return { ok: agent.installed, only: 'WSL' };
+  if (a.windows) return { ok: agent.installed, only: 'Windows' };
   return { ok: false };
 }
 
@@ -270,7 +271,7 @@ export function AgentPicker({ value, onChange, listAgents, refreshAgents, direct
     >
       <AgentIcon agentId={agent.id} size={18} />
       <span className="flex-1 truncate">{agent.label}</span>
-      {!ok && (
+      {(!ok || only) && (
         <span className="shrink-0 text-[11px] text-ink-tertiary">
           {only ? `${only} only` : (INSTALL_HINT[agent.id] ?? 'Not installed')}
         </span>

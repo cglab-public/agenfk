@@ -403,12 +403,12 @@ describe('availability per target (INFRA-425)', () => {
     expect((await optionFor('/home/me/repo', /^Codex/)).getAttribute('aria-disabled')).toBe('true');
   });
 
-  it('with no directory, offers only agents both sides have and labels the rest', async () => {
+  it('with no directory, keeps the agent selectable and hints where it is', async () => {
     const pi = await optionFor(undefined, /^Pi/);
-    expect(pi.getAttribute('aria-disabled')).toBe('true');
+    expect(pi.getAttribute('aria-disabled')).toBe('false');
     expect(pi.textContent).toMatch(/WSL only/);
     expect(screen.getByRole('option', { name: /^Codex/ }).textContent).toMatch(/Windows only/);
-    expect(screen.getByRole('option', { name: /^Claude Code/ }).getAttribute('aria-disabled')).toBe('false');
+    expect(screen.getByRole('option', { name: /^Claude Code/ }).textContent).not.toMatch(/only/);
   });
 
   it('is unchanged where WSL was not probed', async () => {
