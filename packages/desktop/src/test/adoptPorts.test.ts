@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import {
-  adoptPortRange, databaseOwner, invalidPortMessage, parseBoundPort, portSetting,
+  adoptPortRange, boundPortReader, databaseOwner, invalidPortMessage, parseBoundPort, portSetting,
   type DbFileAnswer, type DbFileId,
 } from '../main/adoptPorts.js';
 import { buildServerEnv } from '../main/serverEnv.js';
@@ -92,9 +92,54 @@ describe('parseBoundPort', () => {
     expect(parseBoundPort('')).toBeNull();
   });
 
+  it('ignores a log line that only contains the startup text', () => {
+    expect(parseBoundPort('GET /x?q=AgEnFK API Server running on 127.0.0.1:6666 (with WebSockets)')).toBeNull();
+    expect(parseBoundPort('AgEnFK API Server running on 127.0.0.1:6666 (with WebSockets) trailing')).toBeNull();
+  });
+
   it('rejects a port outside 1 to 65535', () => {
     expect(parseBoundPort('AgEnFK API Server running on 127.0.0.1:0 (with WebSockets)')).toBeNull();
     expect(parseBoundPort('AgEnFK API Server running on 127.0.0.1:70000 (with WebSockets)')).toBeNull();
+  });
+});
+
+describe('boundPortReader', () => {
+  const START = (p: number) => `AgEnFK API Server running on 127.0.0.1:${p} (with WebSockets)`;
+
+  it('parses a startup line split across two chunks', () => {
+    const r = boundPortReader();
+    r.push('noise\nAgEnFK API Server running on 127.0.');
+    expect(r.port()).toBeNull();
+    r.push('0.1:3187 (with WebSockets)\r\n');
+    expect(r.port()).toBe(3187);
+  });
+
+  it('keeps the first startup line and ignores a later look-alike', () => {
+    const r = boundPortReader();
+    r.push(`${START(3100)}\n${START(6666)}\n`);
+    r.push(`${START(7777)}\n`);
+    expect(r.port()).toBe(3100);
+  });
+
+  it('ignores a log line with the pattern mid-line', () => {
+    const r = boundPortReader();
+    r.push(`GET /?x=${START(6666)}\n`);
+    expect(r.port()).toBeNull();
+  });
+
+  it('waits for the newline before it trusts a line', () => {
+    const r = boundPortReader();
+    r.push(START(3100));
+    expect(r.port()).toBeNull();
+  });
+
+  it('starts over after reset', () => {
+    const r = boundPortReader();
+    r.push(`${START(3100)}\n`);
+    r.reset();
+    expect(r.port()).toBeNull();
+    r.push(`${START(3101)}\n`);
+    expect(r.port()).toBe(3101);
   });
 });
 
@@ -208,7 +253,7 @@ describe('the desktop main process', () => {
 
   it('finds its own server through the port its child reports, never the shared file', () => {
     const call = source.slice(source.indexOf('resolveServer({'), source.indexOf('spawn: startServer'));
-    expect(call).toMatch(/readSpawnedPort:\s*\(\)\s*=>\s*spawnedPort/);
+    expect(call).toMatch(/readSpawnedPort:\s*\(\)\s*=>\s*spawnedPortReader\.port\(\)/);
     expect(call).not.toMatch(/readSpawnedPort:\s*readServerPort/);
   });
 

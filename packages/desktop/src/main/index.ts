@@ -14,7 +14,7 @@ import * as os from 'os';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
-import { adoptPortRange, databaseOwner, invalidPortMessage, parseBoundPort, statDbFile } from './adoptPorts.js';
+import { adoptPortRange, boundPortReader, databaseOwner, invalidPortMessage, parseBoundPort, statDbFile } from './adoptPorts.js';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
@@ -121,7 +121,7 @@ let quitHandled = false;
 let weSpawnedTheServer = false;
 // The port the server WE forked reported on its stdout. The shared port file
 // cannot stand in for it: it may name the server we declined to adopt.
-let spawnedPort: number | null = null;
+const spawnedPortReader = boundPortReader();
 
 /** How long to let the server finish its async shutdown before forcing quit. */
 const SHUTDOWN_GRACE_MS = 5000;
@@ -157,7 +157,7 @@ async function startServer(): Promise<void> {
   // Before the fork: the server runs tools like `gh` by name (BUG 474a8240).
   const freshPath = await loginPathWithin();
 
-  spawnedPort = null;
+  spawnedPortReader.reset();
   serverChild = utilityProcess.fork(serverEntry, [], {
     // cwd is explicit because the server's own fallback derives the database
     // from it. Launched from Finder that would be "/" — see serverEnv.ts.
@@ -170,10 +170,7 @@ async function startServer(): Promise<void> {
   });
   serverChild.stdout?.on('data', (chunk: Buffer) => {
     process.stdout.write(chunk);
-    for (const line of chunk.toString('utf8').split('\n')) {
-      const port = parseBoundPort(line);
-      if (port !== null) spawnedPort = port;
-    }
+    spawnedPortReader.push(chunk.toString('utf8'));
   });
   serverChild.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
   console.log(`[DESKTOP] Starting AgEnFK server (db: ${dbPath})`);
@@ -334,7 +331,7 @@ async function boot(): Promise<void> {
       // database this app would open, and databaseOwner decides about it.
       readPort: readServerPort,
       // Our own server may bind past the adopt range, so ask the child.
-      readSpawnedPort: () => spawnedPort,
+      readSpawnedPort: () => spawnedPortReader.port(),
       databaseOwner: async port => {
         const reported = await readServerDbPath(port);
         return reported === null

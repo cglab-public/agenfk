@@ -78,10 +78,35 @@ export function adoptPortRange(env: Env, defaultPort: number): number[] {
  * overwrites it, and the poll would open that one as our own.
  */
 export function parseBoundPort(line: string): number | null {
-  const m = /AgEnFK API Server running on \S+:(\d+) \(with WebSockets\)/.exec(line);
+  const m = /^AgEnFK API Server running on \S+:(\d+) \(with WebSockets\)$/.exec(line);
   if (!m) return null;
   const port = Number.parseInt(m[1], 10);
   return port >= 1 && port <= MAX_PORT ? port : null;
+}
+
+/**
+ * Collects the bound port from the child's stdout, which is free text: log
+ * lines can echo request data. Only a line that is the startup line in FULL
+ * counts, partial lines are held until their newline, and the FIRST match
+ * stays: a later look-alike cannot move it.
+ */
+export function boundPortReader(): { push(chunk: string): void; port(): number | null; reset(): void } {
+  let pending = '';
+  let found: number | null = null;
+  return {
+    push(chunk) {
+      pending += chunk;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() ?? '';
+      // A runaway line with no newline is not the startup line.
+      if (pending.length > 4096) pending = '';
+      for (const line of lines) {
+        if (found === null) found = parseBoundPort(line);
+      }
+    },
+    port: () => found,
+    reset() { pending = ''; found = null; },
+  };
 }
 
 /** What stat said about a database file: its identity, absent, or failed some other way. */
