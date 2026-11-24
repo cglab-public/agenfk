@@ -37,6 +37,8 @@ export interface CockpitContext {
   readonly resumed: boolean;
   /** What the terminal's own shell last reported (envReport.ts), if it does. */
   readonly reported: EnvReport | null;
+  /** The local pty's pid, where the shell's directory can be asked of lsof (no /proc); unset under wsl.exe, tmux and attach. */
+  readonly pid?: number;
 }
 
 export type CockpitSnapshot = ProbeResult & { readonly usage: UsageSnapshot | null };
@@ -203,10 +205,11 @@ export class CockpitService {
     // '-' for empty: wsl.exe may drop an empty argument and shift the rest.
     // '?' for a Terraform variable the shell did not report (an older snippet): not empty.
     const tf = (v: string | undefined): string => (v === undefined ? '?' : v || '-');
+    const pid = ctx.pid && !ctx.wsl && !ctx.tmux ? String(ctx.pid) : '-';
     if (ctx.reported) {
-      return [marker, 'reported', ctx.reported.awsProfile || '-', ctx.reported.kubeconfig || '-', tf(ctx.reported.tfWorkspace), tf(ctx.reported.tfDataDir)];
+      return [marker, 'reported', ctx.reported.awsProfile || '-', ctx.reported.kubeconfig || '-', tf(ctx.reported.tfWorkspace), tf(ctx.reported.tfDataDir), pid];
     }
-    return [marker, ctx.tmux ? 'none' : 'scan', '-', '-', '?', '?'];
+    return [marker, ctx.tmux ? 'none' : 'scan', '-', '-', '?', '?', pid];
   }
 
   private async usage(marker: string, ctx: CockpitContext): Promise<UsageSnapshot | null> {

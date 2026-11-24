@@ -270,6 +270,25 @@ describe('the probe, run for real under sh', () => {
     expect(fs.existsSync(marker)).toBe(false);
   });
 
+  it.skipIf(process.platform !== 'linux')('without /proc, asks lsof where the pty\'s shell stands (macOS); a "-" pid shows no git', () => {
+    const repo = path.join(dir, 'repo');
+    fs.mkdirSync(repo);
+    gitInit(repo, 'mac-branch');
+    fs.writeFileSync(path.join(repo, 'new'), 'x');
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'lsof'), `#!/bin/sh\nprintf 'p%s\\nfcwd\\nn${repo}\\n' "$3"\n`, { mode: 0o755 });
+    const noProc = path.join(dir, 'empty-proc');
+    fs.mkdirSync(noProc);
+    const env = { PATH: `${bin}:${process.env.PATH}` };
+    const asMac = (pid: string) => parseCockpitProbe(
+      execFileSync('/bin/sh', ['-c', COCKPIT_PROBE_SCRIPT, 'cockpit', 'nobody', 'scan', '-', '-', '?', '?', pid, noProc], {
+        cwd: repo, encoding: 'utf8', env: { ...process.env, HOME: dir, ...env },
+      }));
+    expect(asMac('4242').git).toMatchObject({ branch: 'mac-branch', dirty: true });
+    expect(asMac('-').git).toBeNull();
+  });
+
   it.skipIf(process.platform !== 'linux')('still knows dirty anywhere inside the start repository', async () => {
     const repo = path.join(dir, 'repo');
     const below = path.join(repo, 'pkg');
@@ -603,15 +622,24 @@ describe('a terminal\'s cockpit, joined', () => {
     await svc.snapshot('b', ctx({ agentId: 'shell', tmux: true }));
     await svc.snapshot('c', ctx({ agentId: 'shell' }));
     expect(seen).toEqual([
-      ['a', 'reported', 'cglab-stg', '/k', '?', '?'], ['b', 'none', '-', '-', '?', '?'], ['c', 'scan', '-', '-', '?', '?'],
+      ['a', 'reported', 'cglab-stg', '/k', '?', '?', '-'], ['b', 'none', '-', '-', '?', '?', '-'], ['c', 'scan', '-', '-', '?', '?', '-'],
     ]);
+  });
+
+  it('passes the local pty pid, and \'-\' under tmux or wsl.exe where it is not the shell\'s', async () => {
+    const seen: Array<readonly string[]> = [];
+    const svc = service(async (_c, args) => { seen.push(args); return ''; });
+    await svc.snapshot('a', ctx({ agentId: 'shell', pid: 4242 }));
+    await svc.snapshot('b', ctx({ agentId: 'shell', pid: 4242, tmux: true }));
+    await svc.snapshot('c', ctx({ agentId: 'shell', pid: 4242, wsl: { distro: 'Ubuntu' } as CockpitContext['wsl'] }));
+    expect(seen.map(a => a[6])).toEqual(['4242', '-', '-']);
   });
 
   it('passes the Terraform variables the shell reported, "-" for empty and "?" for not reported', async () => {
     const seen: Array<readonly string[]> = [];
     const svc = service(async (_c, args) => { seen.push(args); return ''; });
     await svc.snapshot('a', ctx({ agentId: 'shell', reported: { awsProfile: '', kubeconfig: '', tfWorkspace: 'prod', tfDataDir: '' } }));
-    expect(seen[0]).toEqual(['a', 'reported', '-', '-', 'prod', '-']);
+    expect(seen[0]).toEqual(['a', 'reported', '-', '-', 'prod', '-', '-']);
   });
 
   it('shows no git or Terraform for a terminal with no directory of its own', async () => {

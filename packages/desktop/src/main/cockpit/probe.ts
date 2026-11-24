@@ -25,6 +25,9 @@
  * Where the shell stands: git and Terraform describe the shell's CURRENT
  * directory (/proc/<pid>/cwd), and are left out - unknown - when it cannot be
  * read: no /proc (macOS), no process with the marker, a deleted directory.
+ * Without /proc a local pty's pid (argument $7, '-' under wsl.exe and tmux, where
+ * it is not the shell's) is asked of lsof instead; tmux panes stay unknown. $8
+ * is the /proc directory, for tests only: the app never passes it.
  * The same holds for AWS and kube by scan, which read only /proc: on macOS
  * they are unknown too, and only a shell that reports shows them.
  *
@@ -37,7 +40,7 @@
  */
 
 export const COCKPIT_PROBE_SCRIPT = [
-  "marker=$1; mode=$2; rprof=$3; rkube=$4; rtfw=$5; rtfd=$6",
+  "marker=$1; mode=$2; rprof=$3; rkube=$4; rtfw=$5; rtfd=$6; ptypid=$7; procdir=${8:-/proc}",
   "[ \"$rprof\" = - ] && rprof=\"\"",
   "[ \"$rkube\" = - ] && rkube=\"\"",
   "[ \"$rtfw\" = - ] && rtfw=\"\"",
@@ -50,18 +53,18 @@ export const COCKPIT_PROBE_SCRIPT = [
   // found, and nothing below is read from the environment of any process.
   "shell=\"\"; fgp=\"\"",
   "if [ \"$mode\" != none ]; then",
-  "  for f in $(grep -lzxF \"AGENFK_SESSION=$marker\" /proc/[0-9]*/environ 2>/dev/null); do",
-  "    p=${f#/proc/}; p=${p%/environ}",
+  "  for f in $(grep -lzxF \"AGENFK_SESSION=$marker\" \"$procdir\"/[0-9]*/environ 2>/dev/null); do",
+  "    p=${f#\"$procdir\"/}; p=${p%/environ}",
   "    if [ -z \"$shell\" ] || [ \"$p\" -lt \"$shell\" ]; then shell=$p; fi",
   "  done",
   "  if [ -n \"$shell\" ]; then",
-  "    st=$(cat \"/proc/$shell/stat\" 2>/dev/null); st=${st##*) }",
+  "    st=$(cat \"$procdir/$shell/stat\" 2>/dev/null); st=${st##*) }",
   "    set -- $st; fg=$6",
-  "    if [ -n \"$fg\" ] && [ \"$fg\" -gt 0 ] 2>/dev/null && [ \"$fg\" != \"$shell\" ] && grep -qzxF \"AGENFK_SESSION=$marker\" \"/proc/$fg/environ\" 2>/dev/null; then fgp=$fg; fi",
+  "    if [ -n \"$fg\" ] && [ \"$fg\" -gt 0 ] 2>/dev/null && [ \"$fg\" != \"$shell\" ] && grep -qzxF \"AGENFK_SESSION=$marker\" \"$procdir/$fg/environ\" 2>/dev/null; then fgp=$fg; fi",
   "  fi",
   "fi",
   // One whole NAME= record of a process's environment, nothing else.
-  "getenv() { grep -zx \"$2=.*\" \"/proc/$1/environ\" 2>/dev/null | tr \"\\000\" \"\\n\" | sed -n \"1s/^$2=//p\"; }",
+  "getenv() { grep -zx \"$2=.*\" \"$procdir/$1/environ\" 2>/dev/null | tr \"\\000\" \"\\n\" | sed -n \"1s/^$2=//p\"; }",
   // The shell's CURRENT directory, not the one the terminal started in. Not
   // established (no shell found, a deleted directory): git and Terraform stay
   // unknown rather than describe a directory the shell may have left.
@@ -71,7 +74,13 @@ export const COCKPIT_PROBE_SCRIPT = [
   "g() { git -c core.fsmonitor=false -c core.hooksPath=/dev/null --no-optional-locks \"$@\"; }",
   "tracked=0",
   "if [ -n \"$shell\" ]; then",
-  "  t=$(readlink \"/proc/$shell/cwd\" 2>/dev/null)",
+  "  t=$(readlink \"$procdir/$shell/cwd\" 2>/dev/null)",
+  "  if [ -n \"$t\" ] && cd \"$t\" 2>/dev/null; then tracked=1; fi",
+  // No /proc (macOS): the pty's own child is the login shell, and lsof says
+  // where it stands. Only for a local pty (the app passes '-' under wsl.exe and
+  // tmux, where the pid is not the shell's).
+  "elif [ ! -d \"$procdir/self\" ] && [ \"$ptypid\" -gt 0 ] 2>/dev/null; then",
+  "  t=$(lsof -a -p \"$ptypid\" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)",
   "  if [ -n \"$t\" ] && cd \"$t\" 2>/dev/null; then tracked=1; fi",
   "fi",
   "if [ \"$tracked\" = 1 ]; then",

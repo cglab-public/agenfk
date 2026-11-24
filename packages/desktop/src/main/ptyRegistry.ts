@@ -619,7 +619,7 @@ export class PtyRegistry {
           cwd: isShell || attaching ? null : cwd, agentId: req.agentId, agentSessionId, wsl,
           // An attach has no environment of its own to scan: the process
           // carrying its marker is the herdr client, started with this app's.
-          tmux: useTmux || attaching, spawnedAt: Date.now(), resumed: req.resume === true,
+          tmux: useTmux || attaching, pid: wsl || attaching ? undefined : pty.pid, spawnedAt: Date.now(), resumed: req.resume === true,
         },
       });
       // The run exists from the moment the process does, so the tailer has
