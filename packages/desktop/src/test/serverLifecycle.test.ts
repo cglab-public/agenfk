@@ -179,16 +179,19 @@ describe('resolveServer — judging a found server (BUG cdae6039)', () => {
     expect(result.adopted).toBe(false);
   });
 
-  it('never settles on the skipped server while waiting for its own to publish', async () => {
-    // The port file can still name the foreign server for a few polls after
-    // the spawn; answering is not enough, it must also pass the judge.
+  it('never settles on the skipped server while waiting for its own: the child names its port', async () => {
+    // Replaces a test that fed the shared port file through the judge. The poll
+    // no longer reads that file, so the skipped server cannot be picked at all
+    // (PR #359 review); what is left to pin is that it is not, whatever the
+    // file says and however long the child takes.
     let polls = 0;
     let started = false;
     const result = await resolveServer({
-      readPort: () => {
-        if (!started) return 3000;
+      readPort: () => 3000,
+      readSpawnedPort: () => {
+        if (!started) return null;
         polls += 1;
-        return polls >= 3 ? 3001 : 3000;
+        return polls >= 3 ? 3001 : null;
       },
       probe: async (p: number) => p === 3000 || (started && p === 3001),
       judge: judgeBy({ 3000: { kind: 'skip', serverVersion: '2.0.0-beta.35' } }),
@@ -198,6 +201,23 @@ describe('resolveServer — judging a found server (BUG cdae6039)', () => {
     });
     expect(result.port).toBe(3001);
     expect(result.adopted).toBe(false);
+  });
+
+  it('adds no version notice for the server it started itself', async () => {
+    // The judge's mismatch verdict is for servers found running; the child is
+    // this app's own build on this app's database (PR #360 review, LOW).
+    let started = false;
+    const judge = vi.fn(async () => ({ kind: 'adopt-mismatch', serverVersion: '1', database: 'same' }) as AdoptVerdict);
+    const result = await resolveServer({
+      readPort: () => null,
+      readSpawnedPort: () => (started ? 3001 : null),
+      probe: async (p: number) => started && p === 3001,
+      judge,
+      spawn: () => { started = true; },
+      waitMs: 0,
+    });
+    expect(result.versionMismatch).toBeUndefined();
+    expect(judge).not.toHaveBeenCalled();
   });
 
   it('adopts another candidate when the first one is skipped', async () => {
@@ -523,5 +543,36 @@ describe('resolveServer — the server it started (PR #359 review)', () => {
       waitMs: 0,
     });
     expect(result).toMatchObject({ port: 3100, adopted: false });
+  });
+});
+
+describe('resolveServer — database owner and version judge together (PR #360 review)', () => {
+  const configured = { fallbackPorts: [3100, 3101], waitMs: 0, adoptAttempts: 1 };
+
+  it('does not let a same-version verdict skip the database check past the range', async () => {
+    const spawn = vi.fn();
+    const run = resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      judge: async () => ({ kind: 'adopt' }),
+      databaseOwner: async () => 'unknown',
+      spawn,
+    });
+    await expect(run).rejects.toBeInstanceOf(DatabaseOwnerError);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('adopts it, with the version notice, when it holds the database but is another version', async () => {
+    const result = await resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      judge: async () => ({ kind: 'adopt-mismatch', serverVersion: '2.0.0-beta.35', database: 'same' }),
+      databaseOwner: async () => 'same',
+      spawn: vi.fn(),
+    });
+    expect(result.adopted).toBe(true);
+    expect(result.versionMismatch).toEqual({ serverVersion: '2.0.0-beta.35', database: 'same' });
   });
 });

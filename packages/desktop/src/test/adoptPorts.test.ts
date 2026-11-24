@@ -7,13 +7,12 @@
  * adopted it anyway: on Windows the WSL server on 3000 is forwarded to
  * localhost.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import {
-  adoptPortRange, boundPortReader, databaseOwner, invalidPortMessage, parseBoundPort, portSetting,
-  type DbFileAnswer, type DbFileId,
+  adoptPortRange, boundPortReader, invalidPortMessage, parseBoundPort, portSetting,
 } from '../main/adoptPorts.js';
 import { buildServerEnv } from '../main/serverEnv.js';
 
@@ -140,59 +139,6 @@ describe('boundPortReader', () => {
     expect(r.port()).toBeNull();
     r.push(`${START(3101)}\n`);
     expect(r.port()).toBe(3101);
-  });
-});
-
-describe('databaseOwner', () => {
-  const ids = (m: Record<string, DbFileAnswer>): DbFileId => async p => m[p] ?? 'missing';
-  const A = '/a/data.sqlite';
-  const B = '/b/data.sqlite';
-
-  it('is same for one spelling of the path, without touching the disk', async () => {
-    const fileId = vi.fn();
-    expect(await databaseOwner('/h/a/data.sqlite', '/h/a/./data.sqlite', 'linux', fileId)).toBe('same');
-    expect(fileId).not.toHaveBeenCalled();
-  });
-
-  it('is same for two paths that stat to one file, such as a symlink', async () => {
-    const owner = await databaseOwner('/link/data.sqlite', '/real/data.sqlite', 'linux',
-      ids({ '/link/data.sqlite': { id: '1:7' }, '/real/data.sqlite': { id: '1:7' } }));
-    expect(owner).toBe('same');
-  });
-
-  it('is different when both files exist and are not one file', async () => {
-    expect(await databaseOwner(A, B, 'linux', ids({ [A]: { id: '1:1' }, [B]: { id: '1:2' } }))).toBe('different');
-  });
-
-  it('is different when only one of the two files exists yet', async () => {
-    expect(await databaseOwner(A, B, 'linux', ids({ [A]: { id: '1:1' } }))).toBe('different');
-  });
-
-  it('is unknown, not different, for a relative server path', async () => {
-    expect(await databaseOwner('data/data.sqlite', B, 'linux', ids({}))).toBe('unknown');
-    expect(await databaseOwner('data.sqlite', 'C:\\b\\data.sqlite', 'win32', ids({}))).toBe('unknown');
-  });
-
-  it('is unknown when the desktop path is relative', async () => {
-    expect(await databaseOwner(A, 'data.sqlite', 'linux', ids({}))).toBe('unknown');
-  });
-
-  it('is unknown when stat fails for a reason other than a missing file', async () => {
-    expect(await databaseOwner(A, B, 'linux', ids({ [A]: 'error', [B]: { id: '1:2' } }))).toBe('unknown');
-  });
-
-  it('is unknown when neither file exists', async () => {
-    expect(await databaseOwner(A, B, 'linux', ids({}))).toBe('unknown');
-  });
-
-  it('is different for a WSL path seen from Windows, which the desktop cannot open', async () => {
-    expect(await databaseOwner('/home/u/.agenfk/data.sqlite', 'C:\\Users\\u\\data.sqlite', 'win32', ids({})))
-      .toBe('different');
-  });
-
-  it('ignores case on Windows', async () => {
-    expect(await databaseOwner('C:\\Users\\U\\data.sqlite', 'c:\\users\\u\\data.sqlite', 'win32', ids({})))
-      .toBe('same');
   });
 });
 

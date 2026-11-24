@@ -14,13 +14,13 @@ import * as os from 'os';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
-import { adoptPortRange, boundPortReader, databaseOwner, invalidPortMessage, parseBoundPort, statDbFile } from './adoptPorts.js';
+import { adoptPortRange, boundPortReader, invalidPortMessage } from './adoptPorts.js';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
 import { resolveDbPath, buildServerEnv } from './serverEnv.js';
 import { isAgenfkServer, readServerIdentity, servesUiBundle, httpGet } from './probes.js';
-import { CLI_INSTALL_URL, makeJudge, versionMismatchNotice } from './adoption.js';
+import { CLI_INSTALL_URL, makeJudge, sameDatabase, versionMismatchNotice } from './adoption.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
 import { proposeDecomposition } from './propose.js';
@@ -335,9 +335,7 @@ async function boot(): Promise<void> {
       readSpawnedPort: () => spawnedPortReader.port(),
       databaseOwner: async port => {
         const reported = (await readServerIdentity(port))?.dbPath ?? null;
-        return reported === null
-          ? 'unknown'
-          : databaseOwner(reported, resolveDbPath(), runningOn, statDbFile());
+        return reported === null ? 'unknown' : sameDatabase(reported, resolveDbPath(), runningOn);
       },
       fallbackPorts: ADOPT_PORT_RANGE,
       // Identity, not just liveness: anything could be listening on 3000, and

@@ -9,9 +9,6 @@
  * This separates PORTS only. A desktop and a server that share a home share
  * its database too, unless AGENFK_DB_PATH (or another home) says otherwise.
  */
-import * as fs from 'fs';
-import * as path from 'path';
-
 /** How many ports from the start are checked: a few stale listeners' worth. */
 export const ADOPT_RANGE_SIZE = 16;
 
@@ -107,56 +104,4 @@ export function boundPortReader(): { push(chunk: string): void; port(): number |
     port: () => found,
     reset() { pending = ''; found = null; },
   };
-}
-
-/** What stat said about a database file: its identity, absent, or failed some other way. */
-export type DbFileAnswer = { id: string } | 'missing' | 'error';
-export type DbFileId = (p: string) => Promise<DbFileAnswer>;
-
-export type DatabaseOwner = 'same' | 'different' | 'unknown';
-
-/**
- * Does a server that reports `serverPath` hold the database the desktop would
- * open at `appPath`?
- *
- * Only proof of a different file says "different"; every doubt says "unknown",
- * because a wrong "different" forks a second server onto one SQLite file. A
- * path this machine cannot open (a WSL path seen from Windows, a share) is
- * proof: the desktop cannot open it either.
- */
-export async function databaseOwner(
-  serverPath: string,
-  appPath: string,
-  platform: NodeJS.Platform,
-  fileId: DbFileId,
-): Promise<DatabaseOwner> {
-  const api = platform === 'win32' ? path.win32 : path.posix;
-  const fold = (p: string) => (platform === 'win32' || platform === 'darwin' ? p.toLowerCase() : p);
-  const local = platform === 'win32' ? /^[a-zA-Z]:[\\/]/.test(serverPath) : serverPath.startsWith('/');
-  if (!local) {
-    // On Windows a leading slash or a UNC prefix names another filesystem; a
-    // bare relative path names nothing we can resolve.
-    const foreign = platform === 'win32' && /^[\\/]/.test(serverPath);
-    return foreign ? 'different' : 'unknown';
-  }
-  if (!api.isAbsolute(appPath)) return 'unknown';
-  if (fold(api.normalize(serverPath)) === fold(api.normalize(appPath))) return 'same';
-
-  const [server, app] = await Promise.all([fileId(serverPath), fileId(appPath)]);
-  if (server === 'error' || app === 'error') return 'unknown';
-  if (server === 'missing' && app === 'missing') return 'unknown';
-  if (server === 'missing' || app === 'missing') return 'different';
-  return server.id === app.id ? 'same' : 'different';
-}
-
-/** stat, bounded: a mapped drive can hang for tens of seconds and boot waits on this. */
-export function statDbFile(ms = 2000): DbFileId {
-  return p => new Promise<DbFileAnswer>(resolve => {
-    const timer = setTimeout(() => resolve('error'), ms);
-    timer.unref?.();
-    fs.promises.stat(p).then(
-      s => { clearTimeout(timer); resolve({ id: `${s.dev}:${s.ino}` }); },
-      (e: NodeJS.ErrnoException) => { clearTimeout(timer); resolve(e?.code === 'ENOENT' ? 'missing' : 'error'); },
-    );
-  });
 }
