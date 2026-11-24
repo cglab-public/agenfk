@@ -80,13 +80,16 @@ export const COCKPIT_PROBE_SCRIPT = [
   // status, not diff: an untracked file is a dirty tree too. But status runs the
   // repository's clean/process filters on any file it must compare, and the
   // shell may have walked into a checkout nobody vetted ($HOME is a start
-  // directory too). So it is asked only in the repository the terminal was
-  // opened in - the one the cockpit always read. Anywhere else dirty is '?'
-  // (unknown). rev-parse, symbolic-ref and rev-list run no filters, hooks or
-  // fsmonitor.
-  "    top_cur=$(g rev-parse --show-toplevel 2>/dev/null); top_start=$(cd \"$start\" && g rev-parse --show-toplevel 2>/dev/null)",
-  "    if [ -n \"$top_cur\" ] && [ \"$top_cur\" = \"$top_start\" ]; then",
-  "      if [ -n \"$(g status --porcelain --untracked-files=normal --ignore-submodules 2>/dev/null | head -n 1)\" ]; then d=1; else d=0; fi",
+  // directory too, and a `.git` FILE can point a subdirectory at another git
+  // dir that names this one's work tree). So it is asked only when the shell
+  // resolves to the very same git dir AND work tree as the start directory - the
+  // repository the cockpit always read - and then pinned to those two, never
+  // discovered from here. Anywhere else dirty is '?' (unknown). rev-parse,
+  // symbolic-ref and rev-list run no filters, hooks or fsmonitor.
+  "    gd_cur=$(g rev-parse --absolute-git-dir 2>/dev/null); top_cur=$(g rev-parse --show-toplevel 2>/dev/null)",
+  "    gd_start=$(cd \"$start\" && g rev-parse --absolute-git-dir 2>/dev/null); top_start=$(cd \"$start\" && g rev-parse --show-toplevel 2>/dev/null)",
+  "    if [ -n \"$gd_cur\" ] && [ -n \"$top_cur\" ] && [ -n \"$gd_start\" ] && [ -n \"$top_start\" ] && [ \"$gd_cur\" = \"$gd_start\" ] && [ \"$top_cur\" = \"$top_start\" ]; then",
+  "      if [ -n \"$(g --git-dir=\"$gd_start\" --work-tree=\"$top_start\" status --porcelain --untracked-files=normal --ignore-submodules 2>/dev/null | head -n 1)\" ]; then d=1; else d=0; fi",
   "    else d='?'; fi",
   "    ab=$(g rev-list --left-right --count \"@{u}...HEAD\" 2>/dev/null) || ab=\"\"",
   "    printf \"git=%s\\t%s\\t%s\\n\" \"$b\" \"$d\" \"$ab\"",

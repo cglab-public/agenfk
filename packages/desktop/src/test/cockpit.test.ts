@@ -244,6 +244,32 @@ describe('the probe, run for real under sh', () => {
     expect(fs.existsSync(marker)).toBe(false);
   });
 
+  it.skipIf(process.platform !== 'linux')('never runs a filter from a git dir a .git file points a subdirectory at, even when it names the start work tree', async () => {
+    const outer = path.join(dir, 'outer');
+    const sub = path.join(outer, 'sub');
+    const evilGd = path.join(dir, 'evil-gitdir');
+    fs.mkdirSync(sub, { recursive: true });
+    gitInit(outer, 'main');
+    fs.writeFileSync(path.join(outer, 'a'), 'changed');
+    // The attacker's git dir: the outer repository's history and index, its own config.
+    fs.mkdirSync(path.join(evilGd, 'objects', 'info'), { recursive: true });
+    fs.writeFileSync(path.join(evilGd, 'objects', 'info', 'alternates'), `${path.join(outer, '.git', 'objects')}\n`);
+    fs.cpSync(path.join(outer, '.git', 'refs'), path.join(evilGd, 'refs'), { recursive: true });
+    fs.copyFileSync(path.join(outer, '.git', 'HEAD'), path.join(evilGd, 'HEAD'));
+    fs.copyFileSync(path.join(outer, '.git', 'index'), path.join(evilGd, 'index'));
+    const marker = path.join(dir, 'FILTER-RAN');
+    const cmd = path.join(dir, 'evil.sh');
+    fs.writeFileSync(cmd, `#!/bin/sh\ntouch ${marker}\ncat\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(evilGd, 'config'),
+      `[core]\n\trepositoryformatversion = 0\n\tworktree = ${outer}\n[filter "evil"]\n\tclean = ${cmd}\n\tprocess = ${cmd}\n`);
+    fs.writeFileSync(path.join(outer, '.gitattributes'), '* filter=evil\n');
+    fs.writeFileSync(path.join(sub, '.git'), `gitdir: ${evilGd}\n`);
+    await shellIn('u-gitfile', sub);
+    const got = startedIn(outer, 'u-gitfile');
+    expect(got.git).toMatchObject({ dirty: null });
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
   it.skipIf(process.platform !== 'linux')('still knows dirty anywhere inside the start repository', async () => {
     const repo = path.join(dir, 'repo');
     const below = path.join(repo, 'pkg');
