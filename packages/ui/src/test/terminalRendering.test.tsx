@@ -446,16 +446,20 @@ describe('waiting for the font', () => {
   });
 
   it('does not touch a terminal that closed before the font arrived', async () => {
-    let done: () => void = () => {};
-    Object.defineProperty(document, 'fonts', {
-      configurable: true,
-      value: { load: vi.fn(() => new Promise<unknown>(resolve => { done = () => resolve([]); })), check: () => false },
-    });
+    // fonts.load() runs twice (the measuring call, then the per-range fallback):
+    // each call keeps its own resolver, so the measuring one can be released
+    // after unmount and the cancellation guard is what is under test.
+    const resolvers: Array<() => void> = [];
+    const load = vi.fn((..._args: string[]) => new Promise<unknown>(resolve => { resolvers.push(() => resolve([])); }));
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { load, check: () => false } });
     const term = fakeTerm();
     const { unmount } = render(<TerminalPane itemId="i1" agentId="shell" bridge={quietBridge() as never}
       createTerminal={() => term} createFitAddon={fitAddon()} createRendererAddon={() => null} />);
+    // The measuring call is the one asked with the face alone.
+    const measuring = load.mock.calls.findIndex(args => args.length === 1);
+    expect(measuring).toBeGreaterThanOrEqual(0);
     unmount();
-    await act(async () => { done(); await Promise.resolve(); });
+    await act(async () => { resolvers.forEach(release => release()); await Promise.resolve(); await Promise.resolve(); });
     expect(term.familyWrites).toEqual([]);
   });
 });
