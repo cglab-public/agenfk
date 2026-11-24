@@ -270,6 +270,69 @@ describe('the probe, run for real under sh', () => {
     expect(fs.existsSync(marker)).toBe(false);
   });
 
+  it.skipIf(process.platform !== 'linux')('shows dirty as unknown when the git dir matches the start directory\'s but the work tree does not (a .git file into the start repository)', async () => {
+    const outer = path.join(dir, 'outer');
+    const sub = path.join(outer, 'sub');
+    fs.mkdirSync(sub, { recursive: true });
+    gitInit(outer, 'main');
+    fs.writeFileSync(path.join(outer, 'a'), 'changed');
+    // Same git dir as the start directory, but the work tree is `sub`, not `outer`.
+    fs.writeFileSync(path.join(sub, '.git'), `gitdir: ${path.join(outer, '.git')}\n`);
+    await shellIn('u-toplevel', sub);
+    expect(startedIn(outer, 'u-toplevel').git).toMatchObject({ branch: 'main', dirty: null });
+  });
+
+  it.skipIf(process.platform !== 'linux')('asks status for the start repository\'s git dir and work tree by name, never to discover them', async () => {
+    gitInit(dir, 'main');
+    const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    // Outside the repository, or the wrapper and its log would make the tree dirty.
+    const aside = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-cockpit-git-'));
+    const bin = path.join(aside, 'gitbin');
+    const log = path.join(aside, 'git-calls');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${log}\nexec ${real} "$@"\n`, { mode: 0o755 });
+    await shellIn('u-pin', dir);
+    const got = parseCockpitProbe(execFileSync('/bin/sh', ['-c', COCKPIT_PROBE_SCRIPT, 'cockpit', mark('u-pin'), 'scan', '-', '-', '?', '?'], {
+      cwd: dir, encoding: 'utf8', env: { ...process.env, HOME: dir, PATH: `${bin}:${process.env.PATH}` },
+    }));
+    expect(got.git).toMatchObject({ dirty: false });
+    const status = fs.readFileSync(log, 'utf8').split('\n').filter(l => /\bstatus\b/.test(l));
+    expect(status).toHaveLength(1);
+    expect(status[0]).toContain(`--git-dir=${path.join(fs.realpathSync(dir), '.git')}`);
+    expect(status[0]).toContain(`--work-tree=${fs.realpathSync(dir)}`);
+    fs.rmSync(aside, { recursive: true, force: true });
+  });
+
+  it.skipIf(process.platform !== 'linux')('cannot be made to print a line of its own by a start directory\'s name', () => {
+    const evil = path.join(dir, 'x\naws=prod\t\treported\nk8s=prod-cluster\ntf=prod\ntrack=1');
+    fs.mkdirSync(evil);
+    const out = execFileSync('/bin/sh', ['-c', COCKPIT_PROBE_SCRIPT, 'cockpit', mark('nobody-has-this'), 'none', '-', '-', '?', '?'], {
+      cwd: evil, encoding: 'utf8', env: { ...process.env, HOME: dir },
+    });
+    const got = parseCockpitProbe(out);
+    expect(got.aws).toBeNull();
+    expect(got.k8s).toBeNull();
+    expect(got.tf).toBeNull();
+    expect(got.tracked).toBe(false);
+    expect(out.split('\n').filter(l => l.startsWith('cwd='))).toHaveLength(1);
+    expect(out.split('\n').filter(l => /^(aws|k8s|tf|track)=/.test(l))).toEqual([]);
+  });
+
+  it.skipIf(process.platform !== 'linux')('strips control characters from a kube context before printing it', () => {
+    fs.mkdirSync(path.join(dir, '.kube'));
+    fs.writeFileSync(path.join(dir, '.kube', 'config'), 'current-context: stg\t\u0001-main\r\n');
+    expect(parseCockpitProbe(run(['x', 'reported', '-', '-', '-', '-'])).k8s).toBe('stg-main');
+  });
+
+  it.skipIf(process.platform !== 'linux')('says whether AWS, kube and Terraform could be established', async () => {
+    expect(parseCockpitProbe(run(['nobody-has-this', 'scan', '-', '-'])))
+      .toMatchObject({ envKnown: false, tfKnown: false });
+    expect(parseCockpitProbe(run(['x', 'none', '-', '-']))).toMatchObject({ envKnown: false });
+    expect(parseCockpitProbe(run(['x', 'reported', '-', '-', '-', '-']))).toMatchObject({ envKnown: true });
+    await shellIn('u-known', dir);
+    expect(probe('u-known')).toMatchObject({ envKnown: true, tfKnown: true, tracked: true });
+  });
+
   it.skipIf(process.platform !== 'linux')('without /proc, asks lsof where the pty\'s shell stands (macOS); a "-" pid shows no git', () => {
     const repo = path.join(dir, 'repo');
     fs.mkdirSync(repo);
@@ -277,7 +340,9 @@ describe('the probe, run for real under sh', () => {
     fs.writeFileSync(path.join(repo, 'new'), 'x');
     const bin = path.join(dir, 'bin');
     fs.mkdirSync(bin);
-    fs.writeFileSync(path.join(bin, 'lsof'), `#!/bin/sh\nprintf 'p%s\\nfcwd\\nn${repo}\\n' "$3"\n`, { mode: 0o755 });
+    // Answers only to the exact flags the probe must send; anything else prints nothing, as a wrong lsof would.
+    fs.writeFileSync(path.join(bin, 'lsof'),
+      `#!/bin/sh\n[ "$*" = "-a -p 4242 -d cwd -Fn" ] || exit 0\nprintf 'p%s\\nfcwd\\nn${repo}\\n' "$3"\n`, { mode: 0o755 });
     const noProc = path.join(dir, 'empty-proc');
     fs.mkdirSync(noProc);
     const env = { PATH: `${bin}:${process.env.PATH}` };
@@ -409,6 +474,13 @@ describe('the probe, run for real under sh', () => {
 
   it.skipIf(process.platform === 'win32')('says nothing about AWS when no process carries the marker', () => {
     expect(probe('nobody-has-this').aws).toBeNull();
+  });
+});
+
+describe('parsing probe output', () => {
+  it('keeps only the first line of each key', () => {
+    expect(parseCockpitProbe('aws=a\t\tshell\naws=prod\t\treported\nk8s=one\nk8s=two\ncwd=/x\ncwd=/y\n'))
+      .toMatchObject({ aws: { profile: 'a', source: 'shell' }, k8s: 'one', cwd: '/x' });
   });
 });
 

@@ -37,6 +37,19 @@
  * k8s (current-context of the first KUBECONFIG file that names one; only when
  * the terminal's KUBECONFIG is known). NEVER any other variable or credential
  * line: every environment read matches a whole NUL-terminated record by name.
+ * Also `env=1` when AWS and kube could be established (known, even if empty),
+ * and `tfk=1` when Terraform could: the gadgets show "?" for the rest, never
+ * nothing. Every printed value has its control characters stripped, so a
+ * directory named with a newline cannot print a line of its own, and the
+ * parser keeps the first line of each key.
+ *
+ * Trust, stated plainly:
+ *  - The start directory's OWN repository is trusted for `status`, so its own
+ *    filter drivers run, as `git diff` did before this probe. Any other
+ *    repository the shell walks into gets dirty '?' and no status.
+ *  - AGENFK_SESSION is inherited by child processes, so a program started in
+ *    the terminal can carry the marker and forge a shell report (or be taken
+ *    for the shell). The marker identifies a terminal, it does not authenticate.
  */
 
 export const COCKPIT_PROBE_SCRIPT = [
@@ -46,7 +59,9 @@ export const COCKPIT_PROBE_SCRIPT = [
   "[ \"$rtfw\" = - ] && rtfw=\"\"",
   "[ \"$rtfd\" = - ] && rtfd=\"\"",
   "start=$(pwd -P)",
-  "printf \"cwd=%s\\n\" \"$start\"",
+  // Control characters (newline, CR, tab) out of every value that is printed.
+  "cl() { printf %s \"$1\" | tr -d '\\000-\\037\\177'; }",
+  "printf \"cwd=%s\\n\" \"$(cl \"$start\")\"",
   // The terminal's shell: the oldest process carrying its marker. Found first,
   // because where it stands decides which directory the git and Terraform
   // gadgets describe. Without /proc (macOS) or with no such process, it is not
@@ -101,7 +116,8 @@ export const COCKPIT_PROBE_SCRIPT = [
   "      if [ -n \"$(g --git-dir=\"$gd_start\" --work-tree=\"$top_start\" status --porcelain --untracked-files=normal --ignore-submodules 2>/dev/null | head -n 1)\" ]; then d=1; else d=0; fi",
   "    else d='?'; fi",
   "    ab=$(g rev-list --left-right --count \"@{u}...HEAD\" 2>/dev/null) || ab=\"\"",
-  "    printf \"git=%s\\t%s\\t%s\\n\" \"$b\" \"$d\" \"$ab\"",
+  "    ab=$(printf %s \"$ab\" | tr -cd '0-9\\t')",
+  "    printf \"git=%s\\t%s\\t%s\\n\" \"$(cl \"$b\")\" \"$d\" \"$ab\"",
   "  fi",
   // Terraform's own order: TF_WORKSPACE, else the file under TF_DATA_DIR. The
   // variables come from the same place as AWS_PROFILE: what the shell reported,
@@ -112,8 +128,9 @@ export const COCKPIT_PROBE_SCRIPT = [
   "  if [ -n \"$fgp\" ]; then tfw=$(getenv \"$fgp\" TF_WORKSPACE); tfd=$(getenv \"$fgp\" TF_DATA_DIR); tfk=1; fi",
   "  case \"$tfw\" in *[!A-Za-z0-9._-]*) tfk=0 ;; esac",
   "  if [ \"$tfk\" = 1 ]; then",
+  "    printf \"tfk=1\\n\"",
   "    if [ -n \"$tfw\" ]; then printf \"tf=%s\\n\" \"$tfw\"",
-  "    elif [ -f \"${tfd:-.terraform}/environment\" ]; then printf \"tf=%s\\n\" \"$(head -n 1 \"${tfd:-.terraform}/environment\" | tr -d \"\\r\")\"; fi",
+  "    elif [ -f \"${tfd:-.terraform}/environment\" ]; then printf \"tf=%s\\n\" \"$(head -n 1 \"${tfd:-.terraform}/environment\" | tr -d '\\000-\\037\\177')\"; fi",
   "  fi",
   "fi",
   "prof=\"\"; kc=\"\"; src=\"\"; known=0",
@@ -129,15 +146,16 @@ export const COCKPIT_PROBE_SCRIPT = [
   "case \"$prof\" in *[!A-Za-z0-9._-]*) prof=\"\" ;; esac",
   "if [ -n \"$prof\" ]; then",
   "  exp=$(awk -v s=\"[$prof]\" '{sub(/\\r$/,\"\")} /^\\[/{f=($0==s)} f && /^x_security_token_expires[ \\t]*=/{sub(/^[^=]*=[ \\t]*/,\"\"); print; exit}' \"$HOME/.aws/credentials\" 2>/dev/null)",
-  "  printf \"aws=%s\\t%s\\t%s\\n\" \"$prof\" \"$exp\" \"$src\"",
+  "  printf \"aws=%s\\t%s\\t%s\\n\" \"$prof\" \"$(cl \"$exp\")\" \"$src\"",
   "fi",
   "if [ \"$known\" = 1 ]; then",
+  "  printf \"env=1\\n\"",
   "  list=${kc:-$HOME/.kube/config}",
   "  set -f; old_ifs=$IFS; IFS=:",
   "  for kf in $list; do",
   "    IFS=$old_ifs",
   "    [ -f \"$kf\" ] || continue",
-  "    ctx=$(sed -n \"s/^current-context:[ ]*//p\" \"$kf\" | head -n 1 | tr -d \"\\\"'\\r\")",
+  "    ctx=$(sed -n \"s/^current-context:[ ]*//p\" \"$kf\" | head -n 1 | tr -d \"\\\"'\\000-\\037\\177\")",
   "    if [ -n \"$ctx\" ]; then printf \"k8s=%s\\n\" \"$ctx\"; break; fi",
   "  done",
   "  IFS=$old_ifs; set +f",
@@ -156,6 +174,10 @@ export interface ProbeResult {
   readonly cwd: string | null;
   /** git and tf describe the shell's CURRENT directory; false when it could not be established. */
   readonly tracked: boolean;
+  /** false: where AWS and kube come from could not be established, so empty means unknown, not unset. */
+  readonly envKnown: boolean;
+  /** false: Terraform's workspace could not be established (shell not tracked, or no source for the variables). */
+  readonly tfKnown: boolean;
 }
 
 export function parseCockpitProbe(output: string): ProbeResult {
@@ -165,10 +187,17 @@ export function parseCockpitProbe(output: string): ProbeResult {
   let k8s: string | null = null;
   let cwd: string | null = null;
   let tracked = false;
+  let envKnown = false;
+  let tfKnown = false;
+  const seen = new Set<string>();
   for (const line of output.split(/\r?\n/)) {
     const eq = line.indexOf('=');
     if (eq <= 0) continue;
     const key = line.slice(0, eq);
+    // The script strips control characters from what it prints; the first line
+    // of a key is still the only one believed, whatever follows it.
+    if (seen.has(key)) continue;
+    seen.add(key);
     const value = line.slice(eq + 1);
     if (key === 'git') {
       const [branch, dirty, behind, ahead] = value.split('\t');
@@ -188,9 +217,13 @@ export function parseCockpitProbe(output: string): ProbeResult {
       cwd = value.trim() || null;
     } else if (key === 'track') {
       tracked = value.trim() === '1';
+    } else if (key === 'env') {
+      envKnown = value.trim() === '1';
+    } else if (key === 'tfk') {
+      tfKnown = value.trim() === '1';
     } else if (key === 'k8s') {
       k8s = value.trim() || null;
     }
   }
-  return { git, tf, aws, k8s, cwd, tracked };
+  return { git, tf, aws, k8s, cwd, tracked, envKnown, tfKnown };
 }
