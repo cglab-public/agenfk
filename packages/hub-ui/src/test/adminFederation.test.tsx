@@ -142,6 +142,15 @@ describe('Admin → Parent hub', () => {
     expect(label.nextElementSibling).toHaveTextContent('7');
   });
 
+  it('says what this hub sends its parent, field by field, as the parent set it', async () => {
+    renderPage({ ...BOUND, identity: { person: 'coded', installation: 'as-written' } });
+    expect(await screen.findByText(/^Person$/)).toBeInTheDocument();
+    expect(screen.getByText(/coded \(user key replaced; names, emails and titles not sent\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Installation$/)).toBeInTheDocument();
+    expect(screen.getByText(/^as written$/i)).toBeInTheDocument();
+    expect(screen.getByText(/set by the parent hub/i)).toBeInTheDocument();
+  });
+
   it('will not let the hub leave on its own, and says why', async () => {
     renderPage(BOUND);
     const leave = await screen.findByRole('button', { name: /leave/i });

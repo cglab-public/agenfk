@@ -145,8 +145,8 @@ describe('a change from an installation (the CLI)', () => {
     const token = await issueApiKey(ctx.db, 'org', 'client', { installationId: 'inst-1' });
     const r = await supertest(server).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`).send({ repo: 'https://github.com/acme/app', flowId: created.body.id });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
-    const sel = (await rows(4)).find(x => x.action === 'flow.select');
-    expect(sel, JSON.stringify(await rows(4))).toMatchObject({ source: 'cli', area: 'flows' });
+    const sel = (await rows(3)).find(x => x.action === 'flow.select');
+    expect(sel, JSON.stringify(await rows(3))).toMatchObject({ source: 'cli', area: 'flows' });
     expect(sel!.target).toContain('github.com/acme/app');
     expect(JSON.stringify(sel)).not.toContain(token);
   });

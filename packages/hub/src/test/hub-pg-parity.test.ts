@@ -13,6 +13,7 @@ import { recomputeRollups } from '../rollup';
 import { raceBehindGuard } from './helpers/raceBehindGuard';
 import { ACTIVE_ADMINS_SQL } from '../routes/admin';
 import type { HubDb } from '../db/types';
+import { USAGE_FIXED_VERSION } from '../services/unfixedUsage';
 
 /**
  * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
@@ -1055,5 +1056,371 @@ describe('PG parity: admin model mappings', () => {
     expect(removed.body.removed).toBe(true);
     const reverted = await (await supertest(fx.app).get('/v1/prs/overview').set('Cookie', fx.cookie)).body;
     expect(reverted.byModel).toHaveLength(2);
+  });
+});
+
+/**
+ * PG parity: repository settings (RFC-002).
+ *
+ * The repository record is claimed with an atomic first-writer-wins insert, and
+ * its revision history is a second table keyed by (org, remote_url, revision) —
+ * both statements are exactly the shape the dialect translator can get wrong
+ * (`INSERT OR IGNORE` has no PG spelling, and `shadowThreshold` is a nullable
+ * integer that must survive as NULL, not 0). So the whole admin path is walked
+ * on pg-mem here, with the view checked on the way.
+ */
+describe('PG parity: repository settings (RFC-002)', () => {
+  const REPO = 'https://github.com/acme/app.git';
+  const CANON = 'git@github.com:acme/app.git';
+  let fx: Fixture & { key: string };
+
+  beforeEach(async () => {
+    const booted = await bootHubOnPg();
+    fx = { ...booted, key: await issueApiKey(booted.db, 'org', 'pg-repo', { installationId: 'inst-pg-repo' }) };
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-repo', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'dev', 'dev@acme.com')`,
+    );
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-producer', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'ci', 'ci@acme.com')`,
+    );
+  });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  const bearer = (k: string) => ({ Authorization: `Bearer ${k}` });
+
+  it('init -> admin revise -> mode -> producers, and the view reflects all of it', async () => {
+    const init = await supertest(__server).post('/v1/repo-settings/init').set(bearer(fx.key))
+      .send({ repo: 'git@github.com:ACME/App', verifyCommand: 'npm test' });
+    expect(init.status, JSON.stringify(init.body)).toBe(201);
+    expect(init.body.created).toBe(true);
+    expect(init.body.settings).toMatchObject({
+      remoteUrl: CANON, verifyCommand: 'npm test', revision: 1, receiptsMode: 'off', producers: [],
+    });
+    expect(init.body.settings.shadowThreshold).toBeNull();
+
+    const revised = await supertest(__server).put('/v1/admin/repos/command').set('Cookie', fx.cookie)
+      .send({ repo: REPO, verifyCommand: 'pnpm verify' });
+    expect(revised.status, JSON.stringify(revised.body)).toBe(200);
+    expect(revised.body).toMatchObject({ remoteUrl: CANON, verifyCommand: 'pnpm verify', revision: 2 });
+
+    const mode = await supertest(__server).put('/v1/admin/repos/mode').set('Cookie', fx.cookie)
+      .send({ repo: REPO, mode: 'shadow', shadowThreshold: 12 });
+    expect(mode.status, JSON.stringify(mode.body)).toBe(200);
+    expect(mode.body).toMatchObject({ receiptsMode: 'shadow', shadowThreshold: 12, revision: 2 });
+
+    const producers = await supertest(__server).put('/v1/admin/repos/producers').set('Cookie', fx.cookie)
+      .send({ repo: REPO, installationId: 'inst-pg-producer', allowed: true });
+    expect(producers.status, JSON.stringify(producers.body)).toBe(200);
+    expect(producers.body.producers).toEqual(['inst-pg-producer']);
+
+    const view = await supertest(__server).get(`/v1/repo-settings?repo=${encodeURIComponent(REPO)}`).set(bearer(fx.key));
+    expect(view.status).toBe(200);
+    expect(view.body.settings).toMatchObject({
+      remoteUrl: CANON, verifyCommand: 'pnpm verify', revision: 2, receiptsMode: 'shadow',
+      shadowThreshold: 12, producers: ['inst-pg-producer'],
+    });
+    expect(view.headers.etag).toBeTruthy();
+
+    const revs = await supertest(__server).get(`/v1/admin/repos/revisions?repo=${encodeURIComponent(REPO)}`).set('Cookie', fx.cookie);
+    expect(revs.status).toBe(200);
+    expect(revs.body.revisions.map((r: any) => r.revision)).toEqual([2, 1]);
+    expect(revs.body.revisions[0]).toMatchObject({ source: 'admin', actorEmail: 'admin@x' });
+    expect(revs.body.revisions[1]).toMatchObject({ source: 'init', installationId: 'inst-pg-repo' });
+
+    const rows = await fx.db.all<{ n: number }>('SELECT COUNT(*) AS n FROM repo_settings', []);
+    expect(Number(rows[0].n)).toBe(1);
+  });
+});
+
+/**
+ * PG parity: receipts store (RFC-002).
+ *
+ * The receipt is written once and never again: on SQLite that is
+ * `INSERT OR IGNORE`, and Postgres has no such spelling — it is
+ * `INSERT ... ON CONFLICT DO NOTHING`, which the dialect translator has to get
+ * right including the `changes` count the route reads to tell a new row from a
+ * duplicate. `reusable` is a 1/0 integer and `report_bytes` a nullable integer
+ * that must stay NULL rather than become 0, and `body_hash` is compared as text
+ * both sides must agree on. So the write, the retry and the stored row are
+ * walked on pg-mem here.
+ */
+describe('PG parity: receipts store (RFC-002)', () => {
+  const REPO = 'https://github.com/acme/app.git';
+  const CANON = 'git@github.com:acme/app.git';
+  let fx: Fixture & { key: string };
+
+  beforeEach(async () => {
+    const booted = await bootHubOnPg();
+    fx = { ...booted, key: await issueApiKey(booted.db, 'org', 'pg-receipts', { installationId: 'inst-pg-producer' }) };
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-receipts', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'dev', 'dev@acme.com')`,
+    );
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-producer', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'ci', 'ci@acme.com')`,
+    );
+    const init = await supertest(__server).post('/v1/repo-settings/init').set(bearer(fx.key))
+      .send({ repo: REPO, verifyCommand: 'npm test' });
+    expect(init.status, JSON.stringify(init.body)).toBe(201);
+    const producers = await supertest(__server).put('/v1/admin/repos/producers').set('Cookie', fx.cookie)
+      .send({ repo: REPO, installationId: 'inst-pg-producer', allowed: true });
+    expect(producers.status, JSON.stringify(producers.body)).toBe(200);
+  });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  const bearer = (k: string) => ({ Authorization: `Bearer ${k}` });
+
+  const receipt = (id: string) => ({
+    id,
+    kind: 'verification',
+    version: 1,
+    repo: REPO,
+    receiptsMode: 'shadow',
+    card: {
+      id: 'card-1', title: 'Store the receipt', type: 'TASK',
+      closedAt: '2026-06-01T10:00:00.000Z', owner: null,
+      closedBy: { name: 'CI', email: 'ci@acme.com' }, link: null,
+    },
+    execution: {
+      id: 'test-1', command: 'npm test', commandRevision: 1, exitCode: 0,
+      startedAt: '2026-06-01T09:59:00.000Z', finishedAt: '2026-06-01T10:00:00.000Z', logPath: null,
+    },
+    content: { commit: 'b'.repeat(40), gitTree: 'a'.repeat(40), treeState: null, treeStateVersion: 1 },
+    reusable: true,
+  });
+
+  it('stores a receipt once, answers a retry as a duplicate, and keeps the row on Postgres', async () => {
+    const id = 'rcpt-pg-1';
+    const report = { encoding: 'gzip+base64', data: Buffer.from(require('node:zlib').gzipSync('log line\n')).toString('base64'), bytes: 9 };
+
+    const first = await supertest(__server).post('/v1/receipts').set(bearer(fx.key))
+      .send({ receipt: receipt(id), report });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(first.body).toMatchObject({ id, stored: 'new', reusable: true, reason: null });
+
+    const again = await supertest(__server).post('/v1/receipts').set(bearer(fx.key))
+      .send({ receipt: receipt(id), report });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body).toMatchObject({ id, stored: 'duplicate', reusable: true, reason: null });
+
+    const rows = await fx.db.all<any[]>('SELECT * FROM receipts', []);
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row.org_id).toBe('org');
+    expect(row.installation_id).toBe('inst-pg-producer');
+    expect(row.remote_url).toBe(CANON);
+    expect(row.kind).toBe('verification');
+    expect(row.card_id).toBe('card-1');
+    expect(row.content_tree).toBe('a'.repeat(40));
+    expect(Number(row.command_revision)).toBe(1);
+    expect(Number(row.reusable)).toBe(1);
+    expect(row.not_reusable_reason).toBeNull();
+    expect(Number(row.report_bytes)).toBe(9);
+    expect(row.report_gz_b64).toBe(report.data);
+    expect(row.received_at).toBeTruthy();
+
+    // A different body under the same id is a conflict, and the row does not move.
+    const clash = await supertest(__server).post('/v1/receipts').set(bearer(fx.key))
+      .send({ receipt: { ...receipt(id), card: { ...receipt(id).card, title: 'a different claim' } }, report });
+    expect(clash.status, JSON.stringify(clash.body)).toBe(409);
+    expect(clash.body.code).toBe('receipt_conflict');
+    expect(await fx.db.all<any[]>('SELECT * FROM receipts', [])).toHaveLength(1);
+    expect((await fx.db.all<any[]>('SELECT * FROM receipts', []))[0].card_id).toBe('card-1');
+  });
+});
+
+describe('PG parity: card usage (GH-389)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  // Postgres hands occurred_at back as a Date and JSON numerics as strings in
+  // places SQLite does not: the route must return the same shape on both.
+  it('GET /v1/usage/cards lists closed cards with their usage, latest close per card', async () => {
+    const total = (input: number) => ({ turns: 1, input, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0.5, unpricedTurns: 0 });
+    const closed = (eventId: string, itemId: string, at: string, input: number) => ({
+      eventId, installationId: 'inst-1', orgId: 'org', occurredAt: at, type: 'item.closed', itemId, itemType: 'TASK', itemTitle: `T-${itemId}`,
+      actor: { osUser: 'alice', gitName: 'A', gitEmail: 'alice@acme.com' }, projectId: 'p1',
+      payload: { toStatus: 'DONE', usage: { byModel: [], total: total(input), byStep: [], cards: 1 } },
+    });
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
+      closed('u1', 'c1', '2026-11-19T10:00:00.000Z', 1),
+      closed('u2', 'c1', '2026-11-19T12:00:00.000Z', 2),
+      closed('u3', 'c2', '2026-11-19T11:00:00.000Z', 3),
+    ] });
+    expect(r.status).toBe(200);
+
+    const res = await supertest(fx.app).get('/v1/usage/cards?from=2026-11-01').set('Cookie', fx.cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body.cards.map((c: any) => [c.item_id, c.closed_at, c.usage.total.input, c.usage.total.costUsd])).toEqual([
+      ['c1', '2026-11-19T12:00:00.000Z', 2, 0.5],
+      ['c2', '2026-11-19T11:00:00.000Z', 3, 0.5],
+    ]);
+  });
+
+  it('GET /v1/usage/overview sums step usage by installation, user, model and PR the same as SQLite', async () => {
+    const total = (input: number) => ({ turns: 1, input, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0.5, unpricedTurns: 0 });
+    const usage = (input: number) => ({ byModel: [{ client: 'pi', model: 'qwen3.8:27b', ...total(input) }], total: total(input) });
+    const base = (eventId: string, type: string, itemId: string, at: string, payload: any, who = 'alice', inst = 'inst-1') => ({
+      eventId, installationId: inst, orgId: 'org', occurredAt: at, type, itemId, itemType: 'STORY', itemTitle: `S-${itemId}`,
+      actor: { osUser: who, gitName: who, gitEmail: `${who}@acme.com` }, projectId: 'p1', payload,
+    });
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
+      base('o1', 'step.transitioned', 'c1', '2026-11-19T10:00:00.000Z', { toStatus: 'REVIEW', usage: usage(2) }),
+      base('o2', 'step.transitioned', 'c2', '2026-11-19T11:00:00.000Z', { toStatus: 'REVIEW', usage: usage(30) }, 'bob', 'inst-2'),
+      base('o3', 'item.closed', 'c1', '2026-11-19T12:00:00.000Z', { toStatus: 'DONE', usage: { ...usage(5), byStep: [], cards: 1, own: usage(5) } }),
+      base('o4', 'pr.opened', 'c1', '2026-11-19T13:00:00.000Z', { prNumber: 4, repo: 'acme/api' }),
+    ] });
+    expect(r.status).toBe(200);
+
+    const res = await supertest(fx.app).get('/v1/usage/overview?from=2026-11-01').set('Cookie', fx.cookie);
+
+    expect(res.status).toBe(200);
+    // c1's close recovers 3 turns' worth its step missed (own 5 - step 2).
+    expect(res.body.total).toEqual(expect.objectContaining({ input: 35, costUsd: 1 }));
+    expect(res.body.recoveredAtClose).toEqual(expect.objectContaining({ input: 3 }));
+    expect(res.body.byInstallation.map((x: any) => [x.installation_id, x.cards, x.total.input])).toEqual([['inst-2', 1, 30], ['inst-1', 1, 5]]);
+    expect(res.body.byUser.map((x: any) => [x.user_key, x.total.input])).toEqual([['bob@acme.com', 30], ['alice@acme.com', 5]]);
+    expect(res.body.byModel).toEqual([expect.objectContaining({ client: 'pi', model: 'qwen3.8:27b', input: 35, costUsd: 1 })]);
+    const prs = await supertest(fx.app).get('/v1/usage/prs?from=2026-11-01').set('Cookie', fx.cookie);
+    expect(prs.status).toBe(200);
+    expect(prs.body.rows.map((x: any) => [x.repo, x.pr_number, x.opened_at, x.closed_at, x.usage.total.input])).toEqual([['acme/api', 4, '2026-11-19T13:00:00.000Z', '2026-11-19T12:00:00.000Z', 5]]);
+  });
+
+  it('GET /v1/usage/prs pages, filters and sorts the same as SQLite (GH-396)', async () => {
+    const total = (input: number, costUsd: number, estimatedCostUsd?: number) => ({
+      turns: 1, input, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd, unpricedTurns: 0,
+      ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
+    });
+    const ev = (eventId: string, type: string, itemId: string, at: string, payload: any, who = 'alice', title = `S-${itemId}`) => ({
+      eventId, installationId: `inst-${who}`, orgId: 'org', occurredAt: at, type, itemId, itemType: 'STORY', itemTitle: title,
+      actor: { osUser: who, gitName: who === 'bob' ? 'Adam Bob' : 'Zoe Alice', gitEmail: `${who}@acme.com` }, projectId: 'p1', payload,
+    });
+    const close = (id: string, itemId: string, input: number, cost: number, est?: number) =>
+      ev(id, 'item.closed', itemId, '2026-11-19T09:00:00.000Z', { toStatus: 'DONE', usage: { byModel: [], total: total(input, cost, est), byStep: [], cards: 1 } });
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
+      close('k1', 'a', 100, 0.1, 2), close('k2', 'b', 10, 1), close('k3', 'c', 50, 0, 0.5),
+      ev('p1', 'pr.opened', 'a', '2026-11-19T10:01:00.000Z', { prNumber: 3, repo: 'acme/api' }, 'alice', '100% done'),
+      ev('p2', 'pr.opened', 'b', '2026-11-19T10:02:00.000Z', { prNumber: 20, repo: 'acme/web' }, 'bob'),
+      ev('p3', 'pr.opened', 'c', '2026-11-19T10:03:00.000Z', { prNumber: 100, repo: 'acme/api' }),
+      ev('p4', 'pr.opened', 'd', '2026-11-19T10:03:00.000Z', { prNumber: 4, repo: 'acme/api' }),
+      ev('p5', 'pr.updated', 'a', '2026-11-19T10:05:00.000Z', { prNumber: 3, repo: 'acme/api' }, 'bob', '100% done'),
+    ] });
+    expect(r.status).toBe(200);
+    const get = async (q: string) => {
+      const res = await supertest(fx.app).get(`/v1/usage/prs?from=2026-11-01${q}`).set('Cookie', fx.cookie);
+      expect(res.status).toBe(200);
+      return res.body;
+    };
+
+    const first = await get('&pageSize=2');
+    expect(first.total).toBe(4);
+    expect(first.rows.map((x: any) => x.item_id)).toEqual(['d', 'c']);
+    expect((await get('&pageSize=2&page=2')).rows.map((x: any) => x.item_id)).toEqual(['b', 'a']);
+    expect((await get('&sort=cost&dir=desc')).rows.map((x: any) => x.item_id)).toEqual(['a', 'b', 'c', 'd']);
+    expect((await get('&sort=createdBy&dir=asc')).rows[0].item_id).toBe('b');
+    expect((await get('&q=%25')).rows.map((x: any) => x.item_id)).toEqual(['a']);
+    expect((await get('&status=open')).rows.map((x: any) => x.item_id)).toEqual(['d']);
+    expect((await get('&repos=acme%2Fweb')).rows.map((x: any) => [x.item_id, x.created_by, x.url, x.opened_at])).toEqual([
+      ['b', 'bob@acme.com', 'https://github.com/acme/web/pull/20', '2026-11-19T10:02:00.000Z'],
+    ]);
+    expect((await get('&q=3')).rows.map((x: any) => [x.item_id, x.created_by])).toEqual([['a', 'alice@acme.com']]);
+
+    // GH-397 x GH-396: turns with no stored price (a model the table did not list) are counted, the stored estimate sorts.
+    const unpriced = { ...total(5, 0, 0), turns: 2, unpricedTurns: 2 };
+    const late = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
+      ev('k4', 'item.closed', 'd', '2026-11-19T09:00:00.000Z', { toStatus: 'DONE', usage: { byModel: [], total: unpriced, byStep: [], cards: 1 } }),
+    ] });
+    expect(late.status).toBe(200);
+    const byCost = await get('&sort=cost&dir=desc');
+    expect(byCost.rows.map((x: any) => x.item_id)).toEqual(['a', 'b', 'c', 'd']);
+    expect(byCost.costWithoutEstimate).toBe(1);
+  });
+});
+
+
+describe('PG parity: usage on no card (GH-394)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  it('GET /v1/usage/overview keeps the latest total per installation, project and day, the same as SQLite', async () => {
+    const total = (input: number) => ({ turns: 1, input, cacheRead: 0, cacheWrite: 0, output: 1, reasoning: 0, costUsd: 0.5, unpricedTurns: 0 });
+    const usage = (input: number) => ({ byModel: [{ client: 'pi', model: 'qwen3.8:27b', ...total(input) }], total: total(input) });
+    const noCard = (eventId: string, day: string, asOf: string, occurredAt: string, input: number, inst = 'inst-1', projectId = 'p1') => ({
+      eventId, installationId: inst, orgId: 'org', occurredAt, type: 'usage.no-card', projectId,
+      actor: { osUser: 'alice', gitName: 'alice', gitEmail: 'alice@acme.com' },
+      payload: { day, asOf, usage: usage(input) },
+    });
+    const send = async (events: unknown[]) => {
+      const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events });
+      expect(r.status).toBe(200);
+    };
+    await send([
+      noCard('n2', '2026-11-19', '2026-11-19T18:00:00.000Z', '2026-11-19T17:00:00.000Z', 70),
+      noCard('n3', '2026-11-18', '2026-11-18T18:00:00.000Z', '2026-11-18T17:00:00.000Z', 3, 'inst-2'),
+    ]);
+    // Older, and delivered later: it must not replace the newer total.
+    await send([noCard('n1', '2026-11-19', '2026-11-19T12:00:00.000Z', '2026-11-19T11:00:00.000Z', 40)]);
+
+    const res = await supertest(fx.app).get('/v1/usage/overview?from=2026-11-01').set('Cookie', fx.cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body.noCard.total).toEqual(expect.objectContaining({ input: 73, turns: 2, costUsd: 1 }));
+    expect(res.body.total).toEqual(expect.objectContaining({ input: 73 }));
+    expect(res.body.noCard.byDay.map((d: any) => [d.day, d.total.input])).toEqual([['2026-11-18', 3], ['2026-11-19', 70]]);
+    expect(res.body.noCard.byInstallation.map((r: any) => [r.installation_id, r.total.input])).toEqual([['inst-1', 70], ['inst-2', 3]]);
+    const windowed = await supertest(fx.app).get('/v1/usage/overview?from=2026-11-19T12:00:00Z&to=2026-11-19T23:00:00Z').set('Cookie', fx.cookie);
+    expect(windowed.body.noCard.total.input).toBe(70);
+    expect(res.body.malformedEvents).toBe(0);
+  });
+});
+
+/**
+ * GH-391 (BUG 4f507284): one instant, one answer on both databases. Postgres
+ * compares TIMESTAMPTZ instants, so it was always right here; the scenario is
+ * the SQLite one from events-canonical-time.test.ts, and the two must agree.
+ */
+describe('PG parity: canonical occurredAt (GH-391)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  it('orders and windows offset and no-millisecond timestamps by instant, as SQLite now does', async () => {
+    const base = (eventId: string, occurredAt: string) => ({
+      eventId, installationId: 'inst-1', orgId: 'org', occurredAt, type: 'item.created', itemId: eventId,
+      actor: { osUser: 'alice', gitName: 'Alice', gitEmail: 'alice@acme.com' }, projectId: 'p1', payload: {},
+    });
+    const r = await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
+      base('a-offset', '2026-11-19T09:30:00-03:00'),
+      base('b-ten', '2026-11-19T10:00:00Z'),
+      base('c-eleven', '2026-11-19T11:00:00.000Z'),
+      base('junk', 'yesterday-ish'),
+    ] });
+    expect(r.body).toMatchObject({ ingested: 3, rejected: 1 });
+    expect(r.body.rejections).toEqual([{ eventId: 'junk', reason: 'invalid' }]);
+
+    const all = await supertest(fx.app).get('/v1/timeline').set('Cookie', fx.cookie);
+    expect(all.body.events.map((e: any) => e.event_id)).toEqual(['a-offset', 'c-eleven', 'b-ten']);
+    const from = await supertest(fx.app)
+      .get(`/v1/timeline?from=${encodeURIComponent('2026-11-19T10:00:00Z')}`).set('Cookie', fx.cookie);
+    expect(from.body.events.map((e: any) => e.event_id).sort()).toEqual(['a-offset', 'b-ten', 'c-eleven']);
+    const offFrom = await supertest(fx.app)
+      .get(`/v1/timeline?from=${encodeURIComponent('2026-11-19T08:00:00-03:00')}`).set('Cookie', fx.cookie);
+    expect(offFrom.body.events.map((e: any) => e.event_id).sort()).toEqual(['a-offset', 'c-eleven']);
+  });
+
+  it('the boot migration leaves a Postgres hub alone: its column already holds instants', async () => {
+    const { canonicaliseEventTimes } = await import('../services/canonicaliseEventTimes');
+    await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).set('X-Agenfk-Version', USAGE_FIXED_VERSION).send({ events: [
+      { eventId: 'p1e', installationId: 'inst-1', orgId: 'org', occurredAt: '2026-11-19T10:00:00.000Z', type: 'item.created',
+        actor: { osUser: 'alice', gitName: 'Alice', gitEmail: 'alice@acme.com' }, payload: {} },
+    ] });
+    const res = await canonicaliseEventTimes(fx.db, { force: true });
+    expect(res).toEqual({ skipped: false, eventsRewritten: 0, unparseable: 0, daysRecomputed: 0 });
   });
 });

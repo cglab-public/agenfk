@@ -18,11 +18,77 @@ export enum ItemType {
   BUG = "BUG"
 }
 
-export interface TokenUsage {
+/** GH-389: token usage summed over a set of turns (mirrors @agenfk/core). */
+export interface UsageTotals {
+  turns: number;
   input: number;
+  cacheRead: number;
+  cacheWrite: number;
   output: number;
+  reasoning: number;
+  /** Only what the harnesses reported themselves (pi). */
+  costUsd: number;
+  /** GH-397: what AgEnFK priced the other turns at when it ingested them; absent from usage recorded before. */
+  estimatedCostUsd?: number;
+  /** Turns with neither: the board estimates them at today's prices, and says so. */
+  unpricedTurns: number;
+}
+
+export interface ModelUsage extends UsageTotals {
+  client: string;
   model: string;
-  cost?: number;
+}
+
+/** The usage of one stay in a step, recorded when the card left it. */
+export interface StepUsage {
+  step: string;
+  to: string;
+  enteredAt: string;
+  leftAt: string;
+  complete: boolean;
+  byModel: ModelUsage[];
+  total: UsageTotals;
+}
+
+/** GH-394: a project's usage on no card over its last `days` local days, from this installation. */
+export interface NoCardUsage {
+  projectId: string;
+  days: number;
+  since: string;
+  total: UsageTotals;
+  byModel: ModelUsage[];
+  byDay: Array<{ day: string; total: UsageTotals; byModel: ModelUsage[] }>;
+}
+
+/** The card's usage when it closed, its sub-cards' included. */
+export interface CardUsage {
+  byModel: ModelUsage[];
+  total: UsageTotals;
+  byStep: Array<{ step: string; total: UsageTotals }>;
+  cards: number;
+  complete?: boolean;
+  /** The step the card closed in; the total is current only while the card is still there. */
+  atStatus?: string;
+}
+
+/** One ingested model turn (GET /token-events). */
+export interface TokenEvent {
+  id: string;
+  ts: string;
+  client: string;
+  sessionId: string;
+  model: string;
+  input: number;
+  cachedInput: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  output: number;
+  reasoning: number;
+  total: number;
+  costUsd?: number;
+  /** GH-397: what AgEnFK priced the turn at when it ingested it. */
+  estimatedCostUsd?: number;
+  itemId?: string;
 }
 
 export interface ContextItem {
@@ -188,7 +254,10 @@ export interface AgEnFKItem {
   description: string;
   status: Status;
   assignee?: string;
-  tokenUsage?: TokenUsage[];
+  /** GH-389: usage of each step the card left. Server-written. */
+  usageByStep?: StepUsage[];
+  /** GH-389: the card's usage when it closed. Server-written. */
+  cardUsage?: CardUsage;
   context?: ContextItem[];
   reviews?: ReviewRecord[];
   /** Independent reviews of this card (CGLAB-381); the reviewer is read from its transcript. Server-written only. */

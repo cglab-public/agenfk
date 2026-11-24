@@ -11,9 +11,7 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -28,8 +26,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, io } from '../server';
-import { posixShell } from './helpers/posixShell';
 import { nodeCommand } from './helpers/nodeCommand';
+import { echoRepo, A, IGNORE_REPORT } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -51,9 +49,8 @@ async function setup(ms = 1500) {
     s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('NEXT', 2), s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ar-repo-'));
+  const repo = echoRepo(A, 'agenfk-ar-repo-');
   dirs.push(repo);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `ar-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `node -e "console.log('hello-from-the-run'); setTimeout(() => {}, ${ms})"` } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `ar-${++seq}`, projectId: p.body.id });
@@ -67,36 +64,29 @@ const until = async (pred: () => Promise<boolean>, ms = 10_000) => {
 };
 
 describe('9569b4d7: a running verify is visible to the board', () => {
-  it('item responses carry activeRun while the run lasts, and drop it when it ends', async () => {
+  it("item responses carry activeRun while the run lasts, the board is told it started and served its output without the agent's token, and it drops when the run ends", async () => {
     const t = await setup();
-    const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
-    expect(v.status, JSON.stringify(v.body)).toBe(202);
-    const one = (await agent().get(`/items/${t.id}`)).body;
-    expect(one.activeRun).toMatchObject({ runId: v.body.runId, step: 'WORK' });
-    expect(Number.isNaN(Date.parse(one.activeRun.startedAt))).toBe(false);
-    const listed = (await agent().get('/items').query({ projectId: t.pid })).body.find((i: any) => i.id === t.id);
-    expect(listed.activeRun).toMatchObject({ runId: v.body.runId });
-    await until(async () => !(await agent().get(`/items/${t.id}`)).body.activeRun);
-    expect((await agent().get(`/items/${t.id}`)).body.status).toBe('NEXT');
-  });
-
-  it("serves the run's latest output to the board, without the agent's token, while it runs", async () => {
-    const t = await setup();
-    const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
-    expect(v.status).toBe(202);
-    await until(async () => /hello-from-the-run/.test((await agent().get(`/items/${t.id}/active-run`)).body?.output ?? ''));
-    const r = await agent().get(`/items/${t.id}/active-run`);
-    expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ runId: v.body.runId, step: 'WORK' });
-    await until(async () => (await agent().get(`/items/${t.id}/active-run`)).status === 404);
-  });
-
-  it("streams a capture's output to the agent following the run, so the chat is not silent for the whole suite", async () => {
-    const t = await setup();
-    const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
-    expect(v.status).toBe(202);
-    await until(async () => /hello-from-the-run/.test((await agent().get(`/items/validate-runs/${v.body.runId}`).set(internal())).body?.output ?? ''));
-    await until(async () => (await agent().get(`/items/${t.id}/active-run`)).status === 404);
+    const emit = vi.spyOn(io, 'emit');
+    try {
+      const before = emit.mock.calls.filter(c => c[0] === 'items_updated').length;
+      const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
+      expect(v.status, JSON.stringify(v.body)).toBe(202);
+      const one = (await agent().get(`/items/${t.id}`)).body;
+      expect(one.activeRun).toMatchObject({ runId: v.body.runId, step: 'WORK' });
+      expect(Number.isNaN(Date.parse(one.activeRun.startedAt))).toBe(false);
+      // The board hears that a run started, while it runs.
+      expect(emit.mock.calls.filter(c => c[0] === 'items_updated').length).toBeGreaterThan(before);
+      const listed = (await agent().get('/items').query({ projectId: t.pid })).body.find((i: any) => i.id === t.id);
+      expect(listed.activeRun).toMatchObject({ runId: v.body.runId });
+      // The run's latest output, served to the board without the agent's token.
+      await until(async () => /hello-from-the-run/.test((await agent().get(`/items/${t.id}/active-run`)).body?.output ?? ''));
+      const r = await agent().get(`/items/${t.id}/active-run`);
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({ runId: v.body.runId, step: 'WORK' });
+      await until(async () => !(await agent().get(`/items/${t.id}`)).body.activeRun);
+      expect((await agent().get(`/items/${t.id}/active-run`)).status).toBe(404);
+      expect((await agent().get(`/items/${t.id}`)).body.status).toBe('NEXT');
+    } finally { emit.mockRestore(); }
   });
 
   it('keeps only the last 8 KiB of an output far past the followers\' 256 KiB head', async () => {
@@ -128,26 +118,12 @@ describe('9569b4d7: a running verify is visible to the board', () => {
     expect(Date.now() - t0).toBeLessThan(8000);
   });
 
-  it('tells the board a run started, while it runs', async () => {
-    const t = await setup();
-    const emit = vi.spyOn(io, 'emit');
-    try {
-      const before = emit.mock.calls.filter(c => c[0] === 'items_updated').length;
-      const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
-      expect(v.status).toBe(202);
-      expect((await agent().get(`/items/${t.id}`)).body.activeRun).toBeDefined();
-      expect(emit.mock.calls.filter(c => c[0] === 'items_updated').length).toBeGreaterThan(before);
-      await until(async () => !(await agent().get(`/items/${t.id}`)).body.activeRun);
-    } finally { emit.mockRestore(); }
-  });
-
   it("a capture's output and then the verify command's reach the follower in order, never rewound (review)", async () => {
     const f = await agent().post('/flows').send({ name: `ar-both-${++seq}`, steps: [
       s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('END', 2, { isAnchor: true }),
     ] });
-    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ar-both-'));
+    const repo = echoRepo(IGNORE_REPORT, 'agenfk-ar-both-');
     dirs.push(repo);
-    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
     const runner = path.join(repo, '..', `ar-runner-${seq}.js`);
     dirs.push(runner);
     fs.writeFileSync(runner, `console.log('from-the-capture'); require('fs').writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="ok" file="t.test.js"/></testsuite></testsuites>'); setTimeout(() => {}, 800);`);

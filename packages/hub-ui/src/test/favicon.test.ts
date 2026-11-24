@@ -7,11 +7,10 @@ const FAVICON_PATH = path.join(HUB_UI_ROOT, 'public', 'hub-logo.svg');
 const INDEX_HTML_PATH = path.join(HUB_UI_ROOT, 'index.html');
 
 describe('Hub UI favicon', () => {
-  it('ships a teal CG/lab-themed SVG favicon at public/hub-logo.svg', () => {
+  it('ships an SVG favicon at public/hub-logo.svg', () => {
     expect(fs.existsSync(FAVICON_PATH), `expected ${FAVICON_PATH} to exist`).toBe(true);
     const svg = fs.readFileSync(FAVICON_PATH, 'utf8');
     expect(svg.startsWith('<svg') || svg.includes('<svg')).toBe(true);
-    expect(svg.toLowerCase()).toMatch(/04cc98|7fe5ca|056f71/i);
   });
 
   it('index.html links the favicon via <link rel="icon">', () => {

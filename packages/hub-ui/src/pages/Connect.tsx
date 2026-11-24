@@ -1,16 +1,20 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
-import { Check, Cpu, AlertTriangle } from 'lucide-react';
+import { Check, Cpu, AlertTriangle, KeyRound } from 'lucide-react';
 import { api } from '../api';
 
 export function ConnectPage() {
   const [params] = useSearchParams();
   const initial = (params.get('code') ?? '').toUpperCase();
   const [code, setCode] = useState(initial);
+  // `agenfk hub admin login` (CGLAB-702) sends kind=admin: approving grants the
+  // terminal ADMIN access as you, which is not what connecting a device does.
+  const isAdmin = params.get('kind') === 'admin';
 
   const approve = useMutation({
-    mutationFn: async (userCode: string) => (await api.post('/hub/device/approve', { userCode })).data,
+    mutationFn: async (userCode: string) =>
+      (await api.post(isAdmin ? '/hub/admin-device/approve' : '/hub/device/approve', { userCode })).data,
   });
 
   useEffect(() => {
@@ -26,11 +30,11 @@ export function ConnectPage() {
       <div className="w-full max-w-md bg-card-glass backdrop-blur border border-border-soft rounded-2xl shadow-sm p-7">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-accent-fill text-accent-ink flex items-center justify-center">
-            <Cpu className="w-5 h-5" />
+            {isAdmin ? <KeyRound className="w-5 h-5" /> : <Cpu className="w-5 h-5" />}
           </div>
           <div>
-            <p className="eyebrow text-accent-ink">Connect a device</p>
-            <h1 className="text-title font-bold text-ink">Authorize this installation</h1>
+            <p className="eyebrow text-accent-ink">{isAdmin ? 'Admin CLI sign-in' : 'Connect a device'}</p>
+            <h1 className="text-title font-bold text-ink">{isAdmin ? 'Authorize the admin CLI' : 'Authorize this installation'}</h1>
           </div>
         </div>
 
@@ -38,15 +42,21 @@ export function ConnectPage() {
           <div className="mt-5 p-4 rounded-xl bg-status-ok-bg border border-status-ok-text/40 flex items-start gap-3">
             <Check className="w-5 h-5 text-status-ok-text mt-0.5 shrink-0" />
             <div>
-              <div className="text-body font-semibold text-status-ok-text">Device connected</div>
+              <div className="text-body font-semibold text-status-ok-text">{isAdmin ? 'Admin CLI signed in' : 'Device connected'}</div>
               <p className="mt-0.5 text-small text-status-ok-text">Return to your terminal — the agenfk CLI will pick up the new credentials within a few seconds.</p>
             </div>
           </div>
         ) : (
           <>
-            <p className="mt-4 text-body text-ink-secondary">
-              Enter the code shown by your <span className="font-mono">agenfk hub login</span> command, then approve the connection. The token will be bound to your current org.
-            </p>
+            {isAdmin ? (
+              <p className="mt-4 text-body text-ink-secondary">
+                Enter the code shown by your <span className="font-mono">agenfk hub admin login</span> command. Approving gives that terminal admin access to this hub, as you, for 12 hours. Approve only a code you started yourself.
+              </p>
+            ) : (
+              <p className="mt-4 text-body text-ink-secondary">
+                Enter the code shown by your <span className="font-mono">agenfk hub login</span> command, then approve the connection. The token will be bound to your current org.
+              </p>
+            )}
             <label className="block mt-5">
               <span className="eyebrow text-ink-tertiary">Device code</span>
               <input
@@ -69,7 +79,7 @@ export function ConnectPage() {
               onClick={() => approve.mutate(display)}
               className="mt-5 w-full py-2.5 rounded-xl bg-brand text-navy disabled:opacity-50 font-bold transition-colors"
             >
-              {approve.isPending ? 'Approving…' : 'Approve & connect'}
+              {approve.isPending ? 'Approving…' : isAdmin ? 'Approve admin sign-in' : 'Approve & connect'}
             </button>
           </>
         )}

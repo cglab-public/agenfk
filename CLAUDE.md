@@ -28,7 +28,7 @@ Build a single package:
 npm run build -w packages/server
 ```
 
-Run all tests (vitest, node env, file-parallelism off — tests share filesystem state):
+Run all tests (vitest, node env, files in parallel on a quarter of the CPUs — each worker has its own HOME sandbox):
 ```
 npm test
 ```
@@ -92,7 +92,7 @@ The old version is read from the root `package.json`; commit the manifest change
 
 ## Testing notes
 
-- Root vitest config splits the suite into three projects. `serial` (server, hub, cli) runs one file at a time because those tests share a per-run HOME sandbox and on-disk state; `parallel` (core, storage-sqlite, telemetry, hub-ui, flow-editor) runs its files concurrently; `ui` is the board under `packages/ui/vitest.config.ts` (jsdom, react plugin, its own setup). Don't move a package between them without auditing what it writes.
+- Root vitest config splits the suite into three projects. `serial` (server, hub, cli - named for what it was) writes under HOME, so each vitest worker gets its own HOME inside the run's sandbox (`pinWorkerHome` in `scripts/vitest-home-pin.mjs`, applied by `vitest.setup.ts`) and its files run in parallel too, with a doubled timeout and the run capped at a quarter of the CPUs (at least 2) at the root config, so `--maxWorkers` still overrides it (GH-274). Files on one worker share its home one after another, so a test must not rely on another file's leftovers; `parallel` (core, storage-sqlite, telemetry, hub-ui, flow-editor) runs its files concurrently; `ui` is the board under `packages/ui/vitest.config.ts` (jsdom, react plugin, its own setup). Don't move a package between them without auditing what it writes.
 - `sequence.concurrent` is `false` everywhere and is not a knob: it runs tests WITHIN a file at once, and the jsdom packages are component specs sharing one document. It used to be fused to file parallelism under a single `parallel` flag, which is why neither could be enabled (BUG c03aa92e). Note the root-level `test` block's `fileParallelism` is the GLOBAL and overrides a project's own value — setting it false there silently serialises everything.
 - `packages/cli/src/test/cli.test.ts` is excluded from the root run — it has its own runner. The board's specs are in the root run (4ac25844), so the project's verify command and test report see them.
 - Aliases `@agenfk/core` and `@agenfk/telemetry` resolve to source in tests so you don't need to rebuild between iterations.

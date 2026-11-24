@@ -74,7 +74,15 @@ export function resolveDbPath(opts: ResolveDbPathOptions = {}): string {
  */
 export function buildServerEnv(
   base: NodeJS.ProcessEnv,
-  opts: { uiDir: string; dbPath: string; freshPath: string | null },
+  opts: {
+    uiDir: string; dbPath: string; freshPath: string | null;
+    /**
+     * ea94c023: how the server runs `agenfk airlock exec` for a card an Airlock
+     * sandbox touched - the shipped helper (null: the CLI beside the server) and
+     * the Node to run it with, which in the app is Electron itself.
+     */
+    airlockExec?: { cli: string | null; node: string };
+  },
   profile: Pick<PlatformProfile, 'pathDelimiter' | 'envKeysIgnoreCase'> = platform,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
@@ -86,5 +94,10 @@ export function buildServerEnv(
   env.AGENFK_SERVE_UI = opts.uiDir;
   // Never let the database location depend on how the app was launched.
   env.AGENFK_DB_PATH = opts.dbPath;
+  if (opts.airlockExec) {
+    if (opts.airlockExec.cli) env.AGENFK_AIRLOCK_EXEC_CLI = opts.airlockExec.cli;
+    env.AGENFK_AIRLOCK_EXEC_NODE = opts.airlockExec.node;
+    env.AGENFK_AIRLOCK_EXEC_RUN_AS_NODE = '1';
+  }
   return env;
 }

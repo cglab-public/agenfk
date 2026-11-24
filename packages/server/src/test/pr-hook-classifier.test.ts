@@ -6,6 +6,24 @@ import path from 'node:path';
 // Importing the .mjs hook script directly. Pure helpers are exported by name.
 // @ts-ignore — .mjs has no .d.ts; the helpers are JS functions.
 import { classifyTrigger, buildDirective } from '../../../../bin/agenfk-pr-hook.mjs';
+import { copyTree, gitTemplate, gitSync } from './helpers/gitFixture';
+
+/**
+ * A repo on `main` with one commit of `file.txt`, at `dir` (created if absent).
+ * Copied from a per-worker template (#311): no git spawn once it is built.
+ */
+function initRepoFromTemplate(dir: string): void {
+  const template = gitTemplate('pr-hook-classifier:main-one-commit', (d) => {
+    gitSync(d, 'init', '-q', '-b', 'main');
+    gitSync(d, 'config', 'user.email', 'test@example.com');
+    gitSync(d, 'config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(d, 'file.txt'), 'base\n');
+    gitSync(d, 'add', 'file.txt');
+    gitSync(d, 'commit', '-qm', 'init');
+  });
+  fs.mkdirSync(dir, { recursive: true });
+  copyTree(template, dir);
+}
 
 describe('classifyTrigger', () => {
   it('detects gh pr create', () => {
@@ -332,15 +350,7 @@ describe('runtime branch resolution — the push target directory (BUG 40ff964b)
     return r.stdout.trim();
   }
 
-  function initRepo(dir: string): void {
-    fs.mkdirSync(dir, { recursive: true });
-    git(dir, 'init', '-q', '-b', 'main');
-    git(dir, 'config', 'user.email', 'test@example.com');
-    git(dir, 'config', 'user.name', 'Test');
-    fs.writeFileSync(path.join(dir, 'file.txt'), 'base\n');
-    git(dir, 'add', 'file.txt');
-    git(dir, 'commit', '-qm', 'init');
-  }
+  const initRepo = initRepoFromTemplate;
 
   function pushBranch(dir: string, branch: string): void {
     git(dir, 'checkout', '-q', '-b', branch);
@@ -369,23 +379,6 @@ describe('runtime branch resolution — the push target directory (BUG 40ff964b)
 
       const ctx = runHook(session, `cd ${target} && git push -u origin HEAD`);
       expect(ctx).toContain("pushed to 'feat/CGLAB-425_provenance'");
-      expect(ctx).not.toContain("pushed to 'main'");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('reports the target branch for a bare `git push` after a cd', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pr-hook-'));
-    try {
-      const session = path.join(root, 'session-repo');
-      const target = path.join(root, 'target-repo');
-      initRepo(session);
-      initRepo(target);
-      pushBranch(target, 'feat/CGLAB-426_ask-attachments');
-
-      const ctx = runHook(session, `cd ${target} && git push -q`);
-      expect(ctx).toContain("pushed to 'feat/CGLAB-426_ask-attachments'");
       expect(ctx).not.toContain("pushed to 'main'");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -433,15 +426,7 @@ describe('runtime branch resolution — relative and unresolved targets', () => 
     if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
     return r.stdout.trim();
   }
-  function initRepo(dir: string): void {
-    fs.mkdirSync(dir, { recursive: true });
-    git(dir, 'init', '-q', '-b', 'main');
-    git(dir, 'config', 'user.email', 'test@example.com');
-    git(dir, 'config', 'user.name', 'Test');
-    fs.writeFileSync(path.join(dir, 'file.txt'), 'base\n');
-    git(dir, 'add', 'file.txt');
-    git(dir, 'commit', '-qm', 'init');
-  }
+  const initRepo = initRepoFromTemplate;
   function pushBranch(dir: string, branch: string): void {
     git(dir, 'checkout', '-q', '-b', branch);
     fs.appendFileSync(path.join(dir, 'file.txt'), 'work\n');

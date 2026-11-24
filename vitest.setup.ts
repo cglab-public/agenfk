@@ -50,6 +50,15 @@ if (typeof window !== 'undefined' && typeof (window as Window & { localStorage?:
 }
 
 /**
+ * A HOME of this worker's own inside the run's sandbox (GH-274), before the
+ * test file imports anything that reads it: what lets the server, hub and cli
+ * files run beside each other. See the helper.
+ */
+// @ts-expect-error — plain .mjs helper
+import { pinWorkerHome } from './scripts/vitest-home-pin.mjs';
+pinWorkerHome();
+
+/**
  * Fail loudly on any socket to a non-loopback host. The rationale, and the
  * history that made it necessary, live with the guard itself.
  */

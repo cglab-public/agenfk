@@ -214,6 +214,25 @@ describe('with the UI bundle mounted (desktop / AGENFK_SERVE_UI)', () => {
     expect(missing, `route namespaces missing from API_PATH_PREFIXES: ${missing.join(', ')}`).toEqual([]);
   });
 
+  // GH-281: the same drift guard, read from the routes Express actually holds
+  // rather than from a regex over server.ts's text (which misses any route not
+  // written as a one-line `app.get("...` at column 0).
+  it('keeps API_PATH_PREFIXES covering every top-level route the app has registered', () => {
+    const stack: any[] = (app as any).router?.stack ?? (app as any)._router?.stack ?? [];
+    const registered = new Set<string>();
+    for (const layer of stack) {
+      const p = layer?.route?.path;
+      for (const one of Array.isArray(p) ? p : [p]) {
+        if (typeof one !== 'string' || !one.startsWith('/')) continue;
+        const first = '/' + one.split('/')[1];
+        if (first !== '/') registered.add(first);
+      }
+    }
+    expect(registered.size).toBeGreaterThan(5); // the router was actually read
+    const missing = [...registered].filter(p => !API_PATH_PREFIXES.includes(p));
+    expect(missing, `route namespaces missing from API_PATH_PREFIXES: ${missing.join(', ')}`).toEqual([]);
+  });
+
   it('answers HEAD and GET consistently on a SPA path', async () => {
     const get = await agent().get('/deep/link').set('Accept', 'text/html');
     const head = await agent().head('/deep/link').set('Accept', 'text/html');

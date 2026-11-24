@@ -1,6 +1,6 @@
 {
   "name": "agenfk",
-  "version": "2.0.0",
+  "version": "2.1.0-beta.24",
   "description": "AgenFK Engineering Framework",
   "private": true,
   "workspaces": [
@@ -52,31 +52,39 @@
     "url": "https://github.com/cglab-public/agenfk.git"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": "^22.13.0 || >=23.5.0"
   },
   "overrides": {
-    "hono": "^4.12.34",
-    "@hono/node-server": "^1.19.15",
-    "fast-uri": "3.1.7",
-    "ip-address": "10.3.1",
+    "hono": "^4.13.11",
+    "@hono/node-server": "^2.1.6",
+    "fast-uri": "^3.1.9",
+    "ip-address": "^10.7.4",
     "socket.io-parser": "4.2.7",
-    "qs": "^6.16.0"
+    "qs": "^6.16.1",
+    "@tailwindcss/typography": {
+      "postcss-selector-parser": "^6.1.5"
+    },
+    "mermaid": {
+      "katex": "^0.18.2"
+    }
   },
   "type": "module",
   "devDependencies": {
-    "@stryker-mutator/core": "^10.0.0",
-    "@stryker-mutator/vitest-runner": "^10.0.0",
+    "@stryker-mutator/core": "^10.1.1",
+    "@stryker-mutator/vitest-runner": "^10.1.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
+    "@types/node": "^22.13.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/semver": "^7.8.0",
     "@types/supertest": "^7.2.1",
-    "@vitest/coverage-v8": "^4.1.11",
-    "js-yaml": "^4.1.1",
+    "@vitest/coverage-v8": "^5.0.5",
+    "js-yaml": "^4.3.2",
     "jsdom": "^28.1.0",
-    "semver": "^7.8.5",
+    "semver": "^7.8.6",
     "supertest": "^7.3.1",
-    "vitest": "^4.0.18"
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.5"
   }
 }

@@ -13,9 +13,6 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { execSync } from 'child_process';
 import { randomUUID } from 'crypto';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
@@ -25,8 +22,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { reconcileHubFlow } from '../hub/flowSync';
-import { posixShell } from './helpers/posixShell';
+import { reconcileProjectFlow } from '../hub/flowSync';
+import { echoRepo, A } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -53,9 +50,8 @@ async function flowRow(source: 'hub' | 'local', work: Record<string, unknown>) {
   return id;
 }
 async function project(flowId: string) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-dc-'));
+  const dir = echoRepo(A, 'agenfk-dc-');
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `dc-${++seq}` });
   await storage.updateProject(p.body.id, { flowId, projectRoot: dir, verifyCommand: 'exit 0' } as never);
   return p.body.id as string;
@@ -159,9 +155,11 @@ describe('the hub sync', () => {
     status: 200, ok: true, headers: { get: (k: string) => (k.toLowerCase() === 'etag' ? `W/"${++seq}"` : null) }, json: async () => ({ flow, hubVersion: 2 }),
   })) as any;
 
+  const syncOrg = (flow: any) => reconcileProjectFlow({ storage, hubConfig: { url: 'http://hub.test', token: 't', orgId: 'o' }, projectId: null, lastEtag: null, fetchImpl: fetchOf(flow), emit: vi.fn() } as any);
+
   it("keeps a step's disabledChecks on the flow it installs", async () => {
     const remote = { id: `remote-sync-${++seq}`, name: 'Org', description: '', steps: steps({ disabledChecks: ['command-check:lint'] }) };
-    const out = await reconcileHubFlow({ storage, hubConfig: { url: 'http://hub.test', token: 't', orgId: 'o' }, lastEtag: null, fetchImpl: fetchOf(remote), emit: vi.fn() } as any);
+    const out = await syncOrg(remote);
     expect(out.outcome).toBe('updated');
     const local = (await storage.listFlows()).find(f => f.hubFlowId === remote.id)!;
     expect(local.source).toBe('hub');
@@ -170,7 +168,7 @@ describe('the hub sync', () => {
 
   it('refuses a hub flow that would switch off a human approval', async () => {
     const remote = { id: `remote-sync-${++seq}`, name: 'Org', description: '', steps: steps({ checks: [{ id: 'human-approval' }], disabledChecks: ['human-approval'] }) };
-    const out = await reconcileHubFlow({ storage, hubConfig: { url: 'http://hub.test', token: 't', orgId: 'o' }, lastEtag: null, fetchImpl: fetchOf(remote), emit: vi.fn() } as any);
+    const out = await syncOrg(remote);
     expect(out.outcome).toBe('error');
     expect((out as { error?: string }).error).toMatch(/human-approval/);
     expect((await storage.listFlows()).some(f => f.hubFlowId === remote.id)).toBe(false);

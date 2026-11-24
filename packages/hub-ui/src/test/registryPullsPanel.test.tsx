@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, cleanup, within, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, within, fireEvent, waitFor, act } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -108,13 +108,19 @@ describe('RegistryPullsPanel (CGLAB-368)', () => {
   it('does not poll GitHub: one request, then only when the admin asks (A1)', async () => {
     // The app's QueryClient refetches every 30s by default. On this panel that
     // spent the ORG token - the one the whole fleet browses with - per open tab.
-    get.mockResolvedValue({ data: PULLS });
-    renderPanel({ refetchInterval: 200 });
-    await screen.findAllByTestId('registry-pull');
-    await new Promise((r) => setTimeout(r, 500));
-    expect(get).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole('button', { name: /refresh/i }));
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      get.mockResolvedValue({ data: PULLS });
+      renderPanel({ refetchInterval: 200 });
+      await screen.findAllByTestId('registry-pull');
+      // Two and a half of the client's 200ms polls, on the fake clock.
+      await act(async () => { vi.advanceTimersByTime(500); });
+      expect(get).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole('button', { name: /refresh/i }));
+      await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says the list is cut off, and links to the full one (A2)', async () => {

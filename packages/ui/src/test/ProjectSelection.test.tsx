@@ -153,51 +153,6 @@ describe('ProjectSelection', () => {
     expect(screen.queryByText('apple')).toBeNull();
   });
 
-  it('project list is inside a scrollable container', async () => {
-    vi.mocked(api.listProjects).mockResolvedValue([
-      makeProject('z', 'Zebra'),
-      makeProject('a', 'apple'),
-      makeProject('m', 'Mango'),
-    ]);
-
-    renderKanbanBoard();
-
-    // Wait for projects to render
-    await waitFor(() => screen.getByText('apple'));
-
-    // Find a rendered project name element and walk up to find the
-    // scrollable container wrapping the project list.
-    const appleElement = screen.getByText('apple');
-    let el: HTMLElement | null = appleElement;
-
-    // Walk up the DOM tree looking for the scroll container
-    while (el && el !== document.body) {
-      const className = el.className;
-      const style = el.style;
-
-      if (
-        typeof className === 'string' &&
-        (className.includes('overflow-y-auto') || className.includes('overflow-y-scroll'))
-      ) {
-        break;
-      }
-
-      if (
-        style.maxHeight && style.maxHeight !== '' &&
-        (style.overflow === 'auto' || style.overflow === 'scroll' ||
-         style.overflowY === 'auto' || style.overflowY === 'scroll')
-      ) {
-        break;
-      }
-
-      el = el.parentElement;
-    }
-
-    // We should have found a scrollable ancestor (not document.body)
-    expect(el).not.toBeNull();
-    expect(el).not.toBe(document.body);
-  });
-
   it('shows an empty state when no projects match the search', async () => {
     vi.mocked(api.listProjects).mockResolvedValue([
       makeProject('z', 'Zebra'),

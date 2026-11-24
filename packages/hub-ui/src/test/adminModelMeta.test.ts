@@ -55,7 +55,7 @@ describe('validateMetaRow', () => {
 
 describe('isHarnessName', () => {
   it('flags agent runtimes so they are not filed as models', () => {
-    for (const h of ['claude-code', 'codex-cli', 'opencode', 'cursor', 'windsurf', 'pi']) {
+    for (const h of ['claude-code', 'codex-cli', 'opencode', 'cursor', 'windsurf', 'pi', 'agy', 'antigravity']) {
       expect(isHarnessName(h)).toBe(true);
     }
   });

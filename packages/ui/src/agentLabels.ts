@@ -16,6 +16,7 @@ const LABELS: Record<string, string> = {
   codex: 'Codex',
   gemini: 'Gemini CLI',
   pi: 'Pi',
+  agy: 'Antigravity',
   shell: 'Shell',
   // Lowercase deliberately: it is how herdr writes its own name. Not an agent
   // this app starts - it is the attach - but it is rendered beside them and a

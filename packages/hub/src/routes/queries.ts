@@ -5,7 +5,7 @@ import { recomputeRollups } from '../rollup.js';
 import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
 import { isKnownTimeZone, rebucketToZone, subHourShift, zoneOffsetMin } from '../queries/histogram-zone.js';
 import { coerceMetricsRow, coerceMetricsTotals } from '../queries/metrics-coerce.js';
-import { aggregatePrOverview, clampTzOffsetMin, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
+import { aggregatePrOverview, clampTzOffsetMin, dayKeyer, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
 import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
@@ -13,9 +13,11 @@ import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 import { resolveModelId } from '../util/modelMapping.js';
 import { childHubPredicate, childHubClause, selectedHubIds, HUB_COL_EVENTS, HUB_COL_ROLLUPS } from '../queries/childHub.js';
 import { asyncRoute } from '../util/asyncRoute.js';
-import { prUrlFor } from '../util/remoteUrl.js';
+import { prLinkFor, prUrlFor } from '../util/remoteUrl.js';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
+import { UsageGroup, tokenWeight, installationLabel, chunks, zeroTotals, addTotals, modelsOf, summaryFromModels, CardLedger } from '../util/usageGroup.js';
+import { canonicalOccurredAt } from '../util/occurredAt.js';
 
 /**
  * A query parameter that is not the shape the route reads. Express parses
@@ -69,6 +71,62 @@ interface EventFilters {
   to: string | null;
 }
 
+/** At most this many closes are read per request; the reply says when it hit it. */
+const USAGE_CARDS_LIMIT = 5000;
+/** At most this many step events are summed per overview; the reply says when it hit it. */
+const USAGE_OVERVIEW_LIMIT = 50000;
+/** A project's usage on no card for one local day, the installation's running total (GH-394). */
+const NO_CARD_EVENT = 'usage.no-card';
+/** The By PR table's page size, unless the request asks for another, and the most it may ask for (GH-396). */
+const USAGE_PRS_PAGE_SIZE = 25;
+const USAGE_PRS_MAX_PAGE_SIZE = 100;
+/** The By PR table's sort keys: one per column, plus the opening date it is listed by. */
+const USAGE_PR_SORTS = ['opened', 'pr', 'card', 'createdBy', 'tokens', 'input', 'cacheRead', 'cacheWrite', 'output', 'cost'] as const;
+type UsagePrSort = typeof USAGE_PR_SORTS[number];
+
+/**
+ * user_key -> display name for an org, as GET /v1/people/names serves it: keyed
+ * exactly as ingest keys events (email, or a namespaced OS user, then aliases),
+ * the most recently seen installation's name winning, then a federation
+ * child's recorded names; a hidden person is never named.
+ */
+async function peopleNames(db: HubServerContext['db'], orgId: string): Promise<Record<string, string>> {
+  const rows = await db.all<{ id: string; os_user: string | null; git_name: string | null; git_email: string | null }>(
+    `SELECT id, os_user, git_name, git_email FROM installations
+     WHERE org_id = ? AND git_name IS NOT NULL
+     ORDER BY last_seen DESC`,
+    [orgId],
+  );
+  const aliases = await loadAliasMap(db, orgId);
+  const hidden = new Set((await db.all<{ user_key: string }>(
+    'SELECT user_key FROM hidden_users WHERE org_id = ?', [orgId],
+  )).map(h => h.user_key));
+  const names: Record<string, string> = {};
+  for (const row of rows) {
+    const name = row.git_name?.trim();
+    if (!name) continue;
+    const key = resolveAliasKey(
+      userKeyFor({ osUser: row.os_user ?? '', gitName: name, gitEmail: row.git_email }, row.id),
+      aliases,
+    );
+    if (hidden.has(key) || key in names) continue;
+    names[key] = name;
+  }
+  // A federation parent has no installation for a child hub's people; their
+  // names are recorded at delivery (child_people, keep-policy rows only).
+  // This hub's own installations win.
+  const children = await db.all<{ user_key: string; git_name: string }>(
+    'SELECT user_key, git_name FROM child_people WHERE org_id = ? ORDER BY last_seen DESC',
+    [orgId],
+  );
+  for (const row of children) {
+    const key = resolveAliasKey(row.user_key, aliases);
+    if (hidden.has(key) || key in names) continue;
+    names[key] = row.git_name;
+  }
+  return names;
+}
+
 function readEventFilters(req: Request): EventFilters {
   return {
     users: parseList(req, 'users'),
@@ -76,9 +134,19 @@ function readEventFilters(req: Request): EventFilters {
     projects: parseList(req, 'projects'),
     itemTypes: parseList(req, 'itemTypes'),
     childHubs: parseList(req, 'childHubId'),
-    from: singleValue(req, 'from'),
-    to: singleValue(req, 'to'),
+    from: timeBound(singleValue(req, 'from')),
+    to: timeBound(singleValue(req, 'to')),
   };
+}
+
+/**
+ * A window bound in the form events.occurred_at is stored in (GH-391), so
+ * SQLite's text comparison and Postgres' instant comparison agree: '10:00:00Z'
+ * would otherwise sort after the stored '10:00:00.000Z' on SQLite alone. One
+ * that does not parse is passed on as sent, as before.
+ */
+function timeBound(v: string | null): string | null {
+  return v == null ? v : canonicalOccurredAt(v) ?? v;
 }
 
 function applyEventFilters(orgId: string, f: EventFilters, timeCol: 'occurred_at' | 'day' = 'occurred_at')
@@ -160,7 +228,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
   // high enough that no legitimate dashboard hits it, low enough to bound abuse.
   // Keyed by the signed-in user, not the address: the hub is reached through
   // shared corporate egress, and an IP bucket would be an office-wide cap.
-  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret, ctx.db), message: 'Too many requests, slow down.' }));
   const guard = requireSession(ctx.config.sessionSecret, ctx.db);
 
   router.get('/users', guard, asyncRoute(async (req: Request, res: Response) => {
@@ -279,41 +347,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
   // be looked up. The most recently seen installation's name wins; a hidden
   // person is never named.
   router.get('/people/names', guard, asyncRoute(async (req: Request, res: Response) => {
-    const orgId = req.session!.orgId;
-    const rows = await ctx.db.all<{ id: string; os_user: string | null; git_name: string | null; git_email: string | null }>(
-      `SELECT id, os_user, git_name, git_email FROM installations
-       WHERE org_id = ? AND git_name IS NOT NULL
-       ORDER BY last_seen DESC`,
-      [orgId],
-    );
-    const aliases = await loadAliasMap(ctx.db, orgId);
-    const hidden = new Set((await ctx.db.all<{ user_key: string }>(
-      'SELECT user_key FROM hidden_users WHERE org_id = ?', [orgId],
-    )).map(h => h.user_key));
-    const names: Record<string, string> = {};
-    for (const row of rows) {
-      const name = row.git_name?.trim();
-      if (!name) continue;
-      const key = resolveAliasKey(
-        userKeyFor({ osUser: row.os_user ?? '', gitName: name, gitEmail: row.git_email }, row.id),
-        aliases,
-      );
-      if (hidden.has(key) || key in names) continue;
-      names[key] = name;
-    }
-    // A federation parent has no installation for a child hub's people; their
-    // names are recorded at delivery (child_people, keep-policy rows only).
-    // This hub's own installations win.
-    const children = await ctx.db.all<{ user_key: string; git_name: string }>(
-      'SELECT user_key, git_name FROM child_people WHERE org_id = ? ORDER BY last_seen DESC',
-      [orgId],
-    );
-    for (const row of children) {
-      const key = resolveAliasKey(row.user_key, aliases);
-      if (hidden.has(key) || key in names) continue;
-      names[key] = row.git_name;
-    }
-    res.json({ names });
+    res.json({ names: await peopleNames(ctx.db, req.session!.orgId) });
   }));
 
   router.get('/timeline', guard, asyncRoute(async (req: Request, res: Response) => {
@@ -381,6 +415,506 @@ export function queriesRouter(ctx: HubServerContext): Router {
       limit, offset: before ? 0 : offset, total,
       // Present while a full page came back: there may be more.
       nextBefore: rows.length === limit && last ? `${lastAt}|${last.event_id}` : undefined,
+    });
+  }));
+
+  /**
+   * GH-389: closed cards with their token usage, newest close first. Usage
+   * reaches the hub only on workflow events - a card's whole usage rides its
+   * item.closed (payload.usage) - so this reads those, the latest close per
+   * card (a card reopened and closed again counts once, as it last closed).
+   * A close from a version that sent no usage has usage null: unmeasured,
+   * which is not zero. Same filters as the board's other reads, except types.
+   */
+  router.get('/usage/cards', guard, asyncRoute(async (req: Request, res: Response) => {
+    const f = { ...readEventFilters(req), types: ['item.closed'] };
+    const { where, params } = applyEventFilters(req.session!.orgId, f);
+    const rows = await ctx.db.all<any>(
+      `SELECT event_id, occurred_at, item_id, item_type, item_title, external_id, remote_url, user_key, payload
+         FROM events WHERE ${where.join(' AND ')} AND item_id IS NOT NULL
+        ORDER BY occurred_at DESC, event_id DESC
+        LIMIT ?`,
+      [...params, USAGE_CARDS_LIMIT],
+    );
+    const seen = new Set<string>();
+    const cards = [];
+    for (const r of rows) {
+      if (seen.has(r.item_id)) continue;
+      seen.add(r.item_id);
+      let usage: unknown = null;
+      try { usage = JSON.parse(r.payload)?.payload?.usage ?? null; } catch { /* unreadable: unmeasured */ }
+      cards.push({
+        item_id: r.item_id,
+        item_type: r.item_type ?? null,
+        item_title: r.item_title ?? null,
+        external_id: r.external_id ?? null,
+        remote_url: r.remote_url ?? null,
+        user_key: r.user_key ?? null,
+        // Postgres returns a Date, SQLite the stored text: one shape out.
+        closed_at: new Date(r.occurred_at).toISOString(),
+        usage,
+      });
+    }
+    res.json({ cards, truncated: rows.length === USAGE_CARDS_LIMIT });
+  }));
+
+  /**
+   * GH-389 follow-up: the org's usage over the board filters, by installation,
+   * by user and by harness/model. Usage by PR is GET /v1/usage/prs (GH-396).
+   *
+   * Usage reaches the hub on a card's step changes and its close, and counts
+   * when it arrives. Each of those events carries the card's own usage to
+   * date (usage.own; descendants excluded): the hub keeps a ledger per card
+   * and credits each event with what its snapshot has beyond what the card
+   * already recorded (CardLedger). A turn ingested late is in the next
+   * snapshot; none is counted twice, whatever the order of a step and its
+   * close or a reopen. Steps from versions before the snapshot are deltas;
+   * their closes carry the subtree total, which is never summed. A card's
+   * current step is not on the hub until it moves. A step with no usage is
+   * unmeasured, not zero. ?types= is ignored.
+   *
+   * GH-394: usage on no card (`noCard`) arrives as each installation's running
+   * total per project and local day; it is in `total`, never in the card
+   * breakdowns, and an item-type filter leaves it out.
+   */
+  router.get('/usage/overview', guard, asyncRoute(async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const base = readEventFilters(req);
+    const parse = (raw: string): any => { try { return JSON.parse(raw); } catch { return null; } };
+    const timeOf = (v: unknown) => new Date(v as any).getTime();
+    const iso = (v: unknown) => new Date(v as any).toISOString();
+    // Ingest has stored any string as a timestamp: a row that does not parse is
+    // skipped and counted, never a failed request.
+    const validTime = (v: unknown) => Number.isFinite(timeOf(v));
+    // One count per event, however many of the reads below meet it.
+    const malformed = new Set<string>();
+    const usable = (r: { event_id: unknown; occurred_at: unknown }) => {
+      if (validTime(r.occurred_at)) return true;
+      malformed.add(String(r.event_id));
+      return false;
+    };
+    const USAGE_TYPES = ['step.transitioned', 'item.closed'];
+
+    const all = new UsageGroup();
+    const byInstallation = new Map<string, UsageGroup>();
+    const byUser = new Map<string, UsageGroup>();
+    // The timeline: each credit on the viewer's day (an IANA zone, else an offset, else UTC).
+    const dayOf = dayKeyer(singleValue(req, 'tz'), readTzOffsetMin(req));
+    const byDay = new Map<string, UsageGroup>();
+    const credit = (r: { installation_id: unknown; user_key: unknown; item_id: string | null; occurred_at: unknown }, usage: unknown) => {
+      all.add(r.item_id, usage);
+      const day = dayOf(iso(r.occurred_at));
+      if (!byDay.has(day)) byDay.set(day, new UsageGroup());
+      byDay.get(day)!.add(r.item_id, usage);
+      const inst = String(r.installation_id);
+      if (!byInstallation.has(inst)) byInstallation.set(inst, new UsageGroup());
+      byInstallation.get(inst)!.add(r.item_id, usage);
+      const user = String(r.user_key);
+      if (!byUser.has(user)) byUser.set(user, new UsageGroup());
+      byUser.get(user)!.add(r.item_id, usage);
+    };
+
+    // 1. The usage events in the window.
+    const winF = applyEventFilters(orgId, { ...base, types: USAGE_TYPES });
+    const winRows = await ctx.db.all<any>(
+      `SELECT event_id, type, installation_id, user_key, item_id, occurred_at, payload
+         FROM events WHERE ${winF.where.join(' AND ')}
+        ORDER BY occurred_at DESC, event_id DESC
+        LIMIT ?`,
+      [...winF.params, USAGE_OVERVIEW_LIMIT + 1],
+    );
+    let truncated = winRows.length > USAGE_OVERVIEW_LIMIT;
+    const inWindow = new Map<string, any>();
+    let measured = 0;
+    let unmeasured = 0;
+    let incomplete = 0;
+    for (const r of winRows.slice(0, USAGE_OVERVIEW_LIMIT)) {
+      if (!usable(r)) continue;
+      const usage = parse(r.payload)?.payload?.usage;
+      if (r.type === 'step.transitioned') {
+        if (!usage || typeof usage !== 'object') { unmeasured++; continue; }
+        measured++;
+        if (usage.complete === false) incomplete++;
+      }
+      if (!usage || typeof usage !== 'object') continue;
+      // No card to keep a ledger for: a delta is all the hub can credit.
+      if (!r.item_id) { if (r.type === 'step.transitioned') credit(r, summaryFromModels(modelsOf(usage))); continue; }
+      inWindow.set(String(r.event_id), r);
+    }
+
+    // 2. Each card's ledger over its whole history, crediting only the events
+    //    in the window. The whole history, past the window's end too: an event
+    //    emitted after the window can precede one inside it in read order
+    //    (own.asOf), and disjoint windows must add up to the whole.
+    const cardIds = [...new Set([...inWindow.values()].map(r => r.item_id as string))];
+    const history: any[] = [];
+    for (const ids of chunks(cardIds)) {
+      history.push(...await ctx.db.all<any>(
+        `SELECT event_id, type, item_id, occurred_at, payload FROM events
+          WHERE org_id = ? AND type IN ('step.transitioned', 'item.closed') AND item_id IN (${ids.map(() => '?').join(',')})`,
+        [orgId, ...ids],
+      ));
+    }
+    const rank = (t: string) => (t === 'item.closed' ? 1 : 0);
+    for (let i = history.length - 1; i >= 0; i--) if (!usable(history[i])) history.splice(i, 1);
+    // A snapshot's place is when it was READ (own.asOf): a move reads its card
+    // only after the previous move saved, so read order is the card's order,
+    // while emission order is not (a slow route can emit an older snapshot
+    // late). Older versions sent no asOf; their emission time stands in.
+    for (const h of history) {
+      h.usage = parse(h.payload)?.payload?.usage;
+      const asOf = timeOf(h.usage?.own?.asOf);
+      h.order = Number.isFinite(asOf) ? asOf : timeOf(h.occurred_at);
+    }
+    history.sort((x, y) => String(x.item_id).localeCompare(String(y.item_id))
+      || x.order - y.order
+      || rank(x.type) - rank(y.type)
+      || String(x.event_id).localeCompare(String(y.event_id)));
+    const ledgers = new Map<string, CardLedger>();
+    const recovered = zeroTotals();
+    for (const h of history) {
+      const usage = h.usage;
+      if (!usage || typeof usage !== 'object') continue;
+      let ledger = ledgers.get(h.item_id);
+      if (!ledger) { ledger = new CardLedger(); ledgers.set(h.item_id, ledger); }
+      let credited;
+      if (usage.own) credited = ledger.addSnapshot(modelsOf(usage.own));
+      else if (h.type === 'step.transitioned') credited = ledger.addDelta(modelsOf(usage));
+      else continue; // an older close: its total is the subtree's
+      const row = inWindow.get(String(h.event_id));
+      if (!row || credited.length === 0) continue;
+      const sum = summaryFromModels(credited);
+      if (h.type === 'item.closed') addTotals(recovered, sum.total);
+      credit(row, sum);
+    }
+
+    // 3. Usage on no card (GH-394): each installation's running total per
+    //    project and local day. Every send is stored; the latest (payload.asOf)
+    //    stands for the key, so a resend replaces and never adds. It is credited
+    //    to the window holding that latest send, read across the whole time
+    //    span its key can occupy, so disjoint windows add up to the whole. It
+    //    has no card, so an item-type filter leaves it out and it is no PR's.
+    const noCardAll = new UsageGroup();
+    const noCardByDay = new Map<string, UsageGroup>();
+    const noCardByInstallation = new Map<string, UsageGroup>();
+    const noCardByUser = new Map<string, UsageGroup>();
+    if (!base.itemTypes) {
+      const ncF = applyEventFilters(orgId, { ...base, types: [NO_CARD_EVENT] });
+      const ncRows = await ctx.db.all<any>(
+        `SELECT event_id, installation_id, project_id, occurred_at FROM events WHERE ${ncF.where.join(' AND ')}
+          ORDER BY occurred_at DESC, event_id DESC
+          LIMIT ?`,
+        [...ncF.params, USAGE_OVERVIEW_LIMIT + 1],
+      );
+      if (ncRows.length > USAGE_OVERVIEW_LIMIT) truncated = true;
+      const picked = new Set<string>();
+      let earliest = Infinity;
+      let latest = -Infinity;
+      for (const r of ncRows.slice(0, USAGE_OVERVIEW_LIMIT)) {
+        if (!usable(r)) continue;
+        picked.add(String(r.event_id));
+        earliest = Math.min(earliest, timeOf(r.occurred_at));
+        latest = Math.max(latest, timeOf(r.occurred_at));
+      }
+      // Each picked installation's own picked projects (null: a send with no project).
+      const pairs = new Map<string, Set<string | null>>();
+      for (const r of ncRows) {
+        if (!picked.has(String(r.event_id))) continue;
+        const inst = String(r.installation_id);
+        if (!pairs.has(inst)) pairs.set(inst, new Set());
+        pairs.get(inst)!.add(r.project_id == null ? null : String(r.project_id));
+      }
+      // A key's sends all fall in its local day: within two days of any one of them.
+      const span = 2 * 24 * 60 * 60 * 1000;
+      const versions: any[] = [];
+      for (const [inst, projectSet] of pairs) {
+        const projects = [...projectSet].filter((p): p is string => p !== null);
+        const projectChunks: Array<string[] | null> = [...chunks(projects), ...(projectSet.has(null) ? [null] : [])];
+        for (const pids of projectChunks) {
+          versions.push(...await ctx.db.all<any>(
+            `SELECT event_id, installation_id, user_key, project_id, occurred_at, payload FROM events
+              WHERE org_id = ? AND type = ? AND installation_id = ?
+                AND ${pids ? `project_id IN (${pids.map(() => '?').join(',')})` : 'project_id IS NULL'}
+                AND occurred_at >= ? AND occurred_at <= ?`,
+            [orgId, NO_CARD_EVENT, inst, ...(pids ?? []), iso(earliest - span), iso(latest + span)],
+          ));
+        }
+      }
+      const newest = new Map<string, { row: any; order: number; usage: any }>();
+      for (const v of versions) {
+        if (!usable(v)) continue;
+        const p = parse(v.payload)?.payload;
+        const day = typeof p?.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.day) ? p.day : null;
+        if (!day || !p.usage || typeof p.usage !== 'object') {
+          if (picked.has(String(v.event_id))) malformed.add(String(v.event_id));
+          continue;
+        }
+        const asOf = timeOf(p.asOf);
+        const order = Number.isFinite(asOf) ? asOf : timeOf(v.occurred_at);
+        const key = `${v.installation_id}\u0000${v.project_id ?? ''}\u0000${day}`;
+        const prev = newest.get(key);
+        if (prev && (prev.order > order || (prev.order === order && String(prev.row.event_id) > String(v.event_id)))) continue;
+        newest.set(key, { row: v, order, usage: p.usage });
+      }
+      const group = (m: Map<string, UsageGroup>, k: string) => {
+        if (!m.has(k)) m.set(k, new UsageGroup());
+        return m.get(k)!;
+      };
+      for (const { row, usage } of newest.values()) {
+        if (!picked.has(String(row.event_id))) continue;
+        const sum = summaryFromModels(modelsOf(usage));
+        noCardAll.add(null, sum);
+        group(noCardByDay, dayOf(iso(row.occurred_at))).add(null, sum);
+        group(noCardByInstallation, String(row.installation_id)).add(null, sum);
+        group(noCardByUser, String(row.user_key)).add(null, sum);
+      }
+    }
+
+    const instIds = [...new Set([...byInstallation.keys(), ...noCardByInstallation.keys()])];
+    const identities = new Map<string, any>();
+    for (const ids of chunks(instIds)) {
+      const found = await ctx.db.all<any>(
+        `SELECT id, git_name, git_email, os_user FROM installations WHERE org_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
+        [orgId, ...ids],
+      );
+      for (const f of found) identities.set(f.id, f);
+    }
+    const ordered = (m: Map<string, UsageGroup>, key: string, extra: (id: string) => Record<string, unknown> = () => ({})) =>
+      [...m.entries()]
+        .sort(([a, ga], [b, gb]) => tokenWeight(gb.total) - tokenWeight(ga.total) || a.localeCompare(b))
+        .map(([id, g]) => ({ [key]: id, ...extra(id), cards: g.cards, total: g.total, byModel: g.byModel() }));
+
+    const total = zeroTotals();
+    addTotals(total, all.total);
+    addTotals(total, noCardAll.total);
+    const noCardRows = (m: Map<string, UsageGroup>, key: string, extra: (id: string) => Record<string, unknown> = () => ({})) =>
+      ordered(m, key, extra).map(({ cards: _cards, ...row }) => row);
+    res.json({
+      // Cards and usage on no card; every breakdown below is the cards' only, and noCard has its own.
+      total,
+      cards: all.cards,
+      steps: measured,
+      unmeasuredSteps: unmeasured,
+      incompleteSteps: incomplete,
+      recoveredAtClose: recovered,
+      byInstallation: ordered(byInstallation, 'installation_id', id => ({ label: installationLabel(identities.get(id)) })),
+      byUser: ordered(byUser, 'user_key'),
+      byModel: all.byModel(),
+      byDay: [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b))
+        .map(([day, g]) => ({ day, cards: g.cards, total: g.total, byModel: g.byModel() })),
+      noCard: {
+        total: noCardAll.total,
+        byModel: noCardAll.byModel(),
+        byInstallation: noCardRows(noCardByInstallation, 'installation_id', id => ({ label: installationLabel(identities.get(id)) })),
+        byUser: noCardRows(noCardByUser, 'user_key'),
+        byDay: [...noCardByDay.entries()].sort(([a], [b]) => a.localeCompare(b))
+          .map(([day, g]) => ({ day, total: g.total, byModel: g.byModel() })),
+      },
+      truncated,
+      malformedEvents: malformed.size,
+    });
+  }));
+
+  /**
+   * GH-396: usage by PR, one page at a time. The board filters pick the PRs:
+   * one registered or updated in the window, by the people chosen. Each PR's
+   * anchor card, opening date, opener (created_by) and link come from its
+   * whole history, so a filter cannot resurrect an old anchor; its usage is
+   * the anchor's latest close (card + subtree), null while that card is open
+   * or after a step left the closed status.
+   *
+   * The table's own filters (`repos`, `q`: a PR number or part of the card
+   * title, `status`: closed | open), its sort (`sort`, `dir`) and its paging
+   * (`page`, `pageSize`) run here, so a response is one page and `total`.
+   * Cost sorts by what the usage stored: reported (costUsd) plus the estimate
+   * priced when the turns were recorded (estimatedCostUsd, GH-397). Turns with
+   * neither (`unpricedTurns`: recorded before turns were priced, or of a model
+   * the price table did not list) add nothing to it; the page prices them at
+   * today's prices where it can. `costWithoutEstimate` counts the PRs with any
+   * such turns under a cost sort (null under any other).
+   * A PR not closed yet sorts last on a usage column, either way. Closes are
+   * read for the page's PRs only, unless a status filter or a usage sort needs
+   * them all; `malformedEvents` counts what this request read.
+   */
+  router.get('/usage/prs', guard, asyncRoute(async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const base = readEventFilters(req);
+    const repoFilter = parseList(req, 'repos');
+    const text = (singleValue(req, 'q') ?? '').trim();
+    const status = singleValue(req, 'status');
+    if (status !== null && status !== 'closed' && status !== 'open') throw new BadQuery("Query parameter 'status' must be 'closed' or 'open'.");
+    const sortRaw = singleValue(req, 'sort') ?? 'opened';
+    if (!(USAGE_PR_SORTS as readonly string[]).includes(sortRaw)) throw new BadQuery(`Query parameter 'sort' must be one of ${USAGE_PR_SORTS.join(', ')}.`);
+    const sort = sortRaw as UsagePrSort;
+    const dirRaw = singleValue(req, 'dir');
+    if (dirRaw !== null && dirRaw !== 'asc' && dirRaw !== 'desc') throw new BadQuery("Query parameter 'dir' must be 'asc' or 'desc'.");
+    const dir = dirRaw ?? (sort === 'opened' ? 'desc' : 'asc');
+    const positive = (name: string): number | null => {
+      const raw = singleValue(req, name);
+      if (raw === null) return null;
+      if (!/^[1-9]\d{0,8}$/.test(raw)) throw new BadQuery(`Query parameter '${name}' must be a whole number from 1.`);
+      return Number(raw);
+    };
+    const pageSize = Math.min(positive('pageSize') ?? USAGE_PRS_PAGE_SIZE, USAGE_PRS_MAX_PAGE_SIZE);
+    const askedPage = positive('page') ?? 1;
+
+    const parse = (raw: string): any => { try { return JSON.parse(raw); } catch { return null; } };
+    const timeOf = (v: unknown) => new Date(v as any).getTime();
+    const malformed = new Set<string>();
+    const usable = (r: { event_id: unknown; occurred_at: unknown }) => {
+      if (Number.isFinite(timeOf(r.occurred_at))) return true;
+      malformed.add(String(r.event_id));
+      return false;
+    };
+    const prKey = (p: any): string | null => {
+      const repo = typeof p?.repo === 'string' ? p.repo : null;
+      const num = Number(p?.prNumber);
+      return repo && Number.isInteger(num) ? `${repo.toLowerCase()}#${num}` : null;
+    };
+
+    const prsF = applyEventFilters(orgId, { ...base, types: ['pr.opened', 'pr.updated'] });
+    const picked = new Set<string>();
+    for (const r of await ctx.db.all<any>(
+      `SELECT payload FROM events WHERE ${prsF.where.join(' AND ')} AND item_id IS NOT NULL`, prsF.params,
+    )) {
+      const k = prKey(parse(r.payload)?.payload);
+      if (k) picked.add(k);
+    }
+    type Pr = {
+      repo: string; pr_number: number; item_id: string; item_type: string | null; item_title: string | null;
+      opened_at: string; closed_at: string | null; created_by: string | null; url: string | null; usage: any;
+    };
+    const prs = new Map<string, Pr>();
+    const openedBy = new Map<string, string>();
+    if (picked.size > 0) {
+      // A PR is known by its repo and number, not by the remote of the card it
+      // was registered from (a fork and its upstream name one PR), so its
+      // history is read across the org's PR events - a handful per PR.
+      const prHistory = (await ctx.db.all<any>(
+        `SELECT event_id, type, occurred_at, item_id, item_type, item_title, user_key, remote_url, payload FROM events
+          WHERE org_id = ? AND type IN ('pr.opened', 'pr.updated') AND item_id IS NOT NULL`,
+        [orgId],
+      )).filter(usable);
+      prHistory.sort((x, y) => timeOf(x.occurred_at) - timeOf(y.occurred_at)
+        || String(x.event_id).localeCompare(String(y.event_id)));
+      for (const r of prHistory) {
+        const p = parse(r.payload)?.payload;
+        const k = prKey(p);
+        if (!k || !picked.has(k)) continue;
+        const prev = prs.get(k);
+        // The opener: the first pr.opened, else (a PR only ever seen updated) the first event.
+        const opensIt = !prev || (r.type === 'pr.opened' && openedBy.get(k) !== 'pr.opened');
+        if (opensIt) openedBy.set(k, String(r.type));
+        prs.set(k, {
+          repo: p.repo, pr_number: Number(p.prNumber), item_id: r.item_id,
+          item_type: r.item_type ?? prev?.item_type ?? null,
+          item_title: r.item_title ?? prev?.item_title ?? null,
+          opened_at: prev?.opened_at ?? new Date(r.occurred_at).toISOString(), closed_at: null,
+          created_by: opensIt ? (r.user_key == null ? null : String(r.user_key)) : prev.created_by,
+          url: prLinkFor(r.remote_url, p.repo, p.prNumber),
+          usage: null,
+        });
+      }
+    }
+
+    const all = [...prs.values()];
+    // The repository choices: every repo the board filters picked, before the table's own filters.
+    const repoNames = new Map<string, string>();
+    for (const p of all) if (!repoNames.has(p.repo.toLowerCase())) repoNames.set(p.repo.toLowerCase(), p.repo);
+
+    // Each anchor's latest close (later event id at one instant), unless a
+    // step moved the card after it: a reopened card's close no longer stands.
+    const resolveUsage = async (list: Pr[]) => {
+      const closes = new Map<string, { at: number; id: string; status: string; usage: unknown }>();
+      const leftAt = new Map<string, Array<{ at: number; from: string | undefined }>>();
+      for (const ids of chunks([...new Set(list.map(p => p.item_id))])) {
+        const found = await ctx.db.all<any>(
+          `SELECT item_id, type, occurred_at, event_id, payload FROM events
+            WHERE org_id = ? AND type IN ('item.closed', 'step.transitioned') AND item_id IN (${ids.map(() => '?').join(',')})`,
+          [orgId, ...ids],
+        );
+        for (const f of found) {
+          if (!usable(f)) continue;
+          const at = timeOf(f.occurred_at);
+          const p = parse(f.payload)?.payload;
+          if (f.type === 'step.transitioned') {
+            if (!leftAt.has(f.item_id)) leftAt.set(f.item_id, []);
+            leftAt.get(f.item_id)!.push({ at, from: p?.fromStatus });
+            continue;
+          }
+          const prev = closes.get(f.item_id);
+          if (prev && (prev.at > at || (prev.at === at && prev.id > String(f.event_id)))) continue;
+          closes.set(f.item_id, { at, id: String(f.event_id), status: p?.toStatus ?? 'DONE', usage: p?.usage ?? null });
+        }
+      }
+      for (const p of list) {
+        const c = closes.get(p.item_id);
+        // Reopened: a step left the closed status after the close. The closing
+        // step itself (into that status) never counts, whatever its clock says.
+        if (!c || (leftAt.get(p.item_id) ?? []).some(m => m.from === c.status && m.at >= c.at)) continue;
+        p.closed_at = new Date(c.at).toISOString();
+        p.usage = c.usage;
+      }
+    };
+
+    // The filters that need no usage go first, so the closes are read for as few PRs as the answer needs.
+    const wanted = repoFilter ? new Set(repoFilter.map(r => r.toLowerCase())) : null;
+    const asNumber = /^#?\d+$/.test(text) ? Number(text.replace('#', '')) : null;
+    const needle = text.toLowerCase();
+    let rows = all.filter(p => {
+      if (wanted && !wanted.has(p.repo.toLowerCase())) return false;
+      if (!text) return true;
+      if (asNumber !== null && p.pr_number === asNumber) return true;
+      return (p.item_title ?? '').toLowerCase().includes(needle);
+    });
+    // A status filter or a usage column needs every remaining PR's close; otherwise only the page's.
+    const usageFirst = status !== null || !['opened', 'pr', 'card', 'createdBy'].includes(sort);
+    if (usageFirst) {
+      await resolveUsage(rows);
+      if (status) rows = rows.filter(p => (status === 'closed' ? !!p.closed_at : !p.closed_at));
+    }
+
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    const totalOf = (p: Pr) => (p.usage && typeof p.usage === 'object' && p.usage.total && typeof p.usage.total === 'object' ? p.usage.total : null);
+    const names = sort === 'createdBy' ? await peopleNames(ctx.db, orgId) : {};
+    const raw = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+    const textCmp = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'base', numeric: true }) || raw(a, b);
+    const byPr = (a: Pr, b: Pr) => textCmp(a.repo, b.repo) || a.pr_number - b.pr_number;
+    /** The sorted column's value; null (no usage yet, no opener) sorts last either way. */
+    const value = (p: Pr): string | number | null => {
+      const t = totalOf(p);
+      switch (sort) {
+        case 'opened': case 'pr': return null;
+        case 'card': return p.item_title ?? p.item_id;
+        case 'createdBy': return p.created_by == null ? null : (Object.hasOwn(names, p.created_by) ? names[p.created_by] : p.created_by);
+        case 'tokens': return t ? num(t.input) + num(t.cacheRead) + num(t.cacheWrite) + num(t.output) : null;
+        case 'cost': return t ? num(t.costUsd) + num(t.estimatedCostUsd) : null;
+        default: return t ? num(t[sort]) : null;
+      }
+    };
+    const sign = dir === 'asc' ? 1 : -1;
+    const compare = (a: { p: Pr; v: string | number | null }, b: { p: Pr; v: string | number | null }): number => {
+      if (sort === 'opened') return raw(a.p.opened_at, b.p.opened_at) * sign;
+      if (sort === 'pr') return byPr(a.p, b.p) * sign;
+      if (a.v === null || b.v === null) return a.v === b.v ? 0 : a.v === null ? 1 : -1;
+      return (typeof a.v === 'number' && typeof b.v === 'number' ? a.v - b.v : textCmp(String(a.v), String(b.v))) * sign;
+    };
+    const keyed = rows.map(p => ({ p, v: value(p) }));
+    // One order on every page: ties go newest opened first, then repository and number.
+    keyed.sort((a, b) => compare(a, b) || raw(b.p.opened_at, a.p.opened_at) || byPr(a.p, b.p));
+
+    const repos = [...repoNames.values()].sort(textCmp);
+    const total = keyed.length;
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(askedPage, pages);
+    const pageRows = keyed.slice((page - 1) * pageSize, page * pageSize).map(({ p }) => p);
+    if (!usageFirst) await resolveUsage(pageRows);
+    // Only a cost sort is affected, and only then is every row's usage read.
+    const costWithoutEstimate = sort !== 'cost' ? null : rows.filter(p => num(totalOf(p)?.unpricedTurns) > 0).length;
+    res.json({
+      rows: pageRows,
+      total, page, pageSize, sort, dir, repos, costWithoutEstimate,
+      malformedEvents: malformed.size,
     });
   }));
 

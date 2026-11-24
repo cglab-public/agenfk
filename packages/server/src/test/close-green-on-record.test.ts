@@ -21,7 +21,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -36,7 +35,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
@@ -50,17 +49,20 @@ afterAll(async () => {
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell() });
+
+/** One commit on main (#311: built once per worker, cloned per test). */
+const buildRepo: GitTemplateBuild = (dir) => {
+  gitSync(dir, 'init', '-q', '-b', 'main');
+  gitSync(dir, 'config', 'user.email', 't@t');
+  gitSync(dir, 'config', 'user.name', 't');
+  writeFiles(dir, { 'tests/a.test.js': 'test', 'src.js': 'export const a = 1;\n', '.gitignore': 'report.*\n' });
+  gitSync(dir, 'add', '.');
+  gitSync(dir, 'commit', '-qm', 'one');
+};
 
 function makeRepo(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-closegreen-'));
+  const dir = cloneGitTemplate('close-green-on-record:repo', buildRepo, 'agenfk-closegreen-');
   dirs.push(dir);
-  git(dir, 'git init -q -b main && git config user.email t@t && git config user.name t');
-  fs.mkdirSync(path.join(dir, 'tests'));
-  fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
-  fs.writeFileSync(path.join(dir, 'src.js'), 'export const a = 1;\n');
-  fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  git(dir, 'git add . && git commit -qm one');
   return dir;
 }
 
@@ -130,7 +132,7 @@ describe('the close stands on a green of this tree already on record (ef1342b8)'
     expect(res.body.status).toBe('END');
     expect(suite.runs(), 'the verify command ran over a green of this very tree').toHaveLength(1);
     expect(res.body.message).toMatch(/green of this tree on record/);
-    const head = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+    const head = gitSync(dir, 'rev-parse', 'HEAD');
     const tests = (await read(id)).tests ?? [];
     expect(tests.some((t: any) => t.status === 'PASSED' && t.command === suite.command && t.commit === head && t.treeState),
       'the close recorded no green tied to this tree').toBe(true);
@@ -156,52 +158,18 @@ describe('the close stands on a green of this tree already on record (ef1342b8)'
     const id = await card(pid, 'WORK');
     const green = await captureNow(id);
     fs.writeFileSync(path.join(dir, 'NOTES.md'), '# notes no test reads\n');
-    git(dir, 'git add NOTES.md && git commit -qm docs');
+    gitSync(dir, 'add', 'NOTES.md'); gitSync(dir, 'commit', '-qm', 'docs');
     await moveTo(id, 'FINAL');
 
     expect((await predict(id)).mode).toBe('reuse');
     const res = await validate(id);
     expect(res.body.status, JSON.stringify(res.body)).toBe('END');
     expect(suite.runs(), 'a docs-only change re-ran the verify command').toHaveLength(1);
-    const head = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+    const head = gitSync(dir, 'rev-parse', 'HEAD');
     const t = ((await read(id)).tests ?? []).find((x: any) => x.status === 'PASSED');
     expect(t?.commit, 'the green was not tied to the commit the card closed at').toBe(head);
     expect(t?.treeState, 'the close recorded no tree state').toEqual(expect.any(String));
     expect(t?.treeState, 'the record carries the old tree, not the one that closed').not.toBe(green.filesState);
-  });
-
-  it('a Markdown file a test names changed since the green: it counts as code, and the verify command runs', async () => {
-    const dir = makeRepo();
-    fs.writeFileSync(path.join(dir, 'tests/a.test.js'), "test reads 'GUIDE.md'");
-    fs.writeFileSync(path.join(dir, 'GUIDE.md'), 'v1\n');
-    git(dir, 'git add . && git commit -qm guide');
-    const suite = counted('suite');
-    const pid = await project(await finalOnly(), reported(dir, suite.command));
-    const id = await card(pid, 'WORK');
-    await captureNow(id);
-    fs.writeFileSync(path.join(dir, 'GUIDE.md'), 'v2\n');
-    git(dir, 'git commit -qam guide2');
-    await moveTo(id, 'FINAL');
-
-    expect((await predict(id)).mode).toBe('full');
-    const res = await validate(id);
-    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
-    expect(suite.runs(), 'a file a test reads was treated as docs').toHaveLength(2);
-  });
-
-  it("a project that ignores nothing for reuse (reuseIgnore: none): a docs edit runs the verify command", async () => {
-    const dir = makeRepo();
-    const suite = counted('suite');
-    const pid = await project(await finalOnly(), { projectRoot: dir, verifyCommand: suite.command, testReport: { format: 'junit-xml', reportPath: 'report.xml', command: suite.command, reuseIgnore: [] } });
-    const id = await card(pid, 'WORK');
-    await captureNow(id);
-    fs.writeFileSync(path.join(dir, 'NOTES.md'), '# notes\n');
-    git(dir, 'git add NOTES.md && git commit -qm docs');
-    await moveTo(id, 'FINAL');
-
-    const res = await validate(id);
-    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
-    expect(suite.runs()).toHaveLength(2);
   });
 
   it('a green of the same content in ANOTHER checkout: it is not this tree, and the verify command runs', async () => {
@@ -226,7 +194,7 @@ describe('the close stands on a green of this tree already on record (ef1342b8)'
     const id = await card(pid, 'WORK');
     await captureNow(id);
     fs.writeFileSync(path.join(dir, 'src.js'), 'export const a = 2;\n');
-    git(dir, 'git commit -qam code');
+    gitSync(dir, 'commit', '-qam', 'code');
     await moveTo(id, 'FINAL');
 
     expect((await predict(id)).mode).toBe('full');

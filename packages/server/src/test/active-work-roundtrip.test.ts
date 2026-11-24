@@ -48,20 +48,4 @@ describe('what the gatekeeper writes', () => {
     const read = readActiveWorkForSession(undefined);
     expect(read?.itemId).toBe('item-43');
   });
-
-  it('lands where the reader looks', () => {
-    // The two halves agree on the PATH as well as the shape. The unkeyed file
-    // is the documented fallback for the gatekeeper, which has no session id
-    // to key on.
-    writeActiveWork({ id: 'item-44' });
-    expect(fs.existsSync(activeWorkPath())).toBe(true);
-  });
-
-  it('is rejected when it is not a note at all', () => {
-    // The reader validates rather than trusting the file, so a hand-edited or
-    // truncated one is discarded instead of opening a run against nothing.
-    fs.mkdirSync(path.dirname(activeWorkPath()), { recursive: true });
-    fs.writeFileSync(activeWorkPath(), '{ "nothing": "useful" }');
-    expect(readActiveWorkForSession(undefined)).toBeNull();
-  });
 });

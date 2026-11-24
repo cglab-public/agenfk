@@ -5,6 +5,7 @@ import { api, MeResponse } from '../api';
 import { validateOrgIdInput, spokeRepointCommand } from './adminOrgRename';
 import { AdminFederation } from './AdminFederation';
 import { AdminChildHubs } from './AdminChildHubs';
+import { AdminIdentityCoding } from './AdminIdentityCoding';
 import { buttonClass, cardClass, cn, controlClass, CopyButton } from '../components/ui';
 
 const inputCls = controlClass;
@@ -38,6 +39,7 @@ export function AdminOrg() {
       */}
       <div id="parent-hub"><AdminFederation /></div>
       <div id="child-hubs"><AdminChildHubs /></div>
+      <div id="identity-coding"><AdminIdentityCoding /></div>
     </div>
   );
 }

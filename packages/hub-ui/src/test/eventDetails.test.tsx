@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { eventFields } from '../eventDetails';
+import { eventFields, eventTitle } from '../eventDetails';
 import { eventTone } from '../eventTone';
 import { UserDetailPage } from '../pages/UserDetail';
 import { api } from '../api';
@@ -109,6 +109,26 @@ describe('eventFields', () => {
   });
 });
 
+// User 2026-11-01: an Airlock event's row read only '—'. It names the policy revision and who.
+describe('eventTitle', () => {
+  const airlock = (type: string, inner: Record<string, unknown>, actor: Record<string, unknown> | undefined, over: Record<string, unknown> = {}) =>
+    ({ ...row('a', type, inner, { item_id: null, item_title: null, project_id: null, item_type: null, ...over }), payload: { type, actor, payload: inner } });
+
+  it('names the policy revision and the person\'s git name', () => {
+    expect(eventTitle(airlock('airlock.policy-applied', { revision: 6, iocRevision: 0 }, { osUser: 'fabio', gitName: 'Fabio Caldas', gitEmail: 'fabio@acme.com' }) as any))
+      .toBe('Policy revision 6 · Fabio Caldas');
+  });
+
+  it('falls back to the OS user, then the user key, and leaves out a revision it does not carry', () => {
+    expect(eventTitle(airlock('airlock.policy-refused', { revision: 7 }, { osUser: 'fabio' }) as any)).toBe('Policy revision 7 · fabio');
+    expect(eventTitle(airlock('airlock.decision', { tool: 'bash' }, undefined, { user_key: 'fabio@acme.com' }) as any)).toBe('fabio@acme.com');
+  });
+
+  it('gives other events no title of its own', () => {
+    expect(eventTitle(EVENTS[0] as any)).toBeNull();
+  });
+});
+
 describe('eventTone', () => {
   it('reads PRs as lifecycle and approvals as a pass', () => {
     expect(eventTone('pr.opened')).toBe('accent');
@@ -152,6 +172,17 @@ describe('the user page event list', () => {
     const raw = screen.getAllByText('step.transitioned');
     expect(raw.filter(el => el.closest('summary'))).toHaveLength(0);
     expect(raw.some(el => el.previousElementSibling?.textContent === 'Type')).toBe(true);
+  });
+
+  it('titles an Airlock event\'s row with its policy revision and who, not a dash', async () => {
+    const applied = { ...row('al', 'airlock.policy-applied', { revision: 6, iocRevision: 0 }, { item_id: null, item_title: null, project_id: null, item_type: null }),
+      payload: { type: 'airlock.policy-applied', actor: { osUser: 'fabio', gitName: 'Fabio Caldas' }, payload: { revision: 6, iocRevision: 0 } } };
+    const others = get.getMockImplementation()!;
+    get.mockImplementation(async (url: string) => (url.startsWith('/v1/timeline') ? { data: { events: [applied], total: 1 } } : others(url)));
+    mount();
+    const summary = (await screen.findByText('Airlock policy applied', { selector: 'summary *' })).closest('summary') as HTMLElement;
+    expect(within(summary).getByText('Policy revision 6 · Fabio Caldas')).toBeInTheDocument();
+    expect(within(summary).queryByText('—')).toBeNull();
   });
 
   it('opens to a field list with links, and keeps the raw JSON behind a toggle', async () => {

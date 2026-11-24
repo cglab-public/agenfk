@@ -4,7 +4,7 @@ import { HubServerContext } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS, MAX_INVITE_TOKEN_LEN } from '../auth/inviteToken.js';
 import { semverOrNull } from '../util/semver.js';
-import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
+import { effectiveCodingFor, legacyPolicyFor, codingOfRow } from '../services/federation/identityCoding.js';
 import { recordChildPerson, forwardedActorName, parentAllowsNames } from '../services/migrateChildPeopleNames.js';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
@@ -13,6 +13,8 @@ import { issueFederationKey, requireFederationKey } from '../auth/federationKey.
 import { publicHubUrl } from '../util/publicUrl.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { MAX_CHILD_HUB_NAME_LEN, validChildHubName } from '../util/childHubRow.js';
+import { canonicalOccurredAt } from '../util/occurredAt.js';
+import { dropUsage, usageTrustedFrom } from '../services/unfixedUsage.js';
 
 // Hub federation, parent side (CGLAB-181). A child hub enrolls by redeeming an
 // admin-issued invite of kind 'child-hub', then heartbeats and polls for
@@ -140,15 +142,10 @@ export function federationRouter(ctx: HubServerContext): Router {
       });
       if (!outcome) { res.status(400).json({ error: 'invite token already used' }); return; }
 
-      // Hand the policy over at enrolment, not on the first heartbeat a minute
-      // later: a hub joining a group that already opted out would otherwise
-      // forward real identities for that first minute.
-      const group = await ctx.db.get<{ identity_policy: string | null }>(
-        'SELECT identity_policy FROM org_settings WHERE org_id = ?', [parsed.orgId],
-      );
+      const identity = await effectiveCodingFor(ctx.db, parsed.orgId, null);
       res.json({
         token: outcome, childHubId, orgId: parsed.orgId, parentUrl: publicHubUrl(req),
-        identityPolicy: effectiveIdentityPolicy(group?.identity_policy as any ?? null, null),
+        identity, identityPolicy: legacyPolicyFor(identity),
       });
     } catch (err) {
       // Forwarded explicitly, so the child sees a 500 rather than a hang on any
@@ -165,23 +162,8 @@ export function federationRouter(ctx: HubServerContext): Router {
         'UPDATE child_hubs SET last_seen = ?, hub_version = COALESCE(?, hub_version) WHERE id = ? AND org_id = ?',
         [new Date().toISOString(), hubVersion, childHubId, orgId],
       );
-      // The effective identity policy rides back on the heartbeat, so the
-      // child learns of a change within a tick without a new endpoint or a
-      // directive kind. Group default, overridden per child in either
-      // direction.
-      const group = await ctx.db.get<{ identity_policy: string | null }>(
-        'SELECT identity_policy FROM org_settings WHERE org_id = ?', [orgId],
-      );
-      const child = await ctx.db.get<{ identity_policy: string | null }>(
-        'SELECT identity_policy FROM child_hubs WHERE id = ? AND org_id = ?', [childHubId, orgId],
-      );
-      res.json({
-        ok: true, childHubId, orgId,
-        identityPolicy: effectiveIdentityPolicy(
-          group?.identity_policy as any ?? null,
-          child?.identity_policy as any ?? null,
-        ),
-      });
+      const identity = await effectiveCodingFor(ctx.db, orgId, childHubId);
+      res.json({ ok: true, childHubId, orgId, identity, identityPolicy: legacyPolicyFor(identity) });
     } catch (err) {
       next(err);
     }
@@ -445,8 +427,11 @@ export function federationRouter(ctx: HubServerContext): Router {
       );
       const hidden = new Set(hiddenRows.map(r => r.user_key));
       const aliases = await loadAliasMap(ctx.db, orgId);
-      // Names are recorded only under the parent's own current policy (see below).
       const namesAllowed = await parentAllowsNames(ctx.db, orgId, childHubId);
+      const child = await ctx.db.get<{ hub_version: string | null }>(
+        'SELECT hub_version FROM child_hubs WHERE id = ? AND org_id = ?', [childHubId, orgId],
+      );
+      const keepUsage = usageTrustedFrom(child?.hub_version ?? null);
 
       let accepted = 0;
       let duplicates = 0;
@@ -472,7 +457,11 @@ export function federationRouter(ctx: HubServerContext): Router {
           if (!e || typeof e !== 'object') { reject('invalid_event'); continue; }
           if (typeof e.eventId !== 'string' || !e.eventId) { reject('invalid_event'); continue; }
           if (typeof e.type !== 'string' || !e.type) { reject('invalid_event'); continue; }
-          if (typeof e.occurredAt !== 'string' || !e.occurredAt) { reject('invalid_event'); continue; }
+          // One stored form, as /v1/events stores it (GH-391): the day below and
+          // every window query read it as text on SQLite.
+          const occurredAt = canonicalOccurredAt(e.occurredAt);
+          if (!occurredAt) { reject('invalid_event'); continue; }
+          e.occurredAt = occurredAt;
 
           const userKey = resolveAliasKey(str(e.userKey) ?? 'unknown', aliases);
           // The hidden-people control filters PEOPLE. A dispatch report is
@@ -491,6 +480,7 @@ export function federationRouter(ctx: HubServerContext): Router {
             if (derived) remoteUrl = sanitizeRemoteUrl(derived);
           }
 
+          if (!keepUsage) dropUsage(e);
           const result = await ctx.db.run(
             `INSERT OR IGNORE INTO events
              (event_id, org_id, installation_id, user_key, occurred_at, received_at, type,
@@ -508,9 +498,7 @@ export function federationRouter(ctx: HubServerContext): Router {
           if (result.changes === 0) { duplicates++; continue; }
           accepted++;
 
-          // Name the person (BUG 4159631f), but only under the group's `keep`
-          // policy: a pseudonymize row is never trusted to have dropped one.
-          if (namesAllowed && r.payload?.identityPolicy === 'keep') {
+          if (namesAllowed && codingOfRow(r.payload)?.person === 'as-written') {
             await recordChildPerson(ctx.db, { orgId, childHubId, userKey, name: forwardedActorName(e), occurredAt: e.occurredAt });
           }
 

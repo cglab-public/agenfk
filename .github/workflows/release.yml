@@ -7,12 +7,19 @@ on:
         description: 'Version to release (e.g. 0.2.5) — leave blank to auto-bump patch'
         required: false
 
+# Three jobs (CGLAB-696 story review 2): the version is bumped, tested and packaged; its Airlock
+# base image is built from that very commit; only then are the tag and the release published - a
+# release whose image is missing fails every `agenfk airlock` launch of that version. The image is
+# built here rather than left to the tag push, which starts no workflow when pushed with GITHUB_TOKEN.
 jobs:
-  release:
-    name: Bump, Build & Release
+  prepare:
+    name: Bump, Build & Test
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.sha.outputs.sha }}
 
     steps:
       - name: Checkout
@@ -92,12 +99,55 @@ jobs:
           git commit -m "chore: bump version to ${{ steps.version.outputs.version }}" || echo "Version already current on this ref — nothing to bump."
           git push
 
+      - name: The commit released
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Package distributable
         run: node scripts/package-dist.mjs
 
+      - name: Keep the distributable for the release
+        uses: actions/upload-artifact@v7
+        with:
+          name: agenfk-dist
+          path: agenfk-dist.tar.gz
+          if-no-files-found: error
+
+  image:
+    name: Airlock base image
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/airlock-image.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      ref: ${{ needs.prepare.outputs.sha }}
+
+  publish:
+    name: Tag & Release
+    needs: [prepare, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout the commit released
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Fetch the distributable
+        uses: actions/download-artifact@v7
+        with:
+          name: agenfk-dist
+
       - name: Create tag and GitHub release
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.prepare.outputs.version }}"
           # Scope auto-notes to the previous framework v* tag so an intervening
           # hub-v* release can't truncate the framework changelog.
           PREV=$(git tag -l 'v*' --sort=-v:refname | grep -vx "v${VERSION}" | head -1 || true)

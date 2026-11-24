@@ -71,13 +71,28 @@ describe('hub-ui vitest config parity with the root run', () => {
     expect(local.test.sequence?.concurrent).toBeFalsy();
     expect(root.test.sequence?.concurrent).toBeFalsy();
   });
+});
 
-  it('keeps the test config out of the production build', () => {
-    // vite.config.ts is what `vite build` loads, including inside
-    // packages/hub/Dockerfile — which never copies scripts/. A test-only import
-    // there breaks the hub image, and only at hub-v* release time.
-    const viteConfig = fs.readFileSync(path.join(PKG_ROOT, 'vite.config.ts'), 'utf8');
-    expect(viteConfig).not.toMatch(/vitest-shared-config/);
-    expect(viteConfig).not.toMatch(/\btest\s*:/);
+/*
+ * What `vite build` actually loads, rather than words in vite.config.ts.
+ * packages/hub/Dockerfile copies the hub-ui package but never scripts/ (or the
+ * repo's vitest config), so a production config that reaches outside the
+ * package breaks the hub image - and only at hub-v* release time.
+ */
+describe('the production build config', () => {
+  it('loads nothing from outside packages/hub-ui, and carries no test block', async () => {
+    const { loadConfigFromFile } = await import('vite');
+    const loaded = await loadConfigFromFile(
+      { command: 'build', mode: 'production' },
+      path.join(PKG_ROOT, 'vite.config.ts'),
+      PKG_ROOT,
+      'silent',
+    );
+    expect(loaded, 'vite could not load vite.config.ts').not.toBeNull();
+    expect((loaded!.config as Record<string, unknown>).test).toBeUndefined();
+    const outside = loaded!.dependencies
+      .map(d => path.resolve(PKG_ROOT, d))
+      .filter(d => !d.startsWith(PKG_ROOT + path.sep));
+    expect(outside).toEqual([]);
   });
 });

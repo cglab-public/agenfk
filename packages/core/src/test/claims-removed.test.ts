@@ -7,7 +7,6 @@
  * step alone, and a claim stored on an old card is ignored.
  */
 import { describe, it, expect } from 'vitest';
-import * as core from '../index';
 import { decideGatekeeperAuthorization, commitOnLeaveNote, type GatekeeperItem, type GatekeeperFlow } from '../gatekeeper';
 
 const card = (id: string, status: string, extra: Record<string, unknown> = {}): GatekeeperItem =>
@@ -37,13 +36,5 @@ describe('the gatekeeper and old claims', () => {
   it('does not promise that a step commits only "claimed" files', () => {
     expect(commitOnLeaveNote('PLAN', 'auto')).not.toMatch(/claim/i);
     expect(commitOnLeaveNote('PLAN', 'required')).not.toMatch(/claim/i);
-  });
-});
-
-describe('core', () => {
-  it('no longer exports the claim gate', () => {
-    for (const name of ['gateOnClaims', 'foreignClaimsFor', 'claimTreeOf', 'sameClaimTree', 'strayStaged', 'claimlessNeighbours', 'stillHolds', 'claimsCollide', 'findClaimConflicts', 'isWellFormedClaim']) {
-      expect((core as Record<string, unknown>)[name], name).toBeUndefined();
-    }
   });
 });

@@ -12,10 +12,20 @@ import { asyncRoute } from '../util/asyncRoute.js';
  * so the suite fails until this list is updated.
  */
 export const ORG_ID_CHILD_TABLES: readonly string[] = [
+  'admin_cli_tokens',
+  'admin_device_codes',
+  'airlock_dataset',
+  'airlock_dataset_hosts',
+  'airlock_dataset_settings',
+  'airlock_decisions',
+  'airlock_installations',
+  'airlock_learning_reports',
+  'airlock_policies',
   'api_keys',
   'auth_config',
   'child_hubs',
   'child_people',
+  'ci_tokens',
   'config_audit',
   'device_codes',
   'events',
@@ -31,6 +41,10 @@ export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'model_meta',
   'org_jira',
   'org_settings',
+  'repo_command_revisions',
+  'repo_producers',
+  'repo_settings',
+  'receipts',
   'repoint_campaigns',
   'rollups_daily',
   'upgrade_directives',
@@ -102,9 +116,15 @@ export function orgRenameRouter(ctx: HubServerContext): Router {
     // admin requests don't 401 against a deleted org. Strip the JWT-internal
     // claims (iat/exp) that verifySession leaves on the payload — passing
     // them back to jwt.sign with expiresIn would conflict.
-    const { userId, role } = session;
-    const newToken = signSession({ userId, role, orgId: to }, ctx.config.sessionSecret);
-    setSessionCookie(res, newToken);
+    // Only for a board session: an admin CLI token was carried over with the
+    // rename (ORG_ID_CHILD_TABLES) and keeps working, and handing a CLI caller
+    // a board cookie would turn a 12-hour token into a session that can
+    // approve the next CLI sign-in (CGLAB-702 review).
+    if (session.via !== 'cli') {
+      const { userId, role } = session;
+      const newToken = signSession({ userId, role, orgId: to }, ctx.config.sessionSecret);
+      setSessionCookie(res, newToken);
+    }
 
     res.json({
       ok: true,

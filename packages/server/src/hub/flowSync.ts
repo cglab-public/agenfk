@@ -4,15 +4,19 @@
  *
  * Two layers:
  *  - `reconcileProjectFlow()` does one round-trip for one (optional) projectId.
- *  - `runFlowSyncTick()` iterates the locally-known projects and calls the
- *    above for each, threading a per-project ETag cache. The polling loop in
- *    `startFlowSync()` schedules these ticks with exponential backoff.
+ *  - `flowSyncChannels()` iterates the locally-known projects and calls the
+ *    above for each, threading a per-project ETag cache, beside the Airlock and
+ *    receipt channels. The hub loop in `hubSync.ts` runs them (GH-346).
  */
 import { randomUUID } from 'crypto';
 import type { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import type { Flow } from '@agenfk/core';
 import { flowChecksErrors, normalizeFlowSteps } from '@agenfk/core';
 import type { HubConfig } from './types.js';
+import { syncRepoSettings, declaredVerifyCommand } from './repoSettingsSync.js';
+import { publishPendingReceipts } from './receiptPublisher.js';
+import { runAirlockSync, currentAirlockGeneration, type AirlockApplyReporter } from './airlockSync.js';
+import type { HubSyncChannel } from './hubSync.js';
 
 export type FetchLike = (url: string, opts: any) => Promise<{
   status: number;
@@ -171,40 +175,6 @@ async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<Re
   return { outcome: 'updated', etag, localFlowId: localId };
 }
 
-// ── Backwards-compat single-shot reconciler ─────────────────────────────────
-// Kept as a thin wrapper for callers that don't yet thread project context.
-
-export interface ReconcileArgs {
-  storage: SQLiteStorageProvider;
-  hubConfig: HubConfig;
-  lastEtag: string | null;
-  fetchImpl: FetchLike;
-  emit: (event: string, payload: any) => void;
-}
-
-export async function reconcileHubFlow(args: ReconcileArgs): Promise<ReconcileOutcome> {
-  const result = await reconcileProjectFlow({
-    storage: args.storage,
-    hubConfig: args.hubConfig,
-    projectId: null,
-    lastEtag: args.lastEtag,
-    fetchImpl: args.fetchImpl,
-    emit: args.emit,
-  });
-  // Org-scope path retains the old behaviour of re-binding every project to the
-  // org-default flow — the per-project loop is the new normal but this keeps
-  // the (test-only) single-shot path working.
-  if (result.outcome === 'updated') {
-    const projects = await args.storage.listProjects();
-    for (const p of projects) {
-      if (p.flowId !== result.localFlowId) {
-        await args.storage.updateProject(p.id, { flowId: result.localFlowId });
-      }
-    }
-  }
-  return result;
-}
-
 // ── Per-tick polling ────────────────────────────────────────────────────────
 
 export interface RunTickArgs {
@@ -217,17 +187,45 @@ export interface RunTickArgs {
   /** Resolve a project's raw git remote URL for the repo-keyed hub query.
    *  Returns null when the project has no remote (falls back to projectId). */
   resolveRepo?: (projectId: string) => Promise<string | null>;
+  /** Where the Airlock sync rewrites the adapters' state file (default ~/.agenfk/airlock-state.json). */
+  airlockStateFile?: string;
+  /** The hub this installation is joined to now, so a tick that outlived a repoint writes nothing. */
+  activeHubConfig?: () => Pick<HubConfig, 'url' | 'orgId'> | null;
+  /** Tells the hub which Airlock policy revision this installation applies (HUB-2). */
+  reportAirlock?: AirlockApplyReporter;
 }
 
-export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
-  const projects = await args.storage.listProjects();
-  if (projects.length === 0) return;
+/** The org's Airlock policy; contained, so it never costs another channel anything. */
+async function syncAirlockForTick(args: RunTickArgs, generation: number): Promise<void> {
+  try {
+    await runAirlockSync({
+      storage: args.storage,
+      hubConfig: args.hubConfig,
+      fetchImpl: args.fetchImpl,
+      stateFile: args.airlockStateFile,
+      emit: args.emit,
+      generation,
+      activeHubConfig: args.activeHubConfig,
+      report: args.reportAirlock,
+    });
+  } catch (e) {
+    console.error('[HUB_AIRLOCK] Unexpected error:', (e as Error).message);
+  }
+}
 
+/** Every local project's flow, then its repo settings when it has a git remote. */
+async function syncProjectsForTick(args: RunTickArgs): Promise<void> {
+  // A pass whose loop was replaced (repoint, reload) asks the old hub for nothing
+  // more: checked before each request it would start, not only per project.
+  const replaced = (): boolean => !!args.activeHubConfig && !args.activeHubConfig();
+  const projects = await args.storage.listProjects();
   for (const project of projects) {
+    if (replaced()) return;
     const lastEtag = args.etagCache.get(project.id) ?? null;
     let remoteUrl: string | null = null;
     if (args.resolveRepo) {
       try { remoteUrl = await args.resolveRepo(project.id); } catch { remoteUrl = null; }
+      if (replaced()) return;
     }
     let result: ReconcileOutcome;
     try {
@@ -246,71 +244,65 @@ export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
       continue;
     }
     if (result.etag) args.etagCache.set(project.id, result.etag);
+
+    // RFC-002: the hub's authoritative repository settings, after the flow
+    // reconcile so a hub outage on one channel never blocks the other. Only a
+    // project with a git remote can be keyed on the hub, and its settings ride
+    // their own ETag cache key so a 304 on the flow does not skip them.
+    if (remoteUrl) {
+      if (replaced()) return;
+      try {
+        const repoResult = await syncRepoSettings({
+          storage: args.storage,
+          hubConfig: args.hubConfig,
+          projectId: project.id,
+          remoteUrl,
+          localCommand: declaredVerifyCommand((project as any).projectRoot) ?? (typeof (project as any).verifyCommand === 'string' && (project as any).verifyCommand ? (project as any).verifyCommand : null),
+          projectRoot: (project as any).projectRoot ?? null,
+          lastEtag: args.etagCache.get('repo:' + project.id) ?? null,
+          fetchImpl: args.fetchImpl,
+        });
+        if (repoResult.etag) args.etagCache.set('repo:' + project.id, repoResult.etag);
+      } catch (e) {
+        // Contained per project, exactly like the flow reconcile above.
+        console.error(`[HUB_REPO_SETTINGS] Unexpected error for project ${project.id}:`, (e as Error).message);
+      }
+    }
   }
 }
 
-// ── Polling loop ───────────────────────────────────────────────────────────
-
-export interface FlowSyncHandle {
-  stop: () => void;
+/**
+ * RFC-002: receipts a card is still holding go to the hub. Publishing is per
+ * CARD, not per project, so it has nothing to do with the flow reconcile.
+ */
+async function publishReceiptsForTick(args: RunTickArgs): Promise<void> {
+  try {
+    await publishPendingReceipts({
+      storage: args.storage,
+      hubConfig: args.hubConfig,
+      fetchImpl: args.fetchImpl,
+    });
+  } catch (e) {
+    console.error('[HUB_RECEIPTS] publish failed:', (e as Error).message);
+  }
 }
 
-export interface StartFlowSyncArgs {
-  storage: SQLiteStorageProvider;
-  hubConfig: HubConfig;
-  intervalMs?: number;
-  fetchImpl?: FetchLike;
-  emit: (event: string, payload: any) => void;
-  /**
-   * Optional shared per-project ETag cache. Pass the same Map used by on-demand
-   * refreshes so a poll and a refresh don't re-fetch the same unchanged flow.
-   * Defaults to a private cache when omitted.
-   */
-  etagCache?: Map<string, string>;
-  /** Resolve a project's raw git remote URL for the repo-keyed hub query. */
-  resolveRepo?: (projectId: string) => Promise<string | null>;
+/**
+ * GH-346: the reconciler's three channels, for the hub loop (hubSync.ts) to run
+ * side by side. Separate, so the org's Airlock policy never waits behind every
+ * project's requests, and a hub outage on one channel never costs another.
+ */
+export function flowSyncChannels(args: RunTickArgs): HubSyncChannel[] {
+  return [
+    { name: 'flows', run: () => syncProjectsForTick(args) },
+    // The configuration this sync belongs to, taken as it starts: a sync that
+    // outlives a repoint or a logout must not sync Airlock with the old credential.
+    { name: 'airlock', run: () => syncAirlockForTick(args, currentAirlockGeneration()) },
+    { name: 'receipts', run: () => publishReceiptsForTick(args) },
+  ];
 }
 
-const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-
-export function startFlowSync(args: StartFlowSyncArgs): FlowSyncHandle {
-  const baseInterval = args.intervalMs ?? DEFAULT_INTERVAL_MS;
-  const fetchImpl = args.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
-  const etagCache = args.etagCache ?? new Map<string, string>();
-  let stopped = false;
-  let consecutiveErrors = 0;
-  let timer: NodeJS.Timeout | null = null;
-
-  const tick = async (): Promise<void> => {
-    if (stopped) return;
-    try {
-      await runFlowSyncTick({
-        storage: args.storage,
-        hubConfig: args.hubConfig,
-        fetchImpl,
-        emit: args.emit,
-        etagCache,
-        resolveRepo: args.resolveRepo,
-      });
-      consecutiveErrors = 0;
-    } catch (e) {
-      consecutiveErrors = Math.min(consecutiveErrors + 1, 4);
-      console.error('[HUB_FLOW_SYNC] tick failed:', (e as Error).message);
-    }
-    const delay = baseInterval * Math.pow(2, consecutiveErrors);
-    timer = setTimeout(tick, Math.min(delay, baseInterval * 16));
-  };
-
-  // Defer the first tick so server startup never blocks and tests that
-  // rapidly tear-down/re-init storage don't race with an in-flight reconcile.
-  // 1s in production for "soon after boot" semantics; configurable via env.
-  const firstDelay = Number(process.env.AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS);
-  timer = setTimeout(tick, Number.isFinite(firstDelay) && firstDelay >= 0 ? firstDelay : 1000);
-
-  return {
-    stop: () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-    },
-  };
+/** Every channel once, side by side, settled when all of them are. */
+export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
+  await Promise.allSettled(flowSyncChannels(args).map(c => c.run()));
 }

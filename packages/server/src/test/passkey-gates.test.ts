@@ -19,7 +19,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -38,7 +37,7 @@ process.env.AGENFK_PASSKEY_STORE = STORE;
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { SoftAuthenticator } from './softAuthenticator';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -69,9 +68,8 @@ const gatedFlow = (signed = true) => {
 async function card(status: string, signed = true) {
   const f = await agent().post('/flows').send({ name: `pk-${++seq}`, steps: gatedFlow(signed) });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pk-repo-'));
+  const dir = echoRepo(A, 'agenfk-pk-repo-');
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `pk-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, verifyCommand: 'exit 0' } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `pk-${++seq}`, projectId: p.body.id });
@@ -281,12 +279,14 @@ describe('CGLAB-383: overrides on a step that asks for a passkey', () => {
 });
 
 describe('CGLAB-383: a step that does not ask for a passkey', () => {
-  it('approvals work from the board as in S6, recorded as unverified', async () => {
+  it('approvals work from the board as in S6, recorded and shown on the gates as unverified', async () => {
     const id = await card('PLAN', false);
     const res = await approve(id, {});
     expect(res.status).toBe(201);
     expect(res.body.authority).toBe('unverified');
     expect((await item(id)).stepRecords.find((r: any) => r.kind === 'approval').authority).toBe('unverified');
+    // The board shows each approval with its authority.
+    expect((await agent().get(`/items/${id}/gates`)).body.approvals[0].authority).toBe('unverified');
   });
 });
 
@@ -324,12 +324,6 @@ describe('CGLAB-383: GET /items/:id/gates says whether the step asks for a passk
   it('true on a signed step, false elsewhere', async () => {
     expect((await agent().get(`/items/${await card('PLAN')}/gates`)).body.passkeyRequired).toBe(true);
     expect((await agent().get(`/items/${await card('PLAN', false)}/gates`)).body.passkeyRequired).toBe(false);
-  });
-
-  it('shows each approval with its authority', async () => {
-    const id = await card('PLAN', false);
-    await approve(id, {});
-    expect((await agent().get(`/items/${id}/gates`)).body.approvals[0].authority).toBe('unverified');
   });
 });
 

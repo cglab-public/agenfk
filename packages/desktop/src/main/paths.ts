@@ -13,6 +13,11 @@ export interface DesktopPaths {
   serverEntry: string;
   /** packages/ui/dist — the built bundle the server serves. */
   uiDir: string;
+  /**
+   * ea94c023: the Airlock exec helper a packaged app ships (resources/packages/airlock);
+   * null from a source checkout, where the server finds the CLI beside it.
+   */
+  airlockExec: string | null;
 }
 
 /**
@@ -42,8 +47,10 @@ export function resolveDesktopPaths(opts: {
     );
   }
 
+  const helper = packaged && resourcesPath ? path.join(resourcesPath, 'packages', 'airlock', 'dist', 'agenfk-airlock-exec.mjs') : null;
   return {
     serverEntry: path.join(found, 'server', 'dist', 'server.js'),
     uiDir: path.join(found, 'ui', 'dist'),
+    airlockExec: helper && fs.existsSync(helper) ? helper : null,
   };
 }

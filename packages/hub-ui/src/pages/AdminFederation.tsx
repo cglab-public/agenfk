@@ -30,7 +30,12 @@ interface Status {
   outboxDepth: number;
   releaseRequested?: boolean;
   canLeave?: boolean;
+  /** What this hub codes before forwarding, as the parent set it (GH-395). */
+  identity?: { person: 'as-written' | 'coded'; installation: 'as-written' | 'coded' };
 }
+
+const PERSON_CODED = 'coded (user key replaced; names, emails and titles not sent)';
+const INSTALLATION_CODED = 'coded (installation id replaced)';
 
 export function AdminFederation() {
   const qc = useQueryClient();
@@ -171,11 +176,24 @@ export function AdminFederation() {
           <dd className="text-small text-ink">{d.enrolledAt ? fmtDateTime(d.enrolledAt) : '—'}</dd>
           <dt className="text-small text-ink-tertiary">Waiting to send</dt>
           <dd className="text-small text-ink tabular-nums">{d.outboxDepth}</dd>
+          {d.identity && (
+            <>
+              <dt className="text-small text-ink-tertiary">Person</dt>
+              <dd className="text-small text-ink">{d.identity.person === 'coded' ? PERSON_CODED : 'as written'}</dd>
+              <dt className="text-small text-ink-tertiary">Installation</dt>
+              <dd className="text-small text-ink">{d.identity.installation === 'coded' ? INSTALLATION_CODED : 'as written'}</dd>
+            </>
+          )}
           <dt className="text-small text-ink-tertiary">Status</dt>
           <dd className="text-small text-ink">
             {released ? 'released by the parent — this hub may now leave' : 'active'}
           </dd>
         </dl>
+        {d.identity && (
+          <p className="mt-2 text-caption text-ink-tertiary">
+            What is coded is set by the parent hub. Model, harness, step names, repository and ticket are always sent as written.
+          </p>
+        )}
       </section>
 
       {!released && (

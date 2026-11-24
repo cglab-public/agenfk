@@ -20,7 +20,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -35,7 +34,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell, shellQuote } from './helpers/posixShell';
+import { echoRepo, A, IGNORE_REPORT } from './helpers/echoRepo';
+import { gitSync, writeFiles, cloneGitTemplate, type GitTemplateBuild } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -49,7 +49,6 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 const counter = (file: string) => () => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0);
 
 let seq = 0;
@@ -59,8 +58,8 @@ const s = (name: string, order: number, extra: Record<string, unknown> = {}) => 
 async function captureSetup(sleepMs = 0, exitCode = 0) {
   const f = await agent().post('/flows').send({ name: `ts-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = tmp('agenfk-ts-repo-');
-  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one');
+  const repo = echoRepo({ ...IGNORE_REPORT, ...A }, 'agenfk-ts-repo-');
+  dirs.push(repo);
   const runs = path.join(tmp('agenfk-ts-runs-'), 'runs');
   const runner = path.join(path.dirname(runs), 'runner.js');
   fs.writeFileSync(runner, `require('fs').appendFileSync(${JSON.stringify(runs)}, 'run\\n');
@@ -140,7 +139,8 @@ describe('3ffc9651: a capture reuses a green taken at the same tree state, clean
     fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'mid-edit\n');
     const a = await t.card();
     expect((await capture(a)).status).toBe(200);
-    git(t.repo, 'git add notes.txt && git commit -qm a-closes');
+    gitSync(t.repo, 'add', 'notes.txt');
+    gitSync(t.repo, 'commit', '-qm', 'a-closes');
     const b = await t.card();
     const rb = await capture(b);
     expect(rb.body.reusedFrom).toMatchObject({ itemId: a });
@@ -157,22 +157,14 @@ describe('3ffc9651: a capture reuses a green taken at the same tree state, clean
     expect(t.count()).toBe(2);
   });
 
-  it('two cards capturing one identical dirty tree at once run the suite once', async () => {
-    const t = await captureSetup(800);
-    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'mid-edit\n');
-    const [a, b] = [await t.card(), await t.card()];
-    const [ra, rb] = await Promise.all([capture(a), capture(b)]);
-    expect(ra.status, JSON.stringify(ra.body)).toBe(200);
-    expect(rb.status, JSON.stringify(rb.body)).toBe(200);
-    expect(t.count()).toBe(1);
-    expect([ra.body, rb.body].filter(r => r.reusedFrom)).toHaveLength(1);
-  });
+  // Two cards capturing one identical dirty tree at once run the suite once: close-green-reuse.test.ts
+  // "a dirty tree with the same content is shared: one run, the waiting card takes its record".
 });
 
 /** A STORY with TASK children on the step before DONE, whose verify command counts its runs outside the tree. */
 async function verifySetup(command?: (runs: string) => string) {
-  const repo = tmp('agenfk-ts-prop-');
-  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a.txt && git add . && git commit -qm one');
+  const repo = echoRepo({ 'a.txt': 'a\n' }, 'agenfk-ts-prop-');
+  dirs.push(repo);
   const runs = path.join(tmp('agenfk-ts-prop-runs-'), 'runs');
   const verifyCommand = command ? command(runs) : `node -e "require('fs').appendFileSync(${JSON.stringify(runs).replace(/"/g, '\\"')}, 'run\\n')"`;
   const p = (await agent().post('/projects').set(internal()).send({ name: `ts-prop-${++seq}` })).body;
@@ -189,21 +181,8 @@ const validate = (id: string) => agent().post(`/items/${id}/validate`).set(inter
 const testRecordsOf = (item: any): any[] => (Array.isArray(item?.tests) ? item.tests : []);
 
 describe('3ffc9651: the final verify propagates a sibling green recorded at the same tree state', () => {
-  it('siblings on one DIRTY tree: the first runs the command, the next propagates', async () => {
-    const t = await verifySetup();
-    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'another agent is mid-edit\n');
-    const a = await t.child();
-    const ra = await validate(a);
-    expect(ra.body.status, JSON.stringify(ra.body)).toBe('DONE');
-    expect(t.count()).toBe(1);
-
-    const b = await t.child();
-    const rb = await validate(b);
-    expect(rb.body.status, JSON.stringify(rb.body)).toBe('DONE');
-    expect(rb.body.output, 'the sibling ran the command on the very state the first one verified').toBe('Sibling propagation');
-    expect(t.count()).toBe(1);
-  });
-
+  // Siblings on one dirty tree, the first running the command and the next propagating: "a chain of siblings,
+  // each closing with its own commit" below starts on a dirty tree (b.js and c.js are not committed yet).
   // 83c1cbca (second review of 6caae168, finding 1): a tree state an older build recorded is not compared - before
   // `--relative`, a subdirectory project's uncommitted edit to a tracked file hashed as the committed file.
   it('a sibling green whose tree state an older build recorded does not pass the final step', async () => {
@@ -232,7 +211,8 @@ describe('3ffc9651: the final verify propagates a sibling green recorded at the 
       const r = await validate(id);
       expect(r.body.status, JSON.stringify(r.body)).toBe('DONE');
       out.push(r.body.output === 'Sibling propagation' ? 'propagated' : 'ran');
-      git(t.repo, `git add ${n}.js && git commit -qm ${n}-closes`);
+      gitSync(t.repo, 'add', `${n}.js`);
+      gitSync(t.repo, 'commit', '-qm', `${n}-closes`);
     }
     expect(out).toEqual(['ran', 'propagated', 'propagated']);
     expect(t.count()).toBe(1);
@@ -296,10 +276,69 @@ describe('3ffc9651: the final verify propagates a sibling green recorded at the 
   });
 });
 
+/** Top-level cards (no parent) of one project, on the step before DONE, sharing one tree. */
+async function topLevelSetup() {
+  const repo = echoRepo({ 'a.txt': 'a\n' }, 'agenfk-ts-top-');
+  dirs.push(repo);
+  const runs = path.join(tmp('agenfk-ts-top-runs-'), 'runs');
+  const verifyCommand = `node -e "require('fs').appendFileSync(${JSON.stringify(runs).replace(/"/g, '\\"')}, 'run\\n')"`;
+  const project = async () => {
+    const p = (await agent().post('/projects').set(internal()).send({ name: `ts-top-${++seq}` })).body;
+    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand } as never);
+    return p.id as string;
+  };
+  const projectId = await project();
+  const card = async (inProject = projectId) => {
+    const c = (await agent().post('/items').set(internal()).send({ type: 'BUG', title: `top-${++seq}`, projectId: inProject })).body;
+    await storage.updateItem(c.id, { status: 'TEST' } as any);
+    return c.id as string;
+  };
+  return { repo, card, project, count: counter(runs) };
+}
+
+// GH-271: three top-level cards in one tree each ran the whole suite on close,
+// although the first had just verified this very content: a sibling's green was
+// only ever looked for among cards with the same parent.
+describe('GH-271: a top-level card reuses another top-level card\'s green of the same tree', () => {
+  it('the first closes on the command; the next, with the first\'s files committed, propagates', async () => {
+    const t = await topLevelSetup();
+    fs.writeFileSync(path.join(t.repo, 'one.js'), 'module.exports = 1;\n');
+    fs.writeFileSync(path.join(t.repo, 'two.js'), 'module.exports = 2;\n');
+    const a = await t.card();
+    expect((await validate(a)).body.status).toBe('DONE');
+    expect(t.count()).toBe(1);
+    // The first card's close commit takes only its own file; the content is unchanged.
+    gitSync(t.repo, 'add', 'one.js');
+    gitSync(t.repo, 'commit', '-qm', 'one-closes');
+
+    const b = await t.card();
+    const plan = await agent().get(`/items/${b}/leave-plan?predict=1`);
+    expect(plan.body.prediction, JSON.stringify(plan.body)).toMatchObject({ mode: 'sibling-green' });
+    const rb = await validate(b);
+    expect(rb.body.status, JSON.stringify(rb.body)).toBe('DONE');
+    expect(rb.body.output).toBe('Sibling propagation');
+    expect(t.count()).toBe(1);
+  });
+
+  it('a green of the same tree in another project is not this project\'s', async () => {
+    const t = await topLevelSetup();
+    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'mid-edit\n');
+    expect((await validate(await t.card(await t.project()))).body.status).toBe('DONE');
+    const b = await t.card();
+    const rb = await validate(b);
+    expect(rb.body.status).toBe('DONE');
+    expect(rb.body.output).not.toBe('Sibling propagation');
+    expect(t.count()).toBe(2);
+  });
+
+  // Changed content is another tree for a top-level card too: the same tree-state comparison as
+  // "the dirty content changed after the first sibling verified: the next runs its own".
+});
+
 /** A flow START -> GATE (a person approves) -> WORK -> END, with a STORY and TASK children on WORK. */
 async function gatedSetup(command: (runs: string) => string) {
-  const repo = tmp('agenfk-ts-gate-');
-  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a.txt && git add . && git commit -qm one');
+  const repo = echoRepo({ 'a.txt': 'a\n' }, 'agenfk-ts-gate-');
+  dirs.push(repo);
   const runs = path.join(tmp('agenfk-ts-gate-runs-'), 'runs');
   const f = await agent().post('/flows').send({ name: `ts-gate-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('GATE', 1, { checks: [{ id: 'human-approval' }] }), s('WORK', 2), s('END', 3, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
@@ -348,19 +387,30 @@ describe('3ffc9651 review: a sibling that waited on another\'s final verify', ()
 
 describe('3ffc9651 review: submodules are part of the state', () => {
   /** A repo with one submodule, sub/, whose own repo has two commits to switch between. */
+  const buildLib: GitTemplateBuild = (d) => {
+    gitSync(d, 'init', '-q', '-b', 'main');
+    gitSync(d, 'config', 'user.email', 't@t');
+    gitSync(d, 'config', 'user.name', 't');
+    writeFiles(d, { f: 'one\n' });
+    gitSync(d, 'add', '.');
+    gitSync(d, 'commit', '-qm', 'one');
+    writeFiles(d, { f: 'two\n' });
+    gitSync(d, 'commit', '-qam', 'two');
+  };
   function withSubmodule() {
-    const t = { lib: tmp('agenfk-ts-lib-') };
-    git(t.lib, 'git init -q -b main && git config user.email t@t && git config user.name t && echo one > f && git add . && git commit -qm one && echo two > f && git commit -qam two');
-    return t.lib;
+    const lib = cloneGitTemplate('sibling-tree-state-reuse:submodule-lib-one-two', buildLib, 'agenfk-ts-lib-');
+    dirs.push(lib);
+    return lib;
   }
 
   it('a submodule moved to another commit is another state: the next card runs its own', async () => {
     const t = await captureSetup();
     const lib = withSubmodule();
-    git(t.repo, `git -c protocol.file.allow=always submodule add -q ${shellQuote(lib)} sub && git commit -qm sub`);
+    gitSync(t.repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'sub');
+    gitSync(t.repo, 'commit', '-qm', 'sub');
     const a = await t.card();
     expect((await capture(a)).status).toBe(200);
-    git(path.join(t.repo, 'sub'), 'git checkout -q HEAD~1');
+    gitSync(path.join(t.repo, 'sub'), 'checkout', '-q', 'HEAD~1');
     const b = await t.card();
     const rb = await capture(b);
     expect(rb.body.reusedFrom).toBeUndefined();
@@ -370,7 +420,8 @@ describe('3ffc9651 review: submodules are part of the state', () => {
   it('a submodule with uncommitted work is never shared: its content is not hashed', async () => {
     const t = await captureSetup();
     const lib = withSubmodule();
-    git(t.repo, `git -c protocol.file.allow=always submodule add -q ${shellQuote(lib)} sub && git commit -qm sub`);
+    gitSync(t.repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'sub');
+    gitSync(t.repo, 'commit', '-qm', 'sub');
     fs.writeFileSync(path.join(t.repo, 'sub', 'f'), 'edited inside\n');
     const a = await t.card();
     expect((await capture(a)).status).toBe(200);

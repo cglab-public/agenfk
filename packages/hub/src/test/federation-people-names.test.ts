@@ -2,10 +2,6 @@
 //
 // The parent has no installation for them: their events arrive through
 // POST /v1/federation/deliver. The name is recorded THERE, from each row's
-// actor, and only when the row's identity policy is `keep`; a pseudonymizing
-// group never reveals a name, whatever the row carries. These go through the
-// real deliver route, and the pseudonymized rows are built by the child's own
-// redactIdentity, so the privacy claim is pinned on the real shapes.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -24,9 +20,15 @@ const childEvent = (eventId: string, occurredAt: string, actor: Record<string, s
   eventId, orgId: 'org', installationId: 'child-inst', occurredAt, type: 'item.closed',
   itemId: 'i1', payload: {}, userKey, actor,
 });
-const row = (childHubId: string, event: Record<string, unknown>, identityPolicy: 'keep' | 'pseudonymize' = 'keep') => ({
-  id: `outbox-${event.eventId}`, kind: 'event', payload: { childHubId, identityPolicy, event },
+type Coding = { person: 'as-written' | 'coded'; installation: 'as-written' | 'coded' };
+/** A row as a child queues it: an older child stamps only the binary label, a newer one the per-field coding too. */
+const row = (childHubId: string, event: Record<string, unknown>, label: 'keep' | 'pseudonymize' | Coding | null = 'keep') => ({
+  id: `outbox-${event.eventId}`, kind: 'event',
+  payload: label === null ? { childHubId, event }
+    : typeof label === 'string' ? { childHubId, identityPolicy: label, event }
+      : { childHubId, identity: label, identityPolicy: label.person === 'coded' || label.installation === 'coded' ? 'pseudonymize' : 'keep', event },
 });
+const HANA = { osUser: 'hana', gitName: 'Hana Ito', gitEmail: 'hana@child.com' };
 
 describe('a federation parent names child-hub developers', () => {
   let server: any; let ctx: any; let cookie: string; let child: { token: string; childHubId: string };
@@ -75,9 +77,39 @@ describe('a federation parent names child-hub developers', () => {
     expect((await names())['hana@child.com']).toBe('Hana Ito');
   });
 
+  it('names a developer whose child sends the person as written, even with the installation coded', async () => {
+    const coding: Coding = { person: 'as-written', installation: 'coded' };
+    const raw = childEvent('e1', '2026-09-01T10:00:00.000Z', HANA);
+    await deliver([row(child.childHubId, redactIdentity(raw, child.childHubId, SECRET, coding), coding)]);
+    expect(await names()).toEqual({ 'hana@child.com': 'Hana Ito' });
+  });
+
   it('never names anyone a pseudonymizing child forwarded', async () => {
-    const raw = childEvent('e1', '2026-09-01T10:00:00.000Z', { osUser: 'hana', gitName: 'Hana Ito', gitEmail: 'hana@child.com' });
-    await deliver([row(child.childHubId, redactIdentity(raw, child.childHubId, SECRET), 'pseudonymize')]);
+    const raw = childEvent('e1', '2026-09-01T10:00:00.000Z', HANA);
+    await deliver([row(child.childHubId, redactIdentity(raw, child.childHubId, SECRET, { person: 'coded', installation: 'coded' }), 'pseudonymize')]);
+    expect(await names()).toEqual({});
+  });
+
+  it('never names anyone a child forwarded with the person coded', async () => {
+    const coding: Coding = { person: 'coded', installation: 'as-written' };
+    const raw = childEvent('e1', '2026-09-01T10:00:00.000Z', HANA);
+    await deliver([row(child.childHubId, redactIdentity(raw, child.childHubId, SECRET, coding), coding)]);
+    expect(await names()).toEqual({});
+  });
+
+  it('never names from a row that says the person is coded but still carries an actor', async () => {
+    await deliver([row(child.childHubId, childEvent('e1', '2026-09-01T10:00:00.000Z', HANA), { person: 'coded', installation: 'as-written' })]);
+    expect(await names()).toEqual({});
+  });
+
+  it('never names from a row whose per-field coding is malformed, whatever its binary label says', async () => {
+    const r = row(child.childHubId, childEvent('e1', '2026-09-01T10:00:00.000Z', HANA), 'keep');
+    await deliver([{ ...r, payload: { ...r.payload, identity: { person: 'as-written' } } }]);
+    expect(await names()).toEqual({});
+  });
+
+  it('never names from a row that names no coding it recognises', async () => {
+    await deliver([row(child.childHubId, childEvent('e1', '2026-09-01T10:00:00.000Z', HANA), null)]);
     expect(await names()).toEqual({});
   });
 
@@ -87,9 +119,8 @@ describe('a federation parent names child-hub developers', () => {
     expect(await names()).toEqual({});
   });
 
-  it("follows the parent's policy over a row's label: no names once the parent pseudonymizes", async () => {
-    // The child queued these as `keep` before it heard of the switch.
-    await ctx.db.run('UPDATE child_hubs SET identity_policy = ? WHERE id = ?', ['pseudonymize', child.childHubId]);
+  it("follows the parent's own setting over a row's label: no names once the parent codes the person", async () => {
+    await ctx.db.run('UPDATE child_hubs SET identity_person = ? WHERE id = ?', ['coded', child.childHubId]);
     await deliver([row(child.childHubId, childEvent('e1', '2026-09-01T10:00:00.000Z', { osUser: 'hana', gitName: 'Hana Ito', gitEmail: 'hana@child.com' }))]);
     expect(await names()).toEqual({});
   });
@@ -137,13 +168,13 @@ describe('a federation parent names child-hub developers', () => {
     expect(await migrateChildPeopleNames(ctx.db)).toEqual({ skipped: true, named: 0 });
   });
 
-  it("backfills nothing for a child the parent now pseudonymizes", async () => {
+  it("backfills nothing for a child whose person the parent now codes", async () => {
     await ctx.db.run(
       `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload, child_hub_id)
        VALUES ('old1', 'org', 'child-inst', 'hana@child.com', ?, ?, 'item.closed', ?, ?)`,
       ['2026-08-01T10:00:00.000Z', '2026-08-01T10:00:00.000Z', JSON.stringify({ actor: { gitName: 'Hana Ito' } }), child.childHubId],
     );
-    await ctx.db.run('UPDATE child_hubs SET identity_policy = ? WHERE id = ?', ['pseudonymize', child.childHubId]);
+    await ctx.db.run('UPDATE child_hubs SET identity_person = ? WHERE id = ?', ['coded', child.childHubId]);
     await ctx.db.run('DELETE FROM system_state WHERE key = ?', [CHILD_PEOPLE_MIGRATION]);
     expect(await migrateChildPeopleNames(ctx.db)).toEqual({ skipped: false, named: 0 });
     expect(await names()).toEqual({});

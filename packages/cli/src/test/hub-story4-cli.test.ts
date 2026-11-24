@@ -111,6 +111,23 @@ async function run(program: Command, args: string[]): Promise<void> {
   await program.parseAsync(args, { from: 'user' });
 }
 
+/**
+ * The device-code login waits `interval` seconds (at least 1) before each poll.
+ * Runs `start` under a fake setTimeout and drains it, so a test does not sit
+ * out that real wait. `start` must already carry its assertion, so a rejection
+ * is observed rather than reported as unhandled.
+ */
+async function withFakePollClock(start: () => Promise<unknown>): Promise<void> {
+  vi.useFakeTimers({ toFake: ['setTimeout'] });
+  try {
+    const done = start();
+    await vi.runAllTimersAsync();
+    await done;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 function rewritePosts(): Array<{ from: string; to: string }> {
   return mockPost.mock.calls
     .filter(c => String(c[0]).includes('/internal/hub/rewrite-outbox-org'))
@@ -234,14 +251,14 @@ describe('(b) stale-org detection on login/join — guidance, never auto-rewrite
     });
     (mockPost as any).mockImplementation(async (url: string) => {
       if (url.endsWith('/hub/device/start')) {
-        return { status: 200, data: { deviceCode: 'dc', userCode: 'UC-1', verificationUrl: 'https://hub.acme.com/hub/device' } };
+        return { status: 200, data: { deviceCode: 'dc', userCode: 'UC-1', verificationUri: 'https://hub.acme.com/hub/device' } };
       }
       if (url.includes('/hub/device/poll')) {
         return { status: 200, data: { status: 'approved', token: 'tok', orgId: 'acme', hubUrl: 'https://evil.example.com' } };
       }
       throw new Error(`unexpected POST ${url}`);
     });
-    await expect(run(makeProgram(), ['hub', 'login', '--url', 'https://hub.acme.com'])).rejects.toThrow('exit 1');
+    await withFakePollClock(() => expect(run(makeProgram(), ['hub', 'login', '--url', 'https://hub.acme.com', '--no-open'])).rejects.toThrow('exit 1'));
     expect(fs.existsSync(HUB_CONFIG)).toBe(false);
     expect(errSpy.mock.calls.flat().join(' ')).toMatch(/did not identify as agenfk-hub/);
   });
@@ -268,7 +285,7 @@ describe('(b) stale-org detection on login/join — guidance, never auto-rewrite
       if (url.includes('/internal/hub/reload')) return { status: 200, data: { changed: true } };
       throw new Error(`unexpected POST ${url}`);
     });
-    await run(makeProgram(), ['hub', 'login', '--url', 'https://hub.acme.com', '--no-open']);
+    await withFakePollClock(() => run(makeProgram(), ['hub', 'login', '--url', 'https://hub.acme.com', '--no-open']));
     const cfg = JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'));
     // Trailing slash stripped, returned hubUrl persisted — a mutation of
     // either lands here.

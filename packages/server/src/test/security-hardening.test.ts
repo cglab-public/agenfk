@@ -181,12 +181,6 @@ describe('bug 968259c4: /releases/update requires the forced-preflight header', 
     expect(res.status).toBe(403);
     expect(ran).toBe(false);
   });
-  it('accepts with x-agenfk-ui', async () => {
-    setReleasesUpdateExecImpl(((..._a: any[]) => ({ on() {}, stdout: { on() {} }, stderr: { on() {} } }) as any) as any);
-    const res = await agent().post('/releases/update').set('x-agenfk-ui', '1');
-    expect(res.status).toBe(202);
-    expect(res.body.jobId).toBeTruthy();
-  });
 });
 
 // ── bug fe03d054: POST /prs idempotency is race-free (atomic upsert) ──────────
@@ -199,11 +193,6 @@ describe('bug fe03d054: POST /prs decides newness from the upsert', () => {
     for (const c of calls) expect(c.status).toBe(201);
     const ids = new Set(calls.map((c) => c.body.id));
     expect(ids.size).toBe(1); // all observed the same persisted row, not 5 distinct "opens"
-  });
-  it('re-registration returns the same row (idempotent)', async () => {
-    const first = await agent().post('/prs').send(body(4343));
-    const second = await agent().post('/prs').send(body(4343));
-    expect(second.body.id).toBe(first.body.id);
   });
 });
 

@@ -1,4 +1,5 @@
 import { DB } from './db.js';
+import { canonicalOccurredAt } from './util/occurredAt.js';
 
 export interface RecomputeOptions {
   /** Recompute every event-day on or after this 'YYYY-MM-DD', ignoring the anchor. */
@@ -135,12 +136,7 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
  * to the next UTC day). Falls back to the leading date for an unparseable one.
  */
 export function utcDayOf(occurredAt: string): string {
-  // No offset means UTC to SQLite (and to Postgres' ::timestamptz on a UTC
-  // hub); Date.parse would read it as the host's local time instead.
-  const hasOffset = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(occurredAt);
-  const dateTime = /^\d{4}-\d{2}-\d{2}[T ]\d/.test(occurredAt);
-  const t = Date.parse(hasOffset || !dateTime ? occurredAt : `${occurredAt.replace(' ', 'T')}Z`);
-  return Number.isNaN(t) ? occurredAt.slice(0, 10) : new Date(t).toISOString().slice(0, 10);
+  return (canonicalOccurredAt(occurredAt) ?? occurredAt).slice(0, 10);
 }
 
 /**

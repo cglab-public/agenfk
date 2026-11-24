@@ -21,8 +21,6 @@
  * someone adding the input anyway and shipping a control that cannot work.
  */
 import React from 'react';
-import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 // Straight from the server's own module: the notice the screen paraphrases is
 // derived here rather than retyped, so the two cannot disagree in silence.
@@ -368,32 +366,11 @@ describe('create-project form: the two commands it cannot set', () => {
    * satisfied all three, so a screen could have been rewritten to promise that
    * AgEnFK guesses the command and the suite would have stayed green. A screen
    * that lies about the server is the defect this card exists to close, so the
-   * facts are now read from the code that produces them: rename the error or
-   * change the notice, and this file goes red instead of the screen going
-   * quietly wrong.
+   * facts are now anchored in the code that produces them: the worktree notice
+   * is the server's own planWorktreeSetup, and the error code and the CLI flags
+   * are @agenfk/core's (the describe below), so a rename goes red here instead
+   * of leaving the screen quietly wrong.
    */
-  // Walk up to the monorepo root rather than assume a cwd: this file is run
-  // both from packages/ui and from the repo root, and the two disagree.
-  const repoFile = (rel: string): string => {
-    let dir = process.cwd();
-    while (!existsSync(join(dir, 'packages', 'server', 'src', 'server.ts'))) {
-      const up = dirname(dir);
-      if (up === dir) throw new Error('monorepo root not found from ' + process.cwd());
-      dir = up;
-    }
-    return readFileSync(join(dir, 'packages', ...rel.split('/')), 'utf8');
-  };
-
-  it('names the error the server actually returns', async () => {
-    // Not a literal typed twice: the code is read out of the route that emits
-    // it, so renaming it there fails here rather than in a user's terminal.
-    const serverSource = repoFile('server/src/server.ts');
-    const emitted = serverSource.match(/error:\s*"(NO_[A-Z_]+)"/)?.[1];
-    expect(emitted, 'server.ts no longer returns a NO_* error on the final step').toBe('NO_VERIFY_COMMAND');
-
-    const form = await openProjectForm();
-    expect(form.textContent).toContain(emitted);
-  });
 
   it('describes the verify gate as conditional, because the call may carry the command', async () => {
     /*
@@ -432,18 +409,6 @@ describe('create-project form: the two commands it cannot set', () => {
     expect(form.textContent).toMatch(/declares a dependency manifest/i);
   });
 
-  it('prints CLI flags the CLI actually defines', async () => {
-    const cliSource = repoFile('cli/src/index.ts');
-    const flags = ['--verify-command', '--setup-command'];
-    for (const flag of flags) {
-      expect(cliSource, `${flag} is no longer a flag on update-project`).toContain(`.option('${flag} <cmd>'`);
-    }
-
-    const form = await openProjectForm();
-    expect(form.textContent).toMatch(/agenfk update-project/);
-    for (const flag of flags) expect(form.textContent).toContain(flag);
-  });
-
   it('offers no field for either command — the browser cannot write them', async () => {
     const form = await openProjectForm();
     /*
@@ -466,5 +431,46 @@ describe('create-project form: the two commands it cannot set', () => {
     ).toEqual([]);
 
     expect(controls.map(c => c.id).sort()).toEqual(['new-project-description', 'new-project-name']);
+  });
+});
+
+/*
+ * The same facts, from ONE definition instead of a regex over server.ts and
+ * cli/src/index.ts. The server's refusal and the CLI's options import these
+ * constants from @agenfk/core, and the screen renders the same constants, so
+ * a rename moves all three together. (The server's tests pin what it returns;
+ * the CLI's tests pin which options it accepts.)
+ */
+describe('create-project form: the command facts come from @agenfk/core', () => {
+  const coreFacts = async () => {
+    const core = await import('@agenfk/core') as Record<string, unknown>;
+    return {
+      error: core.NO_VERIFY_COMMAND as string | undefined,
+      verifyFlag: core.VERIFY_COMMAND_FLAG as string | undefined,
+      setupFlag: core.SETUP_COMMAND_FLAG as string | undefined,
+    };
+  };
+
+  it('core names the refusal and the two update-project flags', async () => {
+    const { error, verifyFlag, setupFlag } = await coreFacts();
+    expect(error).toBe('NO_VERIFY_COMMAND');
+    expect(verifyFlag).toBe('--verify-command');
+    expect(setupFlag).toBe('--setup-command');
+  });
+
+  it('shows the refusal core names', async () => {
+    const { error } = await coreFacts();
+    expect(error, '@agenfk/core does not export NO_VERIFY_COMMAND').toBeTypeOf('string');
+    const form = await openProjectForm();
+    expect(form.textContent).toContain(error!);
+  });
+
+  it('prints the update-project flags core names', async () => {
+    const { verifyFlag, setupFlag } = await coreFacts();
+    expect([verifyFlag, setupFlag], '@agenfk/core does not export the flags').toEqual([expect.any(String), expect.any(String)]);
+    const form = await openProjectForm();
+    expect(form.textContent).toMatch(/agenfk update-project/);
+    expect(form.textContent).toContain(verifyFlag!);
+    expect(form.textContent).toContain(setupFlag!);
   });
 });

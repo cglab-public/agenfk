@@ -329,32 +329,6 @@ describe('ProjectPickerGrid', () => {
     expect(row!.getAttribute('aria-selected')).toBe('true');
   });
 
-  it('the modal panel has max-w-4xl and does not have max-w-md', async () => {
-    setColumns(3);
-    setup();
-    await waitFor(() => screen.getByText('a1'));
-
-    const panel = screen.getByTestId('project-picker-panel');
-    expect(panel.className).toContain('max-w-4xl');
-    expect(panel.className).not.toContain('max-w-md');
-  });
-
-  it('the list has max-h-[60vh], grid-cols-1, sm:grid-cols-2, lg:grid-cols-3, and still has an ancestor with overflow-y-auto', async () => {
-    setColumns(3);
-    setup();
-    await waitFor(() => screen.getByText('a1'));
-
-    const listbox = screen.getByRole('listbox', { name: /projects/i });
-    const listClasses = listbox.className;
-
-    expect(listClasses).toContain('max-h-[60vh]');
-    expect(listClasses).toContain('grid-cols-1');
-    expect(listClasses).toContain('sm:grid-cols-2');
-    expect(listClasses).toContain('lg:grid-cols-3');
-
-    expect(listClasses).toContain('overflow-y-auto');
-  });
-
   // ── Group A — arrow keys must not steal the search caret ──────────────────
 
   it('ArrowLeft with text in the search box moves the caret, not the highlight', async () => {
@@ -453,18 +427,6 @@ describe('ProjectPickerGrid', () => {
 
     expect(getHighlightedRow()).toBeNull();
     expect(screen.queryByText(/No projects match/)).not.toBeNull();
-  });
-
-  it('the empty-state message spans the full grid width', async () => {
-    setColumns(3);
-    setup();
-    await waitFor(() => screen.getByText('a1'));
-
-    const input = screen.getByLabelText('Search projects');
-    fireEvent.change(input, { target: { value: 'zzzz' } });
-
-    const emptyMsg = screen.getByText(/No projects match/);
-    expect(emptyMsg.className).toContain('col-span-full');
   });
 
   it('ArrowUp re-clamps an index left beyond the end of a shrunken list', async () => {

@@ -28,7 +28,7 @@
  * Without this line the CSS-variable tokens in brand/tokens.css would flip on
  * toggle while hub-ui's ~132 `dark:` utilities stayed pinned to the OS — a
  * half-themed UI. Must stay byte-identical to the same line in
- * packages/ui/src/index.css (asserted by darkVariantWiring.test.ts) and must
+ * packages/ui/src/index.css (darkVariantCompiled.test.ts compiles both) and must
  * sit after all @import statements, per the CSS spec. */
 @variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
 

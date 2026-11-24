@@ -143,6 +143,10 @@ function makeAttributionStorage(projectRoot: string): StorageProvider & { insert
   };
   storage.listProjects = async () => [project];
   storage.listItems = async (query: any) => (query?.projectId === 'proj-1' ? [item] : []);
+  // GH-389: a turn with a session id is charged through the session-to-card
+  // journal; here the Codex session was put on item-1 when it started work.
+  storage.sessionCardAt = async (client: string, sessionId: string) =>
+    (client === 'codex' && sessionId === 'sess-codex' ? { itemId: 'item-1', projectId: 'proj-1' } : null);
   storage.getFlow = async () => ({
     id: 'flow-1',
     name: 'TDD',

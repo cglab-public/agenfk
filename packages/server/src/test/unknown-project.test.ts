@@ -75,16 +75,6 @@ describe('BUG f36c8a42: cards under a project that does not exist', () => {
     expect(stored).toHaveLength(0);
   });
 
-  it('POST /items still creates a card under a project that exists', async () => {
-    const project = await agent().post('/projects').send({ name: 'UP-real' });
-    expect(project.status).toBe(201);
-
-    const res = await agent().post('/items').send({ type: 'TASK', title: 'x', projectId: project.body.id });
-
-    expect(res.status).toBe(201);
-    expect(res.body.projectId).toBe(project.body.id);
-  });
-
   it('validate WITH a cwd (as the CLI sends) on an orphaned card answers a clear 409, not a 500', async () => {
     await orphanCard('orphan-cwd', 'gone-project');
     const cwd = markedProjectDir();
@@ -108,17 +98,8 @@ describe('BUG f36c8a42: cards under a project that does not exist', () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toContain('gone-project');
     expect(res.body.error).toContain('agenfk move orphan-nocwd');
-  });
-
-  it('the orphaned card does not move', async () => {
-    await orphanCard('orphan-stays', 'gone-project');
-
-    const res = await agent().post('/items/orphan-stays/validate')
-      .set('x-agenfk-internal', VERIFY_TOKEN!)
-      .send({ evidence: 'e' });
-
-    expect(res.status).toBe(409);
-    expect((await storage.getItem('orphan-stays'))?.status).toBe('TODO');
+    // The orphaned card does not move.
+    expect((await storage.getItem('orphan-nocwd'))?.status).toBe('TODO');
   });
 
   it('POST /items refuses a projectId that is not a string with 400, not a 500', async () => {

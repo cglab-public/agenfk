@@ -59,6 +59,7 @@ export function validateMetaRow(input: {
 const HARNESS_NAMES = new Set([
   'claude-code', 'claude-code-cli', 'codex-cli', 'opencode', 'cursor',
   'windsurf', 'aider', 'pi', 'openclaw', 'gemini-cli', 'copilot-cli',
+  'agy', 'antigravity',
 ]);
 
 export function isHarnessName(model: string): boolean {

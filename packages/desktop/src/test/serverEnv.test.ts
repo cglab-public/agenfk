@@ -125,3 +125,30 @@ describe('buildServerEnv', () => {
     expect(env.Path).toBe('C:\\Program Files\\GitHub CLI;C:\\Windows');
   });
 });
+
+/**
+ * ea94c023 (Airlock): the server the desktop app forks runs under Electron's
+ * utility process, so for a card an Airlock sandbox touched it must run
+ * `agenfk airlock exec` with Electron AS Node, from the helper the app ships.
+ */
+describe('buildServerEnv: the Airlock exec helper', () => {
+  const base = { PATH: '/usr/bin', HOME: '/Users/me' };
+  it('names the bundled helper and Electron as the Node to run it with', () => {
+    const env = buildServerEnv(base, { uiDir: '/ui', dbPath: '/db', freshPath: null, airlockExec: { cli: '/App/Resources/packages/airlock/dist/agenfk-airlock-exec.mjs', node: '/App/MacOS/AgEnFK' } }, profileFor('darwin'));
+    expect(env.AGENFK_AIRLOCK_EXEC_CLI).toBe('/App/Resources/packages/airlock/dist/agenfk-airlock-exec.mjs');
+    expect(env.AGENFK_AIRLOCK_EXEC_NODE).toBe('/App/MacOS/AgEnFK');
+    expect(env.AGENFK_AIRLOCK_EXEC_RUN_AS_NODE).toBe('1');
+  });
+
+  it('from a source checkout: Electron as Node, and the server finds the CLI beside it', () => {
+    const env = buildServerEnv(base, { uiDir: '/ui', dbPath: '/db', freshPath: null, airlockExec: { cli: null, node: '/electron' } }, profileFor('darwin'));
+    expect(env.AGENFK_AIRLOCK_EXEC_CLI).toBeUndefined();
+    expect(env.AGENFK_AIRLOCK_EXEC_NODE).toBe('/electron');
+    expect(env.AGENFK_AIRLOCK_EXEC_RUN_AS_NODE).toBe('1');
+  });
+
+  it('without it, nothing Airlock is set', () => {
+    const env = buildServerEnv(base, { uiDir: '/ui', dbPath: '/db', freshPath: null }, profileFor('darwin'));
+    expect(Object.keys(env).filter((k) => k.startsWith('AGENFK_AIRLOCK'))).toEqual([]);
+  });
+});

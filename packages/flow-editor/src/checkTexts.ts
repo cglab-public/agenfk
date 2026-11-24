@@ -20,6 +20,7 @@ export const CHECK_TEXTS: Record<string, CheckText> = {
   'on-card-branch': { title: 'On the card\'s branch', stops: 'working on the wrong branch', must: 'Be on the card\'s own branch' },
   'jira-key-valid': { title: 'Linked to a JIRA item', stops: 'work nobody can trace back to an issue', must: 'Link the card to a valid JIRA key that its branch carries' },
   'has-children': { title: 'Broken down into child cards', stops: 'building an epic or story as one lump', must: 'Break the card down into child cards' },
+  'no-nonfunctional-comments': { title: 'No comments without a function', stops: 'narration, explanatory notes, commented-out code and TODOs added to the code (directives, shebangs, license headers and docstrings stay; existing comments are never judged; a scanner, not a parser, so a rare misread can be passed on the board)', must: 'Remove each comment the step added that has no function, or make it a docstring on the declaration it documents' },
   'only-test-files-changed': { title: 'Only test files changed', stops: 'writing the code before the tests', must: 'Change test files only' },
   'no-broken-test-files': { title: 'Every test file loads', stops: 'a "failing" test that is really a file that will not import', must: 'Make every test file load' },
   'new-tests-exist': { title: 'New tests were added', stops: 'leaving the step without writing a test', must: 'Add at least one test' },
@@ -72,6 +73,7 @@ export const RECORD_TEXTS: Record<string, string> = {
 
 export const GROUP_TEXTS: Record<string, string> = {
   git: 'Git hygiene',
+  code: 'Code',
   tests: 'Tests',
   review: 'Review',
   approvals: 'Approvals',

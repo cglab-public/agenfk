@@ -52,16 +52,6 @@ describe('HubClient.recordEvent while disconnected', () => {
     expect(event.payload.prNumber).toBe(7);
   });
 
-  it('still records normally when configured (orgId baked in as before)', () => {
-    const client = new HubClient('install-2', { url: 'https://hub.example', token: 't', orgId: 'acme' });
-    client.attachStorage(storage);
-
-    client.recordEvent({ type: 'pr.opened', payload: {} } as any);
-
-    const [row] = storage.hubOutboxPeek(1);
-    expect(JSON.parse(row.payload).orgId).toBe('acme');
-  });
-
   it('caps the unconfigured outbox, pruning the OLDEST rows', () => {
     process.env.AGENFK_HUB_OUTBOX_CAP = '5';
     const client = new HubClient('install-3', null);
@@ -76,26 +66,13 @@ describe('HubClient.recordEvent while disconnected', () => {
     const seqs = rows.map(r => JSON.parse(r.payload).payload.seq);
     expect(seqs).toEqual([3, 4, 5, 6, 7]); // oldest three pruned
   });
-
-  it('pending rows are stampable to a real org via hubOutboxRewriteOrgId', () => {
-    const client = new HubClient('install-4', null);
-    client.attachStorage(storage);
-    client.recordEvent({ type: 'pr.opened', payload: {} } as any);
-    client.recordEvent({ type: 'item.closed', payload: {} } as any);
-
-    const rewritten = storage.hubOutboxRewriteOrgId('', 'acme');
-    expect(rewritten).toBe(2);
-    for (const row of storage.hubOutboxPeek(10)) {
-      expect(JSON.parse(row.payload).orgId).toBe('acme');
-    }
-  });
 });
 
 // NB: the boot-time behaviour these greps used to guard is covered elsewhere by
 // real tests — "appends to the outbox with the pending-org sentinel instead of
 // dropping" proves recordEvent no longer early-returns while disconnected, and
-// "pending rows are stampable to a real org via hubOutboxRewriteOrgId" proves the
-// stamping primitive the boot path calls. The source-string boot-wiring guards
+// hub-rewrite-outbox-org.test.ts ("rewrites queued outbox rows from the pending
+// sentinel to the real org") proves the stamping primitive the boot path calls. The source-string boot-wiring guards
 // were removed per the behaviour-based-testing conversion (CGLAB-16).
 
 describe('cap and flusher respect ownership of pending rows', () => {
@@ -139,18 +116,5 @@ describe('cap and flusher respect ownership of pending rows', () => {
       client.recordEvent({ type: 't', occurredAt: new Date(2026, 0, 1, 0, 0, i).toISOString(), payload: { seq: i } } as any);
     }
     expect(storage.hubOutboxCount()).toBe(2);
-  });
-
-  it('the flusher never ships pending-org rows (they would be rejected then deleted)', async () => {
-    const { Flusher } = await import('../hub/flusher');
-    const axios = (await import('axios')).default;
-    storage.hubOutboxAppend('pend-1', new Date().toISOString(), JSON.stringify({ orgId: '', type: 't', payload: {} }));
-    const http = (axios as any).create();
-    const posted: any[] = [];
-    http.post = async (_url: string, body: any) => { posted.push(body); return { status: 200, data: { ingested: body?.events?.length ?? 0 } }; };
-    const flusher = new Flusher(storage, { url: 'http://hub.test', token: 't', orgId: 'o' }, 'inst', 30_000, 500, http);
-    await flusher.flush();
-    expect(posted).toHaveLength(0);                 // nothing shipped
-    expect(storage.hubOutboxCount()).toBe(1);       // nothing deleted
   });
 });

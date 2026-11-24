@@ -30,7 +30,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import axios from 'axios';
 import { app, initStorage, closeStorage } from '../server';
-import { reconcileHubFlow } from '../hub/flowSync';
+import { reconcileProjectFlow } from '../hub/flowSync';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -200,16 +200,16 @@ describe('hub flow sync', () => {
   const hubConfig = { url: 'http://hub.example.test', token: 't', orgId: 'o' };
 
   it('keeps roles and checks from the hub', async () => {
-    const out = await reconcileHubFlow({ storage, hubConfig, lastEtag: null, fetchImpl: fetchOnce({ id: 'r1', name: 'Org', steps: tddSteps() }), emit: vi.fn() } as any);
+    const out = await reconcileProjectFlow({ storage, hubConfig, projectId: null, lastEtag: null, fetchImpl: fetchOnce({ id: 'r1p', name: 'Org', steps: tddSteps() }), emit: vi.fn() } as any);
     expect(out.outcome).toBe('updated');
-    const [flow] = await storage.listFlows();
+    const flow = (await storage.listFlows()).find(f => f.hubFlowId === 'r1p')!;
     expect((flow.steps.find(s => s.name === 'BUILD') as any).checks).toEqual([{ id: 'jira-key-valid' }]);
   });
 
   it('refuses an invalid hub flow: nothing is stored, and the outcome says why', async () => {
-    const out = await reconcileHubFlow({ storage, hubConfig, lastEtag: null, fetchImpl: fetchOnce({ id: 'r2', name: 'Bad', steps: orphanSteps() }), emit: vi.fn() } as any);
+    const out = await reconcileProjectFlow({ storage, hubConfig, projectId: null, lastEtag: null, fetchImpl: fetchOnce({ id: 'r2p', name: 'Bad', steps: orphanSteps() }), emit: vi.fn() } as any);
     expect(out.outcome).toBe('error');
     expect((out as any).error).toMatch(/redSet/);
-    expect(await storage.listFlows()).toHaveLength(0);
+    expect((await storage.listFlows()).some(f => f.hubFlowId === 'r2p')).toBe(false);
   });
 });

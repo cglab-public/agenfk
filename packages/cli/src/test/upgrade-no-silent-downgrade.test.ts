@@ -252,3 +252,39 @@ describe('the stable channel picks by version, not by date (BUG 3a261573)', () =
     expect(await fetchLatestReleaseTag('cglab-public/agenfk', false)).toBe('v2.0.1');
   });
 });
+
+// Behaviour behind upgrade-pinned-version.test.ts's source scans (GH-281).
+describe('a pinned upgrade that cannot happen, and one that need not', () => {
+  const exitCodes = () => (process.exit as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(c => c[0]);
+
+  it('a pinned release that does not exist answers --json failed and exits 1, extracting nothing', async () => {
+    mockedAxios.get.mockImplementation(async (url: string) => {
+      if (url.includes('localhost')) throw new Error('services down');
+      if (url.includes('/releases/tags/')) return { status: 404, data: { message: 'Not Found' } };
+      throw new Error(`unexpected GET ${url}`);
+    });
+    const line = (await upgrade('--version', '0.0.0-no-such-release', '--json')).split('\n').map(l => l.trim()).find(l => l.startsWith('{'));
+    expect(JSON.parse(line!)).toMatchObject({ status: 'failed', fromVersion: CURRENT, toVersion: '0.0.0-no-such-release' });
+    expect(JSON.parse(line!).error).toMatch(/not found/i);
+    expect(exitCodes()).toContain(1);
+    expect(extracted()).toBe(false);
+  });
+
+  it('a version that is not semver is refused with failed and exit 1, before any lookup', async () => {
+    github({ latest: 'v99.0.0', list: [{ tag: 'v99.0.0' }] });
+    const line = (await upgrade('--version', '1.0"; rm -rf ~; "', '--json')).split('\n').map(l => l.trim()).find(l => l.startsWith('{'));
+    expect(JSON.parse(line!).status).toBe('failed');
+    expect(exitCodes()).toContain(1);
+    expect(mockedAxios.get.mock.calls.map(c => String(c[0])).filter(u => u.includes('/releases/tags/'))).toEqual([]);
+  });
+
+  it('pinning the installed version is a noop: --json says so, exits 0, and runs no install', async () => {
+    spawnSync.mockClear(); // not reset by beforeEach: earlier upgrades' calls must not count here
+    github({ latest: 'v99.0.0', list: [{ tag: 'v99.0.0' }] });
+    const line = (await upgrade('--version', CURRENT, '--json')).split('\n').map(l => l.trim()).find(l => l.startsWith('{'));
+    expect(JSON.parse(line!)).toMatchObject({ status: 'noop', fromVersion: CURRENT, toVersion: CURRENT });
+    expect(exitCodes()).not.toContain(1);
+    const commands = [...execSync.mock.calls, ...execFileSync.mock.calls, ...spawnSync.mock.calls].map(c => (c as unknown[]).map(String).join(' '));
+    expect(commands.filter(c => /install\.mjs|\btar\b/.test(c))).toEqual([]);
+  });
+});

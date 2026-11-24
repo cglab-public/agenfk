@@ -102,6 +102,41 @@ describe('agenfk review record <id>', () => {
     expect(mockedAxios.post).not.toHaveBeenCalled();
     expect(process.exit).toHaveBeenCalledWith(1);
   });
+
+  // RFC-002 (95ba0ec5): a review is run through one or more lenses (general,
+  // security, performance). The server stores them on the record and receipts
+  // them, so the CLI sends exactly the names it was given, in the order given.
+  it('sends the lenses it was given, in order, with --lens repeated', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('tok');
+    mockedAxios.post.mockResolvedValue({ status: 201, data: { id: 'r1', reviewer: { client: 'claude-code', sessionId: 's', agentId: 'a' }, findings: [], lenses: ['security', 'general'] } });
+    await program.parseAsync([
+      'node', 'agenfk', 'review', 'record', 'item-1',
+      '--transcript', 't',
+      '--findings', '[]',
+      '--lens', 'security',
+      '--lens', 'general',
+    ]);
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      `${API}/items/item-1/review-records`,
+      expect.objectContaining({ lenses: ['security', 'general'] }),
+      expect.objectContaining({ headers: expect.objectContaining({ 'x-agenfk-internal': expect.anything() }) }),
+    );
+  });
+
+  it('sends no lenses key at all without --lens: the server defaults them', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('tok');
+    mockedAxios.post.mockResolvedValue({ status: 201, data: { id: 'r1', reviewer: { client: 'claude-code', sessionId: 's', agentId: 'a' }, findings: [] } });
+    await program.parseAsync([
+      'node', 'agenfk', 'review', 'record', 'item-1',
+      '--transcript', 't',
+      '--findings', '[]',
+    ]);
+    expect(mockedAxios.post).toHaveBeenCalled();
+    const body = mockedAxios.post.mock.calls.find(c => String(c[0]).endsWith('/items/item-1/review-records'))?.[1] as any;
+    expect(body).not.toHaveProperty('lenses');
+  });
 });
 
 describe('agenfk verify reports the author identity', () => {

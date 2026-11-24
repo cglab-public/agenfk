@@ -17,7 +17,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -26,7 +25,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, io } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A, IGNORE_REPORT } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -43,7 +42,6 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...extra });
 const until = async (pred: () => Promise<boolean>, ms = 10_000) => {
@@ -88,8 +86,8 @@ async function card(opts: { ms?: number; lines?: string[]; name?: string; held?:
     s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('NEXT', 2), s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = tmp('agenfk-vr-repo-');
-  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+  const repo = echoRepo(A, 'agenfk-vr-repo-');
+  dirs.push(repo);
   let script: string;
   let release = () => {};
   if (opts.held) ({ script, release } = heldScript(opts.lines));
@@ -117,27 +115,14 @@ describe('GET /verify-runs: every verify running now, in any project', () => {
     await until(async () => !(await entryFor(a.id)) && !(await entryFor(b.id)));
   });
 
-  it('carries no step records and no output body - only the last line', async () => {
-    const c = await card();
-    expect((await verifyAsync(c.id)).status).toBe(202);
-    await until(async () => !!(await entryFor(c.id)));
-    const e = await entryFor(c.id);
-    for (const heavy of ['output', 'tail', 'stepRecords', 'tests', 'checks', 'message']) expect(e, heavy).not.toHaveProperty(heavy);
-    await until(async () => !(await entryFor(c.id)));
-  });
-
-  it('gives the last line the run printed, colour codes stripped', async () => {
+  it('lists what a running verify is doing and the last line it printed (colour codes stripped), and carries no step records or output body', async () => {
     const c = await card({ lines: ['first', 'second', '\u001b[32m✓ third line\u001b[0m', ''] });
     expect((await verifyAsync(c.id)).status).toBe(202);
-    await until(async () => (await entryFor(c.id))?.lastLine === '✓ third line');
-    await until(async () => !(await entryFor(c.id)));
-  });
-
-  it('a verify running its suite says it is running the whole suite', async () => {
-    const c = await card();
-    expect((await verifyAsync(c.id)).status).toBe(202);
-    await until(async () => (await entryFor(c.id))?.phase?.state === 'running');
-    expect((await entryFor(c.id)).phase).toMatchObject({ state: 'running', kind: 'whole' });
+    await until(async () => { const e = await entryFor(c.id); return e?.lastLine === '✓ third line' && e?.phase?.state === 'running'; });
+    const e = await entryFor(c.id);
+    // A verify running its suite says it is running the whole suite.
+    expect(e.phase).toMatchObject({ state: 'running', kind: 'whole' });
+    for (const heavy of ['output', 'tail', 'stepRecords', 'tests', 'checks', 'message']) expect(e, heavy).not.toHaveProperty(heavy);
     await until(async () => !(await entryFor(c.id)));
   });
 
@@ -164,10 +149,8 @@ describe('affected-only runs say what they run', () => {
     const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [
       s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('BUILD', 2, { checks: [{ id: 'suite-green' }] }), s('SHIP', 3), s('END', 4, { isAnchor: true }),
     ] });
-    const repo = tmp('agenfk-vr-aff-');
-    fs.writeFileSync(path.join(repo, 'lib.js'), 'module.exports = 1;\n');
-    fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass adds\n');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one');
+    const repo = echoRepo({ 'lib.js': 'module.exports = 1;\n', 'a.test.js': 'pass adds\n', ...IGNORE_REPORT }, 'agenfk-vr-aff-');
+    dirs.push(repo);
     const runner = path.join(tmp('agenfk-vr-afftools-'), 'runner.js');
     // Reports a.test.js; a related run takes a while so it can be seen.
     fs.writeFileSync(runner, `const fs = require('fs');
@@ -184,23 +167,6 @@ setTimeout(() => {}, process.argv[2] === 'related' ? 1500 : 0);`);
     await until(async () => (await entryFor(c.id))?.phase?.kind === 'affected');
     expect((await entryFor(c.id)).phase).toMatchObject({ state: 'running', kind: 'affected', files: 1 });
     await until(async () => !(await entryFor(c.id)));
-  });
-});
-
-describe('a verify held only by a person', () => {
-  it('is listed as waiting on a person', async () => {
-    const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [
-      s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'human-approval' }] }), s('NEXT', 2), s('END', 3, { isAnchor: true }),
-    ] });
-    const repo = tmp('agenfk-vr-person-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
-    const p = await agent().post('/projects').send({ name: `vr-person-${++seq}` });
-    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
-    const c = (await agent().post('/items').send({ type: 'TASK', title: `person-${++seq}`, projectId: p.body.id })).body;
-    await storage.updateItem(c.id, { status: 'WORK' } as any);
-    const r = await agent().post(`/items/${c.id}/validate`).set(internal()).send({ evidence: 'ok' });
-    expect(r.status, JSON.stringify(r.body)).toBe(422);
-    expect(await entryFor(c.id)).toMatchObject({ itemId: c.id, step: 'WORK', phase: { state: 'awaiting-person' } });
   });
 });
 
@@ -223,8 +189,8 @@ describe("the 'verify_runs' socket event", () => {
 describe("the 'verify_runs' push follows a final-step verify's output", () => {
   it('pushes the last line as the command prints it', async () => {
     const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
-    const repo = tmp('agenfk-vr-final-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const repo = echoRepo(A, 'agenfk-vr-final-');
+    dirs.push(repo);
     const script = path.join(tmp('agenfk-vr-finaltools-'), 'run.js');
     fs.writeFileSync(script, "console.log('first');\nsetTimeout(() => console.log('second'), 700);\nsetTimeout(() => {}, 1600);\n");
     const p = await agent().post('/projects').send({ name: `vr-final-${++seq}` });
@@ -251,14 +217,15 @@ describe('beae41a0: the list stays true', () => {
     const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [
       s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'human-approval' }] }), s('NEXT', 2), s('END', 3, { isAnchor: true }),
     ] });
-    const repo = tmp('agenfk-vr-held-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const repo = echoRepo(A, 'agenfk-vr-held-');
+    dirs.push(repo);
     const p = await agent().post('/projects').send({ name: `vr-held-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const c = (await agent().post('/items').send({ type: 'TASK', title: `held-${++seq}`, projectId: p.body.id })).body;
     await storage.updateItem(c.id, { status: 'WORK' } as any);
     expect((await agent().post(`/items/${c.id}/validate`).set(internal()).send({ evidence: 'ok' })).status).toBe(422);
-    expect((await entryFor(c.id))?.phase).toEqual({ state: 'awaiting-person' });
+    // A verify held only by a person is listed as waiting on one.
+    expect(await entryFor(c.id)).toMatchObject({ itemId: c.id, step: 'WORK', phase: { state: 'awaiting-person' } });
     return c.id as string;
   }
 
@@ -304,8 +271,8 @@ describe('beae41a0: the list stays true', () => {
     const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [
       s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('NEXT', 2), s('END', 3, { isAnchor: true }),
     ] });
-    const repo = tmp('agenfk-vr-sf-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const repo = echoRepo(A, 'agenfk-vr-sf-');
+    dirs.push(repo);
     const { script, release } = heldScript();
     const p = await agent().post('/projects').send({ name: `vr-sf-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `node ${script}` } as never);
@@ -322,8 +289,8 @@ describe('beae41a0: the list stays true', () => {
 
   it("a sibling's final verify waiting on the other's run says so, and shows its output", async () => {
     const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
-    const repo = tmp('agenfk-vr-sib-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const repo = echoRepo(A, 'agenfk-vr-sib-');
+    dirs.push(repo);
     const { script, release } = heldScript();
     const p = await agent().post('/projects').send({ name: `vr-sib-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `node ${script}` } as never);
@@ -357,8 +324,8 @@ describe('beae41a0: the list stays true', () => {
     const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [
       s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'human-approval', params: { signature: 'passkey' } }] }), s('NEXT', 2), s('END', 3, { isAnchor: true }),
     ] });
-    const repo = tmp('agenfk-vr-pk-');
-    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const repo = echoRepo(A, 'agenfk-vr-pk-');
+    dirs.push(repo);
     const p = await agent().post('/projects').send({ name: `vr-pk-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const c = (await agent().post('/items').send({ type: 'TASK', title: `pk-${++seq}`, projectId: p.body.id })).body;

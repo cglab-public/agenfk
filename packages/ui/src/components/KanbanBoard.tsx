@@ -23,6 +23,7 @@ import { VerifyRunBadge } from './VerifyRunBadge';
 import { VerifyRunsChip } from './VerifyRunsChip';
 import { ColumnContractBadges, ColumnRole } from './ColumnContractBadges';
 import { checkText } from '@agenfk/flow-editor';
+import { usePriceTable } from '../usePriceTable';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
@@ -38,11 +39,12 @@ import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
 import { FlowEditorModal, renderStepIcon } from './FlowEditorModal';
 import { BoardSettingsDialog } from './BoardSettingsDialog';
+import { settingsSectionFromSearch } from '../airlockForm';
 import { OrgFlowPicker } from './OrgFlowPicker';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { capture } from '../posthog';
-import { calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
+import { calculateCycleTimeMs, formatDuration } from '../utils';
 import { cardShortDate, cardAgo, cardFullTimestamp } from '../cardDates';
 import { BoardDateFilter } from './BoardDateFilter';
 import { type DateFilter, emptyColumnMessage, isDateFilterActive, loadDateFilter, matchesDateFilter, saveDateFilter } from '../boardDateFilter';
@@ -118,7 +120,6 @@ interface KanbanCardProps {
   dropTargetId: string | null;
   dropPosition: 'above' | 'below';
   copiedId: string | null;
-  pricesData: any;
   isUserAction: boolean;
   onCardDragStart: (e: React.DragEvent, id: string) => void;
   onCardDragEnd: () => void;
@@ -138,7 +139,7 @@ interface KanbanCardProps {
 
 const KanbanCard: React.FC<KanbanCardProps> = ({
   item, items, projects, highlightedId, dragId, dropTargetId, dropPosition,
-  copiedId, pricesData, isUserAction, onCardDragStart, onCardDragEnd, onCardDragOver,
+  copiedId, isUserAction, onCardDragStart, onCardDragEnd, onCardDragOver,
   onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onMoveToProject, onCopyId, onOpenTerminal, disableLayoutAnimation,
   compact = false,
 }) => {
@@ -153,7 +154,6 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
   const lastContentKey = React.useRef(JSON.stringify({
     t: item.title,
     d: item.description,
-    tu: item.tokenUsage?.length,
     r: item.reviews?.length,
     c: item.comments?.length
   }));
@@ -165,7 +165,6 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       const contentKey = JSON.stringify({
         t: item.title,
         d: item.description,
-        tu: item.tokenUsage?.length,
         r: item.reviews?.length,
         c: item.comments?.length
       });
@@ -187,7 +186,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         });
       }
     }
-  }, [item.updatedAt, item.status, item.sortOrder, item.title, item.description, item.tokenUsage, item.reviews, item.comments, isFlying, controls, isUserAction]);
+  }, [item.updatedAt, item.status, item.sortOrder, item.title, item.description, item.reviews, item.comments, isFlying, controls, isUserAction]);
 
   useEffect(() => {
     if (item.status !== lastStatus.current) {
@@ -471,14 +470,6 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             }
           </div>
         </div>
-        {/* Hiding tokens for now due to algorithm enhancements
-        {item.tokenUsage && item.tokenUsage.length > 0 && (
-          <div className="flex items-center gap-1 font-medium text-status-warn-text bg-status-warn-bg px-1.5 py-0.5 rounded-full">
-            <Zap size={9} className="fill-status-warn-text" />
-            {item.tokenUsage.reduce((acc, curr) => acc + curr.input + curr.output, 0).toLocaleString()}
-          </div>
-        )}
-        */}
       </div>
       {/* When the card was made and last touched, on open and closed cards alike;
           the full local times are on hover. */}
@@ -583,7 +574,17 @@ export const KanbanBoard: React.FC = () => {
   const [isReadmeOpen, setIsReadmeOpen] = useState(false);
   const [isFlowEditorOpen, setIsFlowEditorOpen] = useState(false);
   // 7b640e64: the desktop shell has its own Settings; a browser reaches them from here.
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // GH-294: `agenfk airlock edit` links `?settings=airlock`; the dialog opens on
+  // that section once, and the parameter leaves the URL so a reload does not reopen it.
+  const [settingsSection] = useState(() => settingsSectionFromSearch(window.location.search));
+  const [isSettingsOpen, setIsSettingsOpen] = useState(() => settingsSection !== null);
+  useEffect(() => {
+    if (settingsSection === null) return;
+    const params = new URLSearchParams(window.location.search);
+    params.delete('settings');
+    const rest = params.toString();
+    window.history.replaceState(null, '', window.location.pathname + (rest ? `?${rest}` : '') + window.location.hash);
+  }, [settingsSection]);
   const [isOrgFlowPickerOpen, setIsOrgFlowPickerOpen] = useState(false);
 
   const { data: versionData } = useQuery({
@@ -694,15 +695,7 @@ export const KanbanBoard: React.FC = () => {
     return Object.fromEntries(activeFlow.steps.map((s: FlowStep) => [s.name, s]));
   }, [activeFlow]);
   
-  const { data: pricesData } = useQuery({
-    queryKey: ['prices'],
-    /* v8 ignore next 4 */
-    queryFn: async () => {
-      const res = await fetch('https://www.llm-prices.com/current-v1.json');
-      return res.json();
-    },
-    staleTime: 1000 * 60 * 60 * 24
-  });
+  const pricesData = usePriceTable();
 
   const [selectedItem, setSelectedItem] = useState<AgEnFKItem | null>(null);
 
@@ -2114,21 +2107,6 @@ agenfk update-project <id> --setup-command "npm ci"`}
           <div className="flex items-center gap-4 shrink-0 pl-4 border-l border-slate-100 dark:border-slate-800/50 ml-2">
             <BoardDateFilter value={dateFilter} onChange={setDateFilter} />
 
-            {/* Tokens/Cost section hidden temporarily for algorithm enhancements
-            <div className="flex flex-col items-end">
-              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
-                <Zap size={10} className="text-status-warn-text" />
-                Tokens / Cost
-                <button onClick={() => queryClient.invalidateQueries({ queryKey: ['items'] })} className="hover:text-accent-ink transition-colors">
-                  <Loader2 size={10} className={clsx(isLoading && "animate-spin")} />
-                </button>
-              </div>
-              <div className="text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 leading-none">
-                {items?.reduce((acc: number, i: any) => acc + (i.tokenUsage?.reduce((t: number, u: any) => t + u.input + u.output, 0) || 0), 0).toLocaleString()}
-                {pricesData ? <span className="text-accent-ink ml-1">({formatCost(items?.reduce((acc: number, i: any) => acc + calculateCost(i.tokenUsage, pricesData), 0) || 0)})</span> : ''}
-              </div>
-            </div>
-            */}
 
             {activeFlow && (
               <div className="flex flex-col items-end">
@@ -2193,7 +2171,6 @@ agenfk update-project <id> --setup-command "npm ci"`}
                             dropTargetId={dropTargetId}
                             dropPosition={dropPosition}
                             copiedId={copiedId}
-                            pricesData={pricesData}
                             isUserAction={isUserAction}
                             onCardDragStart={handleDragStart}
                             onCardDragEnd={handleDragEnd}
@@ -2271,7 +2248,6 @@ agenfk update-project <id> --setup-command "npm ci"`}
                         dropTargetId={dropTargetId}
                         dropPosition={dropPosition}
                         copiedId={copiedId}
-                        pricesData={pricesData}
                         isUserAction={isUserAction}
                         onCardDragStart={handleDragStart}
                         onCardDragEnd={handleDragEnd}
@@ -2324,7 +2300,6 @@ agenfk update-project <id> --setup-command "npm ci"`}
                             dropTargetId={dropTargetId}
                             dropPosition={dropPosition}
                             copiedId={copiedId}
-                            pricesData={pricesData}
                             isUserAction={isUserAction}
                             onCardDragStart={handleDragStart}
                             onCardDragEnd={handleDragEnd}
@@ -2369,7 +2344,6 @@ agenfk update-project <id> --setup-command "npm ci"`}
                             dropTargetId={dropTargetId}
                             dropPosition={dropPosition}
                             copiedId={copiedId}
-                            pricesData={pricesData}
                             isUserAction={isUserAction}
                             onCardDragStart={handleDragStart}
                             onCardDragEnd={handleDragEnd}
@@ -2433,7 +2407,6 @@ agenfk update-project <id> --setup-command "npm ci"`}
                           dropTargetId={dropTargetId}
                           dropPosition={dropPosition}
                           copiedId={copiedId}
-                          pricesData={pricesData}
                           isUserAction={isUserAction}
                           onCardDragStart={handleDragStart}
                           onCardDragEnd={handleDragEnd}
@@ -2554,7 +2527,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
       <WhatsNewModal isOpen={isWhatsNewOpen} onClose={() => setIsWhatsNewOpen(false)} />
       <ReadmeModal isOpen={isReadmeOpen} onClose={() => setIsReadmeOpen(false)} />
 
-      {isSettingsOpen && <BoardSettingsDialog projectId={selectedProjectId} onClose={() => setIsSettingsOpen(false)} />}
+      {isSettingsOpen && <BoardSettingsDialog projectId={selectedProjectId} initialSection={settingsSection} onClose={() => setIsSettingsOpen(false)} />}
       {isFlowEditorOpen && selectedProjectId && (
         <FlowEditorModal
           isOpen={isFlowEditorOpen}

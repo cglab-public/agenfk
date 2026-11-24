@@ -14,7 +14,7 @@
  *    intercept the execSync call and assert on the URL it received.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import axios from 'axios';
 import fs from 'fs';
 import os from 'os';
@@ -22,10 +22,20 @@ import path from 'path';
 import { program } from '../index';
 import { buildUiOpenUrl, resolveDashboardUrl } from '../uiUrl';
 
-// Capture the browser-launch instead of opening one in the test environment.
+// Capture every launch instead of making one: the browser through execSync, the desktop app through
+// execFileSync (`open -a`). With only execSync mocked, a machine holding a desktop build (the source
+// tree's packages/desktop/release) had the test open the real app on every run.
+// The app is never running here: `pgrep` finds nothing, as on a machine without it.
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>();
-  return { ...actual, execSync: vi.fn(() => Buffer.from('')) };
+  return {
+    ...actual,
+    execSync: vi.fn((cmd: unknown) => {
+      if (String(cmd).startsWith('pgrep')) throw new Error('no process found');
+      return Buffer.from('');
+    }),
+    execFileSync: vi.fn(() => Buffer.from('')),
+  };
 });
 
 // Keep the item->project lookup hermetic: default to "server unreachable" so
@@ -150,7 +160,15 @@ describe('agenfk ui --open browser launch', () => {
     if (tmpCwd) fs.rmSync(tmpCwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     tmpCwd = '';
     vi.mocked(execSync).mockClear();
+    vi.mocked(execFileSync).mockClear();
+    vi.restoreAllMocks();
   });
+
+  /** Whether a desktop app is installed, whatever this machine holds. */
+  const desktopInstalled = (installed: boolean) => {
+    const exists = fs.existsSync;
+    vi.spyOn(fs, 'existsSync').mockImplementation((p) => (String(p).endsWith('AgEnFK.app') ? installed : exists(p)));
+  };
 
   // The launch command is a platform opener wrapping the URL in quotes
   // (e.g. `open "<url>"` or `xdg-open "<url>"`) — extract that URL.
@@ -259,6 +277,7 @@ describe('agenfk ui --open browser launch', () => {
   });
 
   it('still opens the plain dashboard when --open is absent', async () => {
+    desktopInstalled(false);
     realCwd = process.cwd();
     tmpCwd = makeTmpDir('agenfk-ui-open-cwd-');
     process.chdir(tmpCwd);
@@ -268,6 +287,20 @@ describe('agenfk ui --open browser launch', () => {
     const urls = launchedUrls();
     expect(urls.length).toBeGreaterThan(0);
     expect(urls.every((u) => !u.includes('?item='))).toBe(true);
+  });
+
+  it.skipIf(process.platform !== 'darwin')('with a desktop app installed, opens it (through the mocked opener, never for real)', async () => {
+    desktopInstalled(true);
+    realCwd = process.cwd();
+    tmpCwd = makeTmpDir('agenfk-ui-open-cwd-');
+    process.chdir(tmpCwd);
+
+    await program.parseAsync(['node', 'agenfk', 'ui']);
+
+    const opened = vi.mocked(execFileSync).mock.calls.filter((c) => c[0] === 'open');
+    expect(opened).toHaveLength(1);
+    expect(String((opened[0][1] as string[])[1])).toMatch(/AgEnFK\.app$/);
+    expect(launchedUrls()).toEqual([]);
   });
 
   // #208: native Windows (PowerShell, cmd, the desktop app - no MSYSTEM) had no launch

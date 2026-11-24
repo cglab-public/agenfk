@@ -151,5 +151,104 @@ describe('vitest HOME pin factory (scripts/vitest-home-pin.mjs)', () => {
     // Pre-seeded framework dir: readers of verify-token/server-port see
     // "absent", not a hostile foreign home.
     expect(fs.existsSync(path.join(a.HOME, '.agenfk'))).toBe(true);
+    // The run's sandbox is named for the workers, which each take a home inside it (GH-274).
+    expect(a.AGENFK_TEST_RUN_HOME).toBe(a.HOME);
+  });
+});
+
+/*
+ * GH-274: one HOME per WORKER, inside the run's sandbox. The server, hub and
+ * cli files ran one at a time because every worker shared the run's HOME; a
+ * home of its own lets a worker run them beside another worker's.
+ */
+describe('vitest worker HOME (scripts/vitest-home-pin.mjs)', () => {
+  const load = () => import('../../../../scripts/vitest-home-pin.mjs');
+  const runSandbox = () => fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-test-home-'));
+
+  it('gives each worker its own seeded home and database directory inside the run sandbox', async () => {
+    const { workerHomeEnv } = await load();
+    const run = runSandbox();
+    try {
+      const one = workerHomeEnv(run, '1');
+      const two = workerHomeEnv(run, '2');
+      expect(one.HOME).not.toBe(two.HOME);
+      for (const w of [one, two]) {
+        expect(path.dirname(w.HOME)).toBe(run);
+        expect(w.USERPROFILE).toBe(w.HOME);
+        expect(w.AGENFK_TEST_DB_DIR).toBe(path.join(w.HOME, 'test-dbs'));
+        expect(fs.statSync(w.AGENFK_TEST_DB_DIR).isDirectory()).toBe(true);
+        // The same fixed token as the run's sandbox (BUG 9de0c99c), so no worker mints an ephemeral one.
+        expect(fs.readFileSync(path.join(w.HOME, '.agenfk', 'verify-token'), 'utf8')).toBe('agenfk-test-verify-token');
+      }
+    } finally {
+      fs.rmSync(run, { recursive: true, force: true });
+    }
+  });
+
+  it('is the same home for the same worker, and keeps what an earlier file left there', async () => {
+    const { workerHomeEnv } = await load();
+    const run = runSandbox();
+    try {
+      const first = workerHomeEnv(run, '3');
+      fs.writeFileSync(path.join(first.HOME, 'left-by-an-earlier-file'), 'x');
+      const again = workerHomeEnv(run, '3');
+      expect(again).toEqual(first);
+      expect(fs.existsSync(path.join(again.HOME, 'left-by-an-earlier-file'))).toBe(true);
+    } finally {
+      fs.rmSync(run, { recursive: true, force: true });
+    }
+  });
+
+  it('pins a worker env to its own home, and leaves an env that is not a vitest worker alone', async () => {
+    const { pinWorkerHome } = await load();
+    const run = runSandbox();
+    try {
+      const env: Record<string, string | undefined> = { HOME: run, USERPROFILE: run, AGENFK_TEST_RUN_HOME: run, VITEST_POOL_ID: '4' };
+      expect(pinWorkerHome(env, () => env.HOME!)).toBe(true);
+      expect(env.HOME).toBe(path.join(run, 'worker-4'));
+      expect(env.USERPROFILE).toBe(env.HOME);
+      expect(env.AGENFK_TEST_DB_DIR).toBe(path.join(run, 'worker-4', 'test-dbs'));
+      // A second file in the same worker: the same home, not one nested in it.
+      expect(pinWorkerHome(env, () => env.HOME!)).toBe(true);
+      expect(env.HOME).toBe(path.join(run, 'worker-4'));
+
+      const noPool: Record<string, string | undefined> = { HOME: run, AGENFK_TEST_RUN_HOME: run };
+      expect(pinWorkerHome(noPool, () => noPool.HOME!)).toBe(false);
+      expect(noPool.HOME).toBe(run);
+      const noRun: Record<string, string | undefined> = { HOME: run, VITEST_POOL_ID: '1' };
+      expect(pinWorkerHome(noRun, () => noRun.HOME!)).toBe(false);
+      expect(noRun.HOME).toBe(run);
+    } finally {
+      fs.rmSync(run, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the run's home under the Stryker guard, where os.homedir() does not follow HOME (a frozen C environ)", async () => {
+    const { pinWorkerHome } = await load();
+    const run = runSandbox();
+    try {
+      const env: Record<string, string | undefined> = { HOME: run, USERPROFILE: run, AGENFK_TEST_RUN_HOME: run, VITEST_POOL_ID: '5', AGENFK_SPAWN_PIN: '1' };
+      // HOME would say one directory and os.homedir() another: worse than sharing the run's.
+      expect(pinWorkerHome(env, () => run)).toBe(false);
+      expect(env.HOME).toBe(run);
+      expect(env.USERPROFILE).toBe(run);
+      expect(env.AGENFK_TEST_DB_DIR).toBeUndefined();
+    } finally {
+      fs.rmSync(run, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to run a worker on the shared home anywhere else: its files would collide with the other workers', async () => {
+    const { pinWorkerHome } = await load();
+    const run = runSandbox();
+    try {
+      const env: Record<string, string | undefined> = { HOME: run, USERPROFILE: run, AGENFK_TEST_RUN_HOME: run, VITEST_POOL_ID: '6' };
+      expect(() => pinWorkerHome(env, () => run)).toThrow(/cannot have a HOME of its own/);
+      // Put back before it throws: nothing reads a home os.homedir() does not.
+      expect(env.HOME).toBe(run);
+      expect(env.AGENFK_TEST_DB_DIR).toBeUndefined();
+    } finally {
+      fs.rmSync(run, { recursive: true, force: true });
+    }
   });
 });

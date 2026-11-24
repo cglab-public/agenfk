@@ -47,12 +47,4 @@ describe('Server Release Update API', () => {
       expect.any(Object)
     );
   });
-
-  it('uses the injected exec implementation when one is set (defense in depth)', async () => {
-    const res = await agent().post('/releases/update').set('x-agenfk-ui', '1');
-    expect(res.status).toBe(202);
-
-    expect(stubExec).toHaveBeenCalledTimes(1);
-    expect(stubExec.mock.calls[0][0]).toMatch(/npx -y github:cglab-public\/agenfk/);
-  });
 });

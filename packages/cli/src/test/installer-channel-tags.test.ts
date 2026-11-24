@@ -163,10 +163,11 @@ describe('npx github:cglab-public/agenfk (bin/agenfk.js) downloads the right rel
     expect(tagOf(b.downloads()), `${r.stdout}${r.stderr}`.slice(-2000)).toBe('v2.0.0');
   });
 
-  it('--beta through the gh fallback (GitHub API down): same rule, not `--limit 1` of any kind', () => {
+  it('--beta through the gh fallback (GitHub API down): same rule, not `--limit 1` of any kind, and no drafts', () => {
     const b = makeBin({ api: false, latest: 'hub-v2.1.0' });
     const r = runRoot(['--beta'], b.bin);
     expect(tagOf(b.downloads()), `${r.stdout}${r.stderr}`.slice(-2000)).toBe('v2.0.1-beta.2');
+    expect(b.ghCalls().find(c => c.startsWith('release list'))).toMatch(/--exclude-drafts/);
   });
 });
 
@@ -199,12 +200,6 @@ describe('bin/agenfk.js, review round (BUG 4bd98e16)', () => {
     runRoot(['--beta'], b.bin);
     expect(tagOf(b.downloads())).toBe('v2.1.0-beta.3');
   });
-
-  it('the gh fallback asks for the list without drafts', () => {
-    const b = makeBin({ api: false, latest: 'hub-v2.1.0' });
-    runRoot(['--beta'], b.bin);
-    expect(b.ghCalls().find(c => c.startsWith('release list'))).toMatch(/--exclude-drafts/);
-  });
 });
 
 describe('npx agenfk (packages/create) downloads the right release', () => {
@@ -214,21 +209,16 @@ describe('npx agenfk (packages/create) downloads the right release', () => {
     expect(tagOf(b.downloads()), `${r.stdout}${r.stderr}`.slice(-2000)).toBe('v2.0.0');
   });
 
-  it('through the gh fallback (GitHub API down): same rule', () => {
+  it('through the gh fallback (GitHub API down): same rule, and no drafts', () => {
     const b = makeBin({ api: false, latest: 'hub-v2.1.0' });
     const r = runCreate(b.bin);
     expect(tagOf(b.downloads()), `${r.stdout}${r.stderr}`.slice(-2000)).toBe('v2.0.0');
+    expect(b.ghCalls().find(c => c.startsWith('release list'))).toMatch(/--exclude-drafts/);
   });
 
   it("keeps GitHub's latest when the list request fails (gh down too)", () => {
     const b = makeBin({ api: true, latest: 'v2.0.0', listFails: true, ghDown: true });
     runCreate(b.bin);
     expect(tagOf(b.downloads())).toBe('v2.0.0');
-  });
-
-  it('the gh fallback asks for the list without drafts', () => {
-    const b = makeBin({ api: false, latest: 'hub-v2.1.0' });
-    runCreate(b.bin);
-    expect(b.ghCalls().find(c => c.startsWith('release list'))).toMatch(/--exclude-drafts/);
   });
 });

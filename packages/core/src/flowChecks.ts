@@ -58,7 +58,7 @@ export interface CheckParamDef {
 
 export interface CheckDef {
   id: string;
-  group: 'git' | 'tests' | 'review' | 'approvals' | 'custom';
+  group: 'git' | 'code' | 'tests' | 'review' | 'approvals' | 'custom';
   /** What the check requires, in words the flow editor shows. */
   description: string;
   defaultSeverity: CheckSeverity;
@@ -90,6 +90,8 @@ export const CHECK_CATALOGUE: Record<string, CheckDef> = {
   'has-children': def({ id: 'has-children', group: 'git', defaultSeverity: 'block',
     description: 'A card of the listed types has been broken down into child cards before work moves on.',
     params: { types: { values: ['EPIC', 'STORY', 'EPIC,STORY'], default: 'EPIC', description: 'Which card types must have children.' } } }),
+  'no-nonfunctional-comments': def({ id: 'no-nonfunctional-comments', group: 'code', defaultSeverity: 'block',
+    description: 'The lines this step added carry no comment without a function: narration, explanatory notes, commented-out code and TODOs (ticketed or not) fail. Tool directives (eslint-disable, @ts-expect-error, nosemgrep, noqa, pragmas), shebangs, license headers and docstrings on the declaration they document pass. Existing comments are never judged. Reads JS/TS, Python, shell, Go, Rust, Java, Kotlin, C#, C/C++, Ruby, YAML, SQL and CSS; other files are named, not read. A per-language scanner, not a parser: a marker in a JS regex after a closing parenthesis, a quote nested in an f-string, C# or shell interpolation, a Ruby heredoc or JSX text holding // can be misread. Runs no suite.' }),
   'only-test-files-changed': def({ id: 'only-test-files-changed', group: 'tests', defaultSeverity: 'block',
     description: 'Only test files changed in this step: tests are written before the code they test.' }),
   'no-broken-test-files': def({ id: 'no-broken-test-files', group: 'tests', defaultSeverity: 'block', needsCapture: true,

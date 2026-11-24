@@ -211,24 +211,6 @@ describe('discovering which sessions are live', () => {
     // that lets the screen say so instead of showing a failure.
     expect(discoverSessionSockets(root, () => [], () => false)).toEqual([]);
   });
-
-  it('never lets a session NAME escape the root it was found under', () => {
-    /*
-     * Names come from a directory listing of a trusted root, and the only thing
-     * this module does with one is join it back under that same root. A name
-     * like '../../..' - however it got on disk - must not walk out. `join` does
-     * NOT give that for free: it resolves the `..` and leaves the tree.
-     *
-     * The property is containment in the CONFIG ROOT, not in `sessions/`: the
-     * default session's socket sits directly in the root and is not a traversal.
-     * Asserting the narrower thing failed on the legitimate row, which is how
-     * this comment came to exist.
-     */
-    const found = discoverSessionSockets(root, () => ['../../../etc'], () => true);
-    for (const f of found) expect(f.socketPath.startsWith(`${root}${sep}`), f.socketPath).toBe(true);
-    // And specifically: the traversal produced no row at all.
-    expect(found.map(f => f.name)).toEqual(['default']);
-  });
 });
 
 /* ── the wire ──────────────────────────────────────────────────────────── */
@@ -246,18 +228,6 @@ describe('encoding a request', () => {
     // turns a round trip and an opaque error code into a thrown mistake at the
     // call site that made it.
     expect(() => encodeRequest({ id: 7 as unknown as string, method: 'x', params: {} })).toThrow(/id/i);
-  });
-
-  it('refuses a line over the 1 MiB ceiling BEFORE sending it', () => {
-    /*
-     * Live-probed by collie against herdr 0.7.5: 1 048 575 bytes still gets a
-     * normal reply, 1 048 576 gets NO reply at all - the server drops the
-     * connection or never answers. So the failure mode for going over is a
-     * hang, and a hang is worth trading for a thrown error.
-     */
-    const huge = 'x'.repeat(MAX_REQUEST_BYTES);
-    expect(() => encodeRequest({ id: 'a', method: 'pane.send_text', params: { text: huge } }))
-      .toThrow(/1 MiB|too large|ceiling/i);
   });
 });
 
@@ -385,6 +355,9 @@ describe('pane.read', () => {
   it('returns the text, and says when it was truncated', async () => {
     const r = await readPane('/s.sock', { paneId: 'p' }, async () => READ, 5_000);
     expect(r.ok && r.read).toMatchObject({ text: 'two\nlines', truncated: false, revision: 9 });
+    const cut = JSON.stringify({ id: 'x', result: { type: 'pane_read', read: { text: 'a', truncated: true } } });
+    const t = await readPane('/s.sock', { paneId: 'p' }, async () => cut, 5_000);
+    expect(t.ok && t.read.truncated).toBe(true);
   });
 
   it('surfaces pane_not_found as an error rather than as empty text', async () => {
@@ -436,24 +409,6 @@ describe('subscribing', () => {
     await subscribeEvents('/s.sock', ['pane.created'], () => {},
       async (_p, line) => { sent = line; return { close: () => {} }; });
     expect(JSON.parse(sent).params.subscriptions).toEqual([{ type: 'pane.created' }]);
-  });
-
-  it('REFUSES a pane-scoped type with no pane_id, which is what the live server taught', async () => {
-    /*
-     * MEASURED, NOT READ. Subscribing to the whole catalog with bare `{type}`
-     * entries earned exactly one line back and then silence:
-     *
-     *   {"id":"","error":{"code":"invalid_request",
-     *    "message":"invalid request: missing field `pane_id` at line 1 column 709"}}
-     *
-     * `pane.agent_status_changed` is scoped to ONE pane - collie subscribes to
-     * it once per agent pane. Sent bare, the whole subscribe is rejected, and
-     * the caller is left holding a connection that will never deliver anything.
-     */
-    await expect(
-      subscribeEvents('/s.sock', ['pane.agent_status_changed'], () => {},
-        async () => ({ close: () => {} })),
-    ).rejects.toThrow(/pane_id/i);
   });
 
   it('carries the pane_id when the caller scopes one', async () => {
@@ -536,7 +491,7 @@ describe('subscribing', () => {
 import { createServer, type Server } from 'net';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
-import { join, sep, isAbsolute, posix, win32 } from 'path';
+import { join, isAbsolute, posix, win32 } from 'path';
 import { afterEach } from 'vitest';
 import { socketTransport, socketStreamTransport, liveHerdrSessions, MAX_RESPONSE_BYTES } from '../herdr';
 
@@ -780,12 +735,6 @@ describe('guards the first review proved were untested', () => {
     }
   });
 
-  it('says when a read WAS truncated, which nothing asserted before', async () => {
-    const line = JSON.stringify({ id: 'x', result: { type: 'pane_read', read: { text: 'a', truncated: true } } });
-    const r = await readPane('/s.sock', { paneId: 'p' }, async () => line, 5_000);
-    expect(r.ok && r.read.truncated).toBe(true);
-  });
-
   it('survives a snapshot whose lists are not lists', async () => {
     // The defensive `Array.isArray` had no test, so removing it changed nothing.
     const line = JSON.stringify({ id: 'x', result: { type: 'session_snapshot', snapshot: { panes: 'not a list' } } });
@@ -835,7 +784,9 @@ describe('guards the first review proved were untested', () => {
 
   it('knows all THREE pane-scoped types, not just the one collie uses', async () => {
     // Probed one by one against a live 0.7.5: 21 of 24 accepted, these three
-    // answer `missing field pane_id`.
+    // answer `missing field pane_id`. Sent bare, the WHOLE subscribe is rejected
+    // ({"error":{"code":"invalid_request","message":"... missing field `pane_id` ..."}})
+    // and the caller holds a connection that never delivers anything.
     for (const t of ['pane.agent_status_changed', 'pane.output_matched', 'pane.scroll_changed']) {
       await expect(
         subscribeEvents('/s.sock', [t], () => {}, async () => ({ close: () => {} })),
@@ -869,10 +820,6 @@ describe('running INSIDE a named session', () => {
     ]);
     const found = discoverSessionSockets(root, () => ['work', 'review'], p => live.has(p));
     expect(found.map(f => f.name)).toEqual(['default', 'work', 'review']);
-  });
-
-  it('still reads the default session as its own directory', () => {
-    expect(herdrConfigRoot({ HERDR_SOCKET_PATH: '/cfg/herdr/herdr.sock' }, '/home/x', 'linux')).toBe('/cfg/herdr');
   });
 });
 

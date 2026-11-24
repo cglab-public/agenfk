@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, cpSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, cpSync, readFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { defaultSelfExtract } from '../hub/upgradeSync';
@@ -89,6 +89,12 @@ describe('self-extract on a normal install root', () => {
 
   it('installs dependencies, which makes the recovery complete (BUG bbe794bc)', () => {
     expect(existsSync(path.join(root, '.npm-was-called'))).toBe(true);
+  });
+
+  // GH-281: replaces a regex over upgradeSync.ts's source. A full `npm ci` would
+  // pull devDependencies onto an install root; production-only is the contract.
+  it('installs production dependencies only: npm ci --omit=dev', () => {
+    expect(readFileSync(path.join(root, '.npm-was-called'), 'utf8').trim()).toMatch(/^ci\b.*--omit=dev\b/);
   });
 });
 

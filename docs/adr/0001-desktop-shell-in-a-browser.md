@@ -151,11 +151,6 @@ Nor does it cover the main process (server adoption, window chrome, menus),
 packaging or code signing. A sandboxed server has no hub, so screens that
 depend on one show it disconnected.
 
-`packages/ui/src/test/desktopInBrowserAdr.test.ts` keeps this document honest:
-it runs the init script above and requires the shell to switch on with the
-stub's own identity, and it fails when the preload grows a bridge this list
-does not name.
-
 ## Consequences
 
 - Most verification needs no packaged app and touches no real data: the

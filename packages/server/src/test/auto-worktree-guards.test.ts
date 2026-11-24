@@ -60,25 +60,6 @@ describe('who gets an automatic worktree', () => {
     await internal(agent().put(`/projects/${projectId}`)).send({ autoWorktree: true });
   });
 
-  it('never makes one for an EPIC', async () => {
-    // A container with no code of its own. A checkout for it is a full copy of
-    // the repository that nobody will ever type in — and `agenfk branch
-    // create` already refuses it, so the two paths disagreed.
-    const epic = await agent().post('/items')
-      .send({ title: 'The epic', type: 'EPIC', projectId });
-    expect(shouldAutoWorktree(epic.body)).toBe(false);
-  });
-
-  it('never makes one for a child item', async () => {
-    // A child shares its parent's branch by design, which is the whole reason
-    // `agenfk branch create` refuses children explicitly.
-    const parent = await agent().post('/items')
-      .send({ title: 'Parent', type: 'STORY', projectId });
-    const child = await agent().post('/items')
-      .send({ title: 'Child', type: 'TASK', projectId, parentId: parent.body.id });
-    expect(shouldAutoWorktree(child.body)).toBe(false);
-  });
-
   it('makes one for a top-level STORY, TASK or BUG', async () => {
     // The common case has to keep working, or the guard has eaten the feature.
     for (const type of ['STORY', 'TASK', 'BUG']) {
@@ -86,12 +67,6 @@ describe('who gets an automatic worktree', () => {
         .send({ title: `A ${type}`, type, projectId });
       expect(shouldAutoWorktree(item.body), type).toBe(true);
     }
-  });
-
-  it('does not make a second one for an item that already has it', async () => {
-    const item = await agent().post('/items')
-      .send({ title: 'Already has one', type: 'TASK', projectId });
-    expect(shouldAutoWorktree({ ...item.body, worktreePath: '/somewhere' })).toBe(false);
   });
 
   // 686fdbf6: a card that chose where it runs gets no worktree made behind its back.

@@ -12,7 +12,8 @@ import remarkGfm from 'remark-gfm';
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSocketEvent } from '../SocketContext';
-import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
+import { stripAnsi, calculateCycleTimeMs, formatDuration } from '../utils';
+import { UsageView } from './UsageView';
 import { api } from '../api';
 import { VerifyRunBadge, VerifyRunOutput } from './VerifyRunBadge';
 import { RunsPanel, type AgentRun } from './RunsPanel';
@@ -21,6 +22,7 @@ import { ItemTypePicker } from './ItemTypePicker';
 import { StepChecksPanel } from './StepChecksPanel';
 import { CheckHistoryTab } from './CheckHistoryTab';
 import { FlowAdherenceTab } from './FlowAdherenceTab';
+import { CardAirlockDecisions } from './CardAirlockDecisions';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -124,7 +126,6 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const totalTokens = item.tokenUsage?.reduce((acc, curr) => acc + curr.input + curr.output, 0) || 0;
   const subitems = allItems.filter(i => i.parentId === item.id && item.id);
   /* v8 ignore start */
   const parentItem = item.parentId ? allItems.find(i => i.id === item.parentId) : null;
@@ -142,7 +143,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     // CGLAB-565: review records (CGLAB-381) are server-written; the tab shows
     // only when the card actually carries one.
     { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, badge: item.reviewRecords?.length, hidden: isNew || !item.reviewRecords?.length },
-    { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: isNew || !item.tokenUsage?.length },
+    // GH-389: shown once the card has recorded usage (a step it left, or its close).
+    { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: isNew || !(item.usageByStep?.length || item.cardUsage) },
     { id: 'runs', label: 'Agent Runs', icon: <Zap size={14} />, badge: agentRuns.length, hidden: isNew || !agentRuns.length },
   ].filter(t => !t.hidden);
 
@@ -655,6 +657,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               </div>
               )}
 
+              {/* GH-294 TEL-2: this card's Airlock decisions; renders nothing when there are none. */}
+              {!isNew && <CardAirlockDecisions itemId={item.id} />}
+
               {/* Progress Comments Section — a log of what happened to a card
                   that has not happened yet is an empty box with a heading. */}
               {!isNew && (
@@ -976,31 +981,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
           {activeTab === 'checks' && <CheckHistoryTab itemId={item.id} />}
           {activeTab === 'adherence' && <FlowAdherenceTab itemId={item.id} />}
 
-          {activeTab === 'usage' && item.tokenUsage && (
+          {activeTab === 'usage' && (
             <div className="animate-in slide-in-from-bottom-2 duration-300">
-              <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest mb-3">Usage History</h4>
-              <div className="overflow-hidden rounded-xl border border-border-soft">
-                <table className="w-full text-sm text-left">
-                  <thead className="bg-canvas text-ink-secondary font-medium">
-                    <tr>
-                      <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase">Model</th>
-                      <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase">Input</th>
-                      <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase">Output</th>
-                      {pricesData && <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase">Cost</th>}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border-soft">
-                    {item.tokenUsage.map((u, i) => (
-                      <tr key={i} className="hover:bg-accent-fill transition-colors">
-                        <td className="px-4 py-3 font-mono text-xs text-accent-ink">{u.model}</td>
-                        <td className="px-4 py-3 text-ink-secondary">{u.input.toLocaleString()}</td>
-                        <td className="px-4 py-3 text-ink-secondary">{u.output.toLocaleString()}</td>
-                        {pricesData && <td className="px-4 py-3 text-ink-secondary">{formatCost(calculateCost([u], pricesData))}</td>}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <UsageView itemId={item.id} item={item} prices={pricesData} />
             </div>
           )}
           {activeTab === 'runs' && (

@@ -1,5 +1,5 @@
 import { DB } from '../db.js';
-import { effectiveIdentityPolicy } from './federation/forwarding.js';
+import { effectiveCodingFor } from './federation/identityCoding.js';
 
 /**
  * Child-hub developers' names on a federation parent (BUG 4159631f).
@@ -30,9 +30,9 @@ export function forwardedActorName(event: unknown): string | null {
 }
 
 /**
- * Record a forwarded person's name. Callers pass only rows whose identity policy
- * is `keep`: a pseudonymizing group's rows carry no name to record, and a row
- * that claims pseudonymize must not be trusted to have stripped one.
+ * Record a forwarded person's name. Callers pass only rows queued with the
+ * person as written: a row that coded the person carries no name to record,
+ * and must not be trusted to have stripped one.
  */
 export async function recordChildPerson(
   db: DB,
@@ -45,26 +45,21 @@ export async function recordChildPerson(
 
 /**
  * Whether the PARENT currently lets this child's people be named: its own
- * effective identity policy, not the label the child put on a row. A child
- * learns of a switch to pseudonymize only on its next heartbeat, and rows it
- * queued before then still say `keep`.
+ * effective coding of the person, not the label the child put on a row. A
+ * child learns of a switch to coded only on its next heartbeat, and rows it
+ * queued before then still say as written.
  */
 export async function parentAllowsNames(db: DB, orgId: string, childHubId: string): Promise<boolean> {
-  const group = await db.get<{ identity_policy: string | null }>(
-    'SELECT identity_policy FROM org_settings WHERE org_id = ?', [orgId],
-  );
-  const child = await db.get<{ identity_policy: string | null }>(
-    'SELECT identity_policy FROM child_hubs WHERE id = ? AND org_id = ?', [childHubId, orgId],
-  );
-  return effectiveIdentityPolicy(group?.identity_policy as any ?? null, child?.identity_policy as any ?? null) === 'keep';
+  return (await effectiveCodingFor(db, orgId, childHubId)).person === 'as-written';
 }
 
 export const CHILD_PEOPLE_MIGRATION = 'migration:child_people_names:v1';
 
 /**
  * One-time backfill from events forwarded before names were recorded. Their
- * policy was not stored, but a pseudonymized row has always carried a null
- * actor (redactIdentity), so a row with an actor name came from a keep group.
+ * coding was not stored, but a row with the person coded has always carried
+ * a null actor (redactIdentity), so a row with an actor name sent the person
+ * as written.
  * Paged on (occurred_at, event_id) so a large parent never holds its whole
  * history in memory.
  */
@@ -91,8 +86,6 @@ export async function migrateChildPeopleNames(db: DB): Promise<{ skipped: boolea
         try { event = JSON.parse(event); } catch { event = null; }
       }
       const occurredAt = r.occurred_at instanceof Date ? r.occurred_at.toISOString() : String(r.occurred_at);
-      // The same rule as live delivery: never a child the parent now
-      // pseudonymizes (recordChildPerson refuses pseudonym keys itself).
       const scope = `${r.org_id}\u0000${r.child_hub_id}`;
       if (!allowed.has(scope)) allowed.set(scope, await parentAllowsNames(db, r.org_id, r.child_hub_id));
       if (!allowed.get(scope)) continue;

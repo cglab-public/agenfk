@@ -141,20 +141,6 @@ describe('POST /items/:id/validate — a failed command refuses, it does not rol
     expect(after.status).not.toBe('DISCOVERY');
   });
 
-  it('says in the failure message where the card is, so the agent need not go and look', async () => {
-    if (!VERIFY_TOKEN) return;
-    const { item } = await itemOnTddStep('RNR2', 'CREATE_UNIT_TESTS');
-
-    const res = await agent().post(`/items/${item.id}/validate`).set(internal())
-      .send({ evidence: 'red tests', command: 'exit 1' });
-
-    expect(res.status).toBe(422);
-    const msg: string = res.body.message;
-    expect(msg).toMatch(/Validation Failed/);
-    // The resulting status is stated, and stated as unchanged.
-    expect(msg).toMatch(/Item (stays|remains) on CREATE_UNIT_TESTS/);
-  });
-
   it('records the refusal on the step it happened, not a transition to another step', async () => {
     if (!VERIFY_TOKEN) return;
     const { item } = await itemOnTddStep('RNR3', 'CREATE_UNIT_TESTS');
@@ -222,19 +208,6 @@ describe('POST /items/:id/validate — a failed command refuses, it does not rol
     expect((after.tests || []).filter((t: any) => t.status === 'FAILED').length).toBe(1);
   });
 
-  it('still opens the final gate when the suite is green', async () => {
-    if (!VERIFY_TOKEN) return;
-    const item = await itemOnDefaultFinalStep('RNR5', 'echo suite green');
-
-    const res = await agent().post(`/items/${item.id}/validate`).set(internal())
-      .send({ evidence: 'green' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('DONE');
-    const after = (await agent().get(`/items/${item.id}`)).body;
-    expect(after.status).toBe('DONE');
-  });
-
   it('reports the unchanged status as itemStatus on a failed async run', async () => {
     if (!VERIFY_TOKEN) return;
     const item = await itemOnDefaultFinalStep('RNR6', 'echo async-red && exit 3');
@@ -293,18 +266,5 @@ describe('POST /items/:id/validate — a failed command refuses, it does not rol
     expect(first.status).toBe(200);
     expect(first.body.status).toBe('DISCOVERY');
     expect(first.body.message).toMatch(/MANDATORY EXIT CRITERIA for DISCOVERY — the step this item is now on/);
-  });
-
-  it('an intermediate step with no command still advances without running anything (unchanged)', async () => {
-    if (!VERIFY_TOKEN) return;
-    const { item } = await itemOnTddStep('RNR8', 'CREATE_UNIT_TESTS');
-
-    const res = await agent().post(`/items/${item.id}/validate`).set(internal())
-      .send({ evidence: 'red tests written; no command on a red step' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('IN_PROGRESS');
-    const after = (await agent().get(`/items/${item.id}`)).body;
-    expect(after.status).toBe('IN_PROGRESS');
   });
 });

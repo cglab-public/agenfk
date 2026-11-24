@@ -22,6 +22,17 @@ export interface HubServerConfig {
   /** Most rows one audit CSV export carries (default 100000); set low by tests. */
   auditCsvMaxRows?: number;
   /**
+   * Largest verify-report LOG the hub keeps on a receipt, measured on the
+   * UNCOMPRESSED bytes, in bytes (default 32 MiB). Bigger than this the receipt
+   * is still stored, but with no report and not reusable — the hub would rather
+   * say "too big" than keep a log a reader would take for the whole thing. The
+   * client measures its own log against the same number before sending (and
+   * keeps the gzip that carries it under its own, smaller limit for the body),
+   * so an over-large log is omitted on the way rather than thrown away on
+   * arrival. Set low by tests.
+   */
+  receiptReportMaxBytes?: number;
+  /**
    * Express `trust proxy`: how many reverse proxies stand in front of the hub
    * (a hop count), or which addresses are proxies (a CIDR/`loopback` list).
    * Decides which X-Forwarded-For hop is the client, and so which bucket every
@@ -59,4 +70,8 @@ export interface SessionPayload {
   userId: string;
   orgId: string;
   role: 'admin' | 'viewer';
+  /** What carried the session: the board's cookie, or the admin CLI's bearer token (CGLAB-702). Not in the JWT. */
+  via?: 'board' | 'cli';
+  /** The admin CLI token's id, when `via` is 'cli'. */
+  cliTokenId?: string;
 }

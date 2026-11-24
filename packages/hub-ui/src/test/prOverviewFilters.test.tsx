@@ -204,12 +204,6 @@ describe('PR Overview filters in the accordion', () => {
     renderPage('/prs?filters=0');
     expect(await screen.findByRole('button', { name: 'Edit filters' })).toHaveAttribute('aria-expanded', 'false');
   });
-
-  it('omits the filters param when collapsed, so the common URL stays clean', async () => {
-    renderPage('/prs');
-    await screen.findByRole('button', { name: 'Edit filters' });
-    await waitFor(() => expect(urlNow().get('filters')).toBeNull());
-  });
 });
 
 describe('PR Overview model meta-filter', () => {

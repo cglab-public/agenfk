@@ -14,8 +14,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ProjectPage } from '../components/ProjectPage';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
+import { paintedTypes } from './helpers/typeGrammar';
 
-vi.mock('../api', () => ({ api: { projectSettings: vi.fn() } }));
+vi.mock('../api', () => ({ api: { projectSettings: vi.fn(), getNoCardUsage: vi.fn(), getPriceTable: vi.fn(async () => null) } }));
 
 afterEach(() => cleanup());
 
@@ -63,6 +64,84 @@ describe('the header', () => {
   });
 });
 
+/*
+ * GH-394: the turns an agent spent in this project with no card picked up -
+ * questions, setup, PR and release work - counted from this machine's own
+ * session logs, so the project's spend is not only what its cards show.
+ */
+describe('usage on no card', () => {
+  const zero = { turns: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0, unpricedTurns: 0 };
+  const noCard = vi.mocked(api.getNoCardUsage);
+  afterEach(() => noCard.mockReset());
+
+  it("shows the project's usage on no card, from this machine, with its split by type", async () => {
+    noCard.mockResolvedValue({
+      projectId: 'p1', days: 30,
+      total: { ...zero, turns: 12, input: 1_000_000, cacheRead: 150_000, cacheWrite: 40_000, output: 10_000 },
+      byModel: [], byDay: [],
+    } as never);
+    open();
+    const line = await screen.findByTestId('project-page-no-card');
+    expect(noCard).toHaveBeenCalledWith('p1', 30);
+    expect(line.textContent).toBe('1.2M tokens not on a card · 30 days');
+    expect(line.getAttribute('title')).toBe('12 turns not on a card in the last 30 days: input 1M · cache read 150k · cache write 40k · output 10k');
+  });
+
+  it('says the cost when a harness reported one', async () => {
+    noCard.mockResolvedValue({
+      projectId: 'p1', days: 30, total: { ...zero, turns: 2, input: 5_000, costUsd: 0.42 }, byModel: [], byDay: [],
+    } as never);
+    open();
+    expect((await screen.findByTestId('project-page-no-card')).textContent).toBe('5k tokens not on a card · $0.42 reported · 30 days');
+  });
+
+  it('GH-397: adds the cost AgEnFK estimated when the turns were used, marked est., the parts in the title', async () => {
+    noCard.mockResolvedValue({
+      projectId: 'p1', days: 30, total: { ...zero, turns: 3, input: 5_000, costUsd: 0.42, estimatedCostUsd: 1.2 },
+      byModel: [
+        { client: 'pi', model: 'qwen3.8', ...zero, turns: 1, costUsd: 0.42 },
+        { client: 'claude-code', model: 'claude-opus-5-5', ...zero, turns: 2, input: 5_000, estimatedCostUsd: 1.2 },
+      ],
+      byDay: [],
+    } as never);
+    open();
+    const line = await screen.findByTestId('project-page-no-card');
+    expect(line.textContent).toBe('5k tokens not on a card · $1.62 est. · 30 days');
+    expect(line.getAttribute('title')).toMatch(/\$0\.42 reported, \$1\.20 estimated when used/);
+  });
+
+  it("GH-397: older turns with neither cost are priced from the local server's table and said to be at today's prices", async () => {
+    vi.mocked(api.getPriceTable).mockResolvedValueOnce({ prices: [{ id: 'claude-opus-5-5', input: 10, output: 50 }], fetchedAt: new Date().toISOString() } as never);
+    const old = { ...zero, turns: 1, input: 1_000_000, unpricedTurns: 1 };
+    noCard.mockResolvedValue({
+      projectId: 'p1', days: 30, total: old, byModel: [{ client: 'claude-code', model: 'claude-opus-5-5', ...old }], byDay: [],
+    } as never);
+    open();
+    await waitFor(() => expect(screen.getByTestId('project-page-no-card').textContent)
+      .toBe("1M tokens not on a card · $10.00 est. · $10.00 at today's prices · 30 days"));
+  });
+
+  it('GH-397: a model with some turns priced and some older ones unpriced is named, not passed off as fully priced (review finding)', async () => {
+    const mixed = { ...zero, turns: 3, input: 5_000, unpricedTurns: 1, estimatedCostUsd: 2 };
+    noCard.mockResolvedValue({
+      projectId: 'p1', days: 30, total: mixed, byModel: [{ client: 'claude-code', model: 'claude-opus-5-5', ...mixed }], byDay: [],
+    } as never);
+    open();
+    expect((await screen.findByTestId('project-page-no-card')).textContent)
+      .toBe('5k tokens not on a card · $2.00 est. · not priced: claude-opus-5-5 · 30 days');
+  });
+
+  it('shows nothing when there was none', async () => {
+    const answered = vi.fn();
+    noCard.mockImplementation(async () => { answered(); return { projectId: 'p1', days: 30, total: zero, byModel: [], byDay: [] } as never; });
+    open();
+    await waitFor(() => expect(answered).toHaveBeenCalled());
+    // Let React Query hand the answer to the component before looking.
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.queryByTestId('project-page-no-card')).toBeNull();
+  });
+});
+
 describe('what is in flight', () => {
   it('lists the cards, nested the way the tree nests them', () => {
     open();
@@ -79,6 +158,13 @@ describe('what is in flight', () => {
   it('shows what kind of work each one is', () => {
     open();
     expect(screen.getByTestId('project-card-type-e1')).toBeDefined();
+  });
+
+  it("paints each card's square in its own type, from the grammar", () => {
+    open();
+    expect(paintedTypes(screen.getByTestId('project-card-type-e1'))).toEqual([ItemType.EPIC]);
+    expect(paintedTypes(screen.getByTestId('project-card-type-s1'))).toEqual([ItemType.STORY]);
+    expect(paintedTypes(screen.getByTestId('project-card-type-t1'))).toEqual([ItemType.TASK]);
   });
 
   it('counts what is there, as information rather than a third button', () => {
