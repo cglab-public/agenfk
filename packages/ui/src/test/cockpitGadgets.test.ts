@@ -42,6 +42,32 @@ describe('cockpit gadgets', () => {
       .toMatchObject({ text: 'cglab-stg', tone: 'warn' });
   });
 
+  it('shows a grey ? for AWS and kube when their source is unknown, never nothing and never a value', () => {
+    const got = cockpitGadgets({ envKnown: false, aws: null, k8s: null }, NOW, all);
+    expect(got).toEqual([
+      { id: 'aws', text: '?', tone: 'unknown', caveat: expect.any(String) },
+      { id: 'k8s', text: '?', tone: 'unknown', caveat: expect.any(String) },
+    ]);
+  });
+
+  it('keeps AWS and kube absent when the source is known and the value is empty', () => {
+    expect(cockpitGadgets({ envKnown: true, aws: null, k8s: null }, NOW, all)).toEqual([]);
+  });
+
+  it('shows ? for Terraform when the shell is not tracked, and nothing when tracked with no workspace', () => {
+    expect(cockpitGadgets({ tfKnown: false, tf: null }, NOW, all)).toEqual([{ id: 'tf', text: '?', tone: 'unknown', caveat: expect.any(String) }]);
+    expect(cockpitGadgets({ tfKnown: true, tf: null }, NOW, all)).toEqual([]);
+  });
+
+  it('lets the Settings toggles hide the unknown gadgets too', () => {
+    expect(cockpitGadgets({ envKnown: false, tfKnown: false }, NOW, { ...all, aws: false, k8s: false, tf: false })).toEqual([]);
+    expect(cockpitGadgets({ envKnown: false, tfKnown: false }, NOW, { ...all, aws: false }).map(g => g.id)).toEqual(['k8s', 'tf']);
+  });
+
+  it('prefers a value to the question mark when one is there', () => {
+    expect(cockpitGadgets({ envKnown: false, aws: { profile: 'cglab-stg', expires: null } }, NOW, all)[0]).toMatchObject({ text: 'cglab-stg' });
+  });
+
   it('treats prod and prd as words, not as letters inside product or reproduce', () => {
     expect(cockpitGadgets({ tf: 'product-catalog' }, NOW, all)[0].tone).toBe('normal');
     expect(cockpitGadgets({ k8s: 'reproduce-lab' }, NOW, all)[0].tone).toBe('normal');

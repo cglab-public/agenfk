@@ -17,11 +17,19 @@ export interface CockpitSnapshot {
    */
   readonly aws?: { profile: string; expires: string | null; source?: 'reported' | 'foreground' | 'shell' } | null;
   readonly k8s?: string | null;
+  /**
+   * false: where AWS and kube come from could not be established (no reporting
+   * shell, no /proc), so a missing value means "unknown", not "nothing set".
+   * Absent (an older snapshot) is read as known.
+   */
+  readonly envKnown?: boolean;
+  /** false: the shell's directory is not tracked, so Terraform's workspace is unknown. */
+  readonly tfKnown?: boolean;
   readonly usage?: { contextTokens: number | null; contextWindow: number | null; cost: number; costComplete: boolean } | null;
 }
 
 export type CockpitGadgetId = 'git' | 'aws' | 'k8s' | 'tf' | 'ctx' | 'cost';
-export type CockpitTone = 'normal' | 'warn' | 'danger';
+export type CockpitTone = 'normal' | 'warn' | 'danger' | 'unknown';
 
 export interface CockpitGadget {
   readonly id: CockpitGadgetId;
@@ -73,6 +81,10 @@ function shortDelta(seconds: number): string {
   return `${Math.max(0, Math.floor(seconds))}s`;
 }
 
+const UNKNOWN_ENV = "Not established: no shell is reporting it here. Nothing is shown as set, because it may be.";
+const UNKNOWN_TF = 'Not established: the shell\'s directory is not tracked, so the workspace may be set.';
+const unknown = (id: CockpitGadgetId, caveat: string): CockpitGadget => ({ id, text: '?', tone: 'unknown', caveat });
+
 const tokens = (n: number): string =>
   (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 
@@ -96,13 +108,14 @@ export function cockpitGadgets(snap: CockpitSnapshot, now: number, on: CockpitTo
     if (Number.isNaN(left)) out.push(g(profile, base));
     else if (left <= 0) out.push(g(`${profile} EXPIRED`, 'danger'));
     else out.push(g(`${profile} ↻${shortDelta(left)}`, left < 600 ? 'danger' : base));
-  }
+  } else if (on.aws && snap.envKnown === false) out.push(unknown('aws', UNKNOWN_ENV));
 
   if (on.k8s && snap.k8s) {
     out.push({ id: 'k8s', text: snap.k8s.replace(/^arn:aws:eks:[^:]+:\d+:cluster\//, ''), tone: PROD.test(snap.k8s) ? 'danger' : 'normal' });
-  }
+  } else if (on.k8s && snap.envKnown === false) out.push(unknown('k8s', UNKNOWN_ENV));
 
   if (on.tf && snap.tf) out.push({ id: 'tf', text: snap.tf, tone: PROD.test(snap.tf) ? 'danger' : 'normal' });
+  else if (on.tf && snap.tfKnown === false) out.push(unknown('tf', UNKNOWN_TF));
 
   const usage = snap.usage;
   if (on.ctx && usage && usage.contextTokens !== null) {

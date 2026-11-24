@@ -883,14 +883,14 @@ export function TerminalTab({
               <span
                 key={g.id}
                 data-testid={`cockpit-${g.id}`}
-                title={COCKPIT_LABELS[g.id]}
+                title={g.tone === 'unknown' ? `${COCKPIT_LABELS[g.id]}: ${g.caveat}` : COCKPIT_LABELS[g.id]}
                 className={clsx(
                   'truncate',
-                  g.tone === 'danger' ? 'text-status-danger-text' : g.tone === 'warn' ? 'text-status-warn-text' : 'text-ink-secondary',
+                  g.tone === 'danger' ? 'text-status-danger-text' : g.tone === 'warn' ? 'text-status-warn-text' : g.tone === 'unknown' ? 'text-ink-tertiary' : 'text-ink-secondary',
                 )}
               >
                 <span className="text-ink-tertiary">{COCKPIT_ICONS[g.id]} </span>{g.text}
-                {g.caveat && <span data-testid={`cockpit-${g.id}-caveat`} title={g.caveat} className="text-ink-tertiary"> ?</span>}
+                {g.caveat && g.tone !== 'unknown' && <span data-testid={`cockpit-${g.id}-caveat`} title={g.caveat} className="text-ink-tertiary"> ?</span>}
               </span>
             ))}
           </span>
