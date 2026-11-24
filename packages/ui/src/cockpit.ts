@@ -8,7 +8,7 @@
  */
 
 export interface CockpitSnapshot {
-  readonly git?: { branch: string; dirty: boolean; ahead: number; behind: number } | null;
+  readonly git?: { branch: string; dirty: boolean | null; ahead: number; behind: number } | null;
   readonly tf?: string | null;
   /**
    * `source` is where the profile was read: what the shell reported, the
@@ -82,7 +82,7 @@ export function cockpitGadgets(snap: CockpitSnapshot, now: number, on: CockpitTo
   if (on.git && snap.git) {
     const g = snap.git;
     const marks = [g.ahead ? `↑${g.ahead}` : '', g.behind ? `↓${g.behind}` : ''].filter(Boolean).join(' ');
-    out.push({ id: 'git', text: `${g.branch}${g.dirty ? '*' : ''}${marks ? ` ${marks}` : ''}`, tone: 'normal' });
+    out.push({ id: 'git', text: `${g.branch}${g.dirty === null ? '?' : g.dirty ? '*' : ''}${marks ? ` ${marks}` : ''}`, tone: 'normal' });
   }
 
   if (on.aws && snap.aws) {

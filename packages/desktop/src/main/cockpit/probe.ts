@@ -42,7 +42,8 @@ export const COCKPIT_PROBE_SCRIPT = [
   "[ \"$rkube\" = - ] && rkube=\"\"",
   "[ \"$rtfw\" = - ] && rtfw=\"\"",
   "[ \"$rtfd\" = - ] && rtfd=\"\"",
-  "printf \"cwd=%s\\n\" \"$(pwd -P)\"",
+  "start=$(pwd -P)",
+  "printf \"cwd=%s\\n\" \"$start\"",
   // The terminal's shell: the oldest process carrying its marker. Found first,
   // because where it stands decides which directory the git and Terraform
   // gadgets describe. Without /proc (macOS) or with no such process, it is not
@@ -76,9 +77,16 @@ export const COCKPIT_PROBE_SCRIPT = [
   "if [ \"$tracked\" = 1 ]; then",
   "  printf \"track=1\\n\"",
   "  if b=$(g symbolic-ref --short HEAD 2>/dev/null); then",
-  // status, not diff: an untracked file is a dirty tree too. No optional
-  // locks, so a probe never makes the person's own `git commit` wait.
-  "    if [ -n \"$(g status --porcelain --untracked-files=normal --ignore-submodules 2>/dev/null | head -n 1)\" ]; then d=1; else d=0; fi",
+  // status, not diff: an untracked file is a dirty tree too. But status runs the
+  // repository's clean/process filters on any file it must compare, and the
+  // shell may stand in a checkout nobody vetted: only the directory the terminal
+  // was opened on, or one inside it, is asked. Elsewhere dirty is '?' (unknown).
+  // Branch and ahead/behind run no filters, hooks or fsmonitor.
+  "    cur=$(pwd -P); base=${start%/}",
+  "    case \"$cur\" in",
+  "      \"$base\"|\"$base\"/*) if [ -n \"$(g status --porcelain --untracked-files=normal --ignore-submodules 2>/dev/null | head -n 1)\" ]; then d=1; else d=0; fi ;;",
+  "      *) d='?' ;;",
+  "    esac",
   "    ab=$(g rev-list --left-right --count \"@{u}...HEAD\" 2>/dev/null) || ab=\"\"",
   "    printf \"git=%s\\t%s\\t%s\\n\" \"$b\" \"$d\" \"$ab\"",
   "  fi",
@@ -127,7 +135,7 @@ export const COCKPIT_PROBE_SCRIPT = [
 export type AwsSource = 'reported' | 'foreground' | 'shell';
 
 export interface ProbeResult {
-  readonly git: { branch: string; dirty: boolean; ahead: number; behind: number } | null;
+  readonly git: { branch: string; /** null: not asked, because the directory is outside where the terminal was opened. */ dirty: boolean | null; ahead: number; behind: number } | null;
   readonly tf: string | null;
   readonly aws: { profile: string; expires: string | null; source?: AwsSource } | null;
   readonly k8s: string | null;
@@ -151,7 +159,7 @@ export function parseCockpitProbe(output: string): ProbeResult {
     const value = line.slice(eq + 1);
     if (key === 'git') {
       const [branch, dirty, behind, ahead] = value.split('\t');
-      if (branch) git = { branch, dirty: dirty === '1', ahead: Number(ahead) || 0, behind: Number(behind) || 0 };
+      if (branch) git = { branch, dirty: dirty === '?' ? null : dirty === '1', ahead: Number(ahead) || 0, behind: Number(behind) || 0 };
     } else if (key === 'tf') {
       tf = value.trim() || 'default';
     } else if (key === 'aws') {

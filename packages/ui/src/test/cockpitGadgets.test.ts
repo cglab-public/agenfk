@@ -15,6 +15,11 @@ describe('cockpit gadgets', () => {
     expect(g).toMatchObject({ id: 'git', text: 'main* ↑2 ↓1', tone: 'normal' });
   });
 
+  it('shows the branch with a question mark when the dirty state is unknown, never as clean', () => {
+    const [g] = cockpitGadgets({ git: { branch: 'main', dirty: null, ahead: 0, behind: 0 } }, NOW, all);
+    expect(g.text).toBe('main?');
+  });
+
   it('colours a prod AWS profile and counts down its session', () => {
     const [g] = cockpitGadgets({ aws: { profile: 'cglab-prod-ro', expires: '2026-10-08T13:30:00Z' } }, NOW, all);
     expect(g).toMatchObject({ id: 'aws', text: 'cglab-prod-ro ↻1h30m', tone: 'danger' });
