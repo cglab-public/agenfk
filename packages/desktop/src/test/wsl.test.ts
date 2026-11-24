@@ -350,6 +350,27 @@ describe('detecting agents when terminals run in WSL', () => {
     expect(got.get('pi')).toBe(true);
   });
 
+  it('keeps the Windows and the WSL answer apart', async () => {
+    __resetAgentDetectionCache();
+    const byId = new Map((await detectAgents(deps(['claude'], ['pi'], false))).map(a => [a.id, a.availability]));
+    expect(byId.get('claude-code')).toEqual({ windows: true, wsl: false });
+    expect(byId.get('pi')).toEqual({ windows: false, wsl: true });
+    expect(byId.get('codex')).toEqual({ windows: false, wsl: false });
+  });
+
+  it('answers for WSL on both sides once every terminal runs there', async () => {
+    __resetAgentDetectionCache();
+    const byId = new Map((await detectAgents(deps(['claude'], ['pi'], true))).map(a => [a.id, a.availability]));
+    expect(byId.get('claude-code')).toEqual({ windows: false, wsl: false });
+    expect(byId.get('pi')).toEqual({ windows: true, wsl: true });
+  });
+
+  it('reports WSL as not probed when the distro cannot be asked', async () => {
+    __resetAgentDetectionCache();
+    const got = await detectAgents({ ...deps(['claude'], [], false), inWsl: async () => null });
+    expect(got.find(a => a.id === 'claude-code')?.availability).toEqual({ windows: true, wsl: null });
+  });
+
   it('falls back to Windows alone when the distro cannot be asked', async () => {
     __resetAgentDetectionCache();
     const got = new Map((await detectAgents({ ...deps(['claude'], [], false), inWsl: async () => null })).map(a => [a.id, a.installed]));

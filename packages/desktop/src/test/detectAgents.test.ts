@@ -214,8 +214,14 @@ describe('the shape that actually crosses the IPC border', () => {
     const agents = await detectAgents({ which: whichFinding('claude'), loginPath: async () => null });
     for (const agent of agents) {
       expect(Object.keys(agent).sort(), `agent "${agent.id}" is missing a field the renderer is typed to receive`)
-        .toEqual(['id', 'installed', 'label', 'supportsAutoApprove']);
+        .toEqual(['availability', 'id', 'installed', 'label', 'supportsAutoApprove']);
     }
+  });
+
+  it('reports WSL as not probed off Windows, so the picker keeps its old answer', async () => {
+    const agents = await detectAgents({ which: whichFinding('claude'), loginPath: async () => null });
+    expect(agents.find(a => a.id === 'claude-code')?.availability).toEqual({ windows: true, wsl: null });
+    expect(agents.find(a => a.id === 'codex')?.availability).toEqual({ windows: false, wsl: null });
   });
 
   it('reports auto-approve support truthfully, not as a constant', async () => {

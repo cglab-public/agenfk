@@ -378,3 +378,42 @@ describe('checking again', () => {
     expect(within(menu).queryByRole('button', { name: /check again/i })).toBeNull();
   });
 });
+
+describe('availability per target (INFRA-425)', () => {
+  const SPLIT = [
+    { id: 'claude-code', label: 'Claude Code', installed: true, availability: { windows: true, wsl: true } },
+    { id: 'pi', label: 'Pi', installed: true, availability: { windows: false, wsl: true } },
+    { id: 'codex', label: 'Codex', installed: true, availability: { windows: true, wsl: false } },
+  ];
+  const optionFor = async (directory: string | undefined, name: RegExp) => {
+    renderPicker({ listAgents: async () => SPLIT, directory });
+    const menu = await openMenu();
+    return within(menu).getByRole('option', { name });
+  };
+
+  it('treats a WSL-only agent as unavailable for a Windows project', async () => {
+    expect((await optionFor('C:\\work\\repo', /^Pi/)).getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('treats a WSL-only agent as available for a Linux project', async () => {
+    expect((await optionFor('/home/me/repo', /^Pi/)).getAttribute('aria-disabled')).toBe('false');
+  });
+
+  it('treats a Windows-only agent as unavailable for a Linux project', async () => {
+    expect((await optionFor('/home/me/repo', /^Codex/)).getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('with no directory, offers only agents both sides have and labels the rest', async () => {
+    const pi = await optionFor(undefined, /^Pi/);
+    expect(pi.getAttribute('aria-disabled')).toBe('true');
+    expect(pi.textContent).toMatch(/WSL only/);
+    expect(screen.getByRole('option', { name: /^Codex/ }).textContent).toMatch(/Windows only/);
+    expect(screen.getByRole('option', { name: /^Claude Code/ }).getAttribute('aria-disabled')).toBe('false');
+  });
+
+  it('is unchanged where WSL was not probed', async () => {
+    renderPicker({ listAgents: async () => [{ id: 'claude-code', label: 'Claude Code', installed: true, availability: { windows: true, wsl: null } }], directory: '/home/me/repo' });
+    const menu = await openMenu();
+    expect(within(menu).getByRole('option', { name: /^Claude Code/ }).getAttribute('aria-disabled')).toBe('false');
+  });
+});

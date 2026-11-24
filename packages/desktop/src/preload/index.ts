@@ -17,6 +17,8 @@ export interface AgentInfo {
   readonly id: string;
   readonly label: string;
   readonly installed: boolean;
+  /** Per-target answer on Windows with WSL; `wsl` null = not probed. */
+  readonly availability?: { readonly windows: boolean; readonly wsl: boolean | null };
   /** Whether this agent has a flag to skip its own permission prompts. */
   readonly supportsAutoApprove: boolean;
 }

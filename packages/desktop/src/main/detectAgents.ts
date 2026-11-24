@@ -26,10 +26,22 @@ import { captureLoginPath, mergePath, pathKeyOf } from './ptyEnv.js';
 import { LOGIN_PATH_MEMO_MS } from './loginPathCache.js';
 import { platform } from './platform.js';
 
+/**
+ * Where an agent is installed, per target a terminal can run in (INFRA-425).
+ * `wsl` is null where it was not probed (off Windows, or the distro could not
+ * be asked), and the picker then falls back to `installed`.
+ */
+export interface AgentAvailability {
+  readonly windows: boolean;
+  readonly wsl: boolean | null;
+}
+
 export interface DetectedAgent {
   readonly id: string;
   readonly label: string;
+  /** Installed anywhere a terminal may run; the answer off Windows and the one detection memoises on. */
   readonly installed: boolean;
+  readonly availability: AgentAvailability;
   /**
    * Whether this agent has a flag to skip its own permission prompts.
    *
@@ -229,14 +241,14 @@ async function detectOnce(deps: DetectDeps): Promise<DetectedAgent[]> {
   const ids = [...AGENT_IDS];
   // Once per detection, not once per agent: on a cold memo it is a login shell.
   const pathOverride = await probePath(deps);
-  const found = new Map<string, boolean>();
+  const found = new Map<string, AgentAvailability>();
   // One wsl.exe call for every agent, not one per agent: each is a VM round trip.
   const wsl = deps.inWsl
     ? await deps.inWsl(ids.filter(id => !ALWAYS_AVAILABLE.has(id)).map(id => resolveAgentCommand(id).file)).catch(() => null)
     : null;
   for (const id of ids) {
     if (ALWAYS_AVAILABLE.has(id)) {
-      found.set(id, true);
+      found.set(id, { windows: true, wsl: wsl ? true : null });
       continue;
     }
     // The EXECUTABLE, not the id. They are deliberately different — the id
@@ -246,9 +258,15 @@ async function detectOnce(deps: DetectDeps): Promise<DetectedAgent[]> {
     // command for something already installed.
     const file = resolveAgentCommand(id).file;
     const inLinux = wsl?.found.has(file) === true;
-    found.set(id, wsl?.exclusive
-      ? inLinux
-      : inLinux || Boolean(await lookUp(file, pathOverride, deps)));
+    if (wsl?.exclusive) {
+      // Every terminal runs in the distro, so Windows has no say.
+      found.set(id, { windows: inLinux, wsl: inLinux });
+      continue;
+    }
+    found.set(id, {
+      windows: Boolean(await lookUp(file, pathOverride, deps)),
+      wsl: wsl ? inLinux : null,
+    });
   }
 
   // The whole entry, not just the label: picking fields off one by one is how
@@ -258,7 +276,8 @@ async function detectOnce(deps: DetectDeps): Promise<DetectedAgent[]> {
     id,
     label: meta.get(id)?.label ?? id,
     supportsAutoApprove: meta.get(id)?.supportsAutoApprove === true,
-    installed: Boolean(found.get(id)),
+    installed: Boolean(found.get(id)?.windows || found.get(id)?.wsl),
+    availability: found.get(id) ?? { windows: false, wsl: null },
   }));
 
   // Whether this is worth remembering is decided by the caller above, which
