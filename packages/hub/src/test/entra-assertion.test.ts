@@ -7,6 +7,9 @@ import axios from 'axios';
 import { createHubApp } from '../server';
 import { encryptSecret } from '../crypto';
 import { _resetEntraDiscoveryCache } from '../auth/entra';
+import { _resetEntraExchangeStatus } from '../auth/entraAssertion';
+import { createPasswordUser } from '../auth/password';
+import { loginAs } from './helpers/loginAs';
 import { adminCanStillSignIn } from '../routes/admin';
 import { drainApp } from './helpers/drainApp';
 
@@ -21,7 +24,8 @@ vi.mock('@aws-sdk/client-sts', () => ({
 let mockClaims: any = {};
 vi.mock('jsonwebtoken', async (importOriginal) => {
   const actual = await importOriginal<typeof import('jsonwebtoken')>();
-  const verify = ((_t: any, _k: any, _o: any, cb: any) => cb(null, mockClaims)) as any;
+  // The id_token check passes a callback; the session cookie check is synchronous and keeps the real verify.
+  const verify = ((t: any, k: any, o: any, cb: any) => (typeof cb === 'function' ? cb(null, mockClaims) : (actual as any).verify(t, k, o))) as any;
   return { ...actual, verify, default: { ...(actual.default ?? actual), verify } };
 });
 vi.mock('jwks-rsa', () => ({
@@ -68,6 +72,7 @@ describe('Entra callback: client assertion from AWS STS', () => {
   beforeEach(async () => {
     cleanup();
     _resetEntraDiscoveryCache();
+    _resetEntraExchangeStatus();
     stsSend.mockReset();
     stsInputs.length = 0;
     delete process.env.AGENFK_HUB_ENTRA_ASSERTION;
@@ -226,6 +231,59 @@ describe('Entra callback: client assertion from AWS STS', () => {
     expect(JSON.stringify(entra.body)).not.toMatch(/Trace ID|Correlation ID|Timestamp/);
     expect(entra.body.error_codes).toEqual([7000222]);
     expect(logged.join('\n')).toContain('Trace ID: x');
+  });
+
+  it('STS answers without a token and no secret is stored: 502 STS unavailable, no Entra call', async () => {
+    process.env.AGENFK_HUB_ENTRA_ASSERTION = 'aws-sts';
+    await configure(false);
+    stsSend.mockResolvedValue({});
+    const r = await callback();
+    expect(r.status).toBe(502);
+    expect(r.body.detail).toBe('STS unavailable');
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  it('a discovery failure at /start returns a fixed phrase, and the axios text only reaches the log', async () => {
+    await configure(true);
+    (axios.get as any).mockRejectedValueOnce(new Error('getaddrinfo ENOTFOUND login.microsoftonline.com'));
+    const r = await supertest(server).get('/auth/entra/start').redirects(0);
+    expect(r.status).toBe(502);
+    expect(r.body).toEqual({ error: 'Entra discovery failed', detail: 'Entra discovery unavailable' });
+    expect(logged.join('\n')).toContain('ENOTFOUND');
+  });
+
+  it('Admin sign-in settings report assertion mode and a fallback to the secret, with its reason and count', async () => {
+    process.env.AGENFK_HUB_ENTRA_ASSERTION = 'aws-sts';
+    await configure(true);
+    await createPasswordUser(ctx.db, 'org', 'admin@acme.com', 'longenough1', 'admin');
+    const cookie = await loginAs(app, 'admin@acme.com', 'longenough1');
+    const read = async () => (await supertest(server).get('/v1/admin/auth-config').set('Cookie', cookie)).body.entra;
+
+    expect(await read()).toMatchObject({ assertionEnabled: true, lastExchange: null });
+
+    stsSend.mockRejectedValue(new Error('AccessDenied: not allowed to GetWebIdentityToken'));
+    postSpy.mockResolvedValueOnce({ data: { id_token: 'fake.jwt' } } as any);
+    expect((await callback()).status).toBe(302);
+    const afterFallback = await read();
+    expect(afterFallback.lastExchange).toMatchObject({ path: 'secret-fallback', fallbackReason: 'sts', fallbackCount: 1 });
+    expect(JSON.stringify(afterFallback)).not.toMatch(/AccessDenied/);
+
+    stsSend.mockReset();
+    stsSend.mockResolvedValue({ WebIdentityToken: ASSERTION });
+    postSpy.mockResolvedValueOnce({ data: { id_token: 'fake.jwt' } } as any);
+    expect((await callback()).status).toBe(302);
+    expect((await read()).lastExchange).toMatchObject({ path: 'assertion', fallbackCount: 1 });
+  });
+
+  it('without assertion mode the admin settings say so and record the secret path', async () => {
+    await configure(true);
+    postSpy.mockResolvedValueOnce({ data: { id_token: 'fake.jwt' } } as any);
+    expect((await callback()).status).toBe(302);
+    await createPasswordUser(ctx.db, 'org', 'admin@acme.com', 'longenough1', 'admin');
+    const cookie = await loginAs(app, 'admin@acme.com', 'longenough1');
+    const entra = (await supertest(server).get('/v1/admin/auth-config').set('Cookie', cookie)).body.entra;
+    expect(entra.assertionEnabled).toBe(false);
+    expect(entra.lastExchange).toMatchObject({ path: 'secret', fallbackCount: 0 });
   });
 
   it('secret mode: an expired-secret 401 surfaces AADSTS code instead of the bare status', async () => {

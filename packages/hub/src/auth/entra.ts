@@ -8,7 +8,7 @@ import { decryptSecret } from '../crypto.js';
 import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, verifyOAuthState } from './oauth.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
-import { CLIENT_ASSERTION_TYPE, StsAssertionError, describeEntraFailure, entraAssertionEnabled, getStsClientAssertion, EntraFailure } from './entraAssertion.js';
+import { CLIENT_ASSERTION_TYPE, StsAssertionError, describeEntraFailure, entraAssertionEnabled, getStsClientAssertion, EntraFailure, recordEntraExchange } from './entraAssertion.js';
 
 interface EntraCfg {
   entra_enabled: number;
@@ -82,7 +82,11 @@ export function entraRouter(ctx: HubServerContext): Router {
     }
     let disc;
     try { disc = await getDiscovery(cfg.entra_tenant_id); }
-    catch (e: any) { return res.status(502).json({ error: 'Entra discovery failed', detail: e?.message }); }
+    catch (e: any) {
+      // The axios text stays in the log; an unauthenticated caller gets a fixed phrase.
+      console.error(`[HUB] Entra discovery failed: ${e?.message ?? e}`);
+      return res.status(502).json({ error: 'Entra discovery failed', detail: 'Entra discovery unavailable' });
+    }
 
     const state = issueOAuthState(res);
     const url = new URL(disc.doc.authorization_endpoint);
@@ -124,6 +128,7 @@ export function entraRouter(ctx: HubServerContext): Router {
       let tokenResp;
       if (!entraAssertionEnabled()) {
         tokenResp = await exchange(secretCredential());
+        recordEntraExchange('secret');
       } else {
         // Federated credential first; the stored secret is the one retry, only
         // when the assertion could not be minted or Entra refused it as a client.
@@ -133,11 +138,12 @@ export function entraRouter(ctx: HubServerContext): Router {
           clientAssertion = await getStsClientAssertion();
         } catch (e: any) {
           if (!cfg.entra_client_secret_enc) throw e;
-          assertionFailure = { detail: `STS: ${describeEntraFailure(e).detail}` };
+          assertionFailure = { entraError: 'sts', detail: `STS: ${describeEntraFailure(e).detail}` };
         }
         if (clientAssertion) {
           try {
             tokenResp = await exchange({ client_assertion_type: CLIENT_ASSERTION_TYPE, client_assertion: clientAssertion });
+            recordEntraExchange('assertion');
             console.log('[HUB] Entra code exchange succeeded with the AWS STS client assertion.');
           } catch (e: any) {
             const failure = describeEntraFailure(e);
@@ -148,6 +154,7 @@ export function entraRouter(ctx: HubServerContext): Router {
         if (assertionFailure) {
           console.warn(`[HUB] Entra client assertion path failed (${assertionFailure.detail}); retrying once with the client secret.`);
           tokenResp = await exchange(secretCredential());
+          recordEntraExchange('secret-fallback', assertionFailure.entraError ?? 'unknown');
           console.log('[HUB] Entra code exchange succeeded with the client secret (assertion path failed).');
         }
       }

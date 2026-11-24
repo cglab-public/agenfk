@@ -51,7 +51,7 @@ import {
 } from '../services/flowRegistry.js';
 import { listRegistryPulls } from '../services/registryPulls.js';
 import { purgeRevokedJiraConnections } from '../services/jira.js';
-import { entraAssertionEnabled } from '../auth/entraAssertion.js';
+import { entraAssertionEnabled, entraExchangeStatus } from '../auth/entraAssertion.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -101,6 +101,9 @@ function publicAuthConfig(row: AuthConfigRow) {
       tenantId: row.entra_tenant_id ?? '',
       clientId: row.entra_client_id ?? '',
       clientSecretSet: !!row.entra_client_secret_enc,
+      // Set by the operator (AGENFK_HUB_ENTRA_ASSERTION), not by this form.
+      assertionEnabled: entraAssertionEnabled(),
+      lastExchange: entraExchangeStatus(),
     },
     emailAllowlist: row.email_allowlist ? JSON.parse(row.email_allowlist) : [],
   };

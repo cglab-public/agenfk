@@ -36,6 +36,38 @@ export async function getStsClientAssertion(): Promise<string> {
   return out.WebIdentityToken;
 }
 
+/** Which credential the last successful Entra code exchange used in this process. */
+export type EntraExchangePath = 'assertion' | 'secret-fallback' | 'secret';
+
+export interface EntraExchangeStatus {
+  path: EntraExchangePath;
+  at: string;
+  /** Why the assertion was given up on a fallback: 'sts' or Entra's OAuth error code. Never a description. */
+  fallbackReason?: string;
+  /** Sign-ins since this process started that fell back from the assertion to the secret. */
+  fallbackCount: number;
+}
+
+let lastExchange: EntraExchangeStatus | null = null;
+let fallbackCount = 0;
+
+/**
+ * Remembers how the last exchange signed in, so Admin → Sign-in can say the hub
+ * is on the client secret because the assertion fails, before that secret
+ * expires (INFRA-629). Per process: each hub task keeps its own.
+ */
+export function recordEntraExchange(path: EntraExchangePath, fallbackReason?: string): void {
+  if (path === 'secret-fallback') fallbackCount += 1;
+  lastExchange = { path, at: new Date().toISOString(), fallbackCount, ...(fallbackReason ? { fallbackReason } : {}) };
+}
+
+export function entraExchangeStatus(): EntraExchangeStatus | null {
+  return lastExchange ? { ...lastExchange, fallbackCount } : null;
+}
+
+/** Test hook. */
+export function _resetEntraExchangeStatus(): void { lastExchange = null; fallbackCount = 0; }
+
 /** The STS call failed. The message is for the server log only: an AccessDenied from STS names the account and role ARN. */
 export class StsAssertionError extends Error {}
 

@@ -13,7 +13,7 @@ import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AdminAuth } from '../pages/Admin';
-import { providerStatus } from '../pages/signInProviderStatus';
+import { providerStatus, entraRequires, noWorkingSignInMethod, entraFallbackWarning } from '../pages/signInProviderStatus';
 import { api } from '../api';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
@@ -99,5 +99,41 @@ describe('sign-in provider cards', () => {
     expect(within(entra).getByText('On · needs a client secret')).toBeInTheDocument();
     fireEvent.change(within(entra).getByPlaceholderText('client secret value'), { target: { value: 's3cret' } });
     expect(within(entra).getByText('On')).toBeInTheDocument();
+  });
+});
+
+describe('Entra with the AWS STS client assertion (AGENFK_HUB_ENTRA_ASSERTION=aws-sts)', () => {
+  const entra = { tenantId: 't', clientId: 'c', clientSecretSet: false };
+  const google = { clientId: '', clientSecretSet: false };
+
+  it('needs no client secret, so a secret-less Entra is a working sign-in method', () => {
+    expect(entraRequires(entra).map(r => r.label)).toContain('a client secret');
+    expect(entraRequires({ ...entra, assertionEnabled: true }).map(r => r.label)).toEqual(['a tenant ID', 'a client ID']);
+    const only = (e: typeof entra & { assertionEnabled?: boolean }) =>
+      noWorkingSignInMethod({ passwordEnabled: false, googleEnabled: false, entraEnabled: true, google, entra: e });
+    expect(only(entra)).toBe(true);
+    expect(only({ ...entra, assertionEnabled: true })).toBe(false);
+  });
+
+  it('warns only when the last sign-in fell back to the secret, naming why and how often', () => {
+    const at = '2026-11-24T16:00:00.000Z';
+    expect(entraFallbackWarning({ assertionEnabled: true, lastExchange: null })).toBeNull();
+    expect(entraFallbackWarning({ assertionEnabled: true, lastExchange: { path: 'assertion', at, fallbackCount: 2 } })).toBeNull();
+    expect(entraFallbackWarning({ assertionEnabled: false, lastExchange: { path: 'secret', at, fallbackCount: 0 } })).toBeNull();
+    expect(entraFallbackWarning({ assertionEnabled: true, lastExchange: { path: 'secret-fallback', at, fallbackReason: 'sts', fallbackCount: 3 } }))
+      .toMatch(/client secret: AWS STS did not issue a token\. 3 sign-in\(s\) fell back/);
+    expect(entraFallbackWarning({ assertionEnabled: true, lastExchange: { path: 'secret-fallback', at, fallbackReason: 'invalid_client', fallbackCount: 1 } }))
+      .toMatch(/Entra refused the assertion \(invalid_client\)/);
+  });
+
+  it('the card says On without a secret and shows the fallback warning', async () => {
+    config = { ...config, entraEnabled: true, entra: { ...entra, assertionEnabled: true,
+      lastExchange: { path: 'secret-fallback', at: '2026-11-24T16:00:00.000Z', fallbackReason: 'sts', fallbackCount: 1 } } };
+    mount();
+    await screen.findByRole('heading', { name: 'Microsoft Entra' });
+    const card_ = card('Microsoft Entra');
+    expect(await within(card_).findByText('On')).toBeInTheDocument();
+    expect(within(card_).getByRole('alert')).toHaveTextContent(/AWS STS did not issue a token/);
+    expect(within(card_).getByPlaceholderText('optional: fallback when the AWS STS assertion fails')).toBeInTheDocument();
   });
 });
