@@ -156,8 +156,9 @@ export class CockpitService {
       const parsed = parseCockpitProbe(out);
       if (parsed.cwd && !this.ended.has(marker)) this.physical.set(marker, parsed.cwd);
       // With no directory of its own the probe ran in $HOME, whose git and
-      // Terraform state belong to no pane the person is watching.
-      return ctx.cwd ? parsed : { ...parsed, git: null, tf: null };
+      // Terraform state belong to no pane the person is watching - unless the
+      // probe followed the shell to where it really is.
+      return ctx.cwd || parsed.tracked ? parsed : { ...parsed, git: null, tf: null };
     });
     const [probed, usage] = await Promise.all([
       probing,
@@ -200,8 +201,12 @@ export class CockpitService {
 
   private probeArgs(marker: string, ctx: CockpitContext): string[] {
     // '-' for empty: wsl.exe may drop an empty argument and shift the rest.
-    if (ctx.reported) return [marker, 'reported', ctx.reported.awsProfile || '-', ctx.reported.kubeconfig || '-'];
-    return [marker, ctx.tmux ? 'none' : 'scan', '-', '-'];
+    // '?' for a Terraform variable the shell did not report (an older snippet): not empty.
+    const tf = (v: string | undefined): string => (v === undefined ? '?' : v || '-');
+    if (ctx.reported) {
+      return [marker, 'reported', ctx.reported.awsProfile || '-', ctx.reported.kubeconfig || '-', tf(ctx.reported.tfWorkspace), tf(ctx.reported.tfDataDir)];
+    }
+    return [marker, ctx.tmux ? 'none' : 'scan', '-', '-', '?', '?'];
   }
 
   private async usage(marker: string, ctx: CockpitContext): Promise<UsageSnapshot | null> {
@@ -298,9 +303,9 @@ export class CockpitService {
   /**
    * The conversation's file: in the project directory each agent derives from
    * the working directory, by the id the terminal started it with. Claude's
-   * `--continue` may resume under ANOTHER id - the one it picked - so when the
-   * stored one is missing, the newest file there written since this terminal
-   * opened is the conversation.
+   * `--continue` may resume under ANOTHER id - the one it picked - so for a
+   * resumed terminal the conversation is the one file there written since this
+   * terminal opened, and unknown when that is not one file.
    */
   private async locate(
     kind: TranscriptKind, ctx: CockpitContext, home: string, physical: string | null,
@@ -318,21 +323,35 @@ export class CockpitService {
       let files: string[];
       try { files = (await this.deps.fs.readdir(dir)).filter(f => f.endsWith('.jsonl')); } catch { continue; }
       const exact = files.find(f => (kind === 'claude' ? f === `${id}.jsonl` : f.endsWith(`_${id}.jsonl`)));
-      if (exact) return { path: `${dir}${sep}${exact}`, provisional: false };
       /*
-       * Only a RESUME may land under another id (--continue picks the
-       * directory's latest conversation); a fresh session writes its own id
-       * once the first exchange happens, and guessing before that would pin a
-       * neighbour's transcript in a shared checkout.
+       * A resumed Claude terminal is started with `--continue`, which picks the
+       * directory's latest conversation and does not take the stored id. The
+       * stored file is this terminal's only if it was written since the
+       * terminal opened; otherwise it is an older conversation, and the cost
+       * and context shown would be somebody else's.
        */
-      if (kind !== 'claude' || !ctx.resumed) continue;
-      let best: { path: string; mtime: number } | null = null;
+      const tied = kind !== 'claude' || !ctx.resumed;
+      if (exact && tied) return { path: `${dir}${sep}${exact}`, provisional: false };
+      if (exact) {
+        const { mtimeMs } = await this.deps.fs.stat(`${dir}${sep}${exact}`).catch(() => ({ mtimeMs: 0 }));
+        if (mtimeMs >= ctx.spawnedAt) return { path: `${dir}${sep}${exact}`, provisional: false };
+      }
+      /*
+       * Only a RESUME may land under another id; a fresh session writes its own
+       * id once the first exchange happens, and guessing before that would pin
+       * a neighbour's transcript in a shared checkout. Of the files written
+       * since the terminal opened, exactly one is the conversation; with two,
+       * either could be ours, and usage stays unknown.
+       */
+      if (!ctx.resumed || kind !== 'claude') continue;
+      const written: string[] = [];
       for (const f of files) {
         const path = `${dir}${sep}${f}`;
         const { mtimeMs } = await this.deps.fs.stat(path).catch(() => ({ mtimeMs: 0 }));
-        if (mtimeMs >= ctx.spawnedAt && (!best || mtimeMs > best.mtime)) best = { path, mtime: mtimeMs };
+        if (mtimeMs >= ctx.spawnedAt) written.push(path);
       }
-      if (best) return { path: best.path, provisional: true };
+      if (written.length === 1) return { path: written[0], provisional: true };
+      if (written.length > 1) return null;
     }
     return null;
   }

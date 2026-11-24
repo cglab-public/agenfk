@@ -155,19 +155,94 @@ describe('the probe, run for real under sh', () => {
     });
   const probe = (session: string, mode = 'scan', prof = '-', kube = '-') => parseCockpitProbe(run([session, mode, prof, kube]));
 
-  it.skipIf(process.platform === 'win32')('reads the branch and a dirty tree', () => {
+  /** A terminal's shell: the oldest process carrying the marker, standing in `where`. */
+  const shellIn = async (session: string, where: string, env: NodeJS.ProcessEnv = {}) => {
+    marked = spawn('/bin/sh', ['-c', 'sleep 30'], { cwd: where, env: { ...process.env, AGENFK_SESSION: session, ...env } });
+    await new Promise(r => setTimeout(r, 200));
+  };
+  const gitInit = (where: string, branch: string) => {
+    execFileSync('git', ['init', '-q', '-b', branch], { cwd: where });
+    fs.writeFileSync(path.join(where, 'a'), '1');
+    execFileSync('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', 'add', 'a'], { cwd: where });
+    execFileSync('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '-qm', 'a'], { cwd: where });
+  };
+
+  it.skipIf(process.platform !== 'linux')('reads the branch and a dirty tree', async () => {
+    await shellIn('sess-git', dir);
     execFileSync('git', ['init', '-q', '-b', 'feat/x'], { cwd: dir });
     fs.writeFileSync(path.join(dir, 'a'), '1');
     execFileSync('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', 'add', 'a'], { cwd: dir });
     execFileSync('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '-qm', 'a'], { cwd: dir });
     fs.writeFileSync(path.join(dir, 'a'), '2');
-    expect(probe('none').git).toMatchObject({ branch: 'feat/x', dirty: true });
+    expect(probe('sess-git').git).toMatchObject({ branch: 'feat/x', dirty: true });
   });
 
-  it.skipIf(process.platform === 'win32')('reads the Terraform workspace', () => {
+  it.skipIf(process.platform !== 'linux')('counts an untracked file as dirty, and a clean tree as clean', async () => {
+    await shellIn('sess-untracked', dir);
+    gitInit(dir, 'main');
+    expect(probe('sess-untracked').git).toMatchObject({ branch: 'main', dirty: false });
+    fs.writeFileSync(path.join(dir, 'new-file'), 'x');
+    expect(probe('sess-untracked').git).toMatchObject({ branch: 'main', dirty: true });
+  });
+
+  it.skipIf(process.platform !== 'linux')('follows the shell\'s current directory, not the one the terminal started in', async () => {
+    const sub = path.join(dir, 'sub');
+    fs.mkdirSync(sub);
+    gitInit(sub, 'in-sub');
+    await shellIn('sess-cd', sub);
+    const got = probe('sess-cd');
+    expect(got.git).toMatchObject({ branch: 'in-sub' });
+    // The start directory stays what agents name their project directories by.
+    expect(got.cwd).toBe(fs.realpathSync(dir));
+  });
+
+  it.skipIf(process.platform !== 'linux')('shows no git or Terraform when the shell\'s directory cannot be established', () => {
+    gitInit(dir, 'main');
     fs.mkdirSync(path.join(dir, '.terraform'));
     fs.writeFileSync(path.join(dir, '.terraform', 'environment'), 'stg\n');
-    expect(probe('none').tf).toBe('stg');
+    // No process carries the marker (a shell that exited, or a system with no /proc): the
+    // start directory may be where the shell no longer is.
+    const got = probe('nobody-has-this', 'reported');
+    expect(got.git).toBeNull();
+    expect(got.tf).toBeNull();
+  });
+
+  it.skipIf(process.platform !== 'linux')('reads the Terraform workspace', async () => {
+    await shellIn('sess-tf', dir);
+    fs.mkdirSync(path.join(dir, '.terraform'));
+    fs.writeFileSync(path.join(dir, '.terraform', 'environment'), 'stg\n');
+    expect(probe('sess-tf').tf).toBe('stg');
+  });
+
+  it.skipIf(process.platform !== 'linux')('lets TF_WORKSPACE win over the environment file, as Terraform does', async () => {
+    await shellIn('sess-tfw', dir, { TF_WORKSPACE: 'prod' });
+    fs.mkdirSync(path.join(dir, '.terraform'));
+    fs.writeFileSync(path.join(dir, '.terraform', 'environment'), 'stg\n');
+    expect(probe('sess-tfw').tf).toBe('prod');
+  });
+
+  it.skipIf(process.platform !== 'linux')('reads the environment file under TF_DATA_DIR', async () => {
+    await shellIn('sess-tfd', dir, { TF_DATA_DIR: path.join(dir, 'custom-data') });
+    fs.mkdirSync(path.join(dir, 'custom-data'));
+    fs.writeFileSync(path.join(dir, 'custom-data', 'environment'), 'qa\n');
+    fs.mkdirSync(path.join(dir, '.terraform'));
+    fs.writeFileSync(path.join(dir, '.terraform', 'environment'), 'stg\n');
+    expect(probe('sess-tfd').tf).toBe('qa');
+  });
+
+  it.skipIf(process.platform !== 'linux')('takes the TF_WORKSPACE the shell reported, which sees an export typed at a prompt', async () => {
+    await shellIn('sess-tfr', dir, { TF_WORKSPACE: 'stale-start-value' });
+    fs.mkdirSync(path.join(dir, '.terraform'));
+    fs.writeFileSync(path.join(dir, '.terraform', 'environment'), 'stg\n');
+    const reported = (tfw: string, tfd = '-') => parseCockpitProbe(run(['sess-tfr', 'reported', '-', '-', tfw, tfd]));
+    expect(reported('prod').tf).toBe('prod');
+    // Reported empty: the shell has no TF_WORKSPACE, so the file speaks.
+    expect(reported('-').tf).toBe('stg');
+  });
+
+  it.skipIf(process.platform !== 'linux')('refuses a workspace name that is not a word', async () => {
+    await shellIn('sess-tfx', dir);
+    expect(parseCockpitProbe(run(['sess-tfx', 'reported', '-', '-', 'a b;rm -rf ~', '-'])).tf).toBeNull();
   });
 
   it.skipIf(process.platform !== 'linux')('takes AWS_PROFILE from the terminal\'s own process found by its marker, and only that', async () => {
@@ -265,6 +340,38 @@ describe('a terminal\'s cockpit, joined', () => {
     fs.writeFileSync(path.join(projectDir(), 'picked.jsonl'), `${claudeLine('p1', { output_tokens: 500_000 })}\n`);
     const snap = await service(async () => '').snapshot('sess-c', ctx({ agentSessionId: 'never-written', spawnedAt: 5000, resumed: true }));
     expect(snap.usage?.cost).toBeCloseTo(10, 6);
+  });
+
+  it('does not trust the stored id of a RESUMED terminal when its file was not written since the terminal opened', async () => {
+    // `claude --continue` picks the directory's latest conversation, not the stored id: the
+    // stored file may be an older conversation, and the cost shown would be another one's.
+    fs.mkdirSync(projectDir(), { recursive: true });
+    const stored = path.join(projectDir(), 'conv-1.jsonl');
+    fs.writeFileSync(stored, `${claudeLine('s1', { output_tokens: 1_000_000 })}\n`);
+    fs.utimesSync(stored, new Date(1000), new Date(1000));
+    fs.writeFileSync(path.join(projectDir(), 'continued.jsonl'), `${claudeLine('c1', { output_tokens: 500_000 })}\n`);
+    const snap = await service(async () => '').snapshot('sess-r1', ctx({ resumed: true, spawnedAt: 5000 }));
+    expect(snap.usage?.cost).toBeCloseTo(10, 6);
+  });
+
+  it('shows usage as unknown for a resumed terminal when nothing tells its conversation apart', async () => {
+    fs.mkdirSync(projectDir(), { recursive: true });
+    const stored = path.join(projectDir(), 'conv-1.jsonl');
+    fs.writeFileSync(stored, `${claudeLine('s1', { output_tokens: 1_000_000 })}\n`);
+    fs.utimesSync(stored, new Date(1000), new Date(1000));
+    // Nothing written since the terminal opened: the stored file is somebody's old conversation.
+    expect((await service(async () => '').snapshot('sess-r2', ctx({ resumed: true, spawnedAt: 5000 }))).usage).toBeNull();
+    // Two written since: two conversations are live in the directory and either could be ours.
+    fs.writeFileSync(path.join(projectDir(), 'a.jsonl'), `${claudeLine('a1', { output_tokens: 1_000_000 })}\n`);
+    fs.writeFileSync(path.join(projectDir(), 'b.jsonl'), `${claudeLine('b1', { output_tokens: 500_000 })}\n`);
+    expect((await service(async () => '').snapshot('sess-r3', ctx({ resumed: true, spawnedAt: 5000 }))).usage).toBeNull();
+  });
+
+  it('trusts the stored id of a resumed terminal once its own file is written after the terminal opened', async () => {
+    fs.mkdirSync(projectDir(), { recursive: true });
+    fs.writeFileSync(path.join(projectDir(), 'conv-1.jsonl'), `${claudeLine('s1', { output_tokens: 1_000_000 })}\n`);
+    const snap = await service(async () => '').snapshot('sess-r4', ctx({ resumed: true, spawnedAt: 5000 }));
+    expect(snap.usage?.cost).toBeCloseTo(20, 6);
   });
 
   it('never guesses for a FRESH session, whose own file simply has not been written yet', async () => {
@@ -396,7 +503,16 @@ describe('a terminal\'s cockpit, joined', () => {
     await svc.snapshot('a', ctx({ agentId: 'shell', reported: { awsProfile: 'cglab-stg', kubeconfig: '/k' } }));
     await svc.snapshot('b', ctx({ agentId: 'shell', tmux: true }));
     await svc.snapshot('c', ctx({ agentId: 'shell' }));
-    expect(seen).toEqual([['a', 'reported', 'cglab-stg', '/k'], ['b', 'none', '-', '-'], ['c', 'scan', '-', '-']]);
+    expect(seen).toEqual([
+      ['a', 'reported', 'cglab-stg', '/k', '?', '?'], ['b', 'none', '-', '-', '?', '?'], ['c', 'scan', '-', '-', '?', '?'],
+    ]);
+  });
+
+  it('passes the Terraform variables the shell reported, "-" for empty and "?" for not reported', async () => {
+    const seen: Array<readonly string[]> = [];
+    const svc = service(async (_c, args) => { seen.push(args); return ''; });
+    await svc.snapshot('a', ctx({ agentId: 'shell', reported: { awsProfile: '', kubeconfig: '', tfWorkspace: 'prod', tfDataDir: '' } }));
+    expect(seen[0]).toEqual(['a', 'reported', '-', '-', 'prod', '-']);
   });
 
   it('shows no git or Terraform for a terminal with no directory of its own', async () => {
@@ -407,6 +523,12 @@ describe('a terminal\'s cockpit, joined', () => {
     expect(snap).toMatchObject({ git: null, tf: null, aws: { profile: 'cglab-stg' } });
     const owned = await service(async () => out).snapshot('o', ctx({ agentId: 'shell' }));
     expect(owned).toMatchObject({ git: { branch: 'main' }, tf: 'prod' });
+  });
+
+  it('shows the git of the directory the shell is in, even for a terminal that started in none', async () => {
+    const out = 'track=1\ngit=main\t1\t0\t0\ntf=prod\n';
+    const snap = await service(async () => out).snapshot('h2', ctx({ agentId: 'shell', cwd: null }));
+    expect(snap).toMatchObject({ git: { branch: 'main' }, tf: 'prod' });
   });
 
   it('marks the cost a lower bound when only the tail of a huge transcript was read', async () => {
@@ -504,6 +626,18 @@ describe('the shell reporting its own environment', () => {
     }
   });
 
+  it('carries TF_WORKSPACE and TF_DATA_DIR when the shell reports them, and says nothing of them when it does not', () => {
+    const r = new EnvReportReader('sess-1');
+    r.feed(`\x1b]1337;AgenfkEnv=SESSION=sess-1\x1fAWS_PROFILE=\x1fKUBECONFIG=\x1fTF_WORKSPACE=prod\x1fTF_DATA_DIR=/d\x07`);
+    expect(r.current()).toEqual({ awsProfile: '', kubeconfig: '', tfWorkspace: 'prod', tfDataDir: '/d' });
+    const old = new EnvReportReader('sess-1');
+    old.feed(report('cglab-stg', ''));
+    expect(old.current()).toEqual({ awsProfile: 'cglab-stg', kubeconfig: '' });
+    const bad = new EnvReportReader('sess-1');
+    bad.feed(`\x1b]1337;AgenfkEnv=SESSION=sess-1\x1fAWS_PROFILE=\x1fKUBECONFIG=\x1fTF_WORKSPACE=a b\x07`);
+    expect(bad.current()).toBeNull();
+  });
+
   it('is the same snippet Settings shows', () => {
     expect(UI_SNIPPET).toBe(ENV_REPORT_SNIPPET);
   });
@@ -514,7 +648,7 @@ describe('the shell reporting its own environment', () => {
     });
     const r = new EnvReportReader('sess-1');
     r.feed(out);
-    expect(r.current()).toEqual({ awsProfile: 'cglab-prod-ro', kubeconfig: '/k' });
+    expect(r.current()).toEqual({ awsProfile: 'cglab-prod-ro', kubeconfig: '/k', tfWorkspace: '', tfDataDir: '' });
   });
 });
 

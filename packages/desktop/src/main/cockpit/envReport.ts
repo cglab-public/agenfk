@@ -20,14 +20,14 @@
  *
  * (US is the unit separator, 0x1F; ST, ESC \, is accepted for BEL.) Read in
  * main, from the same stream the title reader taps, so the renderer never
- * handles it. Values are validated here: a profile is a word, a KUBECONFIG is
+ * handles it. Values are validated here: a profile or workspace is a word, a KUBECONFIG is
  * a path list with no control characters.
  */
 
 export const ENV_REPORT_SNIPPET = [
-  '# AgEnFK cockpit: report the AWS profile and KUBECONFIG at each prompt (exit status kept).',
+  '# AgEnFK cockpit: report the AWS profile, KUBECONFIG and Terraform workspace at each prompt (exit status kept).',
   'if [ "$TERM_PROGRAM" = agenfk ]; then',
-  "  __agenfk_env() { local s=$?; printf '\\033]1337;AgenfkEnv=SESSION=%s\\037AWS_PROFILE=%s\\037KUBECONFIG=%s\\007' \"${AGENFK_SESSION:-}\" \"${AWS_PROFILE:-}\" \"${KUBECONFIG:-}\"; return $s; }",
+  "  __agenfk_env() { local s=$?; printf '\\033]1337;AgenfkEnv=SESSION=%s\\037AWS_PROFILE=%s\\037KUBECONFIG=%s\\037TF_WORKSPACE=%s\\037TF_DATA_DIR=%s\\007' \"${AGENFK_SESSION:-}\" \"${AWS_PROFILE:-}\" \"${KUBECONFIG:-}\" \"${TF_WORKSPACE:-}\" \"${TF_DATA_DIR:-}\"; return $s; }",
   '  if [ -n "${ZSH_VERSION:-}" ]; then precmd_functions+=(__agenfk_env)',
   // A NEWLINE separates it from what is already there: valid after a command,
   // after a trailing `;` (PROMPT_COMMAND="history -a;") and after a newline,
@@ -40,6 +40,13 @@ export const ENV_REPORT_SNIPPET = [
 export interface EnvReport {
   readonly awsProfile: string;
   readonly kubeconfig: string;
+  /**
+   * Terraform's TF_WORKSPACE and TF_DATA_DIR. Absent when the shell's snippet
+   * predates them: "not reported" is not "empty", and the probe falls back to
+   * the shell's start environment for those.
+   */
+  readonly tfWorkspace?: string;
+  readonly tfDataDir?: string;
 }
 
 const START = '\x1b]1337;AgenfkEnv=';
@@ -96,7 +103,14 @@ export class EnvReportReader {
     if (fields.get('SESSION') !== this.session) return;
     const awsProfile = fields.get('AWS_PROFILE') ?? '';
     const kubeconfig = fields.get('KUBECONFIG') ?? '';
+    const tfWorkspace = fields.get('TF_WORKSPACE');
+    const tfDataDir = fields.get('TF_DATA_DIR');
     if (!PROFILE.test(awsProfile) || CONTROL.test(kubeconfig)) return;
-    this.latest = { awsProfile, kubeconfig };
+    if ((tfWorkspace !== undefined && !PROFILE.test(tfWorkspace)) || (tfDataDir !== undefined && CONTROL.test(tfDataDir))) return;
+    this.latest = {
+      awsProfile, kubeconfig,
+      ...(tfWorkspace !== undefined ? { tfWorkspace } : {}),
+      ...(tfDataDir !== undefined ? { tfDataDir } : {}),
+    };
   }
 }

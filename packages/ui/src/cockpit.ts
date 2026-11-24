@@ -50,9 +50,9 @@ const PROD = /(^|[^a-z])(prod(uction)?|prd)([^a-z]|$)/i;
  * from main; a desktop test asserts the two copies are identical.
  */
 export const ENV_REPORT_SNIPPET = [
-  '# AgEnFK cockpit: report the AWS profile and KUBECONFIG at each prompt (exit status kept).',
+  '# AgEnFK cockpit: report the AWS profile, KUBECONFIG and Terraform workspace at each prompt (exit status kept).',
   'if [ "$TERM_PROGRAM" = agenfk ]; then',
-  "  __agenfk_env() { local s=$?; printf '\\033]1337;AgenfkEnv=SESSION=%s\\037AWS_PROFILE=%s\\037KUBECONFIG=%s\\007' \"${AGENFK_SESSION:-}\" \"${AWS_PROFILE:-}\" \"${KUBECONFIG:-}\"; return $s; }",
+  "  __agenfk_env() { local s=$?; printf '\\033]1337;AgenfkEnv=SESSION=%s\\037AWS_PROFILE=%s\\037KUBECONFIG=%s\\037TF_WORKSPACE=%s\\037TF_DATA_DIR=%s\\007' \"${AGENFK_SESSION:-}\" \"${AWS_PROFILE:-}\" \"${KUBECONFIG:-}\" \"${TF_WORKSPACE:-}\" \"${TF_DATA_DIR:-}\"; return $s; }",
   '  if [ -n "${ZSH_VERSION:-}" ]; then precmd_functions+=(__agenfk_env)',
   // A NEWLINE separates it from what is already there: valid after a command,
   // after a trailing `;` (PROMPT_COMMAND="history -a;") and after a newline,

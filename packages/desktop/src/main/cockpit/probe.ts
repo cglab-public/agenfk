@@ -3,7 +3,7 @@
  * (INFRA-425).
  *
  * Run where the terminal runs (the local shell, or the WSL distro) with the
- * terminal's directory as cwd. A FIXED script: everything it is told arrives
+ * terminal's start directory as cwd. A FIXED script: everything it is told arrives
  * as positional arguments, and the only values that leave it are named below.
  *
  *   $1  the terminal's marker (AGENFK_SESSION)
@@ -19,6 +19,14 @@
  *       says. The terminal's shell is the oldest process carrying its marker;
  *       its tpgid names what runs in front.
  *   $3 $4  the reported values, '-' for empty (wsl.exe may drop an empty one)
+ *   $5 $6  the reported TF_WORKSPACE and TF_DATA_DIR, likewise; '?' when the
+ *          shell did not report them (a snippet from before they existed)
+ *
+ * Where the shell stands: git and Terraform describe the shell's CURRENT
+ * directory (/proc/<pid>/cwd), and are left out - unknown - when it cannot be
+ * read: no /proc (macOS), no process with the marker, a deleted directory.
+ * The same holds for AWS and kube by scan, which read only /proc: on macOS
+ * they are unknown too, and only a shell that reports shows them.
  *
  * Output, one line each: cwd (physical, as agents name their project
  * directories), git (branch, dirty, behind, ahead), tf, aws (profile, the
@@ -29,20 +37,18 @@
  */
 
 export const COCKPIT_PROBE_SCRIPT = [
-  "marker=$1; mode=$2; rprof=$3; rkube=$4",
+  "marker=$1; mode=$2; rprof=$3; rkube=$4; rtfw=$5; rtfd=$6",
   "[ \"$rprof\" = - ] && rprof=\"\"",
   "[ \"$rkube\" = - ] && rkube=\"\"",
+  "[ \"$rtfw\" = - ] && rtfw=\"\"",
+  "[ \"$rtfd\" = - ] && rtfd=\"\"",
   "printf \"cwd=%s\\n\" \"$(pwd -P)\"",
-  "if b=$(git symbolic-ref --short HEAD 2>/dev/null); then",
-  "  if git diff --quiet --ignore-submodules HEAD 2>/dev/null; then d=0; else d=1; fi",
-  "  ab=$(git rev-list --left-right --count \"@{u}...HEAD\" 2>/dev/null) || ab=\"\"",
-  "  printf \"git=%s\\t%s\\t%s\\n\" \"$b\" \"$d\" \"$ab\"",
-  "fi",
-  "[ -f .terraform/environment ] && printf \"tf=%s\\n\" \"$(head -n 1 .terraform/environment | tr -d \"\\r\")\"",
-  "prof=\"\"; kc=\"\"; src=\"\"; known=0",
-  "if [ \"$mode\" = reported ]; then prof=$rprof; kc=$rkube; src=reported; known=1; fi",
+  // The terminal's shell: the oldest process carrying its marker. Found first,
+  // because where it stands decides which directory the git and Terraform
+  // gadgets describe. Without /proc (macOS) or with no such process, it is not
+  // found, and nothing below is read from the environment of any process.
+  "shell=\"\"; fgp=\"\"",
   "if [ \"$mode\" != none ]; then",
-  "  shell=\"\"",
   "  for f in $(grep -lzxF \"AGENFK_SESSION=$marker\" /proc/[0-9]*/environ 2>/dev/null); do",
   "    p=${f#/proc/}; p=${p%/environ}",
   "    if [ -z \"$shell\" ] || [ \"$p\" -lt \"$shell\" ]; then shell=$p; fi",
@@ -50,18 +56,50 @@ export const COCKPIT_PROBE_SCRIPT = [
   "  if [ -n \"$shell\" ]; then",
   "    st=$(cat \"/proc/$shell/stat\" 2>/dev/null); st=${st##*) }",
   "    set -- $st; fg=$6",
-  "    use=\"\"",
-  "    if [ -n \"$fg\" ] && [ \"$fg\" -gt 0 ] 2>/dev/null && [ \"$fg\" != \"$shell\" ] && grep -qzxF \"AGENFK_SESSION=$marker\" \"/proc/$fg/environ\" 2>/dev/null; then",
-  "      use=$fg; src=foreground",
-  "    elif [ \"$mode\" = scan ]; then",
-  "      use=$shell; src=shell",
-  "    fi",
-  "    if [ -n \"$use\" ]; then",
-  "      prof=$(grep -zx \"AWS_PROFILE=.*\" \"/proc/$use/environ\" 2>/dev/null | tr \"\\000\" \"\\n\" | sed -n \"1s/^AWS_PROFILE=//p\")",
-  "      kc=$(grep -zx \"KUBECONFIG=.*\" \"/proc/$use/environ\" 2>/dev/null | tr \"\\000\" \"\\n\" | sed -n \"1s/^KUBECONFIG=//p\")",
-  "      known=1",
-  "    fi",
+  "    if [ -n \"$fg\" ] && [ \"$fg\" -gt 0 ] 2>/dev/null && [ \"$fg\" != \"$shell\" ] && grep -qzxF \"AGENFK_SESSION=$marker\" \"/proc/$fg/environ\" 2>/dev/null; then fgp=$fg; fi",
   "  fi",
+  "fi",
+  // One whole NAME= record of a process's environment, nothing else.
+  "getenv() { grep -zx \"$2=.*\" \"/proc/$1/environ\" 2>/dev/null | tr \"\\000\" \"\\n\" | sed -n \"1s/^$2=//p\"; }",
+  // The shell's CURRENT directory, not the one the terminal started in. Not
+  // established (no shell found, a deleted directory): git and Terraform stay
+  // unknown rather than describe a directory the shell may have left.
+  "tracked=0",
+  "if [ -n \"$shell\" ]; then",
+  "  t=$(readlink \"/proc/$shell/cwd\" 2>/dev/null)",
+  "  if [ -n \"$t\" ] && cd \"$t\" 2>/dev/null; then tracked=1; fi",
+  "fi",
+  "if [ \"$tracked\" = 1 ]; then",
+  "  printf \"track=1\\n\"",
+  "  if b=$(git symbolic-ref --short HEAD 2>/dev/null); then",
+  // status, not diff: an untracked file is a dirty tree too. No optional
+  // locks, so a probe never makes the person's own `git commit` wait.
+  "    if [ -n \"$(git --no-optional-locks status --porcelain --untracked-files=normal --ignore-submodules 2>/dev/null | head -n 1)\" ]; then d=1; else d=0; fi",
+  "    ab=$(git rev-list --left-right --count \"@{u}...HEAD\" 2>/dev/null) || ab=\"\"",
+  "    printf \"git=%s\\t%s\\t%s\\n\" \"$b\" \"$d\" \"$ab\"",
+  "  fi",
+  // Terraform's own order: TF_WORKSPACE, else the file under TF_DATA_DIR. The
+  // variables come from the same place as AWS_PROFILE: what the shell reported,
+  // else the start environment of the shell, and a command in front wins.
+  "  tfw=\"\"; tfd=\"\"; tfk=0",
+  "  if [ \"$mode\" = reported ] && [ \"$rtfw\" != '?' ]; then tfw=$rtfw; tfd=$rtfd; tfk=1",
+  "  elif [ \"$mode\" != none ]; then tfw=$(getenv \"$shell\" TF_WORKSPACE); tfd=$(getenv \"$shell\" TF_DATA_DIR); tfk=1; fi",
+  "  if [ -n \"$fgp\" ]; then tfw=$(getenv \"$fgp\" TF_WORKSPACE); tfd=$(getenv \"$fgp\" TF_DATA_DIR); tfk=1; fi",
+  "  case \"$tfw\" in *[!A-Za-z0-9._-]*) tfk=0 ;; esac",
+  "  if [ \"$tfk\" = 1 ]; then",
+  "    if [ -n \"$tfw\" ]; then printf \"tf=%s\\n\" \"$tfw\"",
+  "    elif [ -f \"${tfd:-.terraform}/environment\" ]; then printf \"tf=%s\\n\" \"$(head -n 1 \"${tfd:-.terraform}/environment\" | tr -d \"\\r\")\"; fi",
+  "  fi",
+  "fi",
+  "prof=\"\"; kc=\"\"; src=\"\"; known=0",
+  "if [ \"$mode\" = reported ]; then prof=$rprof; kc=$rkube; src=reported; known=1; fi",
+  "use=\"\"",
+  "if [ -n \"$fgp\" ]; then use=$fgp; src=foreground",
+  "elif [ \"$mode\" = scan ] && [ -n \"$shell\" ]; then use=$shell; src=shell; fi",
+  "if [ -n \"$use\" ]; then",
+  "  prof=$(getenv \"$use\" AWS_PROFILE)",
+  "  kc=$(getenv \"$use\" KUBECONFIG)",
+  "  known=1",
   "fi",
   "case \"$prof\" in *[!A-Za-z0-9._-]*) prof=\"\" ;; esac",
   "if [ -n \"$prof\" ]; then",
@@ -89,8 +127,10 @@ export interface ProbeResult {
   readonly tf: string | null;
   readonly aws: { profile: string; expires: string | null; source?: AwsSource } | null;
   readonly k8s: string | null;
-  /** The physical working directory, as the agents name their project directories. */
+  /** The physical directory the terminal STARTED in, as the agents name their project directories. */
   readonly cwd: string | null;
+  /** git and tf describe the shell's CURRENT directory; false when it could not be established. */
+  readonly tracked: boolean;
 }
 
 export function parseCockpitProbe(output: string): ProbeResult {
@@ -99,6 +139,7 @@ export function parseCockpitProbe(output: string): ProbeResult {
   let aws: ProbeResult['aws'] = null;
   let k8s: string | null = null;
   let cwd: string | null = null;
+  let tracked = false;
   for (const line of output.split(/\r?\n/)) {
     const eq = line.indexOf('=');
     if (eq <= 0) continue;
@@ -120,9 +161,11 @@ export function parseCockpitProbe(output: string): ProbeResult {
       }
     } else if (key === 'cwd') {
       cwd = value.trim() || null;
+    } else if (key === 'track') {
+      tracked = value.trim() === '1';
     } else if (key === 'k8s') {
       k8s = value.trim() || null;
     }
   }
-  return { git, tf, aws, k8s, cwd };
+  return { git, tf, aws, k8s, cwd, tracked };
 }
