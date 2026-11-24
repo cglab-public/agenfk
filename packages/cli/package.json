@@ -16,7 +16,7 @@
     "@agenfk/core": "2.1.0",
     "@agenfk/telemetry": "2.1.0",
     "axios": "^1.21.0",
-    "chalk": "^4.1.2",
+    "chalk": "^6.0.1",
     "commander": "^15.0.0",
     "inquirer": "^14.2.4",
     "node-forge": "^1.4.1",
