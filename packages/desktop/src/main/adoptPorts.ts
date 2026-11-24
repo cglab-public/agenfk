@@ -9,6 +9,8 @@
  * This separates PORTS only. A desktop and a server that share a home share
  * its database too, unless AGENFK_DB_PATH (or another home) says otherwise.
  */
+import * as fs from 'fs';
+import * as path from 'path';
 
 /** How many ports from the start are checked: a few stale listeners' worth. */
 export const ADOPT_RANGE_SIZE = 16;
@@ -67,25 +69,69 @@ export function adoptPortRange(env: Env, defaultPort: number): number[] {
 }
 
 /**
- * The port file, kept only when it names a port the desktop may adopt. For the
- * adopt step only: after the desktop starts its own server, the file is the
- * one way to learn where it bound, up to 100 ports above the requested one, so
- * that poll reads it unfiltered (resolveServer's readSpawnedPort).
+ * The port the server we forked bound, read from its startup line on stdout
+ * ("AgEnFK API Server running on 127.0.0.1:3187 (with WebSockets)"), or null
+ * for any other line.
  *
- * Unconfigured, it passes through: a server that bumped past the scanned range
- * is still found by its file. Configured, a file naming another port was
- * written by some other server in this home, possibly the one the user works
- * with, and is ignored.
+ * This is how the desktop learns where ITS server is. The shared port file
+ * cannot say: it may still name the server we declined to adopt until ours
+ * overwrites it, and the poll would open that one as our own.
  */
-export function portFileWithin(
-  readPort: () => number | null,
-  env: Env,
-  defaultPort: number,
-): () => number | null {
-  if (portSetting(env).kind === 'unset') return readPort;
-  const allowed = new Set(adoptPortRange(env, defaultPort));
-  return () => {
-    const port = readPort();
-    return port !== null && allowed.has(port) ? port : null;
-  };
+export function parseBoundPort(line: string): number | null {
+  const m = /AgEnFK API Server running on \S+:(\d+) \(with WebSockets\)/.exec(line);
+  if (!m) return null;
+  const port = Number.parseInt(m[1], 10);
+  return port >= 1 && port <= MAX_PORT ? port : null;
+}
+
+/** What stat said about a database file: its identity, absent, or failed some other way. */
+export type DbFileAnswer = { id: string } | 'missing' | 'error';
+export type DbFileId = (p: string) => Promise<DbFileAnswer>;
+
+export type DatabaseOwner = 'same' | 'different' | 'unknown';
+
+/**
+ * Does a server that reports `serverPath` hold the database the desktop would
+ * open at `appPath`?
+ *
+ * Only proof of a different file says "different"; every doubt says "unknown",
+ * because a wrong "different" forks a second server onto one SQLite file. A
+ * path this machine cannot open (a WSL path seen from Windows, a share) is
+ * proof: the desktop cannot open it either.
+ */
+export async function databaseOwner(
+  serverPath: string,
+  appPath: string,
+  platform: NodeJS.Platform,
+  fileId: DbFileId,
+): Promise<DatabaseOwner> {
+  const api = platform === 'win32' ? path.win32 : path.posix;
+  const fold = (p: string) => (platform === 'win32' || platform === 'darwin' ? p.toLowerCase() : p);
+  const local = platform === 'win32' ? /^[a-zA-Z]:[\\/]/.test(serverPath) : serverPath.startsWith('/');
+  if (!local) {
+    // On Windows a leading slash or a UNC prefix names another filesystem; a
+    // bare relative path names nothing we can resolve.
+    const foreign = platform === 'win32' && /^[\\/]/.test(serverPath);
+    return foreign ? 'different' : 'unknown';
+  }
+  if (!api.isAbsolute(appPath)) return 'unknown';
+  if (fold(api.normalize(serverPath)) === fold(api.normalize(appPath))) return 'same';
+
+  const [server, app] = await Promise.all([fileId(serverPath), fileId(appPath)]);
+  if (server === 'error' || app === 'error') return 'unknown';
+  if (server === 'missing' && app === 'missing') return 'unknown';
+  if (server === 'missing' || app === 'missing') return 'different';
+  return server.id === app.id ? 'same' : 'different';
+}
+
+/** stat, bounded: a mapped drive can hang for tens of seconds and boot waits on this. */
+export function statDbFile(ms = 2000): DbFileId {
+  return p => new Promise<DbFileAnswer>(resolve => {
+    const timer = setTimeout(() => resolve('error'), ms);
+    timer.unref?.();
+    fs.promises.stat(p).then(
+      s => { clearTimeout(timer); resolve({ id: `${s.dev}:${s.ino}` }); },
+      (e: NodeJS.ErrnoException) => { clearTimeout(timer); resolve(e?.code === 'ENOENT' ? 'missing' : 'error'); },
+    );
+  });
 }

@@ -14,12 +14,12 @@ import * as os from 'os';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
-import { adoptPortRange, invalidPortMessage, portFileWithin } from './adoptPorts.js';
+import { adoptPortRange, databaseOwner, invalidPortMessage, parseBoundPort, statDbFile } from './adoptPorts.js';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
 import { resolveDbPath, buildServerEnv } from './serverEnv.js';
-import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
+import { isAgenfkServer, readServerDbPath, servesUiBundle, httpGet } from './probes.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
 import { proposeDecomposition } from './propose.js';
@@ -119,6 +119,9 @@ let quitHandled = false;
 // RESOLVES. When it throws we have already forked a child, and keying shutdown
 // off `server` would skip the graceful stop on exactly the path that needs it.
 let weSpawnedTheServer = false;
+// The port the server WE forked reported on its stdout. The shared port file
+// cannot stand in for it: it may name the server we declined to adopt.
+let spawnedPort: number | null = null;
 
 /** How long to let the server finish its async shutdown before forcing quit. */
 const SHUTDOWN_GRACE_MS = 5000;
@@ -154,14 +157,25 @@ async function startServer(): Promise<void> {
   // Before the fork: the server runs tools like `gh` by name (BUG 474a8240).
   const freshPath = await loginPathWithin();
 
+  spawnedPort = null;
   serverChild = utilityProcess.fork(serverEntry, [], {
     // cwd is explicit because the server's own fallback derives the database
     // from it. Launched from Finder that would be "/" — see serverEnv.ts.
     cwd: path.dirname(serverEntry),
     // ea94c023: the server runs Airlock's exec helper with this app's Electron as Node.
     env: buildServerEnv(process.env, { uiDir, dbPath, freshPath, airlockExec: { cli: airlockExec, node: process.execPath } }),
-    stdio: 'inherit',
+    // Piped, not inherited, so the bound port can be read from the startup
+    // line. Both streams are forwarded: an unread pipe fills and stalls the child.
+    stdio: 'pipe',
   });
+  serverChild.stdout?.on('data', (chunk: Buffer) => {
+    process.stdout.write(chunk);
+    for (const line of chunk.toString('utf8').split('\n')) {
+      const port = parseBoundPort(line);
+      if (port !== null) spawnedPort = port;
+    }
+  });
+  serverChild.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
   console.log(`[DESKTOP] Starting AgEnFK server (db: ${dbPath})`);
 
   serverChild.on('exit', code => {
@@ -316,9 +330,17 @@ async function boot(): Promise<void> {
     const badPort = invalidPortMessage(process.env);
     if (badPort) throw new Error(badPort);
     server = await resolveServer({
-      readPort: portFileWithin(readServerPort, process.env, DEFAULT_API_PORT),
-      // Our own server may bind past the adopt range; its file is the answer.
-      readSpawnedPort: readServerPort,
+      // Unfiltered: a published server past the configured range may hold the
+      // database this app would open, and databaseOwner decides about it.
+      readPort: readServerPort,
+      // Our own server may bind past the adopt range, so ask the child.
+      readSpawnedPort: () => spawnedPort,
+      databaseOwner: async port => {
+        const reported = await readServerDbPath(port);
+        return reported === null
+          ? 'unknown'
+          : databaseOwner(reported, resolveDbPath(), runningOn, statDbFile());
+      },
       fallbackPorts: ADOPT_PORT_RANGE,
       // Identity, not just liveness: anything could be listening on 3000, and
       // adopting it would open a window on somebody else's application.

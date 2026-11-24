@@ -7,11 +7,14 @@
  * adopted it anyway: on Windows the WSL server on 3000 is forwarded to
  * localhost.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { adoptPortRange, invalidPortMessage, portFileWithin, portSetting } from '../main/adoptPorts.js';
+import {
+  adoptPortRange, databaseOwner, invalidPortMessage, parseBoundPort, portSetting,
+  type DbFileAnswer, type DbFileId,
+} from '../main/adoptPorts.js';
 import { buildServerEnv } from '../main/serverEnv.js';
 
 describe('portSetting', () => {
@@ -76,39 +79,75 @@ describe('adoptPortRange', () => {
   });
 });
 
-describe('portFileWithin', () => {
-  it('passes the port file through when nothing is configured', () => {
-    // Unconfigured, a server that bumped past 3015 is still found by its file.
-    const read = portFileWithin(() => 3040, {}, 3000);
-    expect(read()).toBe(3040);
+describe('parseBoundPort', () => {
+  // The line the server prints once it listens (server.ts, httpServer.listen).
+  it('reads the port from the server startup line', () => {
+    expect(parseBoundPort('AgEnFK API Server running on 127.0.0.1:3187 (with WebSockets)')).toBe(3187);
+    expect(parseBoundPort('AgEnFK API Server running on ::1:3100 (with WebSockets)')).toBe(3100);
   });
 
-  it('drops a port file that names a port outside the configured range', () => {
-    // The file in this home may have been written by the server the user works
-    // with; a build told to keep to 3100 must not adopt it through the file.
-    const read = portFileWithin(() => 3000, { AGENFK_PORT: '3100' }, 3000);
-    expect(read()).toBeNull();
+  it('ignores every other line, including the bump notice', () => {
+    expect(parseBoundPort('AgEnFK API Server: requested port 3100 was in use, bound to 3187 instead')).toBeNull();
+    expect(parseBoundPort('Client connected to WebSockets')).toBeNull();
+    expect(parseBoundPort('')).toBeNull();
   });
 
-  it('keeps a port file inside the configured range', () => {
-    const read = portFileWithin(() => 3103, { AGENFK_PORT: '3100' }, 3000);
-    expect(read()).toBe(3103);
+  it('rejects a port outside 1 to 65535', () => {
+    expect(parseBoundPort('AgEnFK API Server running on 127.0.0.1:0 (with WebSockets)')).toBeNull();
+    expect(parseBoundPort('AgEnFK API Server running on 127.0.0.1:70000 (with WebSockets)')).toBeNull();
+  });
+});
+
+describe('databaseOwner', () => {
+  const ids = (m: Record<string, DbFileAnswer>): DbFileId => async p => m[p] ?? 'missing';
+  const A = '/a/data.sqlite';
+  const B = '/b/data.sqlite';
+
+  it('is same for one spelling of the path, without touching the disk', async () => {
+    const fileId = vi.fn();
+    expect(await databaseOwner('/h/a/data.sqlite', '/h/a/./data.sqlite', 'linux', fileId)).toBe('same');
+    expect(fileId).not.toHaveBeenCalled();
   });
 
-  it('drops every port file when the setting is invalid', () => {
-    expect(portFileWithin(() => 3000, { AGENFK_PORT: 'abc' }, 3000)()).toBeNull();
+  it('is same for two paths that stat to one file, such as a symlink', async () => {
+    const owner = await databaseOwner('/link/data.sqlite', '/real/data.sqlite', 'linux',
+      ids({ '/link/data.sqlite': { id: '1:7' }, '/real/data.sqlite': { id: '1:7' } }));
+    expect(owner).toBe('same');
   });
 
-  it('keeps an absent port file absent', () => {
-    expect(portFileWithin(() => null, { AGENFK_PORT: '3100' }, 3000)()).toBeNull();
+  it('is different when both files exist and are not one file', async () => {
+    expect(await databaseOwner(A, B, 'linux', ids({ [A]: { id: '1:1' }, [B]: { id: '1:2' } }))).toBe('different');
   });
 
-  it('reads the file on every call, not once', () => {
-    let port: number | null = null;
-    const read = portFileWithin(() => port, { AGENFK_PORT: '3100' }, 3000);
-    expect(read()).toBeNull();
-    port = 3101;
-    expect(read()).toBe(3101);
+  it('is different when only one of the two files exists yet', async () => {
+    expect(await databaseOwner(A, B, 'linux', ids({ [A]: { id: '1:1' } }))).toBe('different');
+  });
+
+  it('is unknown, not different, for a relative server path', async () => {
+    expect(await databaseOwner('data/data.sqlite', B, 'linux', ids({}))).toBe('unknown');
+    expect(await databaseOwner('data.sqlite', 'C:\\b\\data.sqlite', 'win32', ids({}))).toBe('unknown');
+  });
+
+  it('is unknown when the desktop path is relative', async () => {
+    expect(await databaseOwner(A, 'data.sqlite', 'linux', ids({}))).toBe('unknown');
+  });
+
+  it('is unknown when stat fails for a reason other than a missing file', async () => {
+    expect(await databaseOwner(A, B, 'linux', ids({ [A]: 'error', [B]: { id: '1:2' } }))).toBe('unknown');
+  });
+
+  it('is unknown when neither file exists', async () => {
+    expect(await databaseOwner(A, B, 'linux', ids({}))).toBe('unknown');
+  });
+
+  it('is different for a WSL path seen from Windows, which the desktop cannot open', async () => {
+    expect(await databaseOwner('/home/u/.agenfk/data.sqlite', 'C:\\Users\\u\\data.sqlite', 'win32', ids({})))
+      .toBe('different');
+  });
+
+  it('ignores case on Windows', async () => {
+    expect(await databaseOwner('C:\\Users\\U\\data.sqlite', 'c:\\users\\u\\data.sqlite', 'win32', ids({})))
+      .toBe('same');
   });
 });
 
@@ -160,15 +199,17 @@ describe('the desktop main process', () => {
     expect(source).toMatch(/const ADOPT_PORT_RANGE = adoptPortRange\(process\.env, DEFAULT_API_PORT\)/);
   });
 
-  it('reads the port file through the configured range', () => {
+  it('reads the published port unfiltered and judges its database', () => {
     const call = source.slice(source.indexOf('resolveServer({'), source.indexOf('spawn: startServer'));
-    expect(call).toMatch(/readPort:\s*portFileWithin\(readServerPort, process\.env, DEFAULT_API_PORT\)/);
+    expect(call).toMatch(/readPort:\s*readServerPort\b/);
     expect(call).toMatch(/fallbackPorts:\s*ADOPT_PORT_RANGE/);
+    expect(call).toMatch(/databaseOwner:/);
   });
 
-  it('polls the port file unfiltered after it starts its own server', () => {
+  it('finds its own server through the port its child reports, never the shared file', () => {
     const call = source.slice(source.indexOf('resolveServer({'), source.indexOf('spawn: startServer'));
-    expect(call).toMatch(/readSpawnedPort:\s*readServerPort\b/);
+    expect(call).toMatch(/readSpawnedPort:\s*\(\)\s*=>\s*spawnedPort/);
+    expect(call).not.toMatch(/readSpawnedPort:\s*readServerPort/);
   });
 
   it('stops on an unreadable port setting before looking for a server', () => {

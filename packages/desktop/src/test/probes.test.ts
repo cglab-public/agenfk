@@ -9,7 +9,7 @@
  * cheerfully log that it adopted an AgEnFK server.
  */
 import { describe, it, expect } from 'vitest';
-import { isAgenfkServer, servesUiBundle, type HttpResponse } from '../main/probes.js';
+import { isAgenfkServer, readServerDbPath, servesUiBundle, type HttpResponse } from '../main/probes.js';
 
 /** Answers every path with the same response. Used by servesUiBundle tests. */
 const respond = (r: HttpResponse | null) => async () => r;
@@ -134,5 +134,20 @@ describe('isAgenfkServer — the banner check', () => {
         ? { status: 200, contentType: 'application/json', body: '{"version":"1.1.18"}' }
         : null;
     expect(await isAgenfkServer(3000, halfDead)).toBe(false);
+  });
+});
+
+describe('readServerDbPath', () => {
+  it('reads the database path the server reports', async () => {
+    const get = async (_p: number, path: string) => (path === '/db/status' ? json('{"dbPath":"/h/data.sqlite"}') : null);
+    expect(await readServerDbPath(3000, get)).toBe('/h/data.sqlite');
+  });
+
+  it('is null for an error status, bad JSON, a missing field and no answer', async () => {
+    expect(await readServerDbPath(3000, respond({ status: 500, contentType: 'application/json', body: '{}' }))).toBeNull();
+    expect(await readServerDbPath(3000, respond(json('not json')))).toBeNull();
+    expect(await readServerDbPath(3000, respond(json('{"dbType":"sqlite"}')))).toBeNull();
+    expect(await readServerDbPath(3000, respond(json('{"dbPath":""}')))).toBeNull();
+    expect(await readServerDbPath(3000, respond(null))).toBeNull();
   });
 });
