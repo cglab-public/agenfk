@@ -28,10 +28,14 @@ import * as path from 'path';
  * Through the person's OWN login shell, interactive, because that is where
  * ~/.local/bin, mise shims and nvm put agents on PATH: a bare `wsl.exe --exec
  * claude` sees the distro's default PATH and reports "not found" for an agent
- * used every day. bash and zsh read their rc files with `-lic`; any other shell
- * (fish, or none recorded) gets POSIX sh as a login shell, which reads
- * ~/.profile. `exec` so the agent replaces the shell: its exit code is the
- * terminal's, and no idle shell is left behind it.
+ * used every day. bash and zsh read their rc files with `-lic`; fish does too
+ * but has no `$0`/`$@`, so the same line is `exec $argv` (the arguments after
+ * `-c` are `$argv`, one word each, never re-parsed). Any other shell (nu,
+ * xonsh, or none recorded) gets POSIX sh as a login shell, which reads
+ * ~/.profile; if the agent is not found there, the terminal says that this
+ * shell is not supported rather than only "not found". `exec` so the agent
+ * replaces the shell: its exit code is the terminal's, and no idle shell is
+ * left behind it.
  *
  * Run by /bin/sh, which every distro has (Alpine ships no bash). Its own `$0`
  * is a label; the agent and its arguments follow it untouched.
@@ -45,7 +49,14 @@ export const WSL_LOGIN_EXEC = [
   'shell=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)',
   'case "${shell##*/}" in',
   '  bash|zsh) exec "$shell" -lic \'exec "$0" "$@"\' "$@" ;;',
-  '  *) exec /bin/sh -lc \'exec "$0" "$@"\' "$@" ;;',
+  '  fish) exec "$shell" -lic \'exec $argv\' "$@" ;;',
+  // Not exec'd, so the 127 of a missing agent can be explained. The agent's own
+  // exit code is passed through unchanged.
+  '  *) /bin/sh -lc \'exec "$0" "$@"\' "$@"; rc=$?',
+  '     if [ "$rc" = 127 ]; then',
+  '       printf \'agenfk: %s was not found. Your login shell (%s) is not supported here; agents are found through bash, zsh or fish.\\n\' "$1" "${shell##*/}" >&2',
+  '     fi',
+  '     exit "$rc" ;;',
   'esac',
 ].join('\n');
 
@@ -116,6 +127,12 @@ export function chooseWslTarget(opts: {
   running: readonly string[];
   preference: string;
   cwd: string;
+  /**
+   * Of the running distros, those that have `cwd`, when it was asked. A Linux
+   * path belongs to the distro whose filesystem it is in; the default distro
+   * is only a guess when none or several qualify.
+   */
+  holding?: readonly string[];
 }): WslTarget | null {
   if (!opts.onWindows) return null;
   const chosen = opts.preference && opts.distros.includes(opts.preference) ? opts.preference : null;
@@ -123,7 +140,8 @@ export function chooseWslTarget(opts: {
   if (!isLinuxPath(opts.cwd)) return null;
   // The server the Linux path came from runs in a distro; when exactly one is
   // up, that is it, and wsl.exe's default may be a different one.
-  return { distro: opts.running.length === 1 ? opts.running[0] : null };
+  if (opts.running.length === 1) return { distro: opts.running[0] };
+  return { distro: opts.holding?.length === 1 ? opts.holding[0] : null };
 }
 
 /**

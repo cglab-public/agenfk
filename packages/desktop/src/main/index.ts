@@ -44,7 +44,7 @@ import { makeLoginPathCache } from './loginPathCache.js';
 import { SOUND_EXTENSIONS } from './customSound.js';
 import { showAttentionNotice } from './attentionNotice.js';
 import { platform, runningOn } from './platform.js';
-import { chooseWslTarget, wslExecutable } from './wsl.js';
+import { isLinuxPath, wslExecutable } from './wsl.js';
 import { createWslProbe } from './wslProbe.js';
 
 /**
@@ -582,13 +582,11 @@ async function boot(): Promise<void> {
          * wherever a Linux path leaves no other way in. Read per spawn, so a
          * change in Settings applies to the next terminal without a restart.
          */
-        wslTarget: async ({ cwd }) => chooseWslTarget({
-          onWindows: runningOn === 'win32',
-          distros: runningOn === 'win32' ? await listWslDistros() : [],
-          running: runningOn === 'win32' ? await wslProbe.listRunning() : [],
-          preference: readPrefs(app.getPath('userData')).wslDistro,
-          cwd,
-        }),
+        wslTarget: async ({ cwd }) => (runningOn === 'win32'
+          ? wslProbe.targetFor(cwd, readPrefs(app.getPath('userData')).wslDistro)
+          : null),
+        // The terminal's own target, not the machine-wide "Installed" of the picker.
+        agentInWsl: (target, file) => wslProbe.agentIn(target, file),
         // The lookup that marks an agent Installed, so the picker and the
         // terminal cannot disagree about where it is (story 1b9d622e).
         locate: file => locateExecutable(file),
@@ -616,6 +614,10 @@ async function boot(): Promise<void> {
            * card's terminal on the user's current branch with no worktree.
            */
           isRepo: isGitCheckout,
+          // A /home/... root on Windows is asked of its distro, not of Windows.
+          foreignDir: dir => (runningOn === 'win32' && isLinuxPath(dir)
+            ? wslProbe.dirStateFor(dir, readPrefs(app.getPath('userData')).wslDistro)
+            : Promise.resolve(null)),
           exists: dir => existsSync(dir),
           hasCommits: hasAnyCommit,
           /*
@@ -879,6 +881,10 @@ async function boot(): Promise<void> {
            * card's terminal on the user's current branch with no worktree.
            */
           isRepo: isGitCheckout,
+          // A /home/... root on Windows is asked of its distro, not of Windows.
+          foreignDir: dir => (runningOn === 'win32' && isLinuxPath(dir)
+            ? wslProbe.dirStateFor(dir, readPrefs(app.getPath('userData')).wslDistro)
+            : Promise.resolve(null)),
           exists: dir => existsSync(dir),
           hasCommits: hasAnyCommit,
           /*

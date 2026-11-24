@@ -4,7 +4,29 @@
  * The process runner is injected, as detectAgents.ts injects `run`, so the
  * timeout, encoding and failure paths are tested without starting wsl.exe.
  */
-import { parseDistroList, parseProbe, wslLaunch, WSL_PROBE_SCRIPT } from './wsl.js';
+import { parseDistroList, parseProbe, wslLaunch, chooseWslTarget, isLinuxPath, WSL_PROBE_SCRIPT, type WslTarget } from './wsl.js';
+
+/** Exit 0 only when `$1` is a directory. */
+const WSL_DIR_EXISTS_SCRIPT = 'test -d "$1"';
+
+/**
+ * The same three questions the Windows side asks of a local directory, in one
+ * round trip. `git -C`, so nothing depends on a login shell's cwd.
+ */
+const WSL_DIR_STATE_SCRIPT = [
+  '[ -d "$1" ] || { echo missing; exit 0; }',
+  'echo exists',
+  'git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || exit 0',
+  'echo repo',
+  'git -C "$1" rev-parse --verify -q HEAD >/dev/null 2>&1 && echo commits',
+  'exit 0',
+].join('\n');
+
+export interface WslDirState {
+  exists: boolean;
+  isRepo: boolean;
+  hasCommits: boolean;
+}
 
 /** Runs a program; rejects on a non-zero exit, a timeout or a missing binary. */
 export type WslRun = (
@@ -102,5 +124,83 @@ export function createWslProbe(deps: {
     }
   }
 
-  return { listDistros, listRunning, agentsIn };
+  /**
+   * Which of these distros have this directory. For a Linux path with several
+   * distros running: it belongs to the filesystem it exists in, and the
+   * default distro is only a guess. The path is a positional argument of a
+   * fixed script, as everywhere in this file. Never starts a distro: callers
+   * pass running ones.
+   */
+  async function distrosHolding(dir: string, candidates: readonly string[]): Promise<string[]> {
+    const has = async (distro: string): Promise<boolean> => {
+      const probe = wslLaunch({
+        distro, cwd: null, exe: deps.exe,
+        command: { file: '/bin/sh', args: ['-c', WSL_DIR_EXISTS_SCRIPT, 'probe', dir] },
+      });
+      try {
+        await deps.run(probe.file, probe.args, { encoding: 'utf8', timeout: 5000, windowsHide: true, env });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const answers = await Promise.all(candidates.map(has));
+    return candidates.filter((_, i) => answers[i]);
+  }
+
+  /**
+   * What a Linux directory is, asked inside the distro. Windows cannot: its
+   * existsSync and git have no /home. Null when wsl.exe did not answer, which
+   * callers read as "do not guess".
+   */
+  async function dirState(dir: string, distro: string | null): Promise<WslDirState | null> {
+    const probe = wslLaunch({
+      distro, cwd: null, exe: deps.exe,
+      command: { file: '/bin/sh', args: ['-c', WSL_DIR_STATE_SCRIPT, 'probe', dir] },
+    });
+    try {
+      const out = await deps.run(probe.file, probe.args, { encoding: 'utf8', timeout: 15000, windowsHide: true, env });
+      const said = new Set(String(out).split(/\r?\n/).map(l => l.trim()));
+      return { exists: said.has('exists'), isRepo: said.has('repo'), hasCommits: said.has('commits') };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Where a terminal for `cwd` runs: chooseWslTarget with the lists it needs.
+   * The per-distro directory check is only paid when it can change the answer:
+   * a Linux path, no valid preference, and several distros running.
+   */
+  async function targetFor(cwd: string, preference: string): Promise<WslTarget | null> {
+    const distros = await listDistros();
+    const running = await listRunning();
+    const chosen = Boolean(preference) && distros.includes(preference);
+    const holding = !chosen && isLinuxPath(cwd) && running.length > 1
+      ? await distrosHolding(cwd, running)
+      : undefined;
+    return chooseWslTarget({ onWindows: true, distros, running, preference, cwd, holding });
+  }
+
+  /** Whether the distro a terminal would open in has the agent; null when unknown. */
+  async function agentIn(target: WslTarget, file: string): Promise<boolean | null> {
+    const probe = wslLaunch({
+      distro: target.distro, cwd: null, exe: deps.exe,
+      command: { file: '/bin/sh', args: ['-c', WSL_PROBE_SCRIPT, 'probe', file] },
+    });
+    try {
+      const out = await deps.run(probe.file, probe.args, { encoding: 'utf8', timeout: 15000, windowsHide: true, env });
+      return parseProbe(String(out), [file]).has(file);
+    } catch {
+      return null;
+    }
+  }
+
+  /** dirState in the distro a terminal for that directory would open in. */
+  async function dirStateFor(dir: string, preference: string): Promise<WslDirState | null> {
+    const target = await targetFor(dir, preference);
+    return target ? dirState(dir, target.distro) : null;
+  }
+
+  return { listDistros, listRunning, agentsIn, distrosHolding, dirState, targetFor, agentIn, dirStateFor };
 }

@@ -98,3 +98,40 @@ describe('finding agents in WSL', () => {
     expect(await make(run).agentsIn(files, 'Debian')).toEqual({ found: new Set(['codex']), exclusive: true });
   });
 });
+
+describe('review fixes: telling distros apart by the directory', () => {
+  it('names the running distros that have the directory', async () => {
+    const run = vi.fn(async (_f: string, args: readonly string[]) => {
+      if (args.includes('Debian')) throw new Error('exit 1');
+      return '';
+    }) as unknown as Run;
+    expect(await make(run).distrosHolding('/home/e/repo', ['Ubuntu', 'Debian'])).toEqual(['Ubuntu']);
+    const calls = (run as any).mock.calls as Array<[string, string[]]>;
+    // The directory travels as a positional argument, never spliced into the script.
+    expect(calls[0][1]).toEqual(expect.arrayContaining(['--distribution', 'Ubuntu', '/home/e/repo']));
+    expect(calls[0][1].join(' ')).not.toMatch(/-c .*\/home\/e\/repo.*agenfk-wsl/);
+  });
+});
+
+describe('review fixes: looking at a Linux directory from Windows', () => {
+  const state = (stdout: string | Error) => make(fake({ probe: stdout })).dirState('/home/e/repo', 'Ubuntu');
+
+  it('reads a repository with commits', async () => {
+    expect(await state('exists\nrepo\ncommits\n')).toEqual({ exists: true, isRepo: true, hasCommits: true });
+  });
+  it('reads an empty repository', async () => {
+    expect(await state('exists\nrepo\n')).toEqual({ exists: true, isRepo: true, hasCommits: false });
+  });
+  it('reads a folder with no git', async () => {
+    expect(await state('exists\n')).toEqual({ exists: true, isRepo: false, hasCommits: false });
+  });
+  it('reads a missing directory', async () => {
+    expect(await state('missing\n')).toEqual({ exists: false, isRepo: false, hasCommits: false });
+  });
+  it('says nothing when wsl.exe failed, so the caller keeps the server\'s refusal', async () => {
+    expect(await state(new Error('timed out'))).toBeNull();
+  });
+  it('ignores what an rc file printed', async () => {
+    expect(await state('Welcome\nexists\nrepo\ncommits\nrepo2\n')).toEqual({ exists: true, isRepo: true, hasCommits: true });
+  });
+});

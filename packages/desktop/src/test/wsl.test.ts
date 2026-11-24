@@ -31,7 +31,8 @@ import {
   WSL_LOGIN_EXEC,
   WSL_PROBE_SCRIPT,
 } from '../main/wsl';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { detectAgents, __resetAgentDetectionCache } from '../main/detectAgents';
@@ -212,8 +213,9 @@ describe('the wsl.exe command line', () => {
   it('starts the agent through the person\'s own login shell, replacing it', () => {
     expect(WSL_LOGIN_EXEC).toContain('getent passwd');
     expect(WSL_LOGIN_EXEC).toContain(`-lic 'exec "$0" "$@"'`);
-    // Any shell that is not bash or zsh gets POSIX sh, which reads ~/.profile.
-    expect(WSL_LOGIN_EXEC).toContain(`exec /bin/sh -lc 'exec "$0" "$@"'`);
+    // Any other shell gets POSIX sh, which reads ~/.profile. It is no longer
+    // exec'd (review fix): the 127 of a missing agent is explained afterwards.
+    expect(WSL_LOGIN_EXEC).toContain(`/bin/sh -lc 'exec "$0" "$@"'`);
   });
 });
 
@@ -411,6 +413,94 @@ describe('choosing the distro in Settings', () => {
     // installed would be passed to `wsl.exe --distribution`.
     for (const bad of ['Arch', '--help', 'Ubuntu; calc.exe', 7, null]) {
       await expect(handlers['prefs:set']({}, { key: 'wslDistro', value: bad })).rejects.toThrow(/wslDistro/);
+    }
+  });
+});
+
+describe('review fixes: which distro a Linux path belongs to', () => {
+  const base = { onWindows: true, distros: ['Ubuntu', 'Debian'], running: ['Ubuntu', 'Debian'], preference: '' };
+
+  it('uses the one running distro that has the directory, not the default', () => {
+    expect(chooseWslTarget({ ...base, holding: ['Ubuntu'], cwd: '/home/e/repo' })).toEqual({ distro: 'Ubuntu' });
+  });
+
+  it('falls back to the default when none, or several, running distros have it', () => {
+    expect(chooseWslTarget({ ...base, holding: [], cwd: '/home/e/repo' })).toEqual({ distro: null });
+    expect(chooseWslTarget({ ...base, holding: ['Ubuntu', 'Debian'], cwd: '/home/e/repo' })).toEqual({ distro: null });
+  });
+
+  it('lets a chosen distro win over what holds the directory', () => {
+    expect(chooseWslTarget({ ...base, holding: ['Ubuntu'], preference: 'Debian', cwd: '/home/e/repo' })).toEqual({ distro: 'Debian' });
+  });
+});
+
+describe('review fixes: the login shell script runs the person\'s shell, whatever it is', () => {
+  // The script runs for real under POSIX sh, with `getent` replaced by a stub
+  // that names a stub "shell" which prints the argv it was started with.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-wsl-shell-'));
+  const stubShell = (name: string) => {
+    const file = path.join(tmp, name);
+    fs.writeFileSync(file, '#!/bin/sh\nfor a in "$@"; do printf "%s|" "$a"; done\n', { mode: 0o755 });
+    return file;
+  };
+  const getent = (shellPath: string) => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'bin-'));
+    fs.writeFileSync(path.join(dir, 'getent'), `#!/bin/sh\necho "u:x:1:1::/home/u:${shellPath}"\n`, { mode: 0o755 });
+    return dir;
+  };
+  const run = (shellPath: string, args: string[]) => {
+    const r = spawnSync('/bin/sh', ['-c', WSL_LOGIN_EXEC, 'agenfk-wsl', ...args], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${getent(shellPath)}:${process.env.PATH}` },
+    });
+    return r;
+  };
+
+  it.skipIf(process.platform === 'win32')('starts fish with its own syntax, the agent and card text as separate arguments', () => {
+    const r = run(stubShell('fish'), ['claude', 'Fix `it` $(x); "y"']);
+    // fish has no `$0`/`$@`: the agent and its arguments are `$argv`.
+    expect(r.stdout).toBe('-lic|exec $argv|claude|Fix `it` $(x); "y"|');
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps bash and zsh on the positional form', () => {
+    expect(run(stubShell('zsh'), ['claude', 'a b']).stdout).toBe('-lic|exec "$0" "$@"|claude|a b|');
+  });
+
+  it.skipIf(process.platform === 'win32')('says so when the shell is one it cannot run an agent through and the agent is not found', () => {
+    const r = run(stubShell('nu'), ['agenfk-no-such-agent']);
+    expect(r.status).toBe(127);
+    expect(r.stderr).toContain('agenfk-no-such-agent');
+    expect(r.stderr).toMatch(/nu\b.*(not supported|unsupported)|(not supported|unsupported).*\bnu\b/);
+    expect(r.stderr).toMatch(/bash, zsh or fish/);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps the agent\'s own exit code for an unsupported shell when it IS found', () => {
+    expect(run(stubShell('nu'), ['sh', '-c', 'exit 3']).status).toBe(3);
+  });
+});
+
+describe('review fixes: an agent the target distro does not have', () => {
+  const spawn = vi.fn();
+  const registry = (inDistro: boolean | null) => new PtyRegistry({
+    spawn: spawn as never,
+    resolveCwd: async () => ({ cwd: '/home/e/repo', branchName: null }),
+    emit: () => {},
+    wslTarget: async () => ({ distro: 'Debian' }),
+    agentInWsl: async () => inDistro,
+  } as never);
+
+  it('refuses with a sentence naming the agent and the distro, instead of opening a dead terminal', async () => {
+    spawn.mockClear();
+    await expect(registry(false).spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 }))
+      .rejects.toThrow(/Claude Code.*Debian/s);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('opens when the distro has it, or when that could not be told', async () => {
+    for (const answer of [true, null]) {
+      spawn.mockClear();
+      spawn.mockReturnValue({ pid: 1, onData: () => {}, onExit: () => {}, write: () => {}, resize: () => {}, kill: () => {}, pause: () => {}, resume: () => {} });
+      await registry(answer).spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
+      expect(spawn).toHaveBeenCalledOnce();
     }
   });
 });

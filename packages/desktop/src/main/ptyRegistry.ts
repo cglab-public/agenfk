@@ -16,7 +16,7 @@
  * nor the reaping need real processes to test.
  */
 import { randomUUID } from 'crypto';
-import { resolveAgentCommand, canDictateSessionId, HERDR_AGENT_ID, SHELL_AGENT_ID, resolveShellCommand } from './agents.js';
+import { resolveAgentCommand, listAgents, canDictateSessionId, HERDR_AGENT_ID, SHELL_AGENT_ID, resolveShellCommand } from './agents.js';
 import { wslExecutable, wslLaunch, withWslEnv, type WslTarget } from './wsl.js';
 import { TitleReader, activityFromTitle } from './agentState.js';
 import { buildPtyEnv } from './ptyEnv.js';
@@ -103,6 +103,15 @@ export interface PtyRegistryDeps {
    * spawn exactly as it was, which is every platform but Windows.
    */
   readonly wslTarget?: (req: { cwd: string }) => Promise<WslTarget | null>;
+
+  /**
+   * Whether the target distro has this agent executable on its login PATH:
+   * true, false, or null when that could not be told (then the launch goes
+   * ahead, as before). The picker's "Installed" is one answer for the whole
+   * machine and a terminal runs in ONE place, so this is the check against the
+   * place it resolved to.
+   */
+  readonly agentInWsl?: (target: WslTarget, file: string) => Promise<boolean | null>;
 
   /** Sends a message to one window only. */
   readonly emit: (windowId: number, channel: string, payload: unknown) => void;
@@ -494,6 +503,15 @@ export class PtyRegistry {
      * wrong program even if there is one.
      */
     const wsl = this.deps.wslTarget ? await this.deps.wslTarget({ cwd }) : null;
+    if (wsl && !isShell && !attaching && !useTmux && req.agentId !== SHELL_AGENT_ID && this.deps.agentInWsl) {
+      if (await this.deps.agentInWsl(wsl, command.file).catch(() => null) === false) {
+        const label = listAgents().find(a => a.id === req.agentId)?.label ?? req.agentId;
+        throw new Error(
+          `${label} is not installed in ${wsl.distro ? `the WSL distro ${wsl.distro}` : 'the default WSL distro'}, `
+          + 'which is where this project opens. Install it there, or open the project from a Windows folder.',
+        );
+      }
+    }
     /*
      * A plain shell in WSL is the distro's own login shell, not the platform's
      * shell command (PowerShell) run inside it. The same for the Shell agent
