@@ -133,12 +133,15 @@ export function entraRouter(ctx: HubServerContext): Router {
         // Federated credential first; the stored secret is the one retry, only
         // when the assertion could not be minted or Entra refused it as a client.
         let assertionFailure: EntraFailure | undefined;
+        // Why the assertion was given up, for Admin → Sign-in: 'sts' or Entra's own OAuth error code.
+        let fallbackReason: string | undefined;
         let clientAssertion: string | undefined;
         try {
           clientAssertion = await getStsClientAssertion();
         } catch (e: any) {
           if (!cfg.entra_client_secret_enc) throw e;
-          assertionFailure = { entraError: 'sts', detail: `STS: ${describeEntraFailure(e).detail}` };
+          assertionFailure = { detail: `STS: ${describeEntraFailure(e).detail}` };
+          fallbackReason = 'sts';
         }
         if (clientAssertion) {
           try {
@@ -149,12 +152,13 @@ export function entraRouter(ctx: HubServerContext): Router {
             const failure = describeEntraFailure(e);
             if (failure.entraError !== 'invalid_client' || !cfg.entra_client_secret_enc) throw e;
             assertionFailure = failure;
+            fallbackReason = failure.entraError;
           }
         }
         if (assertionFailure) {
           console.warn(`[HUB] Entra client assertion path failed (${assertionFailure.detail}); retrying once with the client secret.`);
           tokenResp = await exchange(secretCredential());
-          recordEntraExchange('secret-fallback', assertionFailure.entraError ?? 'unknown');
+          recordEntraExchange('secret-fallback', fallbackReason ?? 'unknown');
           console.log('[HUB] Entra code exchange succeeded with the client secret (assertion path failed).');
         }
       }

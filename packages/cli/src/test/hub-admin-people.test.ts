@@ -189,7 +189,8 @@ describe('sign-in', () => {
       'hub', 'admin', 'sign-in', 'set', '--entra-tenant-id', 'tid', '--entra-client-id', 'ecid', '--entra-client-secret-stdin',
     ]));
     const cfg = (await board('get', '/v1/admin/auth-config')).body;
-    expect(cfg.entra).toEqual({ tenantId: 'tid', clientId: 'ecid', clientSecretSet: true });
+    // The hub also reports assertion mode and the last exchange path here; this test is about the stored client.
+    expect(cfg.entra).toMatchObject({ tenantId: 'tid', clientId: 'ecid', clientSecretSet: true });
   });
 
   it('refuses an empty secret on stdin, and changes nothing', async () => {
