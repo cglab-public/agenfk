@@ -10,7 +10,7 @@ import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
 import { Page, Toggle, RowMenu, CopyButton, Badge, LocalTime, QueryError, InlineError, buttonClass, cardClass, controlClass, useConfirm } from '../components/ui';
 import { inviteErrors } from './adminValidation';
-import { providerStatus, ProviderRequirement, noWorkingSignInMethod, googleRequires, entraRequires } from './signInProviderStatus';
+import { providerStatus, ProviderRequirement, noWorkingSignInMethod, googleRequires, entraRequires, entraFallbackWarning, EntraLastExchange } from './signInProviderStatus';
 import { userAccessLock, isLastActiveAdmin } from './userAccessLock';
 import { silentDays } from './installationStaleness';
 
@@ -79,7 +79,7 @@ export function AdminLayout() {
 interface AuthConfig {
   passwordEnabled: boolean; googleEnabled: boolean; entraEnabled: boolean;
   google: { clientId: string; clientSecretSet: boolean };
-  entra: { tenantId: string; clientId: string; clientSecretSet: boolean };
+  entra: { tenantId: string; clientId: string; clientSecretSet: boolean; assertionEnabled?: boolean; lastExchange?: EntraLastExchange | null };
   emailAllowlist: string[];
 }
 
@@ -157,6 +157,9 @@ export function AdminAuth() {
           </div>
           <Toggle label="Microsoft Entra sign-in" checked={c.entraEnabled} onChange={(v) => setDraft({ ...draft, entraEnabled: v })} />
         </header>
+        {c.entraEnabled && entraFallbackWarning(c.entra) && (
+          <p role="alert" className="mt-3 text-small text-status-warn-text">{entraFallbackWarning(c.entra)}</p>
+        )}
         {c.entraEnabled && (
         <div className="mt-4 grid sm:grid-cols-2 gap-3">
           <Field label="Tenant ID">
@@ -166,7 +169,7 @@ export function AdminAuth() {
             <input className={inputCls} placeholder="application (client) ID" value={c.entra.clientId} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, clientId: e.target.value } })} />
           </Field>
           <Field label="Client secret" className="sm:col-span-2">
-            <input className={inputCls} type="password" placeholder={c.entra.clientSecretSet ? '•••••• (leave blank to keep)' : 'client secret value'} value={c.entra.clientSecret ?? ''} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, clientSecret: e.target.value } })} />
+            <input className={inputCls} type="password" placeholder={c.entra.clientSecretSet ? '•••••• (leave blank to keep)' : c.entra.assertionEnabled ? 'optional: fallback when the AWS STS assertion fails' : 'client secret value'} value={c.entra.clientSecret ?? ''} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, clientSecret: e.target.value } })} />
           </Field>
         </div>
         )}

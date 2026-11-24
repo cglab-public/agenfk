@@ -8,6 +8,7 @@ import { decryptSecret } from '../crypto.js';
 import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, verifyOAuthState } from './oauth.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
+import { CLIENT_ASSERTION_TYPE, StsAssertionError, describeEntraFailure, entraAssertionEnabled, getStsClientAssertion, EntraFailure, recordEntraExchange } from './entraAssertion.js';
 
 interface EntraCfg {
   entra_enabled: number;
@@ -81,7 +82,11 @@ export function entraRouter(ctx: HubServerContext): Router {
     }
     let disc;
     try { disc = await getDiscovery(cfg.entra_tenant_id); }
-    catch (e: any) { return res.status(502).json({ error: 'Entra discovery failed', detail: e?.message }); }
+    catch (e: any) {
+      // The axios text stays in the log; an unauthenticated caller gets a fixed phrase.
+      console.error(`[HUB] Entra discovery failed: ${e?.message ?? e}`);
+      return res.status(502).json({ error: 'Entra discovery failed', detail: 'Entra discovery unavailable' });
+    }
 
     const state = issueOAuthState(res);
     const url = new URL(disc.doc.authorization_endpoint);
@@ -96,7 +101,8 @@ export function entraRouter(ctx: HubServerContext): Router {
 
   router.get('/callback', asyncRoute(async (req: Request, res: Response) => {
     const cfg = await readEntraConfig(ctx);
-    if (!cfg?.entra_enabled || !cfg.entra_tenant_id || !cfg.entra_client_id || !cfg.entra_client_secret_enc) {
+    if (!cfg?.entra_enabled || !cfg.entra_tenant_id || !cfg.entra_client_id
+      || (!cfg.entra_client_secret_enc && !entraAssertionEnabled())) {
       return res.status(404).json({ error: 'Entra sign-in is not enabled' });
     }
     if (!verifyOAuthState(req, req.query.state as string | undefined)) {
@@ -108,20 +114,70 @@ export function entraRouter(ctx: HubServerContext): Router {
     let claims: jwt.JwtPayload;
     try {
       const disc = await getDiscovery(cfg.entra_tenant_id);
-      const clientSecret = decryptSecret(cfg.entra_client_secret_enc, ctx.config.secretKey);
-      const tokenResp = await axios.post(disc.doc.token_endpoint, new URLSearchParams({
+      const redirectUri = callbackUrl(req);
+      const exchange = (credential: Record<string, string>) => axios.post(disc.doc.token_endpoint, new URLSearchParams({
         code,
-        client_id: cfg.entra_client_id,
-        client_secret: clientSecret,
-        redirect_uri: callbackUrl(req),
+        client_id: cfg.entra_client_id!,
+        ...credential,
+        redirect_uri: redirectUri,
         grant_type: 'authorization_code',
         scope: 'openid profile email',
       }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 10_000 });
-      const idToken = tokenResp.data.id_token as string | undefined;
+      const secretCredential = () => ({ client_secret: decryptSecret(cfg.entra_client_secret_enc!, ctx.config.secretKey) });
+
+      let tokenResp;
+      if (!entraAssertionEnabled()) {
+        tokenResp = await exchange(secretCredential());
+        recordEntraExchange('secret');
+      } else {
+        // Federated credential first; the stored secret is the one retry, only
+        // when the assertion could not be minted or Entra refused it as a client.
+        let assertionFailure: EntraFailure | undefined;
+        // Why the assertion was given up, for Admin → Sign-in: 'sts' or Entra's own OAuth error code.
+        let fallbackReason: string | undefined;
+        let clientAssertion: string | undefined;
+        try {
+          clientAssertion = await getStsClientAssertion();
+        } catch (e: any) {
+          if (!cfg.entra_client_secret_enc) throw e;
+          assertionFailure = { detail: `STS: ${describeEntraFailure(e).detail}` };
+          fallbackReason = 'sts';
+        }
+        if (clientAssertion) {
+          try {
+            tokenResp = await exchange({ client_assertion_type: CLIENT_ASSERTION_TYPE, client_assertion: clientAssertion });
+            recordEntraExchange('assertion');
+            console.log('[HUB] Entra code exchange succeeded with the AWS STS client assertion.');
+          } catch (e: any) {
+            const failure = describeEntraFailure(e);
+            if (failure.entraError !== 'invalid_client' || !cfg.entra_client_secret_enc) throw e;
+            assertionFailure = failure;
+            fallbackReason = failure.entraError;
+          }
+        }
+        if (assertionFailure) {
+          console.warn(`[HUB] Entra client assertion path failed (${assertionFailure.detail}); retrying once with the client secret.`);
+          tokenResp = await exchange(secretCredential());
+          recordEntraExchange('secret-fallback', fallbackReason ?? 'unknown');
+          console.log('[HUB] Entra code exchange succeeded with the client secret (assertion path failed).');
+        }
+      }
+      const idToken = tokenResp!.data.id_token as string | undefined;
       if (!idToken) return res.status(502).json({ error: 'Entra response missing id_token' });
       claims = await verifyIdToken(idToken, disc.jwks, cfg.entra_client_id, disc.doc.issuer);
     } catch (e: any) {
-      return res.status(502).json({ error: 'Entra OAuth exchange failed', detail: e?.message });
+      // Full text stays in the log; the caller is unauthenticated and gets
+      // codes only (Entra's description has Trace/Correlation IDs, STS's has the role ARN).
+      const failure = describeEntraFailure(e);
+      const fromSts = e instanceof StsAssertionError;
+      console.error(`[HUB] Entra OAuth exchange failed${fromSts ? ' (STS)' : ''}: ${failure.detail}`
+        + (failure.errorCodes?.length ? ` (error_codes: ${failure.errorCodes.join(',')})` : ''));
+      return res.status(502).json({
+        error: 'Entra OAuth exchange failed',
+        detail: fromSts ? 'STS unavailable' : failure.entraError ? 'Entra rejected the token request' : 'Entra sign-in failed',
+        ...(failure.entraError ? { entra_error: failure.entraError } : {}),
+        ...(failure.errorCodes?.length ? { error_codes: failure.errorCodes } : {}),
+      });
     }
 
     const subject = (claims.oid as string | undefined) || (claims.sub as string | undefined);
