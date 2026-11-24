@@ -19,9 +19,20 @@ describe('naming the project of each terminal', () => {
     expect(s.projectName).toBe('aws-org-infra');
   });
 
-  it('names a project terminal after its project', () => {
+  it('shows a project terminal under its project\'s name, not prefixed with it', () => {
+    // CONTRACT CHANGE (INFRA-425 review): a project terminal is always opened
+    // titled with its project's name, so the title follows the project instead
+    // of the header showing "agenfk / Shell 1".
     const [s] = withProjectNames([{ id: 's2', projectId: 'p2', title: 'Shell 1' }], itemProject, names);
-    expect(s.projectName).toBe('agenfk');
+    expect(s.title).toBe('agenfk');
+    expect(s.projectName).toBeUndefined();
+  });
+
+  it('follows a renamed project: no "new name / old name" header on a project terminal', () => {
+    const renamed = new Map([['p2', 'agenfk-core']]);
+    const [s] = withProjectNames([{ id: 's2c', projectId: 'p2', title: 'agenfk' }], itemProject, renamed);
+    expect(s.title).toBe('agenfk-core');
+    expect(s.projectName).toBeUndefined();
   });
 
   it('does not repeat the name of a project terminal already titled with it', () => {
