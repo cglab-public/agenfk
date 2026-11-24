@@ -16,7 +16,7 @@
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import React from 'react';
-import { AgentPicker, SEARCHABLE_AT } from '../components/AgentPicker';
+import { AgentPicker, SEARCHABLE_AT, type AgentInfo } from '../components/AgentPicker';
 
 // Both groups populated, because the grouping is what this file is about.
 const AGENTS = [
@@ -409,6 +409,19 @@ describe('availability per target (INFRA-425)', () => {
     expect(pi.textContent).toMatch(/WSL only/);
     expect(screen.getByRole('option', { name: /^Codex/ }).textContent).toMatch(/Windows only/);
     expect(screen.getByRole('option', { name: /^Claude Code/ }).textContent).not.toMatch(/only/);
+  });
+
+  it('says where a disabled agent is installed instead of "Not installed"', async () => {
+    const pi = await optionFor('C:\\work\\repo', /^Pi/);
+    expect(pi.textContent).toMatch(/WSL only/);
+    expect(pi.textContent).not.toMatch(/Install from|Not installed/);
+  });
+
+  it('treats an undefined WSL answer like an unprobed one', async () => {
+    const odd = { id: 'claude-code', label: 'Claude Code', installed: true, availability: { windows: true, wsl: undefined } } as unknown as AgentInfo;
+    renderPicker({ listAgents: async () => [odd], directory: '/home/me/repo' });
+    const menu = await openMenu();
+    expect(within(menu).getByRole('option', { name: /^Claude Code/ }).getAttribute('aria-disabled')).toBe('false');
   });
 
   it('is unchanged where WSL was not probed', async () => {

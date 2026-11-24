@@ -60,8 +60,15 @@ const isLinuxDir = (p: string): boolean => p.startsWith('/');
  */
 function reach(agent: AgentInfo, directory?: string): { ok: boolean; only?: 'WSL' | 'Windows' } {
   const a = agent.availability;
-  if (!a || a.wsl === null) return { ok: agent.installed };
-  if (directory) return { ok: isLinuxDir(directory) ? a.wsl : a.windows };
+  // `== null`: an older or hand-built payload may carry `wsl: undefined`.
+  if (!a || a.wsl == null) return { ok: agent.installed };
+  if (directory) {
+    const linux = isLinuxDir(directory);
+    const ok = linux ? a.wsl : a.windows;
+    // Installed on the other side is not "Not installed": say where it is.
+    const elsewhere = linux ? a.windows : a.wsl;
+    return ok || !elsewhere ? { ok } : { ok, only: linux ? 'Windows' : 'WSL' };
+  }
   if (a.windows && a.wsl) return { ok: true };
   // No project to say where it runs: stay selectable, as before, and hint where
   // it lives. The launch refuses a mismatch with its own message.
