@@ -95,24 +95,68 @@ const API_BANNER = 'AgEnFK Framework API is running';
  * means adopting a stranger's server and showing it in a chrome-less window.
  */
 export async function isAgenfkServer(port: number, get: HttpGet = httpGet): Promise<boolean> {
+  return (await agenfkVersion(port, get)) !== null;
+}
+
+/** The version an AgEnFK server reports, or null when the port is not one. */
+async function agenfkVersion(port: number, get: HttpGet): Promise<string | null> {
   const version = await get(port, '/version');
-  if (!version || version.status !== 200) return false;
-  if (!version.contentType.includes('json')) return false;
+  if (!version || version.status !== 200) return null;
+  if (!version.contentType.includes('json')) return null;
+  let reported: string;
   try {
     const parsed = JSON.parse(version.body);
     const looksRight = !!parsed
       && typeof parsed === 'object'
       && !Array.isArray(parsed)
       && typeof parsed.version === 'string';
-    if (!looksRight) return false;
+    if (!looksRight) return null;
+    reported = parsed.version;
   } catch {
-    return false;
+    return null;
   }
 
   // Second, specific signal. Sent without an Accept preference so the server
   // negotiates to JSON even when it is also serving the UI bundle.
   const root = await get(port, '/');
-  return !!root && root.status === 200 && root.body.includes(API_BANNER);
+  const ours = !!root && root.status === 200 && root.body.includes(API_BANNER);
+  return ours ? reported : null;
+}
+
+/** What the adopt decision needs to know about a server (BUG cdae6039). */
+export interface ServerIdentity {
+  version: string;
+  /** The database it serves; null when it would not say. */
+  dbPath: string | null;
+}
+
+/**
+ * Which AgEnFK server is this, and on which database?
+ *
+ * Being AgEnFK is not enough to adopt: a WSL server forwarded to the Windows
+ * localhost is AgEnFK too, of whatever version was installed there, on a
+ * database the Windows app does not use. /db/status has reported dbPath for
+ * far longer than the versions still installed, so older servers answer it.
+ */
+export async function readServerIdentity(
+  port: number,
+  get: HttpGet = httpGet,
+): Promise<ServerIdentity | null> {
+  const version = await agenfkVersion(port, get);
+  if (version === null) return null;
+  return { version, dbPath: await reportedDbPath(port, get) };
+}
+
+async function reportedDbPath(port: number, get: HttpGet): Promise<string | null> {
+  const status = await get(port, '/db/status');
+  if (!status || status.status !== 200) return null;
+  try {
+    const parsed = JSON.parse(status.body);
+    const dbPath = parsed?.dbPath;
+    return typeof dbPath === 'string' && dbPath.trim() ? dbPath : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

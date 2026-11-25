@@ -8,7 +8,8 @@
  * is tested without spawning processes or booting Electron.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { resolveServer, ServerUnavailableError } from '../main/serverLifecycle.js';
+import { resolveServer, ServerUnavailableError, DatabaseOwnerError } from '../main/serverLifecycle.js';
+import type { AdoptVerdict } from '../main/adoption.js';
 
 /** A probe that answers true only for the ports listed. */
 const probeFor = (...live: number[]) =>
@@ -149,6 +150,148 @@ describe('resolveServer — adopting an already-running server', () => {
   });
 });
 
+/**
+ * BUG cdae6039: a live AgEnFK server is not automatically ours to adopt.
+ *
+ * On Windows, a WSL server of an older version answered on localhost:3000 and
+ * the app adopted it, so the window rendered that server's stale UI. The judge
+ * says, per port, whether to adopt, adopt and warn, or skip; a skipped server
+ * sits on another database, so starting our own is safe.
+ */
+describe('resolveServer — judging a found server (BUG cdae6039)', () => {
+  type Verdict = AdoptVerdict;
+  const judgeBy = (verdicts: Record<number, Verdict>) =>
+    vi.fn(async (port: number): Promise<Verdict> => verdicts[port] ?? { kind: 'adopt' });
+
+  it('skips a server judged foreign and starts its own instead', async () => {
+    let started = false;
+    const spawn = vi.fn(() => { started = true; });
+    const result = await resolveServer({
+      readPort: () => (started ? 3001 : null),
+      fallbackPorts: [3000],
+      probe: async (p: number) => p === 3000 || (started && p === 3001),
+      judge: judgeBy({ 3000: { kind: 'skip', serverVersion: '2.0.0-beta.35' } }),
+      spawn,
+      waitMs: 0,
+    });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(result.port).toBe(3001);
+    expect(result.adopted).toBe(false);
+  });
+
+  it('never settles on the skipped server while waiting for its own: the child names its port', async () => {
+    // Replaces a test that fed the shared port file through the judge. The poll
+    // no longer reads that file, so the skipped server cannot be picked at all
+    // (PR #359 review); what is left to pin is that it is not, whatever the
+    // file says and however long the child takes.
+    let polls = 0;
+    let started = false;
+    const result = await resolveServer({
+      readPort: () => 3000,
+      readSpawnedPort: () => {
+        if (!started) return null;
+        polls += 1;
+        return polls >= 3 ? 3001 : null;
+      },
+      probe: async (p: number) => p === 3000 || (started && p === 3001),
+      judge: judgeBy({ 3000: { kind: 'skip', serverVersion: '2.0.0-beta.35' } }),
+      spawn: () => { started = true; },
+      waitMs: 0,
+      attempts: 10,
+    });
+    expect(result.port).toBe(3001);
+    expect(result.adopted).toBe(false);
+  });
+
+  it('adds no version notice for the server it started itself', async () => {
+    // The judge's mismatch verdict is for servers found running; the child is
+    // this app's own build on this app's database (PR #360 review, LOW).
+    let started = false;
+    const judge = vi.fn(async () => ({ kind: 'adopt-mismatch', serverVersion: '1', database: 'same' }) as AdoptVerdict);
+    const result = await resolveServer({
+      readPort: () => null,
+      readSpawnedPort: () => (started ? 3001 : null),
+      probe: async (p: number) => started && p === 3001,
+      judge,
+      spawn: () => { started = true; },
+      waitMs: 0,
+    });
+    expect(result.versionMismatch).toBeUndefined();
+    expect(judge).not.toHaveBeenCalled();
+  });
+
+  it('adopts another candidate when the first one is skipped', async () => {
+    const spawn = vi.fn();
+    const result = await resolveServer({
+      readPort: () => 3000,
+      fallbackPorts: [3002],
+      probe: probeFor(3000, 3002),
+      judge: judgeBy({ 3000: { kind: 'skip', serverVersion: '2.0.0-beta.35' } }),
+      spawn,
+      waitMs: 0,
+    });
+    expect(result.port).toBe(3002);
+    expect(result.adopted).toBe(true);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('adopts a mismatched server on the same database and reports the mismatch', async () => {
+    const spawn = vi.fn();
+    const result = await resolveServer({
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      judge: judgeBy({ 3000: { kind: 'adopt-mismatch', serverVersion: '2.0.0-beta.35', database: 'same' } }),
+      spawn,
+      waitMs: 0,
+    });
+    expect(result.adopted).toBe(true);
+    expect(result.versionMismatch).toEqual({ serverVersion: '2.0.0-beta.35', database: 'same' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('accepts its own server even when it is judged a version mismatch', async () => {
+    // The bundled server's package version need not equal app.getVersion();
+    // our own server, on our database, must still do.
+    let started = false;
+    const result = await resolveServer({
+      readPort: () => (started ? 3001 : null),
+      probe: async (p: number) => started && p === 3001,
+      judge: judgeBy({ 3001: { kind: 'adopt-mismatch', serverVersion: '2.0.0-beta.46', database: 'same' } }),
+      spawn: () => { started = true; },
+      waitMs: 0,
+      adoptAttempts: 1,
+    });
+    expect(result.port).toBe(3001);
+    expect(result.adopted).toBe(false);
+  });
+
+  it('reports no mismatch for a server judged adoptable', async () => {
+    const result = await resolveServer({
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      judge: judgeBy({}),
+      spawn: vi.fn(),
+      waitMs: 0,
+    });
+    expect(result.adopted).toBe(true);
+    expect(result.versionMismatch).toBeUndefined();
+  });
+
+  it('only judges ports where an AgEnFK server answered', async () => {
+    const judge = judgeBy({});
+    await resolveServer({
+      readPort: () => 3000,
+      fallbackPorts: [3001],
+      probe: probeFor(3001),
+      judge,
+      spawn: vi.fn(),
+      waitMs: 0,
+    });
+    expect(judge).toHaveBeenCalledWith(3001);
+    expect(judge).not.toHaveBeenCalledWith(3000);
+  });
+});
+
 describe('resolveServer — spawning our own', () => {
   it('waits for an asynchronous spawn before polling for the port (BUG 474a8240)', async () => {
     // The server is forked only once the fresh PATH is in hand; polling while
@@ -186,6 +329,37 @@ describe('resolveServer — spawning our own', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(result.adopted).toBe(false);
     expect(result.port).toBe(3000);
+  });
+
+  it('finds its own server through the unfiltered reader, wherever it bound (PR #359 review)', async () => {
+    // AGENFK_PORT=3100 with 3100-3186 busy: the server binds 3187, outside the
+    // 16 ports the adopt filter keeps. The post-spawn poll must still find it.
+    let started = false;
+    const spawn = vi.fn(() => { started = true; });
+    const result = await resolveServer({
+      readPort: () => null,
+      readSpawnedPort: () => (started ? 3187 : null),
+      probe: async (p: number) => started && p === 3187,
+      spawn,
+      waitMs: 0,
+      attempts: 3,
+    });
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(result.adopted).toBe(false);
+    expect(result.port).toBe(3187);
+  });
+
+  it('polls readPort after spawning when no separate reader is given', async () => {
+    let started = false;
+    const result = await resolveServer({
+      readPort: () => (started ? 3005 : null),
+      probe: async (p: number) => started && p === 3005,
+      spawn: () => { started = true; },
+      waitMs: 0,
+    });
+
+    expect(result.port).toBe(3005);
   });
 
   it('spawns when the port file is stale and nothing answers there', async () => {
@@ -275,5 +449,130 @@ describe('resolveServer — failure', () => {
       waitMs: 0,
       attempts: 3,
     })).rejects.toThrow(/ENOENT/);
+  });
+});
+
+describe('resolveServer — a published server outside the adopt range (PR #359 review)', () => {
+  // AGENFK_PORT=3100: the range is 3100-3115, while `agenfk up` published 3000
+  // on the default database. The desktop would open that same SQLite file.
+  const configured = { fallbackPorts: Array.from({ length: 16 }, (_, i) => 3100 + i), waitMs: 0, adoptAttempts: 1 };
+
+  it('adopts it when it holds the database the desktop would use', async () => {
+    const spawn = vi.fn();
+    const result = await resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      databaseOwner: async () => 'same',
+      spawn,
+    });
+    expect(result).toMatchObject({ port: 3000, adopted: true });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses to start a second server when it cannot tell whose database that is', async () => {
+    const spawn = vi.fn();
+    const run = resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      databaseOwner: async () => 'unknown',
+      spawn,
+    });
+    await expect(run).rejects.toBeInstanceOf(DatabaseOwnerError);
+    await expect(run).rejects.toThrow(/3000/);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('starts its own server when that one is on another database', async () => {
+    let started = false;
+    const result = await resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      readSpawnedPort: () => (started ? 3100 : null),
+      probe: async p => p === 3000 || (started && p === 3100),
+      databaseOwner: async () => 'different',
+      spawn: () => { started = true; },
+    });
+    expect(result).toMatchObject({ port: 3100, adopted: false });
+  });
+
+  it('does not ask about a published server that is inside the range', async () => {
+    const databaseOwner = vi.fn(async () => 'different' as const);
+    const result = await resolveServer({
+      ...configured,
+      readPort: () => 3103,
+      probe: probeFor(3103),
+      databaseOwner,
+      spawn: vi.fn(),
+    });
+    expect(result.port).toBe(3103);
+    expect(databaseOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not ask about a published port nothing answers on', async () => {
+    let started = false;
+    const databaseOwner = vi.fn(async () => 'unknown' as const);
+    const result = await resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      readSpawnedPort: () => (started ? 3100 : null),
+      probe: async p => started && p === 3100,
+      databaseOwner,
+      spawn: () => { started = true; },
+    });
+    expect(result.port).toBe(3100);
+    expect(databaseOwner).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveServer — the server it started (PR #359 review)', () => {
+  it('never takes the shared port file for its own server while the child has not bound', async () => {
+    // The file still names the server we declined to adopt; it answers, ours
+    // does not yet. The poll must wait for the child's own port.
+    let childPort: number | null = null;
+    let polls = 0;
+    const result = await resolveServer({
+      readPort: () => 3000,
+      readSpawnedPort: () => { polls++; if (polls === 3) childPort = 3100; return childPort; },
+      probe: async p => p === 3000 || p === childPort,
+      databaseOwner: async () => 'different',
+      fallbackPorts: [3100],
+      adoptAttempts: 1,
+      spawn: () => {},
+      waitMs: 0,
+    });
+    expect(result).toMatchObject({ port: 3100, adopted: false });
+  });
+});
+
+describe('resolveServer — database owner and version judge together (PR #360 review)', () => {
+  const configured = { fallbackPorts: [3100, 3101], waitMs: 0, adoptAttempts: 1 };
+
+  it('does not let a same-version verdict skip the database check past the range', async () => {
+    const spawn = vi.fn();
+    const run = resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      judge: async () => ({ kind: 'adopt' }),
+      databaseOwner: async () => 'unknown',
+      spawn,
+    });
+    await expect(run).rejects.toBeInstanceOf(DatabaseOwnerError);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('adopts it, with the version notice, when it holds the database but is another version', async () => {
+    const result = await resolveServer({
+      ...configured,
+      readPort: () => 3000,
+      probe: probeFor(3000),
+      judge: async () => ({ kind: 'adopt-mismatch', serverVersion: '2.0.0-beta.35', database: 'same' }),
+      databaseOwner: async () => 'same',
+      spawn: vi.fn(),
+    });
+    expect(result.adopted).toBe(true);
+    expect(result.versionMismatch).toEqual({ serverVersion: '2.0.0-beta.35', database: 'same' });
   });
 });

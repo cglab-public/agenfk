@@ -61,7 +61,7 @@ export function ProjectSuiteControl({ projectId, row, onSaved }: {
   if (!hasSuiteControl(row)) return null;
   if (row.key === 'verifyAtScope') {
     return (
-      <span className="flex shrink-0 items-center gap-2">
+      <span className="flex min-w-0 max-w-full items-center gap-2">
         {error}
         <select
           data-testid="setting-select-verifyAtScope"
@@ -73,7 +73,7 @@ export function ProjectSuiteControl({ projectId, row, onSaved }: {
             setScope(next);
             void save({ verifyAtScope: next === 'worktree' || next === 'project' ? next : null });
           }}
-          className="shrink-0 rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-50"
+          className="min-w-0 max-w-full rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-50"
         >
           <option value="">{own === '' && row.value ? `The flow's: ${SCOPE_TEXT[row.value] ?? row.value}` : "The flow's setting"}</option>
           <option value="worktree">{SCOPE_TEXT.worktree}</option>
