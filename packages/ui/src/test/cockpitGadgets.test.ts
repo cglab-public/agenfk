@@ -59,6 +59,12 @@ describe('cockpit gadgets', () => {
     expect(cockpitGadgets({ tfKnown: true, tf: null }, NOW, all)).toEqual([]);
   });
 
+  it('shows ? for git when the shell is not tracked, and nothing when tracked outside a repository', () => {
+    expect(cockpitGadgets({ tracked: false, git: null }, NOW, all)).toEqual([{ id: 'git', text: '?', tone: 'unknown', caveat: expect.any(String) }]);
+    expect(cockpitGadgets({ tracked: true, git: null }, NOW, all)).toEqual([]);
+    expect(cockpitGadgets({ tracked: false, git: null }, NOW, { ...all, git: false })).toEqual([]);
+  });
+
   it('lets the Settings toggles hide the unknown gadgets too', () => {
     expect(cockpitGadgets({ envKnown: false, tfKnown: false }, NOW, { ...all, aws: false, k8s: false, tf: false })).toEqual([]);
     expect(cockpitGadgets({ envKnown: false, tfKnown: false }, NOW, { ...all, aws: false }).map(g => g.id)).toEqual(['k8s', 'tf']);

@@ -25,6 +25,8 @@ export interface CockpitSnapshot {
   readonly envKnown?: boolean;
   /** false: the shell's directory is not tracked, so Terraform's workspace is unknown. */
   readonly tfKnown?: boolean;
+  /** false: the shell's directory is not tracked, so its git branch is unknown. Absent (an older snapshot) is read as tracked. */
+  readonly tracked?: boolean;
   readonly usage?: { contextTokens: number | null; contextWindow: number | null; cost: number; costComplete: boolean } | null;
 }
 
@@ -83,6 +85,7 @@ function shortDelta(seconds: number): string {
 
 const UNKNOWN_ENV = "Not established: no shell is reporting it here. Nothing is shown as set, because it may be.";
 const UNKNOWN_TF = 'Not established: the shell\'s directory is not tracked, so the workspace may be set.';
+const UNKNOWN_GIT = 'Not established: the shell\'s directory is not tracked, so it may be in a repository.';
 const unknown = (id: CockpitGadgetId, caveat: string): CockpitGadget => ({ id, text: '?', tone: 'unknown', caveat });
 
 const tokens = (n: number): string =>
@@ -95,7 +98,7 @@ export function cockpitGadgets(snap: CockpitSnapshot, now: number, on: CockpitTo
     const g = snap.git;
     const marks = [g.ahead ? `↑${g.ahead}` : '', g.behind ? `↓${g.behind}` : ''].filter(Boolean).join(' ');
     out.push({ id: 'git', text: `${g.branch}${g.dirty === null ? '?' : g.dirty ? '*' : ''}${marks ? ` ${marks}` : ''}`, tone: 'normal' });
-  }
+  } else if (on.git && snap.tracked === false) out.push(unknown('git', UNKNOWN_GIT));
 
   if (on.aws && snap.aws) {
     const { profile, expires, source } = snap.aws;
