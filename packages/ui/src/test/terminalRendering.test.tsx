@@ -450,7 +450,7 @@ describe('waiting for the font', () => {
     // each call keeps its own resolver, so the measuring one can be released
     // after unmount and the cancellation guard is what is under test.
     const resolvers: Array<() => void> = [];
-    const load = vi.fn((..._args: string[]) => new Promise<unknown>(resolve => { resolvers.push(() => resolve([])); }));
+    const load = vi.fn<(...args: string[]) => Promise<unknown>>(() => new Promise<unknown>(resolve => { resolvers.push(() => resolve([])); }));
     Object.defineProperty(document, 'fonts', { configurable: true, value: { load, check: () => false } });
     const term = fakeTerm();
     const { unmount } = render(<TerminalPane itemId="i1" agentId="shell" bridge={quietBridge() as never}
