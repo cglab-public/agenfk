@@ -14,11 +14,13 @@ import * as os from 'os';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
+import { adoptPortRange, boundPortReader, invalidPortMessage } from './adoptPorts.js';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
 import { resolveDbPath, buildServerEnv } from './serverEnv.js';
-import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
+import { isAgenfkServer, readServerIdentity, servesUiBundle, httpGet } from './probes.js';
+import { CLI_INSTALL_URL, makeJudge, sameDatabase, versionMismatchNotice } from './adoption.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
 import { proposeDecomposition } from './propose.js';
@@ -118,6 +120,9 @@ let quitHandled = false;
 // RESOLVES. When it throws we have already forked a child, and keying shutdown
 // off `server` would skip the graceful stop on exactly the path that needs it.
 let weSpawnedTheServer = false;
+// The port the server WE forked reported on its stdout. The shared port file
+// cannot stand in for it: it may name the server we declined to adopt.
+const spawnedPortReader = boundPortReader();
 
 /** How long to let the server finish its async shutdown before forcing quit. */
 const SHUTDOWN_GRACE_MS = 5000;
@@ -129,9 +134,12 @@ const SHUTDOWN_GRACE_MS = 5000;
  * MAX_PORT_PROBE_ATTEMPTS of them, so "is AgEnFK already running?" is a range
  * question, not a single-port one. We scan the low end where it realistically
  * lands: far enough to cover a few stale listeners, short enough that the scan
- * does not visibly delay startup.
+ * does not visibly delay startup. It starts at AGENFK_PORT (or PORT) when set,
+ * read as the server reads it, so a build told to use another port never
+ * adopts the server on 3000; an unreadable value adopts nothing (BUG db4e8cc2).
+ * Ports only: the database is kept apart by AGENFK_DB_PATH or another home.
  */
-const ADOPT_PORT_RANGE = Array.from({ length: 16 }, (_, i) => DEFAULT_API_PORT + i);
+const ADOPT_PORT_RANGE = adoptPortRange(process.env, DEFAULT_API_PORT);
 
 /** Show a real dialog: a GUI app's console output goes nowhere the user looks. */
 function fail(title: string, detail: string): void {
@@ -150,14 +158,22 @@ async function startServer(): Promise<void> {
   // Before the fork: the server runs tools like `gh` by name (BUG 474a8240).
   const freshPath = await loginPathWithin();
 
+  spawnedPortReader.reset();
   serverChild = utilityProcess.fork(serverEntry, [], {
     // cwd is explicit because the server's own fallback derives the database
     // from it. Launched from Finder that would be "/" — see serverEnv.ts.
     cwd: path.dirname(serverEntry),
     // ea94c023: the server runs Airlock's exec helper with this app's Electron as Node.
     env: buildServerEnv(process.env, { uiDir, dbPath, freshPath, airlockExec: { cli: airlockExec, node: process.execPath } }),
-    stdio: 'inherit',
+    // Piped, not inherited, so the bound port can be read from the startup
+    // line. Both streams are forwarded: an unread pipe fills and stalls the child.
+    stdio: 'pipe',
   });
+  serverChild.stdout?.on('data', (chunk: Buffer) => {
+    process.stdout.write(chunk);
+    spawnedPortReader.push(chunk.toString('utf8'));
+  });
+  serverChild.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
   console.log(`[DESKTOP] Starting AgEnFK server (db: ${dbPath})`);
 
   serverChild.on('exit', code => {
@@ -307,16 +323,37 @@ async function boot(): Promise<void> {
    */
   void currentLoginPath();
   try {
+    // Before any lookup: an unreadable value would otherwise surface 15 s later
+    // as a server that did not answer, never naming the variable.
+    const badPort = invalidPortMessage(process.env);
+    if (badPort) throw new Error(badPort);
     server = await resolveServer({
+      // Unfiltered: a published server past the configured range may hold the
+      // database this app would open, and databaseOwner decides about it.
       readPort: readServerPort,
+      // Our own server may bind past the adopt range, so ask the child.
+      readSpawnedPort: () => spawnedPortReader.port(),
+      databaseOwner: async port => {
+        const reported = (await readServerIdentity(port))?.dbPath ?? null;
+        return reported === null ? 'unknown' : sameDatabase(reported, resolveDbPath(), runningOn);
+      },
       fallbackPorts: ADOPT_PORT_RANGE,
       // Identity, not just liveness: anything could be listening on 3000, and
       // adopting it would open a window on somebody else's application.
       probe: isAgenfkServer,
+      // Identity is not enough either (BUG cdae6039): a WSL server of another
+      // version, forwarded to localhost, is AgEnFK on a database we do not use.
+      judge: makeJudge({
+        appVersion: () => app.getVersion(),
+        appDbPath: resolveDbPath,
+        platform: runningOn,
+        readIdentity: readServerIdentity,
+      }),
       spawn: startServer,
     });
     console.log(
-      `[DESKTOP] ${server.adopted ? 'Adopted running' : 'Started'} AgEnFK server at ${server.url}`,
+      `[DESKTOP] ${server.adopted ? 'Adopted running' : 'Started'} AgEnFK server at ${server.url}` +
+      (server.versionMismatch ? ` (server ${server.versionMismatch.serverVersion}, app ${app.getVersion()})` : ''),
     );
 
     if (!await servesUiBundle(server.port)) {
@@ -362,6 +399,25 @@ async function boot(): Promise<void> {
       tearingDown = true;
       app.quit();
       return;
+    }
+
+    if (server.versionMismatch) {
+      // Not awaited: the board still opens. The user decides whether to switch.
+      const notice = versionMismatchNotice({
+        ...server.versionMismatch,
+        appVersion: app.getVersion(),
+      });
+      void dialog.showMessageBox({
+        type: 'info',
+        title: notice.title,
+        message: notice.title,
+        detail: notice.detail,
+        buttons: notice.buttons,
+        defaultId: notice.defaultId,
+        cancelId: 0,
+      }).then(({ response }) => {
+        if (notice.actions[response] === 'open-cli-install') openExternally(CLI_INSTALL_URL);
+      });
     }
 
     // Terminals need the resolved port: a card's directory comes from the
