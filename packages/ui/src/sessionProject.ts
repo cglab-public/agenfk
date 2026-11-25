@@ -28,8 +28,9 @@ export function withProjectNames<T extends { itemId?: string; projectId?: string
     if (!session.itemId && session.projectId) {
       if (name === session.title && session.projectName === undefined) return session;
       changed = true;
-      const { projectName: _stale, ...rest } = session;
-      return { ...rest, title: name } as T;
+      const next: T = { ...session, title: name };
+      delete next.projectName;
+      return next;
     }
     if (name === session.projectName || name === session.title) return session;
     changed = true;
