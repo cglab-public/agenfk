@@ -44,8 +44,8 @@ const DEV_TOOLING = new Set([
 ]);
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'test', 'tests', '__tests__', 'coverage', '.git']);
-/** Icons plus the generated server-bundle: the server source, already scanned, bundled with its deps. */
-const SKIP_PATHS = new Set(['packages/desktop/build']);
+/** Icons plus the generated server-bundle, and electron-builder's output (git-ignored, on a machine that packaged the app): copies of source already scanned. */
+const SKIP_PATHS = new Set(['packages/desktop/build', 'packages/desktop/release']);
 const SOURCE_EXT = /\.(ts|tsx|js|mjs|cjs)$/;
 const NOT_SOURCE = /\.d\.[cm]?ts$|\.(test|spec)\.[cm]?[jt]sx?$/;
 
@@ -310,6 +310,11 @@ spawn('npm ci', { 'shell': true, detached: true, windowsHide: true });`;
 
 describe('GitHub #200 — every runtime child process is spawned hidden', () => {
   const files = runtimeSourceFiles();
+
+  it('the TypeScript compiler API the guard relies on is present', () => {
+    expect(typeof ts.createSourceFile).toBe('function');
+    expect(typeof ts.forEachChild).toBe('function');
+  });
 
   it('scans the files that launch processes at runtime (the guard is not vacuous)', () => {
     for (const f of [

@@ -15,7 +15,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -30,8 +29,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
 import { nodeCommand } from './helpers/nodeCommand';
+import { echoRepo } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -44,9 +43,8 @@ afterAll(async () => {
 });
 
 function repo(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-parentclose-'));
+  const dir = echoRepo({}, 'agenfk-parentclose-');
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && git commit -q --allow-empty -m one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 

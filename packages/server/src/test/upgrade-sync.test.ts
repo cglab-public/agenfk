@@ -1,8 +1,8 @@
 /**
  * Story 3b — upgradeSync polling reconciler + boot-time outcome replay.
  *
- * The module exports two pure-ish functions that startUpgradeSync wires into
- * a polling timer. We test the pure functions directly with injected deps so
+ * The module exports two pure-ish functions; the server runs the reconciler
+ * as the hub loop's `upgrade` channel. We test the pure functions directly with injected deps so
  * we don't have to mock setTimeout / axios / child_process all at once.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -467,6 +467,32 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
 });
 
 describe('Story 3b — replayPendingUpgradeOutcome (boot-time replay)', () => {
+  it('says nothing and keeps the marker while this process is still running that upgrade (GH-346 review)', async () => {
+    // A repoint restarts the hub subsystems, which replays: it must not report the
+    // upgrade still in flight as failed, or erase the marker its own boot replay needs.
+    const f = makeFakes({ directive: { directiveId: 'd-live', targetVersion: '0.3.1' } });
+    let finish!: (r: { exitCode: number; stdout: string }) => void;
+    const running = reconcileUpgradeDirective({
+      dbDir, currentVersion: '0.3.0', hubUrl: 'https://hub', hubToken: 't', installationId: 'inst-1',
+      fetchImpl: f.fetchImpl, recordEvent: f.recordEvent, flushNow: f.flushNow,
+      spawnImpl: () => new Promise((r) => { finish = r; }),
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
+    });
+    while (!finish) await new Promise(r => setTimeout(r, 1));
+    expect(readUpgradeState(dbDir)?.outcome).toBe('started');
+
+    const replayEvents: RecordedEvent[] = [];
+    await replayPendingUpgradeOutcome({
+      dbDir, currentVersion: '0.3.0', installationId: 'inst-1',
+      recordEvent: (e: any) => { replayEvents.push({ type: e.type, payload: e.payload }); },
+    });
+    expect(replayEvents).toEqual([]);
+    expect(readUpgradeState(dbDir)?.outcome).toBe('started');
+
+    finish({ exitCode: 0, stdout: '{"status":"upgraded","fromVersion":"0.3.0","toVersion":"0.3.1"}' });
+    await running;
+  });
+
   it('does nothing when no upgrade state exists', async () => {
     const f = makeFakes();
     await replayPendingUpgradeOutcome({

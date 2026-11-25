@@ -529,7 +529,7 @@ describe.skipIf(process.platform === 'win32')('the ci-check GitHub Action', () =
    */
   function runAction(inputs: Record<string, string>, {
     cliExit = 0, download = true, tarOk = true, npmOk = true,
-    cliOutputs = {} as Record<string, string>, cliPrints = '',
+    cliOutputs = {} as Record<string, string>, cliPrints = '', nodeVersion = 'v22.13.0',
   } = {}) {
     const action: any = yaml.load(fs.readFileSync(actionPath, 'utf8'));
     expect(action.runs.using).toBe('composite');
@@ -560,8 +560,10 @@ printf '%s\n' "$PWD" "$@" > "${log('npm')}"
 ${npmOk ? '' : 'exit 1'}
 `, { mode: 0o755 });
     // node plays the CLI: records its argv, writes its outputs, prints, exits.
+    // `node --version` answers with the runner's Node, and is not a CLI call.
     const outputLines = Object.entries(cliOutputs).map(([k, v]) => `echo '${k}=${v}' >> "$GITHUB_OUTPUT"`).join('\n');
     fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh
+if [ "$1" = "--version" ]; then echo '${nodeVersion}'; exit 0; fi
 printf '%s\n' "$@" > "${log('node')}"
 ${outputLines}
 ${cliPrints ? `echo '${cliPrints}'` : ''}
@@ -661,6 +663,31 @@ exit ${cliExit}
     expect(r.status).toBe(0);
     expect(r.outputs.check?.run).toBe('true');
     expect(r.node).toEqual([]);
+  });
+
+  // PR #316: the CLI requires ESM-only commander 15, which loads through require()
+  // only on Node ^22.13.0 || >=23.5.0 (agenfk's engines). The action does not set
+  // Node up, so an older runner Node is an install that cannot work, said so.
+  it('runs the gated steps, downloading nothing, on a Node older than the CLI needs', () => {
+    for (const nodeVersion of ['v22.12.0', 'v20.19.0', 'v23.4.0']) {
+      const r = runAction({ kind: 'verification' }, { nodeVersion });
+      expect(r.status, nodeVersion).toBe(0);
+      expect(r.outputs.check?.run, nodeVersion).toBe('true');
+      expect(r.curl, nodeVersion).toEqual([]);
+      expect(r.node, nodeVersion).toEqual([]);
+      expect(r.stdout, nodeVersion).toContain(`needs Node ^22.13.0 or >=23.5.0, found ${nodeVersion.slice(1)}`);
+    }
+  });
+
+  it('fails the job on a Node older than the CLI needs when the policy requires a receipt', () => {
+    expect(runAction({ kind: 'verification', policy: 'require' }, { nodeVersion: 'v22.11.0' }).status).toBe(1);
+  });
+
+  it('runs the CLI on every Node its engines accept', () => {
+    for (const nodeVersion of ['v22.13.0', 'v22.20.1', 'v23.5.0', 'v24.0.0', 'v25.2.1']) {
+      const r = runAction({ kind: 'verification' }, { nodeVersion });
+      expect(r.node.slice(1, 3), nodeVersion).toEqual(['ci', 'check']);
+    }
   });
 
   it('fails the job when the release cannot be downloaded and the policy requires a receipt', () => {

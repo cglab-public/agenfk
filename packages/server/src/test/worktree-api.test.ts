@@ -468,6 +468,27 @@ describe('GET /items/:id/diff', () => {
     expect(res.status).toBe(403);
   });
 
+  // CGLAB-696 story review: the worktree may be one an Airlock session wrote. A program its config
+  // names (fsmonitor, an external diff, a textconv) would run here with the server's rights.
+  it.skipIf(process.platform === 'win32')('runs no program the worktree\'s git config names', async () => {
+    const item = await makeItem('Config programs');
+    const wt = (await agent().post(`/items/${item.id}/worktree`).send({ root })).body.path as string;
+    const ran = path.join(wt, '..', `ran-${item.id}`);
+    const script = path.join(wt, '..', `prog-${item.id}.sh`);
+    fs.writeFileSync(script, `#!/bin/sh\necho "$0" >> '${ran}'\n`, { mode: 0o755 });
+    const git = (...a: string[]) => execFileSync('git', ['-C', wt, ...a]);
+    git('config', 'core.fsmonitor', script);
+    git('config', 'diff.external', script);
+    git('config', 'diff.tc.textconv', script);
+    fs.writeFileSync(path.join(wt, '.gitattributes'), 'README.md diff=tc\n');
+
+    fs.writeFileSync(path.join(wt, 'README.md'), '# fixture\nadded line\n');
+    const res = await agent().get(`/items/${item.id}/diff`).query({ path: 'README.md' });
+    expect(res.status).toBe(200);
+    expect(res.body.diff).toContain('+added line');
+    expect(fs.existsSync(ran)).toBe(false);
+  });
+
   it('409s for a card with no worktree, rather than diffing somewhere else', async () => {
     const item = await makeItem('No worktree');
     const res = await agent().get(`/items/${item.id}/diff`).query({ path: 'README.md' });

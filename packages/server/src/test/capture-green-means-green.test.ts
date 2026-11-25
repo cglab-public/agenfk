@@ -18,7 +18,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
@@ -28,7 +27,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { capturedGreen, describeCapture } from '../checkEngine';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A, IGNORE_REPORT } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -56,8 +55,8 @@ const FAIL = '<testsuites><testsuite name="s"><testcase classname="t" name="adds
 async function setup() {
   const f = await agent().post('/flows').send({ name: `cg-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const repo = tmp('agenfk-cg-repo-');
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
+  const repo = echoRepo({ ...IGNORE_REPORT, ...A }, 'agenfk-cg-repo-');
+  dirs.push(repo);
   fs.writeFileSync(path.join(repo, 'notes.txt'), 'mid-edit\n');
   const outside = tmp('agenfk-cg-ctl-');
   const mode = path.join(outside, 'mode');

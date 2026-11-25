@@ -54,7 +54,7 @@ const HUB_CLOUD_URL = 'https://acme.atlassian.net';
 const LOCAL_CLOUD_URL = 'https://local-leftover.atlassian.net';
 const ENV_KEYS = [
   'AGENFK_HUB_URL', 'AGENFK_HUB_TOKEN', 'AGENFK_HUB_ORG',
-  'AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS', 'AGENFK_DB_PATH',
+  'AGENFK_HUB_SYNC_FIRST_DELAY_MS', 'AGENFK_DB_PATH',
   'JIRA_CLIENT_ID', 'JIRA_CLIENT_SECRET',
 ];
 const savedEnv: Record<string, string | undefined> = {};
@@ -134,7 +134,7 @@ describe('JIRA routes on a hub-joined installation', () => {
     process.env.AGENFK_HUB_URL = HUB_URL;
     process.env.AGENFK_HUB_TOKEN = 'agk_test';
     process.env.AGENFK_HUB_ORG = 'org-test';
-    process.env.AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS = '3600000';
+    process.env.AGENFK_HUB_SYNC_FIRST_DELAY_MS = '3600000';
     process.env.AGENFK_DB_PATH = TEST_DB;
     // A fully configured LOCAL JIRA too - which a joined installation must ignore.
     process.env.JIRA_CLIENT_ID = 'local-cid';

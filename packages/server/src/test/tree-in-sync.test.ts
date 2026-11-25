@@ -14,7 +14,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -29,7 +28,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell, shellQuote } from './helpers/posixShell';
+import { echoRepo, A } from './helpers/echoRepo';
+import { gitSync, writeFiles } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -43,19 +43,26 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (p: string) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), p)); dirs.push(d); return d; };
-const sh = (cwd: string, cmd: string) => execSync(cmd, { cwd, shell: posixShell(), encoding: 'utf8' }).trim();
-const id = 'git config user.email t@t && git config user.name t';
+const id = (dir: string) => { gitSync(dir, 'config', 'user.email', 't@t'); gitSync(dir, 'config', 'user.name', 't'); };
+/** `echo f > f && git add f && git commit -qm f`. */
+const commitFile = (dir: string, f: string) => { writeFiles(dir, { [f]: `${f}\n` }); gitSync(dir, 'add', f); gitSync(dir, 'commit', '-qm', f); };
 
 /** A bare origin, the card's clone of it, and a colleague's clone that can push ahead of it. */
 function remoteSetup() {
   const origin = tmp('agenfk-sync-origin-');
-  sh(origin, 'git init -q --bare -b main');
+  gitSync(origin, 'init', '-q', '--bare', '-b', 'main');
   const work = tmp('agenfk-sync-work-');
-  sh(work, `git clone -q ${shellQuote(origin)} . && ${id} && echo a > a && git add . && git commit -qm one && git push -q -u origin main`);
+  gitSync(work, 'clone', '-q', origin, '.');
+  id(work);
+  writeFiles(work, { a: 'a\n' });
+  gitSync(work, 'add', '.');
+  gitSync(work, 'commit', '-qm', 'one');
+  gitSync(work, 'push', '-q', '-u', 'origin', 'main');
   const other = tmp('agenfk-sync-other-');
-  sh(other, `git clone -q ${shellQuote(origin)} . && ${id}`);
-  const pushFromOther = (f: string) => sh(other, `git pull -q --ff-only && echo ${f} > ${f} && git add ${f} && git commit -qm ${f} && git push -q`);
-  const commitHere = (f: string) => sh(work, `echo ${f} > ${f} && git add ${f} && git commit -qm ${f}`);
+  gitSync(other, 'clone', '-q', origin, '.');
+  id(other);
+  const pushFromOther = (f: string) => { gitSync(other, 'pull', '-q', '--ff-only'); commitFile(other, f); gitSync(other, 'push', '-q'); };
+  const commitHere = (f: string) => commitFile(work, f);
   return { origin, work, pushFromOther, commitHere };
 }
 
@@ -118,8 +125,8 @@ describe('1049ce52: tree-in-sync', () => {
   });
 
   it('passes a tree with no remote at all: nothing to be in sync with', async () => {
-    const solo = tmp('agenfk-sync-solo-');
-    sh(solo, `git init -q -b main && ${id} && echo a > a && git add . && git commit -qm one`);
+    const solo = echoRepo(A, 'agenfk-sync-solo-');
+    dirs.push(solo);
     const cid = await card(solo);
     const res = await validate(cid);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -130,7 +137,7 @@ describe('1049ce52: tree-in-sync', () => {
     const r = remoteSetup();
     r.pushFromOther('b');
     // A card branch cut locally from the (stale) HEAD: it tracks nothing.
-    sh(r.work, 'git checkout -q -b feat/card-1');
+    gitSync(r.work, 'checkout', '-q', '-b', 'feat/card-1');
     const cid = await card(r.work);
     const res = await validate(cid);
     expect(res.status, JSON.stringify(res.body)).toBe(422);
@@ -140,7 +147,7 @@ describe('1049ce52: tree-in-sync', () => {
   it('does not judge the base of a branch with no upstream that has its own commits', async () => {
     const r = remoteSetup();
     r.pushFromOther('b');
-    sh(r.work, 'git checkout -q -b feat/card-2');
+    gitSync(r.work, 'checkout', '-q', '-b', 'feat/card-2');
     r.commitHere('mine');
     const cid = await card(r.work);
     const res = await validate(cid);
@@ -157,7 +164,7 @@ describe('1049ce52: tree-in-sync', () => {
 
   it('only warns when the remote cannot be reached: offline work is not stranded', async () => {
     const r = remoteSetup();
-    sh(r.work, 'git remote set-url origin /nonexistent/agenfk-remote.git');
+    gitSync(r.work, 'remote', 'set-url', 'origin', '/nonexistent/agenfk-remote.git');
     const cid = await card(r.work);
     const res = await validate(cid);
     expect(res.status, JSON.stringify(res.body)).toBe(200);

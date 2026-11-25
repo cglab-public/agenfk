@@ -13,6 +13,7 @@
  * the CLI records it here for the run recorder to pick up.
  */
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -108,6 +109,27 @@ export function readActiveWork(reader: FileReader = readerFor()): ActiveWork | n
   };
 }
 
+/**
+ * The key a note from an Airlock sandbox is kept under (review finding S3): its signed launch
+ * and the session it names. The session id is the sandbox's word, the launch is not, so a
+ * sandbox can only write - and its calls only read - notes of its own launch.
+ */
+export function sandboxSessionKey(launchNonce: string, sessionId: string): string {
+  // Hashed to a fixed length: a launch nonce and a 256-character session id would pass the
+  // 255-byte limit on a file name, and the note would be lost without a word (second review).
+  return `airlock-${createHash('sha256').update(`${launchNonce}\0${sessionId}`).digest('hex').slice(0, 40)}`;
+}
+
+/**
+ * The note for a call: under its launch when it came from an Airlock sandbox (or the launcher
+ * speaking for one), where a call without a session has none - never the shared note, which may
+ * be any project's (second review) - else the session's own, as before.
+ */
+export function activeWorkKeyFor(sessionId: string | undefined, launchNonce: string | undefined): { key: string | undefined } | null {
+  if (launchNonce === undefined) return { key: sessionId };
+  return sessionId ? { key: sandboxSessionKey(launchNonce, sessionId) } : null;
+}
+
 /** Read the note for a specific session, falling back to the shared one. */
 export function readActiveWorkForSession(sessionId?: string): ActiveWork | null {
   return readActiveWork(readerFor(sessionId));
@@ -116,8 +138,18 @@ export function readActiveWorkForSession(sessionId?: string): ActiveWork | null 
 /** Record the item the gatekeeper just authorized. Never throws. */
 export function writeActiveWork(work: ActiveWork, sessionId?: string): void {
   try {
-    const target = activeWorkPath(sessionId);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (!sessionId) {
+      const shared = activeWorkPath();
+      fs.mkdirSync(path.dirname(shared), { recursive: true });
+      fs.writeFileSync(shared, serializeActiveWork(work), 'utf8');
+      return;
+    }
+    // A session id names the file (POST /active-work takes it from a request): whatever it
+    // holds, the note stays in the notes dir (PR #297 CodeQL js/path-injection).
+    const notes = path.resolve(os.homedir(), '.agenfk', 'active-work');
+    const target = path.resolve(notes, path.basename(activeWorkPath(sessionId)));
+    if (!target.startsWith(notes + path.sep)) return;
+    fs.mkdirSync(notes, { recursive: true });
     fs.writeFileSync(target, serializeActiveWork(work), 'utf8');
   } catch {
     // A lost note costs a run that is not recorded — never a failed command.

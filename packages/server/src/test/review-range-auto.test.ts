@@ -18,7 +18,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 import { removeTestDb, testDbPath } from './helpers/testDb';
 
 vi.mock('axios', () => {
@@ -34,7 +33,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -58,16 +57,25 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 
+/** Two commits: a.txt (one), then b.txt (two). */
+const buildTwoCommits: GitTemplateBuild = (d) => {
+  gitSync(d, 'init', '-q', '-b', 'main');
+  gitSync(d, 'config', 'user.email', 't@t');
+  gitSync(d, 'config', 'user.name', 't');
+  writeFiles(d, { 'a.txt': 'a' });
+  gitSync(d, 'add', '.');
+  gitSync(d, 'commit', '-qm', 'one');
+  writeFiles(d, { 'b.txt': 'b' });
+  gitSync(d, 'add', '.');
+  gitSync(d, 'commit', '-qm', 'two');
+};
+
 function makeRepo(): { dir: string; base: string; tip: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-rauto-repo-'));
+  // A clone of the per-worker template (#311): same content and history as a
+  // fresh build, with real commit dates from when the worker built it.
+  const dir = cloneGitTemplate('review-range-auto:two-commits', buildTwoCommits, 'agenfk-rauto-repo-');
   cleanup.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
-  fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
-  const base = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
-  fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
-  execSync('git add . && git commit -qm two', { cwd: dir, shell: posixShell() });
-  const tip = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+  const [base, tip] = gitSync(dir, 'rev-parse', 'HEAD~1', 'HEAD').split(/\r?\n/);
   return { dir, base, tip };
 }
 
@@ -171,8 +179,9 @@ describe("CGLAB-457 review: a parent's range covers its whole tree", () => {
   it("starts before a child's work committed ahead of the parent's own start", async () => {
     const { dir, base, pid } = await setup();
     fs.writeFileSync(path.join(dir, 'child.txt'), 'child work');
-    execSync('git add . && git commit -qm "close(task): child"', { cwd: dir, shell: posixShell() });
-    const later = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+    gitSync(dir, 'add', '.');
+    gitSync(dir, 'commit', '-qm', 'close(task): child');
+    const later = gitSync(dir, 'rev-parse', 'HEAD');
     const parent = await cardAt(pid, later);
     await cardAt(pid, base, { parentId: parent, status: 'END' });
     const res = await record(parent, { transcript: claudeSubagentTranscript('author-sess', 'early1', FUTURE), findings: [] });
@@ -221,8 +230,9 @@ describe('CGLAB-457: a refused review says what to do next', () => {
     const id = await cardAt(pid, base);
     expect((await record(id, { transcript: claudeSubagentTranscript('author-sess', 'head1', FUTURE), findings: [] })).status).toBe(201);
     fs.writeFileSync(path.join(dir, 'c.txt'), 'c');
-    execSync('git add . && git commit -qm three', { cwd: dir, shell: posixShell() });
-    const moved = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+    gitSync(dir, 'add', '.');
+    gitSync(dir, 'commit', '-qm', 'three');
+    const moved = gitSync(dir, 'rev-parse', 'HEAD');
     const res = await validate(id);
     expect(res.status).toBe(422);
     const detail = reviewCheck(res.body).detail as string;

@@ -2,6 +2,633 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.1.0] — 2026-11-23
+
+Stable. Everything in 2.1.0-beta.1 to 2.1.0-beta.24, plus the fixes below. The sections under each beta describe the
+changes in detail.
+
+**Highlights since 2.0.0**
+
+- **Usage and cost per card.** AgEnFK reads Claude Code, Codex, pi and Antigravity session logs and charges each turn
+  to its card, subagents included. The card's Usage tab and the hub's `/usage` page show tokens and cost by step,
+  model, person, harness and PR.
+- **Airlock (Preview).** An egress and action shield that runs pi, OpenCode, Claude Code and Codex in a smolvm
+  microVM under the org's policy, with model keys and logins held on the host.
+- **CI receipts (RFC-002).** Verify once on a laptop, and skip the same job in CI.
+- **`agenfk hub admin`.** About 110 commands that cover every admin page of the hub.
+- **Whole-database SQLite backups**, `agenfk db vacuum`, and a fuller `agenfk db status`.
+
+**Breaking changes since 2.0.0**
+
+- The CLI needs Node `^22.13.0` or `>=23.5.0`.
+- A command refuses positional arguments it does not take: quote each value of several words.
+- Backups are `.sqlite` snapshots, not JSON.
+- Install the hub and its clients together: a 2.1 hub drops the usage that clients older than 2.1.0-beta.21 send.
+- `AGENFK_HUB_SYNC_INTERVAL_MS` and `AGENFK_HUB_SYNC_FIRST_DELAY_MS` replace the four hub sync interval variables.
+  `GET /v1/usage/overview` no longer returns `byPr`: use `GET /v1/usage/prs`.
+- A custom Airlock image named by a policy needs util-linux `setsid` 2.31 or later.
+
+**Fixes**
+
+- **`agenfk tokens --client` accepts `agy` and `pi`** (#413, #415).
+- **The desktop PTY tests no longer send real signals to fake process ids** (#416). They could stop the CI runner
+  in the middle of a run.
+
+## [2.1.0-beta.24] — 2026-11-23
+
+Beta, cumulative over 2.1.0-beta.23: everything in 2.1.0-beta.23, plus the changes below.
+
+**Usage & Pricing**
+
+- **Antigravity (`agy`) usage token & cost support** (#411, #412). Local token ingestion now scans Antigravity CLI (`~/.gemini/antigravity-cli/brain`, override `AGY_DATA_DIR`) and IDE (`~/.gemini/antigravity/brain`, override `ANTIGRAVITY_DATA_DIR`) transcripts (`PLANNER_RESPONSE` records), resolves workspace `cwd` from `conversation_summaries.db`, attributes turns via confirmed AgEnFK tool-call claims, and strips effort suffixes (`-minimal`, `-low`, `-medium`, `-high`, `-xhigh`) when pricing models from the public price table. Adds `'agy'` to client whitelists, UI `Antigravity` label, and Hub `HARNESS_NAMES`.
+
+**Hub**
+
+- **Airlock marked as Preview in Hub UI** (#407, #412). Marks the Airlock section and admin views with a Preview badge and banner in the Hub UI.
+
+## [2.1.0-beta.23] — 2026-11-23
+
+Beta, cumulative over 2.1.0-beta.22: everything in 2.1.0-beta.22, plus the changes below.
+
+**Hub**
+
+- **Filter dropdowns are no longer cut off** (#405, #406). The Project (git remote) dropdown on Usage, Org, the user
+  page, PR overview and Flow adherence was clipped at the bottom of the filter panel, so only the first project
+  showed. It now opens over the content below, with an opaque background.
+
+## [2.1.0-beta.22] — 2026-11-20
+
+Beta, cumulative over 2.1.0-beta.21: everything in 2.1.0-beta.21, plus the changes below.
+
+**Usage attribution** (#400, #401)
+
+- **A helper spawned by a subagent counts toward its spawner's card.** A subagent that never names a card used to
+  count toward the session's card, also when another subagent spawned it, and after a handover that was no card. It
+  now follows its spawn chain and counts toward the nearest spawner's card, and toward the session's card only when no
+  spawner names one.
+- **Stored usage of these helpers is charged again once.** On upgrade, the server moves the stored turns of helpers
+  spawned by subagents to their spawner's card and recomputes the usage of each card that changed. A turn whose
+  session log is gone stays where it is. The server log says what moved.
+- **The hub's By PR table says when a closed card reported no usage.** It showed "not closed yet" for a card that was
+  closed with no usage, which looked like the "Card closed" filter did not work. It now shows "closed, no usage
+  reported".
+
+## [2.1.0-beta.21] — 2026-11-20
+
+Beta, cumulative over 2.1.0-beta.20: everything in 2.1.0-beta.20, plus the changes below. Install the hub and the clients together: a beta.21 hub drops usage that older clients send.
+
+**Features**
+
+- **A flow check fails a step whose diff adds comments with no function** (#392). Directives, docstrings and agent tool descriptions are allowed; narration and notes fail.
+- **Usage with no card reaches the hub** (#394). The server sends each project's daily totals of turns on no card, and /usage and the board show them.
+- **The hub's By PR table pages, filters and sorts on the server** (#396). `GET /v1/usage/prs` serves one page at a time, with repository, text and status filters and a sort on every column. The 1000-PR cap is gone.
+- **Claude Code and Codex turns are priced when they are ingested** (#397). Each turn stores `estimatedCostUsd` from the price table of that time. Older usage with no stored price is priced at today's prices, and the page says so.
+
+**Fixes**
+
+- **A child hub forwards card usage when identities are coded** (#395). Step and close events keep their usage numbers on the way to the parent hub, without identities.
+
+**Usage attribution** (#398)
+
+- **Each subagent's usage goes to its own card.** A Claude Code subagent runs with its parent's session id, so
+  parallel subagents of one session charged their usage to each other's cards, and to the parent's. In a session
+  with subagents, each transcript is now charged by its own gatekeeper and verify calls. A subagent counts toward
+  the first card it names from its first turn, and only a subagent that never names one (a reviewer, an explorer)
+  counts toward its parent's card. The parent counts toward its own card only, until one of its subagents names that
+  card: from then on the parent counts toward no card until it names one again. Turns read before the call that
+  decides their card are charged again when it is read. A session without subagents is charged as before.
+- **Stored usage is charged again once.** On upgrade, the server charges the stored turns of sessions with subagents
+  again by the new rule, and recomputes the step and close usage of each card that changed. A turn whose session
+  log is gone goes to no card, and it still counts for its project. The server log says what moved.
+- **The hub drops usage from versions before this fix.** The hub keeps the events, but it drops the usage that
+  versions older than 2.1.0-beta.21 send, and the usage from child hubs on those versions. On upgrade, it clears the
+  usage that it already stored from them, on SQLite and on Postgres.
+
+**From Eduardo Pin** (@eduardopincglab, @eduardopin)
+
+- **Settings has a Back button** (#362). It returns to the view Settings was opened from, which stays as it was.
+- **UI scale and terminal font size persist** (#364). Settings > Appearance sets both, and the desktop app keeps them across launches.
+- **`comment`, `add-context` and `log-test` accept a short item id** (#386), as `get` does.
+- **A flaky back-navigation test no longer fails on a loaded machine** (#358).
+
+## [2.1.0-beta.20] — 2026-11-20
+
+**Features** (#393)
+
+- **The hub's Usage page shows each token type.** The headline, the tables (by installation, person, harness and
+  model, and PR) and the daily tokens chart show input, cache read, cache write and output beside the total. Each
+  type column sorts, and the chart stacks each day by type, with a tooltip on each part. Reasoning tokens are not
+  shown, because some harnesses count them in the output tokens.
+
+**Fixes** (#391)
+
+- **The hub stores one form of each event time.** Ingest and federation store `occurredAt` as a UTC ISO time, so
+  SQLite and Postgres filter and sort events the same way. A time without an offset is read as UTC. An event whose
+  time is not ISO 8601 is rejected alone, and does not cause its batch to fail on Postgres. On its first boot, a
+  SQLite hub rewrites the stored times one time and rebuilds the rollups of the days that changed; it keeps each row
+  that it cannot parse.
+- **A PR with no usage yet sorts last on the Usage page**, in each sort direction.
+
+## [2.1.0-beta.19] — 2026-11-20
+
+**Features** (#389)
+
+- **Usage per card.** AgEnFK reads the Claude Code, Codex and pi session logs again, one event per message, and
+  charges each turn to the card of its session. Each card move records the usage of the step it leaves, and a
+  closing card records its total with its sub-cards. The card's **Usage** tab shows it by sub-card, by step and by
+  model. A move waits up to 15 seconds for the session logs; when they are late the move continues and the step is
+  marked incomplete.
+- **A Usage page on the hub.** `/usage` shows the tokens and the cost of the org over the filters: totals, cost and
+  tokens per day, then by installation, person, harness and model, and PR. pi reports its cost; Claude Code and
+  Codex are estimated from the public price table and marked "est.". `agenfk hub admin data usage-overview` reads
+  the same data. The By PR table is served a page at a time: filter it by repository, PR number or card title and
+  status, sort it on the hub by any column, open a PR on its host from its link, and see who opened it
+  (`agenfk hub admin data usage-prs`). `GET /v1/usage/overview` no longer returns `byPr` or `prsTruncated`: the PR
+  list is `GET /v1/usage/prs`. The hub counts each turn once: late turns, events in any order, reopened cards and a restored
+  backup do not count a turn twice.
+
+**Fixes**
+
+- **The hub's new `events` index does not block event ingest on Postgres.** It is built `CONCURRENTLY`, and an
+  index left INVALID by a failed build is rebuilt on the next boot.
+
+## [2.1.0-beta.18] — 2026-11-15
+
+**Fixes** (#371)
+
+- **`agenfk airlock claude` (and every other agent) starts in the sandbox again.** The session's `setsid` returned
+  at once in the machine, so the launcher took the session for ended, stopped the machine, and failed with
+  "could not put the session in a cgroup of its own (… connection closed)". The session now starts with
+  `setsid --wait`, and, under a terminal, keeps the one the machine gave it instead of failing with
+  "setsid: failed to set the controlling terminal". A session that ends before it is contained now says so.
+  A machine image named by an org or repository policy now needs util-linux's `setsid` 2.31 or later (the base
+  image has it): with busybox's (alpine), every session refuses with 125 and says why.
+- **`agenfk airlock exec --no-process-group` documents which processes its caller may kill:** the machine it starts
+  is in the same process group, so killing that group after the command returned stops the machine.
+
+**Fixes** (#349)
+
+- **The installers work when the user folder has accented letters on Windows.** On Node 22, `fs.cpSync` stopped the
+  process with no message (exit code 3) for a path such as `C:\Users\Fábio`, leaving `~/.agenfk-system` or
+  `~/.agenfk-hub` half copied. `npx github:cglab-public/agenfk` and `agenfk-hub` now copy the install file by file.
+- **An Airlock session no longer hangs when the AgEnFK server is down on WSL2 with mirrored networking.** There a
+  connection to a closed loopback port never fails, and the session's relay waited on it for good; it now gives up
+  after 5 seconds and the agent gets a 502. A loopback model endpoint's forward also delivers a request whose
+  client closed before the connection was made, and closes once that client is gone instead of staying open.
+
+**Build** (#244)
+
+- **The repo builds with TypeScript 6.0.3.** `typescript` is declared once, in the root `package.json`, instead of
+  in every package. Every package that builds with `tsc` now sets `rootDir: "./src"` and `types: ["node"]`, which
+  TypeScript 6 no longer infers (`flow-editor` and `hub-ui` got `types` too), and `dist/` keeps its flat layout (a new `dist-layout` test guards this). The build
+  output is the same as before. Dependabot now skips new major versions of `typescript`.
+- **After pulling this, delete the old build cache and rebuild `core` first.** Remove `node_modules/.tmp/*.tsbuildinfo`
+  files written by TypeScript 5, and run `npm run build` before trusting a type error: a stale `packages/core/dist`
+  makes `cli` and `server` report errors about `AIRLOCK_CLIENTS` that have nothing to do with TypeScript.
+
+## [2.1.0-beta.17] — 2026-11-04
+
+**Airlock: Claude Code and Codex in the sandbox** (#356, #357)
+
+- **`agenfk airlock claude` and `agenfk airlock codex`** launch Claude Code and Codex in the Airlock machine. There
+  is no launch gate: a session outside Airlock is untouched. Inside, each tool call is judged by the per-call hook,
+  and the guest image now ships both clients.
+- **Logins are held on the host by default.** The machine's login file is a stand-in, and the host puts the real
+  token in on the way to the model: Claude Code's own login on this machine (its Keychain entry on a Mac), or
+  Codex's ChatGPT login in `~/.codex/auth.json` (or `$CODEX_HOME`'s). For Codex the host also answers its token
+  refresh itself, and puts the token into its WebSocket to chatgpt.com as well. Airlock never refreshes a login on
+  the host: if one has expired, run the client here once. `--login mount`, before the client's name, gives the
+  machine its own copy of the login file instead, and nothing written to it reaches yours. An API key in the
+  environment is masked, in either mode.
+- **A missing `.mcp.json` in the workspace is held** as an empty read-only directory for the session. The session
+  could otherwise create one whose MCP command the host's Claude Code would run next. Claude Code in the machine
+  reports it as a config it could not parse and carries on; git does not show it.
+
+**Windows verify speed** (#310, #348)
+
+- The verify suite runs faster on Windows: fixture git repos come from a template, git calls are memoised per
+  verify, and the suite's worker count is tuned for win32. It runs the same specs, with nothing skipped.
+
+**CLI** (#316)
+
+- **A command refuses positional arguments it does not take**, now that the CLI is on commander 15. A stray word
+  used to be dropped silently: an unquoted `agenfk create TASK Fix the thing` made a card titled "Fix", and
+  `agenfk verify <id> --evidence ... -- npm test` ran `npm`. It now exits 1 with "too many arguments", so quote a
+  value of several words. A mistyped command still says "unknown command" and suggests the right one.
+- **The CLI needs Node `^22.13.0` or `>=23.5.0`**, as its engines already said: commander 15 loads only there. The
+  `ci-check` GitHub Action does not set Node up, so on an older runner Node it now warns and runs the gated steps
+  (or fails under `policy: require`), as for a release it cannot install.
+
+**Dependencies** (#320)
+
+- **Electron 40 to 42** (#321, #352) for the desktop app: fixes 26 Dependabot alerts.
+- **Vulnerable transitive dependencies upgraded** (#325, #351) within their existing ranges.
+- **CI fails on a new high or critical advisory in a runtime dependency** (`npm audit --omit=dev --audit-level=high`,
+  #340, #353), and Dependabot now targets `beta`.
+
+## [2.1.0-beta.16] — 2026-11-02
+
+**Hub sync** (#346, #347)
+
+- **One loop, and no hub request that can hang it.** An installation could stop applying new Airlock policy
+  revisions, with nothing logged, until the server restarted: the flow reconciler pulled flows, repo settings,
+  Airlock and receipts one after another, with no request timeout, and started its next tick only once the last one
+  had finished. The four timers the server ran against the hub (events, flows, repoint, upgrade) are now one loop,
+  every 30 s. Each tick starts every channel at once, a channel still running is skipped rather than run twice, and a
+  failing channel logs one `[HUB_SYNC]` line and holds up no other. Every hub request gives up after 15 s
+  (`AGENFK_HUB_REQUEST_TIMEOUT_MS`).
+- Flows, repo settings, Airlock and repoint directives are now checked every 30 s, not every 5 minutes, and upgrade
+  directives every 30 s, not every 60 s. `AGENFK_HUB_SYNC_INTERVAL_MS` and `AGENFK_HUB_SYNC_FIRST_DELAY_MS` replace
+  `AGENFK_HUB_FLOW_SYNC_INTERVAL_MS`, `AGENFK_HUB_REPOINT_SYNC_INTERVAL_MS`, `AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS`
+  and `AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS`.
+- **A hub repoint moves every channel, not just events.** After a repoint campaign moved an installation to a new
+  hub name, only its events followed: flows, repo settings, Airlock, receipts and upgrade checks kept the old name
+  until the server restarted, so once the old name was retired the installation silently stopped taking policy,
+  flows and upgrades. The move now restarts the hub loop on the verified target, exactly as
+  `POST /internal/hub/reload` does. A repoint overtaken by a newer login or token no longer puts the older token
+  back, and restarting the hub loop no longer reports an upgrade still in progress as failed.
+
+## [2.1.0-beta.15] — 2026-11-02
+
+**Airlock** (#345)
+
+- **`*` in a host list: every host but the always-denied ones.** `* download` allows every download while uploads
+  stay limited to the hosts allowed for them; `*` both ways allows every host. The cloud metadata endpoints, the IOC
+  hosts and the deny list still refuse, since they are judged before any allow; a range that names a metadata address
+  (`0.0.0.0/0`) is still refused. In the sandbox, `*` opens the network the way observe mode does - every host not
+  denied is reachable and every name not denied resolves - and which way data goes stays judged on tool calls: the
+  network cannot see direction, so under a one-way `*` a script that names no host can still upload, and a host
+  denied by name is not recognised when reached by its address with no lookup. Adding `*` to a running session
+  applies from its next start, and says so. Learning keeps proposing a host only a one-way `*` covers.
+- **The host lists are lists.** On the board and the hub, for the policy and project overrides: one row per host with
+  Download and Upload boxes (on the deny side, which way it is blocked), a remove button, and a field that adds a
+  host on Enter or several pasted at once, one per line. The saved policy is unchanged.
+
+The hub needs this version for its editor.
+
+## [2.1.0-beta.14] — 2026-11-02
+
+**Airlock** (#344)
+
+- **Each learned host says what it is, so a person can decide on it.** Every import
+  (`agenfk airlock learn --import-pi-sessions`) now brings the projects whose sessions reached a host (the working
+  folder's name, never its path) and an address's reverse DNS name, and the board and the hub label what can be said
+  for certain: a public DNS resolver, a cloud machine (the address is someone else's once it is gone), a network
+  address (`x.x.x.0`), an address with no name. The hub lists every installation's projects (25, then a count) and
+  the newest name and hint; `agenfk hub admin airlock learning list` prints them too. Display only: nothing here
+  allows, excludes or accepts a host.
+- **`--hints <provider>` writes one sentence per host.** Opt-in: `--hints claude`, `codex` or `pi` runs your own CLI
+  with your own login, or `--hints <http(s) URL>` asks an OpenAI-compatible server (a local llama-server or Ollama,
+  a self-hosted model; key in `AGENFK_HINTS_API_KEY`), with `--hints-model <id>` to pick the model. It is given up to
+  three example commands per host with secrets removed (the log redaction, plus the credentials a command spells out:
+  `curl -u`, authorization and cookie headers, a URL's user:password, `sshpass -p`, password options and
+  `*_PASSWORD=` style assignments), 30 hosts per call; the commands go to that provider only, never to the server or
+  the hub. A provider that fails or takes too long is stopped with everything it started, and the import goes on
+  without hints for those hosts. A later import replaces a host's projects and reverse DNS name, and keeps its hint
+  unless it brings a new one.
+- **Fixed:** the dropdowns in the board's Airlock settings took the whole row, squeezing each rule's name and
+  description to one word per line; the hub's learning direction picker had the same fault.
+- **Fixed:** the guest resolver could fail to start on Windows when the TCP side of the port it picked was reserved;
+  it now tries another port.
+
+The hub needs this version to show context and hints; an older hub ignores them in a forward.
+
+**Fixes**
+
+- A stopped `git am` declines the close commit as "a git am session is in progress", not as a rebase (#309).
+
+## [2.1.0-beta.13] — 2026-11-02
+
+**Airlock** (#319)
+
+- **Every allowed and blocked host can be one way: download, upload or both.** On the board and on the hub, write
+  `download` or `upload` after a host (a name, `*.domain` or a CIDR) in the policy or a project override; a host
+  with neither is both ways, so existing policies keep their meaning. Direction is judged on tool calls: an upload
+  to a host allowed for downloads only is refused, and a host blocked for uploads can still be fetched from. A call
+  whose direction cannot be read (an interpreter, `ssh`, `awk`, a command piped to a shell - even `echo <url>`,
+  since `echo ... | sh` is one) is treated as an upload to a host allowed for downloads only, and any block stops
+  it; set "Upload to an unlisted host" to "Needs a person's approval" to approve such calls instead. While any host
+  is allowed for downloads only, a `git push` to a remote alias (`origin`) is refused the same way, since its
+  destination is not in the call: push to the remote's URL. The sandbox network cannot see direction: it reaches a host allowed either way and
+  refuses only one blocked both ways, so a host allowed for downloads is not a barrier against a deliberate leak
+  (a request still carries its URL and headers). An installation older than this release is never looser: it
+  ignores one-way allows and treats one-way blocks as both ways. `git clone`/`fetch`/`pull` are read as downloads
+  and `git push` to a URL as an upload.
+- **Learning shows which hosts were sent data, and proposes wildcards.** Each proposed host says whether a tool call
+  ever sent it data, and starts at Download or Both accordingly; hosts sharing a domain are offered as one
+  `*.domain` entry (never over shared hosting, tunnels, wildcard DNS or object storage). Accepting picks a direction
+  per entry, on the board, on the hub, and with `agenfk hub admin airlock learning accept --direction`.
+- **Learning no longer learns names that are not hosts**: query words such as `@session.id:abc`, `file://` paths, and
+  reserved names (`*.test`, `*.example`, `example.com`). `agenfk airlock learn --import-pi-sessions` now says, on a
+  hub-joined installation, that the hosts are sent to the hub from the board and accepted there by an org admin.
+
+## [2.1.0-beta.12] — 2026-11-01
+
+**Airlock**
+
+- **Tool calls that write JavaScript or TypeScript classes are judged again** (#306). A command word such as
+  `constructor`, `toString` or `__proto__` (any heredoc writing a class has one) made Airlock's command analyser
+  fail. The server answered 500, which pi reads as "server unreachable": under `enforce` the call was refused with
+  the wrong reason, and under `observe` it went through unrecorded.
+- **A very long command no longer fails the analyser** (#306). A command with about 130,000 words did, the same way.
+- **`agenfk airlock learn --import-pi-sessions` reads every log** (#306). It stopped at the first line the analyser
+  failed on. A line it cannot read is now skipped and counted.
+
+**CLI**
+
+- Help text no longer carries internal ticket ids (`TEL-3`, `DS-3` and the like).
+
+## [2.1.0-beta.11] — 2026-11-01
+
+**Hub**
+
+- **Hub admin from the command line** (#303, CGLAB-702). `agenfk hub admin <area> <verb>` covers every hub admin
+  page: people and access, fleet (flows, upgrades, repoint), policies (Airlock, repos, models), hub settings and
+  data (events, audit, every board chart as JSON/CSV) - about 110 commands. `agenfk hub admin login` signs in with a
+  device flow an admin approves in the browser (12-hour token, stored on the hub only as a hash); `logout` and
+  `sessions list|revoke` end sessions. Configuration changes made from the CLI are audited with source `cli`. `--json` on commands
+  that returns data, `--yes` on destructive or fleet-wide changes, secrets only from stdin.
+- **Admin → Airlock is organised in tabs** (#304): Policy, Network, Sandbox, Projects, Activity and Learning. Policy,
+  Network and Sandbox edit one policy with one Save; unsaved edits survive switching tabs, and `?tab=` links to one.
+  Long lists (installations, recent denials, revision history, proposed hosts) scroll within the page.
+- **Airlock events name the policy revision and who** in a person's Recent events, instead of a dash.
+- **`agenfk hub skill install` teaches every coding agent to administer the hub** (#305). It installs an
+  `agenfk-hub-admin` skill for pi, Codex, OpenCode, Cursor and Gemini (`~/.agents/skills`) and Claude Code
+  (`~/.claude/skills`), or into the repository with `--project`: how to sign in (a person approves the code), when
+  to confirm with the user, and every `agenfk hub admin` command with its arguments and options, made from the
+  installed CLI. Install it again after an upgrade. `agenfk skills install` leaves it in place.
+
+**Worktrees**
+
+- **Windows: cards get their worktree again on long paths** (#298, #269). Worktree commands run with
+  `core.longpaths` (and the new worktree keeps it), so `Filename too long` no longer leaves a card on "no branch
+  yet"; a creation that still fails says what to do and cleans up after itself.
+
+## [2.1.0-beta.10] — 2026-11-01
+
+**Airlock**
+
+- **Home folder read-write now means read-write** (#302). Under that policy the session may write anywhere in the
+  home folder and the workspace: git, ssh and shell config, login agents, every coding agent's config, AgEnFK's own
+  install and `.agenfk` folders and the workspace's git hooks and config are no longer held. Only Airlock's records
+  (`~/.agenfk/airlock`, the report token) stay hidden. *Protect credentials* and *home folder read-only* are
+  unchanged. A workspace inside `~/.agenfk` is refused in that mode, since the session's own `~/.agenfk` covers it.
+- **`jq` is in the Airlock base image**, so a pi provider whose key command pipes `auth.json` through it works.
+
+## [2.1.0-beta.9] — 2026-10-31
+
+**Airlock**
+
+- **Home access is a policy setting** (#301). The org's Airlock policy chooses what of the home folder a sandboxed
+  session's machine sees: *protect credentials* (the default, as before), *home folder read-only*, or *home folder
+  read-write*. It is set on the hub admin page or the standalone board; a hub-joined installation follows the hub and
+  cannot open more locally. AgEnFK's own files stay unwritable and Airlock's records unreadable in every mode. The
+  open modes let a pi provider whose key is read from `auth.json` work inside the sandbox. Read-write is labelled as
+  able to run code on the machine: git, ssh and shell config, login agents and both agents' configs stay protected,
+  other projects' hooks and unlisted tool configs do not. A policy that narrows home access ends running sessions.
+- **`agenfk airlock pi|opencode` passes every argument after the client's name to it as typed**, `--help` and `--`
+  included. AgEnFK's own `--key-env NAME` now goes before the client's name: `agenfk airlock --key-env NAME pi ...`.
+- A session that ignores SIGTERM is ended through its cgroup, which it cannot redirect.
+
+## [2.1.0-beta.8] — 2026-10-31
+
+**Airlock**
+
+- **Launches work again in a repository that holds a linked worktree** (#300). A worktree checked out inside the
+  workspace (Claude Code's `.claude/worktrees/...`, say) made `agenfk airlock pi` and `opencode` refuse to start
+  in beta.7, because that worktree's `.git` pointer leads into `.git/worktrees`. That folder is protected the
+  same way submodules' is, so it is now accepted.
+
+## [2.1.0-beta.7] — 2026-10-31
+
+Airlock runs sandboxed agents in smolvm microVMs (#299, CGLAB-696).
+
+**Airlock**
+
+- **Sandboxed sessions run in a smolvm microVM, one per workspace, in place of ASRT.** AgEnFK installs the pinned
+  smolvm itself (`agenfk airlock install`; install and upgrade do it where Airlock is on) and builds the machine
+  from the AgEnFK base image. Linked git worktrees, crash recovery, `agenfk airlock reset`, and server-run commands
+  (`airlock exec`) all work in the machine.
+- **Every outbound connection is decided on the host**, by the policy: by address, port, TLS server name or HTTP
+  Host. Denied and IOC names do not resolve inside the machine. Every decision reaches the session's report,
+  including the lookups the machine's resolver refuses. A policy changed while a session runs reaches it.
+- **Model keys never enter the machine.** The guest gets a placeholder, and the host puts the key in on the way out
+  to the approved inference host. A key for a plain-http endpoint cannot be masked: it reaches the session as
+  launch warns, never on a command line.
+- **A model server on your machine's loopback** (an ssh tunnel, ollama: `http://127.0.0.1:<port>`, `localhost`)
+  is reached from inside the machine. An IPv6 loopback endpoint is not: use 127.0.0.1 or localhost.
+- **What the host runs next is read-only to the agent**: pi's launcher, installs and settings, OpenCode's
+  config, plugins and LSP binaries, git hooks and config (nested repositories too), and `~/.agenfk`. `npm ci`
+  lifecycle scripts cannot leave processes running after the install.
+- **Project isolation is gone**: a sandboxed agent can read and change cards in any project. Airlock blocks
+  harmful behaviour, such as uploads to outside sites; it does not separate AgEnFK projects. Airlock's own
+  records (approvals, decisions, learning) stay out of a sandbox's reach, and a grant is spent only by the launch
+  it was given to.
+- Launch refuses (it says why):
+  - a protected client config that is a symbolic link (a dotfiles-managed `~/.pi/agent/settings.json`,
+    `opencode.json`);
+  - a nested `.git` pointer that leads anywhere but a protected submodule folder.
+- Sessions and locks know a reused process id from the process that held it, and the smolvm install takes the
+  same lock as the machine.
+
+## [2.1.0-beta.6] — 2026-10-29
+
+Fixes from the beta.5 post-release tests (#297, CGLAB-694).
+
+**Airlock**
+
+- **`agenfk airlock pi` works on a machine that has `~/.pi/agent/auth.json`.** pi reads an auth.json it cannot open
+  as "no key", even for a key in `models.json`, and the sandbox denies it: every launch failed with "No API key
+  found". pi now runs on a staged agent dir (every entry but `auth.json`, which is an empty one of its own). A
+  `PI_CODING_AGENT_DIR` you set is honoured (`~` and `file://` too), its `auth.json` denied and `extensions`
+  unwritable. pi's `/login` logins are not available inside; give a provider's key as an env var.
+- **The shared `/tmp` is writable inside the sandbox**, for tools that hardcode it (e.g. `pi-patty-bg-tasks`).
+  Accepted risk: a sandboxed agent can change anything of yours under `/tmp`, such as a git checkout's hooks there.
+- **Dataset: no secret in a one-line shell command or an XML file.** `printf 'user: x\npassword: y'` (escaped
+  newlines), `<password>`, `<db:password>` and multiline elements are now recognised, and the content left out.
+- **Dataset: live rows carry their card and session.** The pi extension names its own session (exported to its
+  shells as `AGENFK_PI_SESSION_ID`, ranked after Claude Code's), and a sandboxed gatekeeper records its card
+  through the server, under its launch. Proxy rows take the session the launch's calls last named.
+- **Dataset: a write's content is in its row** (it was a placeholder), redacted before it leaves; bodies are
+  dropped from a call that would be too large rather than blocking it.
+- `agenfk airlock dataset status` says whether the org's dataset switch is on, asking the hub now.
+- `agenfk airlock status` against a server older than Airlock says so, instead of a bare 404.
+
+**CLI and installer**
+
+- An install into another HOME no longer restarts (kills) the AgEnFK server of a different install on the same
+  machine.
+- No more Node 22 `ExperimentalWarning: SQLite` on every command.
+
+## [2.1.0-beta.5] — 2026-10-28
+
+**Airlock**
+
+- **Commands the server runs for a sandboxed agent are sandboxed too, while the policy enforces** (#294).
+  Verify, the suite, the baseline capture and worktree setup of a card an Airlock session touched run through
+  `agenfk airlock exec`, in a sandbox built from the same policy, with git hooks off. In `observe` mode they
+  run as before. The desktop app bundles what that needs. This
+  closes the beta.4 limit "commands the server runs for an agent are not sandboxed".
+- **Board-only writes are refused at the launcher's relay** (#294). A sandboxed agent can no longer forge
+  approvals, policy writes or learning accepts on a standalone installation (the beta.4 limit).
+- **Publishing through an allowed host is its own rule** (`publishThroughAllowedHost`): gists, issue bodies
+  read from files, package and model uploads, image pushes need a person's approval by default, even to a host
+  the allow list names.
+- **Per-project overrides** (#294). An override is keyed by repository (`host/owner/repo`, any git remote
+  form, or `owner/repo` on GitHub) or, on a standalone installation, `project:<id>`. Its allowed and denied
+  hosts are added to the policy's, and a host the policy denies stays denied. Each rule it sets replaces the
+  policy's, so it can loosen or tighten. Mode, model selectors, the IOC list and the cloud metadata denies stay
+  the policy's. Edit them on Hub Admin → Airlock (they are part of the policy and its revisions) or on a
+  standalone board's Settings → Airlock; a hub-joined board shows the hub's read-only.
+- A sandboxed session is held to the project it was launched for: the server refuses its requests that reach
+  another project's cards or projects, or change a project's root or delete a project.
+- **Airlock dataset** (#294), for training the semantic scorer. A hub admin switches it on in Hub Admin →
+  Airlock → Dataset; it is **off by default**, and a standalone installation captures nothing. While it is on,
+  each judged tool call goes to the hub as a full row: the call (commands, paths, written content, URLs), the
+  verdict, the card's title, description and step, and the session's last few calls. Secrets are removed on
+  the installation before the row leaves it. A person's approve or deny, and a learning accept, is kept as a
+  label on its row. Past pi and OpenCode sessions go up only when someone runs
+  `agenfk airlock dataset import`, never because the switch was turned on. The hub keeps at most 100,000 rows
+  per org for 90 days (64 KB a row, 20 labels of 4 KB each), and only an admin can download it, as JSONL, from
+  the hub. There is no local export.
+- **What a sandboxed session can reach on the server is narrower** (#294). Refused from the Airlock sandbox, at the
+  launcher's relay and at the server: herdr panes and terminal sessions (they type into, or start, host terminals);
+  setting a project's verify, setup or test-report command, creating, changing, selecting or installing a flow, and
+  `/internal` (all of them would run later, on the host, for cards no sandbox touched). Listings (cards, runs, token
+  events, projects) answer with the launch's own project only; Airlock approvals, decisions, learning, verify runs, hub
+  refusals and the database status are refused; a verify run or a PR of another project is not found.
+- **A launch refuses a server older than this agenfk** while the policy enforces: that server would run the session's
+  cards' commands outside the sandbox. Restart it on this version (`agenfk restart`). In observe mode it only warns.
+- **Airlock dataset, more secrets kept out.** Text or a command that holds any credential-named key (`password:`,
+  `API_TOKEN=`, `"credentials":`, `[secrets]`, quoted or escaped) is sent as omitted, with its size only. Credential
+  values in content, YAML block scalars and quoted values over several lines, and `passphrase`, `cookie`, `session_id`
+  and `auth` keys are redacted in what is sent. A person's approve or deny still labels its rows after the server
+  restarts.
+
+*Known limits:*
+
+- A repository is matched without case, port or `.git` ending, so ssh and https remotes of one repository
+  share a key. Two different repositories that differ only in port or a `.git` suffix share one too.
+- Each installation reads a project's repository from its checkout once and keeps it
+  (`~/.agenfk/airlock/repo-pins.json`), because a sandboxed agent can replace the checkout's `.git`. The
+  first read is trusted. After a project's origin changes, run `agenfk update-project <id> --project-root
+  <path>` to read it again. `agenfk airlock pi|opencode` records a project's root when the server has none
+  (`agenfk init` sets none). Where a repository override applies and the repository cannot be told, the
+  policy is refused (`AIRLOCK_PROJECT_UNKNOWN`) rather than applied without it.
+- A session launched by an older `agenfk` is refused (`AIRLOCK_LAUNCH_OUTDATED`): exit it and launch it again.
+- On macOS a sandboxed command can reach local services (macOS has no network namespace).
+- An installation learns that the dataset switch went off at its next policy sync (every few minutes). Until
+  then it may still send rows, which the hub drops. Rows it had queued are not sent after that sync.
+- The server still runs git on the host in the tree of a card a sandboxed session touched (git status, the close
+  commit, worktrees). The sandbox cannot write that repository's config, hooks, `commondir`, worktree config, or its
+  submodules' and other worktrees' git directories. It can still make git read config it wrote through a config
+  `include` target inside the workspace, a nested repository or submodule `.git` file, or (on Linux) a repository
+  created after launch. Running the server's git inside the sandbox for those cards is planned.
+- The dataset recognises a credential-named key in the usual syntaxes. Unusual ones (a YAML explicit key `? password`, a
+  shell backslash-escaped key, a line break between a key and its colon) are not recognised, and their values can reach
+  the hub's dataset while an admin has it on.
+
+## [2.1.0-beta.4] — 2026-10-28
+
+**Airlock (new, beta)**
+
+- **Airlock: an optional egress and action shield for pi and OpenCode** (#294, #295, RFC-027). It is meant
+  for sessions on open-weight models. A policy decides which hosts, commands and paths a session may reach.
+  It runs in `observe` (log what enforce would have denied) or `enforce`, and sensitive actions go to a
+  person for approval. Read it with `agenfk airlock status` / `agenfk airlock check`, or the MCP tools
+  `airlock_status` / `airlock_check`. Edit it on the board: Settings → Airlock. On a hub-joined installation
+  the hub's policy (Admin → Airlock) is the source of truth and cannot be overruled locally. A standalone
+  installation keeps its own.
+- **`agenfk airlock pi` / `agenfk airlock opencode`** launch the client inside a whole-process sandbox
+  (`@anthropic-ai/sandbox-runtime`, pinned to 0.0.81). Network goes through an allowlisting proxy, and
+  credential stores and the AgEnFK state directory can't be read or written. A launch gate refuses to start
+  when the sandbox can't be confirmed. Windows is refused.
+- **Telemetry and alerts.** Proxy denials are reported to the server with their own token. Alerts are raised
+  for cloud-storage upload hosts, cloud metadata endpoints and IOC hosts. Each card gets an Airlock section,
+  and the decision list filters by client, source and alert.
+- **Learning mode.** It proposes an allowlist from observed traffic and from existing pi session logs
+  (`agenfk airlock learn --import-pi-sessions`). Nothing is applied automatically: a person accepts it on the
+  board, or a hub admin does when the installation is hub-joined.
+- **Hub admin.** Recent denials and alerts across the organization; which policy revision each installation
+  runs (installations that are behind or refused a policy are flagged); revision history.
+- **Hooks:** pi and OpenCode hooks no longer skip plugin tools, and OpenCode's gatekeeper now covers
+  `apply_patch`.
+- *Known limits in this beta:* commands the server runs for an agent (verify, the suite) are not sandboxed.
+  On a standalone installation, board-only Airlock writes can still be forged by a sandboxed agent; the fix
+  (refusing them at the sandbox proxy) is planned. On Linux (measured on Debian 12 in Docker) the sandbox
+  needs unprivileged user namespaces and its own `/proc` mount: inside a container, run with
+  `--security-opt seccomp=unconfined --security-opt systempaths=unconfined` (or `--privileged`). Under Docker's
+  default profile the launch fails closed, and the agent does not start. OpenCode's sandboxed launch is untested.
+
+**Breaking**
+
+- **Node 22.13 or newer is required** (was 22.12). inquirer 14, which the CLI's interactive `flow create` and
+  `flow edit` use, declares `^22.13.0` (#286).
+  *Migrate:* upgrade Node to 22.13 or later before upgrading AgEnFK.
+
+**Dependencies**
+
+- **inquirer 9 → 14** (#286, supersedes #284). `agenfk flow edit`'s step pickers move from the `list` prompt,
+  which inquirer 10 removed, to `select`.
+
+## [2.1.0-beta.3] — 2026-10-26
+
+**Hub**
+
+- **"All joined installations" as a repository's receipt producers** (#289, RFC-002 Amendment 1). Admin →
+  Repositories now has a producer mode per repository: *Only these installations* (the default, today's
+  allowlist) or *All joined installations*, where any installation of the organization that is not retired
+  produces receipts CI may reuse, including ones that join later. Retiring an installation stops its receipts
+  counting, both when it publishes and when CI asks. The explicit list is kept while All is on and applies again
+  when the repository is switched back. The switch is audited (`repo.producer-mode`) and shows in the settings
+  installations sync (`producerMode`). Trade-off: under All, any machine that joins the organization can produce
+  a receipt that skips a job in Enforce, so use it where joining the hub already requires a managed machine.
+  Existing hubs gain the setting at boot, with every repository on *Only these installations*.
+
+**Database**
+
+- **Backups are SQLite snapshots of the whole database** (#288). They were one JSON string of projects and
+  items, which failed above ~512 MB (`Invalid string length`) and never held flows, settings or receipts.
+  `agenfk-backup-<time>.sqlite` is written every 30 minutes and on shutdown, with node:sqlite's online backup
+  (`VACUUM INTO` on a Node older than 22.16). The 5 newest are kept, older `.json` ones included. A new install
+  restores the newest; a `.json` one is still imported as before. A failed backup is shown by `agenfk db
+  status`, not only logged.
+- **`agenfk db vacuum`** (#288) folds the WAL into the database, gives back the space deleted rows left, and
+  checks the result, through the server. It is refused while a verify suite run is queued or running, and names
+  the cards. `agenfk db status` shows the database and WAL sizes, what a vacuum would reclaim, and the largest
+  tables.
+
+**CI receipts**
+
+- **A root card in Shadow or Enforce no longer closes on a sibling's green** (#291). It ran nothing, so it made
+  no receipt, and a PR of two root cards was certified by neither. It now runs the command itself, as the
+  root card's final gate does whenever a green is on record; `agenfk verify --plan` says so.
+- **A root parent in Shadow or Enforce is no longer closed by its last child** (#291). The roll-up walked it
+  onto the exit step having run nothing, and its children (which defer receipts to it) made none either. It now
+  stops one step short, as on a `verifyAt: parent` flow: the parent's own verify runs fresh and makes the receipt.
+- **`agenfk verify --plan` no longer promises one run** where a final step's capture would close a root card in
+  Shadow or Enforce (#291): the close runs the command again after it, and the plan now says so.
+- **CI finds the receipt for its tree when the PR's card has only older ones** (#291). The lookup stopped at the
+  card the PR is registered on; it now falls back to the receipts for the tree CI checked out.
+
+## [2.1.0-beta.2] — 2026-10-25
+
+**Fixes**
+
+- **`actions/ci-check` works again** (#278). It ran `npx agenfk@<version>`, but agenfk is not on npm, so the action
+  failed for every user. It now installs the pinned GitHub release's `agenfk-dist.tar.gz` (optionally checked
+  against `agenfk-sha256`) and runs the built CLI. A download, install or CLI failure runs the gated steps under
+  `policy: run` and fails the job under `require`; a failed CLI never leaves `run=false` behind, and the CLI's
+  output is never read as workflow commands. This repository's CI gates its Linux test step on the check.
+- **Hub: Admin → Repositories scrolls within the window and is searchable** by part of a repository's name (#273).
+- **Hub: Recent receipts name the producer** by its git email (else OS user), not its installation id (#276).
+
+**Test suite**
+
+- **The full suite runs in about half the time** (#274, #281). Server, hub and CLI test files now run in parallel,
+  each worker with its own sandboxed home. About 400 repeated, nitpicking, over-the-top and text-rubric tests were
+  removed or merged, each with named coverage; tests that never asserted were rewritten.
+
 ## [2.1.0-beta.1] — 2026-10-24
 
 **CI receipts (RFC-002): verify once, reuse in CI.** Opt-in per repository on the hub. See `HUB_ARCHITECTURE.md` §13.

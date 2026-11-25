@@ -13,6 +13,10 @@
 import { describe, it, expect } from 'vitest';
 import { createVitest } from 'vitest/node';
 import * as os from 'os';
+import { resolveMaxWorkers } from '../../../../scripts/vitest-workers.mjs';
+
+/** What the root config should resolve to on THIS machine (#313: win32 has its own rule). */
+const expectedWorkers = () => resolveMaxWorkers({ platform: process.platform, cpus: os.availableParallelism() });
 
 /** `fileParallelism` is present on the resolved config at runtime but missing
  *  from vitest's published ResolvedConfig type, so read it through this shape
@@ -45,21 +49,48 @@ describe('root vitest parallelism', () => {
 
   // GH-274: server/hub/cli ran one file at a time because every worker shared the
   // run's HOME sandbox; each worker now has its own (scripts/vitest-home-pin.mjs).
-  // Their files spawn git and node children by the dozen, so the run takes a quarter of the CPUs.
-  it('runs the server/hub/cli files in parallel, on a quarter of the CPUs', async () => {
+  // Their files spawn git and node children by the dozen, so the run takes a capped
+  // worker count: a quarter of the CPUs on POSIX, its own rule on win32 (#313).
+  it('runs the server/hub/cli files in parallel, on the worker count resolveMaxWorkers gives this platform', async () => {
     const r = await resolved();
     expect(r.projects.serial?.fileParallelism).toBe(true);
-    expect(r.global.maxWorkers).toBe(Math.max(2, Math.floor(os.availableParallelism() / 4)));
+    expect(r.global.maxWorkers).toBe(expectedWorkers());
   });
 
   it('leaves the worker count to --maxWorkers when one is given, for every project', async () => {
-    // A project's own maxWorkers would win over the flag: the cap lives at the root.
+    // vitest 5 resolves maxWorkers per project (the board's config file sets its own, see
+    // packages/ui/vitest.config.ts), so assert what each project actually runs with: the flag.
     // One more than the default, so the flag is told apart from the cap on any machine.
-    const flag = Math.max(2, Math.floor(os.availableParallelism() / 4)) + 1;
+    const flag = expectedWorkers() + 1;
     const r = await resolved({ maxWorkers: flag });
     expect(r.global.maxWorkers).toBe(flag);
     for (const [name, cfg] of Object.entries(r.projects)) {
-      expect(cfg.maxWorkers, `project ${name} sets its own worker count`).toBeFalsy();
+      expect(cfg.maxWorkers, `project ${name} ignores --maxWorkers`).toBe(flag);
+    }
+  });
+
+  it('gives every project the same worker count without a flag, as vitest 5 requires', async () => {
+    // Projects of one sequence.groupOrder with different maxWorkers stop the run before any test.
+    const r = await resolved();
+    for (const [name, cfg] of Object.entries(r.projects)) {
+      expect(cfg.maxWorkers, `project ${name} runs on its own worker count`).toBe(expectedWorkers());
+    }
+  });
+
+  it('collects each test file in exactly one project', async () => {
+    // vitest 5 merges the root test block into the inline projects and concatenates arrays:
+    // a root `include` made `parallel` and `serial` both collect every file, so the suite ran twice.
+    const v = await createVitest('test', { watch: false });
+    try {
+      const counts = new Map<string, string[]>();
+      for (const spec of await v.globTestSpecifications()) {
+        counts.set(spec.moduleId, [...(counts.get(spec.moduleId) ?? []), spec.project.name]);
+      }
+      const twice = [...counts].filter(([, projects]) => projects.length > 1);
+      expect(counts.size).toBeGreaterThan(0);
+      expect(twice, 'files collected by more than one project').toEqual([]);
+    } finally {
+      await v.close();
     }
   });
 

@@ -5,8 +5,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
-import { posixShell } from './helpers/posixShell';
+import { gitSync } from './helpers/gitFixture';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -49,7 +48,7 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
 
     it('a small fix to a file the card already changed a lot counts small, once that work is committed', async () => {
       const { dir, id } = await atLook(40);
-      execSync('git add -A && git commit -qm "the card\'s work"', { cwd: dir, shell: posixShell() });
+      gitSync(dir, 'add', '-A'); gitSync(dir, 'commit', '-qm', 'the card\'s work');
       const startedAt = await reviewerBegins();
       fs.appendFileSync(path.join(dir, 'src/feature.js'), 'const oneMore = 1;\n');
       await reviewed(id, dir, { startedAt });
@@ -61,7 +60,7 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
     it('counts a test file removed after the reviewer began', async () => {
       const { dir, id } = await atLook();
       write(dir, 'tests/extra.test.js', lines(30, 't'));
-      execSync('git add -A && git commit -qm "more tests"', { cwd: dir, shell: posixShell() });
+      gitSync(dir, 'add', '-A'); gitSync(dir, 'commit', '-qm', 'more tests');
       const startedAt = await reviewerBegins();
       fs.rmSync(path.join(dir, 'tests/extra.test.js'));
       await reviewed(id, dir, { startedAt });

@@ -51,7 +51,11 @@ export function FilterAccordion({
   const toggle = () => onOpenChange(!open);
 
   return (
-    <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl overflow-hidden">
+    // No overflow-hidden: a facet's popover is absolutely positioned inside
+    // the fold and must hang past its bottom edge (GH-405). relative z-10:
+    // backdrop-blur makes the fold a stacking context, so without its own
+    // z-index the cards after it paint over that popover.
+    <section className="relative z-10 bg-card-glass backdrop-blur border border-border-soft rounded-2xl">
       <h2 id={headingId} className="sr-only">Filters</h2>
       {/* The whole row toggles: a click anywhere in the header area expands
           or contracts the fold — the 'Edit filters' link is just its visible

@@ -164,12 +164,13 @@ describe("the parent hub's changes, seen by the federation worker", () => {
     expect((await now('org', 'federation')).map(x => x.action)).toContain('parent.revoked');
   });
 
-  it('records the identity policy the parent set, before -> after', async () => {
+  it('records the identity coding the parent set, before -> after', async () => {
     await bind();
-    await federationTick({ db: ctx.db, secretKey: SEC, orgId: 'org', transport: { ...quiet, ping: async () => ({ ok: true, identityPolicy: 'pseudonymize' }) } } as any);
-    const row = (await now('org', 'federation')).find(x => x.action === 'identity-policy.parent-update');
+    await federationTick({ db: ctx.db, secretKey: SEC, orgId: 'org', transport: { ...quiet, ping: async () => ({ ok: true, identity: { person: 'coded', installation: 'as-written' } }) } } as any);
+    const row = (await now('org', 'federation')).find(x => x.action === 'identity-coding.parent-update');
     expect(row, JSON.stringify(await now())).toBeTruthy();
-    expect(row!.after).toMatchObject({ identityPolicy: 'pseudonymize' });
+    expect(row!.before).toMatchObject({ identity: { person: 'as-written', installation: 'as-written' } });
+    expect(row!.after).toMatchObject({ identity: { person: 'coded', installation: 'as-written' } });
     expect(JSON.stringify(row)).not.toContain('f'.repeat(64));
   });
 });

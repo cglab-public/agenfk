@@ -13,9 +13,6 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { execSync } from 'child_process';
 import { randomUUID } from 'crypto';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
@@ -26,7 +23,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { reconcileProjectFlow } from '../hub/flowSync';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A } from './helpers/echoRepo';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -53,9 +50,8 @@ async function flowRow(source: 'hub' | 'local', work: Record<string, unknown>) {
   return id;
 }
 async function project(flowId: string) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-dc-'));
+  const dir = echoRepo(A, 'agenfk-dc-');
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `dc-${++seq}` });
   await storage.updateProject(p.body.id, { flowId, projectRoot: dir, verifyCommand: 'exit 0' } as never);
   return p.body.id as string;

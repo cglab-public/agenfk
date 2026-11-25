@@ -11,6 +11,7 @@ import { adminRouter } from './routes/admin.js';
 import { orgRenameRouter } from './routes/orgRename.js';
 import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { repoSettingsAdminRouter, repoSettingsRouter } from './routes/repoSettings.js';
+import { airlockAdminRouter, airlockRouter, AIRLOCK_ADMIN_BODY_LIMIT } from './routes/airlock.js';
 import { receiptsRouter } from './routes/receipts.js';
 import { ciRouter, ciTokensAdminRouter } from './routes/ci.js';
 import { googleRouter } from './auth/google.js';
@@ -23,10 +24,13 @@ import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { federationRouter, federationInviteRouter } from './routes/federation.js';
 import { startRollupTimer } from './rollup.js';
+import { startAirlockDatasetPruneTimer } from './services/airlockDataset.js';
 import { startFederationSync } from './services/federation/federationSync.js';
 import { migrateOsUserKeys } from './services/migrateOsUserKeys.js';
 import { migrateChildPeopleNames } from './services/migrateChildPeopleNames.js';
 import { backfillUserKeyAliases } from './services/backfillUserKeyAliases.js';
+import { canonicaliseEventTimes } from './services/canonicaliseEventTimes.js';
+import { clearUnfixedUsage } from './services/unfixedUsage.js';
 import * as fs from 'fs';
 import * as pathMod from 'path';
 
@@ -230,6 +234,9 @@ export async function createHubApp(
   app.set('trust proxy', config.trustProxy ?? DEFAULT_TRUST_PROXY);
   // Read by publicHubUrl for every URL the hub hands out.
   app.locals.hubPublicUrl = config.publicUrl;
+  // The Airlock admin routes take a policy, never a bulk upload: parsed under a
+  // tight limit of their own before the global parser (which then skips them).
+  app.use('/v1/admin/airlock', express.json({ limit: AIRLOCK_ADMIN_BODY_LIMIT }));
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -248,6 +255,8 @@ export async function createHubApp(
   // installation's own read/claim, likewise ahead of the broad /v1 routers.
   mountRouter(app, '/v1/admin/repos', repoSettingsAdminRouter(ctx));
   mountRouter(app, '/v1', repoSettingsRouter(ctx));
+  mountRouter(app, '/v1/admin/airlock', airlockAdminRouter(ctx));
+  mountRouter(app, '/v1', airlockRouter(ctx));
   mountRouter(app, '/v1', receiptsRouter(ctx));
   mountRouter(app, '/v1/ci', ciRouter(ctx));
   mountRouter(app, '/v1/admin/ci-tokens', ciTokensAdminRouter(ctx));
@@ -272,7 +281,7 @@ export async function createHubApp(
   // than silent: it can SPLIT a key that two machines shared, which changes what
   // the dashboards show — deliberately, since those were never one person.
   // Never fatal: a hub that cannot migrate must still serve.
-  migrateOsUserKeys(db)
+  const osUserKeysMigrated = migrateOsUserKeys(db)
     .then((r) => {
       if (r.skipped || r.eventsRewritten === 0) return;
       console.log(
@@ -288,6 +297,29 @@ export async function createHubApp(
   migrateChildPeopleNames(db)
     .then((r) => { if (!r.skipped && r.named > 0) console.log(`[MIGRATION] Recorded names for ${r.named} forwarded event(s) from child hubs.`); })
     .catch((e) => console.error('[MIGRATION] child-hub names backfill failed:', (e as Error).message));
+
+  // Event times stored before ingest canonicalised them (GH-391): on SQLite they
+  // filter and sort as text, apart from the same instant in the stored form.
+  // Never fatal. After the osUser-key migration, never beside it: both rebuild
+  // rollups in per-day transactions on the one SQLite connection, and run
+  // together one's BEGIN lands inside the other's open transaction.
+  const eventTimesCanonicalised = osUserKeysMigrated
+    .then(() => canonicaliseEventTimes(db))
+    .then((r) => {
+      if (r.skipped || (r.eventsRewritten === 0 && r.unparseable === 0)) return;
+      console.log(
+        `[MIGRATION] Rewrote ${r.eventsRewritten} event time(s) to the stored UTC form`
+        + `${r.unparseable > 0 ? `; ${r.unparseable} could not be read and were kept as they are` : ''}.`,
+      );
+    })
+    .catch((e) => console.error('[MIGRATION] event time canonicalisation failed:', (e as Error).message));
+  eventTimesCanonicalised
+    .then(() => clearUnfixedUsage(db))
+    .then((r) => {
+      if (r.skipped || r.eventsCleared === 0) return;
+      console.log(`[MIGRATION] Cleared the usage of ${r.eventsCleared} event(s) sent by agenfk versions before the subagent attribution fix (GH-398); the events are kept.`);
+    })
+    .catch((e) => console.error('[MIGRATION] clearing unfixed usage failed:', (e as Error).message));
 
   // Merges made before user_key_aliases existed carry no alias, so the guarantee
   // that a machine waking after the liveness window cannot resurrect a retired
@@ -313,6 +345,7 @@ export async function createHubApp(
     .catch((e) => console.error('[MIGRATION] alias backfill failed:', (e as Error).message));
 
   const rollupTimer = startRollupTimer(db);
+  const datasetPruneTimer = startAirlockDatasetPruneTimer(db);
   // Child-side federation (CGLAB-181). Starting it unconditionally is safe and
   // deliberate: with no parent binding every tick is a no-op, so a standalone
   // hub pays one cheap query a minute and needs no configuration to opt out.
@@ -325,7 +358,7 @@ export async function createHubApp(
     transport: config.federationTransport as any,
     intervalMs: config.federationIntervalMs,
   });
-  ctx.stopWorkers = () => { clearInterval(rollupTimer); stopFederation(); };
+  ctx.stopWorkers = () => { clearInterval(rollupTimer); clearInterval(datasetPruneTimer); stopFederation(); };
 
   // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in
   // the released tarball that lives next to the hub package. We probe a few

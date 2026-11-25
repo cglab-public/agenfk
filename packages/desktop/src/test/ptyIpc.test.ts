@@ -315,7 +315,7 @@ describe('prefs over IPC', () => {
       customSoundPath: '/Users/x/Library/sounds/custom.wav',
     }));
     const got = await handlers['prefs:get']({} as never, undefined);
-    expect(Object.keys(got).sort()).toEqual(['askBeforeOpening', 'autoApprove', 'defaultAgentId']);
+    expect(Object.keys(got).sort()).toEqual(['askBeforeOpening', 'autoApprove', 'defaultAgentId', 'terminalFontSize', 'uiScale']);
     expect(JSON.stringify(got), 'the path crossed to the renderer')
       .not.toMatch(/customSound|\/Users\/x/);
   });
@@ -332,7 +332,7 @@ describe('prefs over IPC', () => {
       customSoundPath: '/Users/x/Library/sounds/custom.wav',
     }));
     const wrote = await handlers['prefs:set']({} as never, { key: 'autoApprove', value: true });
-    expect(Object.keys(wrote).sort()).toEqual(['askBeforeOpening', 'autoApprove', 'defaultAgentId']);
+    expect(Object.keys(wrote).sort()).toEqual(['askBeforeOpening', 'autoApprove', 'defaultAgentId', 'terminalFontSize', 'uiScale']);
     expect(JSON.stringify(wrote), 'the path came back on the write').not.toMatch(/customSound|\/Users\/x/);
   });
 });

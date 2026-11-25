@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, act, within } from '@testing-library/react';
 import { SocketProvider } from '../SocketContext';
 import { CardDetailModal } from '../components/CardDetailModal';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -40,6 +40,7 @@ vi.mock('../api', () => ({
     listAgentRuns: vi.fn(() => Promise.resolve([])),
     listRunEvents: vi.fn(() => Promise.resolve([])),
     getGates: vi.fn(() => Promise.resolve({ step: 'TODO', approvalRequired: false, approvals: [], overrides: {}, lastChecks: null })),
+    getTokenEvents: vi.fn(() => Promise.resolve([])),
     getCheckHistory: vi.fn(() => Promise.resolve([{ kind: 'approval', step: 'DISCOVERY', at: '2026-09-24T21:05:00.000Z', by: 'board', authority: 'unverified' }])),
   }
 }));
@@ -86,7 +87,12 @@ describe('CardDetailModal', () => {
     status: Status.TODO,
     createdAt: new Date(),
     updatedAt: new Date(),
-    tokenUsage: [{ model: 'gpt-4', input: 100, output: 50 }],
+    // GH-389: the Usage tab reads the per-step usage the server records.
+    usageByStep: [{
+      step: 'IN_PROGRESS', to: 'REVIEW', enteredAt: '2026-11-19T09:00:00.000Z', leftAt: '2026-11-19T10:00:00.000Z', complete: true,
+      byModel: [{ client: 'codex', model: 'gpt-4', turns: 1, input: 100, cacheRead: 0, cacheWrite: 0, output: 50, reasoning: 0, costUsd: 0, unpricedTurns: 1 }],
+      total: { turns: 1, input: 100, cacheRead: 0, cacheWrite: 0, output: 50, reasoning: 0, costUsd: 0, unpricedTurns: 1 },
+    }],
     tests: [{ id: 'r1', command: 'npm test', output: 'ok', status: 'PASSED', executedAt: new Date() }],
     implementationPlan: '# Plan\n- step 1',
   };
@@ -259,7 +265,23 @@ describe('CardDetailModal', () => {
     // Switch to Usage tab
     const usageTab = screen.getByRole('button', { name: /Usage/i });
     fireEvent.click(usageTab);
-    expect(screen.getByText(/gpt-4/i)).toBeDefined();
+    expect(within(screen.getByRole('list', { name: 'Models' })).getByText('gpt-4')).toBeDefined();
+  });
+
+  it('GH-389: a card carrying only the legacy tokenUsage has no Usage tab', () => {
+    const { usageByStep: _u, ...rest } = mockItem as any;
+    render(
+      <CardDetailModal
+        item={{ ...rest, tokenUsage: [{ model: 'gpt-4', input: 100, output: 50 }] } as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper }
+    );
+    expect(screen.queryByRole('button', { name: /^Usage/ })).toBeNull();
   });
 
   it('should render subitems for stories', async () => {
@@ -1213,7 +1235,12 @@ describe('CardDetailModal — no hardcoded neutral surface colour (aca414c7 §04
     status: Status.TODO,
     createdAt: new Date(),
     updatedAt: new Date(),
-    tokenUsage: [{ model: 'gpt-4', input: 100, output: 50 }],
+    // GH-389: the Usage tab reads the per-step usage the server records.
+    usageByStep: [{
+      step: 'IN_PROGRESS', to: 'REVIEW', enteredAt: '2026-11-19T09:00:00.000Z', leftAt: '2026-11-19T10:00:00.000Z', complete: true,
+      byModel: [{ client: 'codex', model: 'gpt-4', turns: 1, input: 100, cacheRead: 0, cacheWrite: 0, output: 50, reasoning: 0, costUsd: 0, unpricedTurns: 1 }],
+      total: { turns: 1, input: 100, cacheRead: 0, cacheWrite: 0, output: 50, reasoning: 0, costUsd: 0, unpricedTurns: 1 },
+    }],
     tests: [{ id: 'r1', command: 'npm test', output: 'ok', status: 'PASSED', executedAt: new Date() }],
     implementationPlan: '# Plan\n- step 1',
     history: [{ id: 'h1', fromStatus: Status.TODO, toStatus: Status.IN_PROGRESS, timestamp: new Date(), evidence: 'moved' }],

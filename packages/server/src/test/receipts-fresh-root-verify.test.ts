@@ -31,7 +31,7 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -46,7 +46,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles } from './helpers/gitFixture';
 import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
@@ -60,23 +60,34 @@ afterAll(async () => {
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell() });
 
-function makeRepo(files: Record<string, string> = {}): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-receipts-'));
+/** The base tree (tests/a.test.js, src.js, .gitignore) plus `files`, committed as "one". */
+function buildRepo(dir: string, files: Record<string, string> = {}): void {
+  gitSync(dir, 'init', '-q', '-b', 'main');
+  gitSync(dir, 'config', 'user.email', 't@t');
+  gitSync(dir, 'config', 'user.name', 't');
+  writeFiles(dir, { 'tests/a.test.js': 'test', 'src.js': 'export const a = 1;\n', '.gitignore': 'report.*\n', ...files });
+  gitSync(dir, 'add', '.');
+  gitSync(dir, 'commit', '-qm', 'one');
+}
+
+/** The base tree, cloned from the per-worker template (#311). */
+function makeRepo(): string {
+  const dir = cloneGitTemplate('receipts-fresh-root-verify:base', (d) => buildRepo(d), 'agenfk-receipts-');
   dirs.push(dir);
-  git(dir, 'git init -q -b main && git config user.email t@t && git config user.name t');
-  fs.mkdirSync(path.join(dir, 'tests'));
-  fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
-  fs.writeFileSync(path.join(dir, 'src.js'), 'export const a = 1;\n');
-  fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  for (const [rel, content] of Object.entries(files)) {
-    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
-    fs.writeFileSync(path.join(dir, rel), content);
-  }
-  git(dir, 'git add . && git commit -qm one');
   return dir;
 }
+
+/** The base tree plus `files`, built fresh: for content that is per test (absolute paths baked in). */
+function freshRepo(files: Record<string, string>): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-receipts-'));
+  dirs.push(dir);
+  buildRepo(dir, files);
+  return dir;
+}
+
+/** The base tree plus a project in app/ and a sibling package beside it. */
+const SUBDIR_FILES = { 'app/tests/a.test.js': 'test', 'app/src.js': 'export const a = 1;\n', 'app/.gitignore': 'report.*\n', 'sibling/x.txt': 'one\n' };
 
 /** A suite writing a JUnit report of two passing tests, counting its runs in a log outside the tree. */
 // Node, not printf/echo: the server runs it with sh off Windows and cmd.exe on it (#208).
@@ -121,7 +132,7 @@ function countedThenTreeDirtier(files: Record<string, string> = {}): { dir: stri
     + JUNIT_JS
     + `fs.copyFileSync('report.xml',${JSON.stringify(stored)});fs.rmSync('report.xml',{force:true});`;
   return {
-    dir: makeRepo({ 'scripts/suite.cjs': source, ...files }),
+    dir: freshRepo({ 'scripts/suite.cjs': source, ...files }),
     command: 'node scripts/suite.cjs',
     runs: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split(String.fromCharCode(10)).filter(Boolean) : []),
   };
@@ -338,7 +349,8 @@ describe('in receipts mode the root card final gate runs the command, and the pa
   // that lands during the close (here a pre-commit hook staging a sibling
   // package) is content no run tested. Posix only: the hook is a shell script.
   const subdirProject = async (withHook: boolean) => {
-    const dir = makeRepo({ 'app/tests/a.test.js': 'test', 'app/src.js': 'export const a = 1;\n', 'app/.gitignore': 'report.*\n', 'sibling/x.txt': 'one\n' });
+    const dir = cloneGitTemplate('receipts-fresh-root-verify:subdir-project', (d) => buildRepo(d, SUBDIR_FILES), 'agenfk-receipts-');
+    dirs.push(dir);
     if (withHook) {
       const hook = path.join(dir, '.git', 'hooks', 'pre-commit');
       fs.writeFileSync(hook, '#!/bin/sh\necho hooked >> sibling/x.txt && git add sibling/x.txt\n', { mode: 0o755 });
@@ -350,7 +362,7 @@ describe('in receipts mode the root card final gate runs the command, and the pa
     const id = await card(pid, 'FINAL');
     // Staged work of the card's own, so the close makes a commit (and the hook runs).
     fs.writeFileSync(path.join(app, 'src.js'), 'export const a = 2;\n');
-    git(dir, 'git add app/src.js');
+    gitSync(dir, 'add', 'app/src.js');
     return { dir, id };
   };
   /**
@@ -380,7 +392,7 @@ describe('in receipts mode the root card final gate runs the command, and the pa
     expect(res.body.status, JSON.stringify(res.body)).toBe('END');
     // The hook really did land its change in the commit the receipt would name.
     expect(fs.readFileSync(path.join(dir, 'sibling/x.txt'), 'utf8')).toContain('hooked');
-    expect(execSync('git status --porcelain', { cwd: dir, encoding: 'utf8' }).trim()).toBe('');
+    expect(gitSync(dir, 'status', '--porcelain')).toBe('');
     expect(receiptsOf(await read(id))).toHaveLength(0);
     expect(commentsOf(await read(id)).map((c: any) => c.content).join('\n')).toMatch(/No verification receipt/);
   });
@@ -401,5 +413,122 @@ describe('in receipts mode the root card final gate runs the command, and the pa
     expect(suite.runs()).toHaveLength(2);
     const item = await read(id);
     expect(receiptsOf(item), JSON.stringify(receiptsOf(item))).toHaveLength(0);
+  });
+});
+
+/*
+ * GH-291: two ROOT cards on one tree (one PR made of two cards). The second to
+ * close found the first one's green and closed on it by sibling propagation -
+ * running nothing, so it made no receipt, and the PR's content was certified by
+ * nobody. In receipts mode a root card owes a fresh run whatever a sibling did.
+ */
+describe('in receipts mode a root card does not close on a sibling root card\'s green (GH-291)', () => {
+  async function twoRootCardsOneTree(mode: 'off' | 'shadow' | 'enforce') {
+    const dir = makeRepo();
+    const suite = counted('suite');
+    const pid = await project(await finalOnly(), reported(dir, suite.command));
+    await inReceiptsMode(pid, suite.command, mode);
+    const first = await card(pid, 'FINAL');
+    const second = await card(pid, 'FINAL');
+    const a = await validate(first);
+    expect(a.body.status, JSON.stringify(a.body)).toBe('END');
+    return { dir, suite, first, second };
+  }
+
+  for (const mode of ['shadow', 'enforce'] as const) {
+    it(`${mode}: the second root card runs the command itself and leaves its own receipt`, async () => {
+      const { dir, suite, second } = await twoRootCardsOneTree(mode);
+      const before = suite.runs().length;
+      const p = await predict(second);
+      expect(p.mode, JSON.stringify(p)).toBe('full');
+      const b = await validate(second);
+      expect(b.body.status, JSON.stringify(b.body)).toBe('END');
+      expect(b.body.message, 'closed on the sibling instead of running').not.toMatch(/sibling propagation|already verified by sibling/i);
+      expect(suite.runs(), 'the second root card ran nothing').toHaveLength(before + 1);
+      const receipts = receiptsOf(await read(second));
+      expect(receipts, JSON.stringify(commentsOf(await read(second)).map(c => c.content).slice(-2))).toHaveLength(1);
+      expect(receipts[0].content.gitTree).toBe(revParse(dir, 'HEAD^{tree}'));
+    });
+  }
+
+  it('CONTROL - receipts mode off: the second root card still closes on the sibling\'s green, running nothing', async () => {
+    const { suite, second } = await twoRootCardsOneTree('off');
+    const before = suite.runs().length;
+    expect((await predict(second)).mode).toBe('sibling-green');
+    const b = await validate(second);
+    expect(b.body.status, JSON.stringify(b.body)).toBe('END');
+    expect(suite.runs()).toHaveLength(before);
+    expect(receiptsOf(await read(second))).toHaveLength(0);
+  });
+});
+
+// Review of GH-291 (Codex): the two other ways a root card closed without the fresh run it owes.
+describe('in receipts mode a root parent is not closed by its last child (GH-291 review)', () => {
+  async function storyWithOneTask(mode: 'off' | 'shadow') {
+    const dir = makeRepo();
+    const suite = counted('suite');
+    const pid = await project(await finalOnly(), reported(dir, suite.command));
+    await inReceiptsMode(pid, suite.command, mode);
+    const parent = await agent().post('/items').send({ type: 'STORY', title: `story-${++seq}`, projectId: pid });
+    expect(parent.status, JSON.stringify(parent.body)).toBe(201);
+    await storage.updateItem(parent.body.id, { status: 'FINAL' } as any);
+    const child = await card(pid, 'FINAL');
+    await storage.updateItem(child, { parentId: parent.body.id } as any);
+    const c = await validate(child);
+    expect(c.body.status, JSON.stringify(c.body)).toBe('END');
+    return { dir, suite, parent: parent.body.id as string };
+  }
+
+  it('shadow: the last child closing leaves the root parent on its final step; the parent\'s own verify runs fresh and makes the receipt', async () => {
+    const { dir, suite, parent } = await storyWithOneTask('shadow');
+    expect((await read(parent)).status, 'the parent was walked to the exit step having run nothing').toBe('FINAL');
+    const before = suite.runs().length;
+    expect((await predict(parent)).mode).toBe('full');
+    const p = await validate(parent);
+    expect(p.body.status, JSON.stringify(p.body)).toBe('END');
+    expect(suite.runs()).toHaveLength(before + 1);
+    const receipts = receiptsOf(await read(parent));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].content.gitTree).toBe(revParse(dir, 'HEAD^{tree}'));
+  });
+
+  it('CONTROL - receipts mode off: the last child closing still closes the parent', async () => {
+    const { parent } = await storyWithOneTask('off');
+    expect((await read(parent)).status).toBe('END');
+  });
+});
+
+describe('in receipts mode the plan of a final step that captures says the command runs after the capture (GH-291 review)', () => {
+  const finalCaptures = () => flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true, role: 'closing' })]);
+  const plan = async (id: string) => {
+    const r = await agent().get(`/items/${id}/leave-plan`);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    return r.body;
+  };
+
+  it('shadow: the capture does not close the card, the verify command runs after it, and the plan says so', async () => {
+    const dir = makeRepo();
+    const suite = counted('suite');
+    const pid = await project(await finalCaptures(), reported(dir, suite.command));
+    await inReceiptsMode(pid, suite.command, 'shadow');
+    const id = await card(pid, 'TEST');
+    const p = await plan(id);
+    expect(p.closesOnCapture, JSON.stringify(p)).toBeUndefined();
+    expect(p.thenCommand).toBe(suite.command);
+    const res = await validate(id);
+    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
+    expect(suite.runs(), 'the plan and the close disagree about how many runs').toHaveLength(2);
+  });
+
+  it('CONTROL - receipts mode off: the capture closes the card in one run, as planned', async () => {
+    const dir = makeRepo();
+    const suite = counted('suite');
+    const pid = await project(await finalCaptures(), reported(dir, suite.command));
+    await inReceiptsMode(pid, suite.command, 'off');
+    const id = await card(pid, 'TEST');
+    expect((await plan(id)).closesOnCapture).toBe(true);
+    const res = await validate(id);
+    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
+    expect(suite.runs()).toHaveLength(1);
   });
 });

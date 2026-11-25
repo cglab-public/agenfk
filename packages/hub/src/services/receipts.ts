@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import * as zlib from 'node:zlib';
 import type { HubDb } from '../db/types.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
+import { producerCheckOf } from './repoSettings.js';
 
 /**
  * Receipt storage (RFC-002, task 0334a5e6).
@@ -376,14 +377,13 @@ export async function storeReceipt(
     );
 
     if (inserted.changes === 1) {
-      // OUR row. The allowlist we hold the lock over, read before we wrote.
-      const producer = await db.get<{ installation_id: string }>(
-        'SELECT installation_id FROM repo_producers WHERE org_id = ? AND remote_url = ? AND installation_id = ?',
-        [orgId, remoteUrl, installationId],
-      );
+      // OUR row. The repository's producer rule as it stands inside the lock:
+      // its allowlist, or under 'all' whether this installation is a live one
+      // of the org (RFC-002 Amendment 1).
+      const producerAllowed = (await producerCheckOf(db, orgId, remoteUrl, [installationId]))(installationId);
       const overCap = report.overCap || report.tooBig;
       const decision = decideReusability({
-        producerAllowed: !!producer,
+        producerAllowed,
         reportOverCap: overCap,
         offeredReusable: rcpt.reusable === true,
       });

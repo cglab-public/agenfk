@@ -14,6 +14,7 @@ import {
   listRevisions,
   reviseRepoCommand,
   setProducer,
+  setProducerMode,
   setReceiptsMode,
 } from '../services/repoSettings.js';
 import { lastReceiptTimes, listRepoReceipts } from '../services/ciReceipts.js';
@@ -39,6 +40,7 @@ const STATUS_FOR: Record<RepoSettingsError['code'], number> = {
   machine_specific_path: 400,
   invalid_mode: 400,
   invalid_threshold: 400,
+  invalid_producer_mode: 400,
   unknown_installation: 400,
   threshold_required: 400,
   not_found: 404,
@@ -54,8 +56,9 @@ const repoQuery = (req: Request): unknown => req.query.repo;
 
 /**
  * A weak entity tag over everything the installation caches. Kept by hand, like
- * /v1/flows/active: it must bust when the command, the mode, the threshold or
- * the producer list moves, and none of those is a version of a single row.
+ * /v1/flows/active: it must bust when the command, the mode, the threshold, the
+ * producer mode or the producer list moves, and none of those is a version of a
+ * single row.
  *
  * The producer list goes in as its contents, not its length: swap one
  * installation for another and the count is unchanged while the allowlist an
@@ -63,9 +66,11 @@ const repoQuery = (req: Request): unknown => req.query.repo;
  * header is no place for an unbounded list, and a collision only costs one
  * extra 200.
  */
-const etagOf = (s: { revision: number; receiptsMode: string; shadowThreshold: number | null; producers: string[] }) => {
+const etagOf = (s: {
+  revision: number; receiptsMode: string; shadowThreshold: number | null; producerMode: string; producers: string[];
+}) => {
   const digest = createHash('sha256')
-    .update(`${s.revision}:${s.receiptsMode}:${s.shadowThreshold ?? '-'}:${s.producers.join(',')}`)
+    .update(`${s.revision}:${s.receiptsMode}:${s.shadowThreshold ?? '-'}:${s.producerMode}:${s.producers.join(',')}`)
     .digest('hex')
     .slice(0, 16);
   return `W/"${digest}"`;
@@ -191,6 +196,16 @@ export function repoSettingsAdminRouter(ctx: HubServerContext): Router {
         mode: req.body?.mode,
         shadowThreshold: req.body?.shadowThreshold,
       }));
+    } catch (e) {
+      sendRepoError(res, e);
+    }
+  }));
+
+  // Who may produce receipts: the allowlist below, or every live installation
+  // of the org (RFC-002 Amendment 1). The allowlist itself is left as it is.
+  router.put('/producer-mode', guard, asyncRoute(async (req: Request, res: Response) => {
+    try {
+      res.json(await setProducerMode(ctx.db, req.session!.orgId, req.body?.repo, req.body?.producerMode));
     } catch (e) {
       sendRepoError(res, e);
     }

@@ -3,9 +3,8 @@
  * Split out so the parts run side by side (GH-274); the harness is helpers/engineTests.ts.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { execSync } from 'child_process';
 import { storage } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { gitSync } from './helpers/gitFixture';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -85,7 +84,7 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
       const dir = makeRepo();
       const pid = await project(await flow(tddSteps()), { projectRoot: dir, verifyCommand: 'node runner.cjs', testReport: REPORT });
       const id = await card(pid, 'START', { externalId: 'ABC-7' });
-      if (branch) execSync(`git checkout -q -b ${branch}`, { cwd: dir });
+      if (branch) gitSync(dir, 'checkout', '-q', '-b', branch);
       return id;
     }
 
@@ -227,7 +226,7 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
       await walk(a, () => honestTests(dir), () => {
         impl(dir, { add: 'ok', mul: '12' });
         write(dir, 'tests/sneaky.test.js', 'T sneaky add=ok\n'); // added after a's tests were frozen
-        execSync(`git add -A && git commit -qm "close(task): a [${a}]"`, { cwd: dir, shell: posixShell() });
+        gitSync(dir, 'add', '-A'); gitSync(dir, 'commit', '-qm', `close(task): a [${a}]`);
       });
       const b = (await agent().post('/items').send({ type: 'TASK', title: 'b', projectId: pid, parentId: story })).body.id as string;
       await storage.updateItem(b, { status: 'START' } as any);

@@ -5,9 +5,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
 import { storage } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { gitSync } from './helpers/gitFixture';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -72,7 +71,7 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
       const recs = fs.readFileSync(t, 'utf8').trim().split('\n');
       recs.splice(1, 0, JSON.stringify({ isSidechain: true, agentId: 'third', sessionId: 'sess', timestamp: later, type: 'user', isMeta: true, message: { content: '[handback-send-enforce] Your report has not been delivered' } }));
       fs.writeFileSync(t, recs.join('\n') + '\n');
-      const rr = await agent().post(`/items/${id2}/review-records`).set(internal()).send({ transcript: t, range: `${execSync('git rev-list --max-parents=0 HEAD', { cwd: d2, encoding: 'utf8' }).trim()}..HEAD`, findings: [] });
+      const rr = await agent().post(`/items/${id2}/review-records`).set(internal()).send({ transcript: t, range: `${gitSync(d2, 'rev-list', '--max-parents=0', 'HEAD')}..HEAD`, findings: [] });
       expect(rr.status, JSON.stringify(rr.body)).toBe(201);
       expect((await leave(id2)).outcome).toBe('fail');
     });
@@ -80,9 +79,13 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
     it('main merged in during the review is not the card\'s work', async () => {
       const { dir, id } = await atLook();
       const startedAt = await reviewerBegins();
-      execSync('git checkout -q -b upstream', { cwd: dir });
+      gitSync(dir, 'checkout', '-q', '-b', 'upstream');
       write(dir, 'src/theirs.js', lines(50, 'theirs'));
-      execSync('git add src/theirs.js && git commit -qm "main moved on" && git update-ref refs/remotes/origin/main HEAD && git checkout -q main && git merge -q --no-edit upstream', { cwd: dir, shell: posixShell() });
+      gitSync(dir, 'add', 'src/theirs.js');
+      gitSync(dir, 'commit', '-qm', 'main moved on');
+      gitSync(dir, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+      gitSync(dir, 'checkout', '-q', 'main');
+      gitSync(dir, 'merge', '-q', '--no-edit', 'upstream');
       await reviewed(id, dir, { startedAt });
       expect((await leave(id)).outcome).toBe('pass');
     });

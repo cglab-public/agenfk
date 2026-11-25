@@ -33,6 +33,9 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { useGitStatus, type WorktreeView } from '../gitStatus';
 import { DiffModal } from './DiffModal';
+import { UsageView } from './UsageView';
+import { useCardUsage } from '../useCardUsage';
+import { abbreviateTokens, tokensOf } from '../usage';
 
 /** Colour carries the kind, and the letter carries it again for greyscale. */
 const STATE_MARK: Record<string, { letter: string; className: string }> = {
@@ -56,7 +59,14 @@ export function WorktreePanel({ itemId }: {
    * single control that opens this; choosing between the halves happens here,
    * where both are in view.
    */
-  const [view, setView] = React.useState<WorktreeView>('changed');
+  /*
+   * GH-389 / #385: a third tab, USAGE - how much AI this card used. Here, not
+   * on the board: it is per card, opened on demand, and token figures were
+   * taken off the cards on purpose (#9, #14).
+   */
+  const [view, setView] = React.useState<WorktreeView | 'usage'>('changed');
+  const usage = useCardUsage(itemId);
+  const usageLabel = usage.summary?.measured ? `Usage (${abbreviateTokens(tokensOf(usage.summary.total))})` : 'Usage';
   /** The file whose diff is open, or null (be411ffb). */
   const [diffOf, setDiffOf] = React.useState<{ path: string; staged: boolean } | null>(null);
   const files = (data?.files ?? []).filter(f => (view === 'staged' ? f.staged : !f.staged));
@@ -72,7 +82,7 @@ export function WorktreePanel({ itemId }: {
           always showing, which is the condition a tablist describes and
           aria-pressed does not. */}
       <div role="tablist" aria-label="Worktree files" className="flex shrink-0 border-b border-border-soft">
-        {(['changed', 'staged'] as WorktreeView[]).map(v => (
+        {(['changed', 'staged', 'usage'] as const).map(v => (
           <button
             key={v}
             role="tab"
@@ -86,12 +96,13 @@ export function WorktreePanel({ itemId }: {
                 : 'border-b-2 border-transparent text-ink-tertiary hover:text-ink-secondary',
             )}
           >
-            {v === 'staged' ? 'Staged' : 'Changed'} ({count(v)})
+            {v === 'usage' ? usageLabel : `${v === 'staged' ? 'Staged' : 'Changed'} (${count(v)})`}
           </button>
         ))}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-slim">
+        {view === 'usage' ? <UsageView itemId={itemId} /> : (<>
         {isError && (
           <div
             role="alert"
@@ -146,6 +157,7 @@ export function WorktreePanel({ itemId }: {
             );
           })}
         </ul>
+        </>)}
       </div>
 
       {diffOf && itemId && (

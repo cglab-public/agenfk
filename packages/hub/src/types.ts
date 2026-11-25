@@ -70,4 +70,8 @@ export interface SessionPayload {
   userId: string;
   orgId: string;
   role: 'admin' | 'viewer';
+  /** What carried the session: the board's cookie, or the admin CLI's bearer token (CGLAB-702). Not in the JWT. */
+  via?: 'board' | 'cli';
+  /** The admin CLI token's id, when `via` is 'cli'. */
+  cliTokenId?: string;
 }

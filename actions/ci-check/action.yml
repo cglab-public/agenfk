@@ -73,6 +73,20 @@ runs:
         AGENFK_VERSION: ${{ inputs.agenfk-version }}
         AGENFK_SHA256: ${{ inputs.agenfk-sha256 }}
       run: |
+        # The CLI loads ESM-only dependencies (commander 15) through require(), which
+        # needs Node ^22.13.0 or >=23.5.0 (agenfk's engines). This action does not set
+        # Node up, so the runner's own must do: an older one is an install that fails.
+        node_version="$(node --version 2>/dev/null || true)"
+        node_version="${node_version#v}"
+        IFS=. read -r node_major node_minor _ <<< "$node_version"
+        case "$node_major.$node_minor" in
+          *[!0-9.]*|.*|*.) node_major=0; node_minor=0 ;;
+        esac
+        if ! { [ "$node_major" -gt 23 ] || { [ "$node_major" -eq 23 ] && [ "$node_minor" -ge 5 ]; } \
+          || { [ "$node_major" -eq 22 ] && [ "$node_minor" -ge 13 ]; }; }; then
+          echo "::warning::agenfk needs Node ^22.13.0 or >=23.5.0, found ${node_version:-none}: set one up (actions/setup-node) before this action."
+          exit 0
+        fi
         version="${AGENFK_VERSION:-latest}"
         version="${version#v}"
         releases="https://github.com/cglab-public/agenfk/releases"

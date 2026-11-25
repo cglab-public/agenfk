@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 import { Rocket, AlertTriangle, X, ExternalLink, ArrowUpCircle, Loader2, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
@@ -40,6 +41,8 @@ export const ReleaseReminder: React.FC = () => {
   const [countdown, setCountdown] = useState<number | null>(null);
   const outputRef = useRef<HTMLPreElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const badgeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const { data: release } = useQuery<ReleaseInfo>({
     queryKey: ['latestRelease'],
@@ -55,6 +58,28 @@ export const ReleaseReminder: React.FC = () => {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
   }, [updateState]);
+
+  // GH-421: the dialog is portalled to the end of <body>, away from the badge in tab
+  // order. Take focus on open, close on Escape (not mid-update), hand focus back on close.
+  // Read through a ref so a phase change does not re-run the effect and bounce focus.
+  const isUpdatingRef = useRef(false);
+  useEffect(() => { isUpdatingRef.current = updateState.phase === 'running'; }, [updateState.phase]);
+  useEffect(() => {
+    if (!isModalOpen) return;
+    const badge = badgeRef.current;
+    dialogRef.current?.focus();
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape' || isUpdatingRef.current) return;
+      // Same as the close button.
+      setIsModalOpen(false);
+      setUpdateState({ phase: 'idle' });
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      badge?.focus();
+    };
+  }, [isModalOpen]);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -171,6 +196,7 @@ export const ReleaseReminder: React.FC = () => {
   return (
     <>
       <button
+        ref={badgeRef}
         onClick={() => setIsModalOpen(true)}
         className={`relative p-2 rounded-lg border shadow-sm transition-all hover:scale-105 ${
           isMandatory
@@ -188,13 +214,21 @@ export const ReleaseReminder: React.FC = () => {
         </span>
       </button>
 
-      {isModalOpen && (
+      {/* GH-421: portalled to <body>. The badge sits in the board's sticky header, whose
+          backdrop-blur makes it the containing block for position:fixed - left inside
+          it, the modal was centred on the header and ran off the top of the window. */}
+      {isModalOpen && createPortal(
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
           onClick={!isUpdating ? handleClose : undefined}
         >
           <div
-            className="bg-surface rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg mx-4 max-h-[85vh] flex flex-col overflow-hidden"
+            ref={dialogRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="release-reminder-title"
+            className="outline-none bg-surface rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg mx-4 max-h-[85vh] flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
@@ -207,7 +241,7 @@ export const ReleaseReminder: React.FC = () => {
                   }
                 </div>
                 <div>
-                  <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg">
+                  <h2 id="release-reminder-title" className="font-bold text-slate-800 dark:text-slate-100 text-lg">
                     {updateState.phase === 'success' ? 'Update Complete' :
                      updateState.phase === 'error' ? 'Update Failed' :
                      updateState.phase === 'running' ? 'Updating AgEnFK...' :
@@ -275,7 +309,7 @@ export const ReleaseReminder: React.FC = () => {
                   </div>
                 )}
                 <div className="flex-1 overflow-y-auto px-6 py-4">
-                  <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-slate-800 dark:prose-headings:text-slate-200 prose-p:text-slate-600 dark:prose-p:text-slate-400 prose-li:text-slate-600 dark:prose-li:text-slate-400 prose-code:text-accent-ink prose-code:bg-slate-100 dark:prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs">
+                  <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-slate-800 dark:prose-headings:text-slate-200 prose-p:text-slate-600 dark:prose-p:text-slate-400 prose-li:text-slate-600 dark:prose-li:text-slate-400 prose-code:text-accent-ink prose-code:bg-slate-100 dark:prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:before:content-none prose-code:after:content-none">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {release.body || 'No release notes available.'}
                     </ReactMarkdown>
@@ -357,7 +391,8 @@ export const ReleaseReminder: React.FC = () => {
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );

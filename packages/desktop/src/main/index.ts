@@ -37,6 +37,7 @@ import { detectTmux, type TmuxStatus } from './tmux.js';
 import { whichOnPath, setAgentDetectionDeps, locateExecutable } from './detectAgents.js';
 import { makeEmit } from './windowEmit.js';
 import { wireFullScreen, answerFullScreenQuery } from './windowFullScreen.js';
+import { wireUiScale } from './windowUiScale.js';
 import { makeLoginPathCache } from './loginPathCache.js';
 import { SOUND_EXTENSIONS } from './customSound.js';
 import { showAttentionNotice } from './attentionNotice.js';
@@ -139,7 +140,7 @@ function fail(title: string, detail: string): void {
 }
 
 async function startServer(): Promise<void> {
-  const { serverEntry, uiDir } = resolveDesktopPaths({
+  const { serverEntry, uiDir, airlockExec } = resolveDesktopPaths({
     dirname: __dirname,
     resourcesPath: process.resourcesPath,
     packaged: app.isPackaged,
@@ -153,7 +154,8 @@ async function startServer(): Promise<void> {
     // cwd is explicit because the server's own fallback derives the database
     // from it. Launched from Finder that would be "/" — see serverEnv.ts.
     cwd: path.dirname(serverEntry),
-    env: buildServerEnv(process.env, { uiDir, dbPath, freshPath }),
+    // ea94c023: the server runs Airlock's exec helper with this app's Electron as Node.
+    env: buildServerEnv(process.env, { uiDir, dbPath, freshPath, airlockExec: { cli: airlockExec, node: process.execPath } }),
     stdio: 'inherit',
   });
   console.log(`[DESKTOP] Starting AgEnFK server (db: ${dbPath})`);
@@ -191,6 +193,9 @@ export function createWindow(url: string): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // The stored size from the FIRST paint (INFRA-425). Re-applied on every
+      // load by wireUiScale, which this alone does not cover after a reload.
+      zoomFactor: readPrefs(app.getPath('userData')).uiScale,
     },
   });
 
@@ -198,6 +203,8 @@ export function createWindow(url: string): BrowserWindow {
   win.once('ready-to-show', () => win.show());
   // The shell's own title bar is dead space in full screen; see windowFullScreen.ts.
   wireFullScreen(win);
+  // The size the person chose, on every load, and Ctrl+= / Ctrl+- remembered.
+  wireUiScale(win, () => app.getPath('userData'), runningOn);
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null;
   });

@@ -416,3 +416,102 @@ describe('a symlink pointing out of the root', () => {
     }
   });
 });
+
+/**
+ * GitHub #269: a failed `git worktree add` must not leave debris behind.
+ *
+ * git's own failure modes are what matter here, so this drives real git. The
+ * failure is forced with a post-checkout hook that exits 1 (a repo-local
+ * core.hooksPath, so nothing global is touched): git 2.56 then exits non-zero
+ * AFTER creating the `-b` branch and registering the worktree - the same
+ * half-made state a "Filename too long" checkout leaves on Windows, without
+ * needing a real 260-character path. Git for Windows runs the hook through its
+ * own sh, so the shebang script works on every CI shard.
+ *
+ * No `gitEnv` is passed: SX-3's hooks-off environment would switch the hook
+ * off and the failure would never happen.
+ */
+describe('createWorktree rolls back what a failed `worktree add` created (#269)', () => {
+  let hooks: string;
+
+  beforeEach(() => {
+    hooks = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-wt-hooks-'));
+    const hook = path.join(hooks, 'post-checkout');
+    fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n');
+    fs.chmodSync(hook, 0o755);
+    git(repo, 'config', 'core.hooksPath', hooks.replace(/\\/g, '/'));
+  });
+
+  afterEach(() => {
+    if (hooks && fs.existsSync(hooks)) fs.rmSync(hooks, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+
+  const targetFor = (branchName: string): string => buildWorktreePath(root, repoNameFor(repo), branchName);
+  const registeredBranches = (): Array<string | null> => listWorktrees(repo).map(w => w.branchName);
+
+  it('R1: deletes the branch it created, deregisters the worktree and removes its directory', () => {
+    const branch = 'feature/hook-fails-new';
+    expect(() => createWorktree({ repoRoot: repo, root, branchName: branch }))
+      .toThrow(/git worktree add failed for branch 'feature\/hook-fails-new'/);
+
+    expect(git(repo, 'branch', '--list', branch).trim(), 'the new branch was left behind').toBe('');
+    expect(registeredBranches(), 'the worktree is still registered').not.toContain(branch);
+    expect(listWorktrees(repo), 'something other than the main tree is registered').toHaveLength(1);
+    expect(fs.existsSync(targetFor(branch)), 'the worktree directory was left behind').toBe(false);
+  });
+
+  it('R2: never deletes a branch that existed before the call, and leaves it where it was', () => {
+    const branch = 'feature/hook-fails-existing';
+    git(repo, 'branch', branch);
+    const before = git(repo, 'rev-parse', `refs/heads/${branch}`).trim();
+
+    expect(() => createWorktree({ repoRoot: repo, root, branchName: branch }))
+      .toThrow(/git worktree add failed/);
+
+    expect(git(repo, 'rev-parse', `refs/heads/${branch}`).trim(), 'the user\'s branch moved or vanished').toBe(before);
+    expect(registeredBranches(), 'the worktree is still registered').not.toContain(branch);
+    expect(fs.existsSync(targetFor(branch)), 'the worktree directory was left behind').toBe(false);
+  });
+
+  it('R3: an invalid start point surfaces git\'s reason and leaves nothing behind', () => {
+    const branch = 'feature/bad-start';
+    expect(() => createWorktree({ repoRoot: repo, root, branchName: branch, startPoint: 'refs/remotes/origin/does-not-exist' }))
+      .toThrow(/git worktree add failed for branch 'feature\/bad-start':[^]*(invalid reference|not a valid)/i);
+
+    expect(git(repo, 'branch', '--list', branch).trim()).toBe('');
+    expect(listWorktrees(repo)).toHaveLength(1);
+    expect(fs.existsSync(targetFor(branch))).toBe(false);
+  });
+
+  it('R4: never deletes a target directory that was already there before the call', () => {
+    // A directory that LOOKS like a worktree (a .git file) and so would pass
+    // isRemovableWorktree. git refuses to add into a non-empty directory; the
+    // rollback must not then delete what the call did not create.
+    const branch = 'feature/dir-was-there';
+    const target = targetFor(branch);
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, '.git'), 'gitdir: /somewhere/else\n');
+    fs.writeFileSync(path.join(target, 'precious.txt'), 'keep me');
+
+    expect(() => createWorktree({ repoRoot: repo, root, branchName: branch })).toThrow(/git worktree add failed/);
+
+    expect(fs.existsSync(path.join(target, 'precious.txt')), 'rollback deleted a directory it did not create').toBe(true);
+    expect(git(repo, 'branch', '--list', branch).trim()).toBe('');
+  });
+
+  it('R5: a pre-existing EMPTY target directory survives the rollback', () => {
+    // git accepts an empty existing directory as the add target, so here the
+    // add gets far enough to register the worktree before the hook fails - and
+    // `worktree remove --force` takes the whole directory with it.
+    const branch = 'feature/empty-dir-was-there';
+    const target = targetFor(branch);
+    fs.mkdirSync(target, { recursive: true });
+
+    expect(() => createWorktree({ repoRoot: repo, root, branchName: branch })).toThrow(/git worktree add failed/);
+
+    expect(fs.existsSync(target), 'rollback deleted a directory that was there before the call').toBe(true);
+    expect(fs.statSync(target).isDirectory()).toBe(true);
+    expect(registeredBranches(), 'the worktree is still registered').not.toContain(branch);
+    expect(git(repo, 'branch', '--list', branch).trim(), 'the new branch was left behind').toBe('');
+  });
+});

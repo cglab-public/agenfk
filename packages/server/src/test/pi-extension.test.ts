@@ -819,3 +819,50 @@ describe('activate(): pi read tool and the database files', () => {
     expect(await fire('tool_call', { toolName: 'read', input: { path: '/repo/src/index.ts' } }, {})).toBeUndefined();
   });
 });
+
+// ── pi 1.4's ExtensionContext: the live model is ctx.model ──────────────────
+// Verified against @earendil-works/pi-coding-agent 1.4.0
+// (dist/core/extensions/types.d.ts, ExtensionContext): it carries `model`
+// ({ provider, id, ... }) and `cwd`; getModel() is only on an internal runner
+// type, and PI_PROVIDER/PI_MODEL are set in the bash tool's CHILD shell, not in
+// the extension's process. So in a real session ctx.model is the live model.
+
+/** The shape pi 1.4 hands an extension handler (the fields this extension reads). */
+const realCtx = (provider: string, id: string) => ({
+  cwd: '/repo',
+  mode: 'tui',
+  hasUI: true,
+  ui: { notify: () => {} },
+  model: { provider, id, name: id, api: 'openai-completions' },
+});
+
+describe('resolveModelSource reads ctx.model (pi 1.4 ExtensionContext)', () => {
+  const none = () => null;
+
+  it('ctx.model is the first source: it beats the env, getModel(), the cache, the transcript and settings.json', () => {
+    const ctx = { ...realCtx('coding4', 'qwen3.8:27b'), getModel: () => ({ provider: 'anthropic', id: 'stale' }) };
+    expect(resolveModelSource({
+      ctx: ctx as any, lastSelected: 'cached', readDefault: () => 'settings', readTranscript: () => 't/transcript', env: () => 'e/env',
+    })).toBe('coding4/qwen3.8:27b');
+  });
+
+  it('with no env and no transcript, the live model wins over a different settings.json model', () => {
+    expect(resolveModelSource({
+      ctx: realCtx('cloudflare-workers-ai', '@cf/zai-org/glm-5.2') as any,
+      lastSelected: null, readDefault: () => 'qwen3.8:27b', readTranscript: none, env: none,
+    })).toBe('cloudflare-workers-ai/@cf/zai-org/glm-5.2');
+  });
+
+  it('a ctx.model with no id falls through to the next source', () => {
+    expect(resolveModelSource({ ctx: { model: { provider: 'p' } } as any, lastSelected: null, readDefault: () => 'settings', readTranscript: none, env: none })).toBe('settings');
+  });
+
+  it('activate(): an agenfk pr command is rewritten to the live ctx.model, not settings.json', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps({ readDefaultModel: () => 'settings-model' }));
+    const input = { command: 'agenfk pr create abc' };
+    await fire('tool_call', { toolName: 'bash', input }, realCtx('coding4', 'qwen3.8:27b'));
+    expect(input.command).toContain('--model coding4/qwen3.8:27b --harness pi');
+    expect(input.command).not.toContain('settings-model');
+  });
+});

@@ -125,14 +125,14 @@ presents it once, and the parent issues the key
 
 ### What a parent can see and do
 
-- **See the events its children forward**, shaped by the identity policy below.
+- **See the events its children forward**, shaped by the identity coding below.
 - **Read aggregate metrics per child hub**, kept apart by `child_hub_id` on
   `events` and `rollups_daily` rather than in a separate table.
 - **Dispatch one of its flows** to some or all children, which install it as an
   `org_available` flow of origin `parent` (`services/federation/federationSync.ts`).
 - **Dispatch a target agenfk version**, which each child fans out over its own
   installations (`services/federation/upgradeFanout.ts`), and **cancel** it.
-- **Set the identity policy** for the group, or per child.
+- **Set the identity coding** (person, installation) for the group, or per child.
 - **Detach a child**, which is the only way a child is released.
 
 ### What a parent cannot do — the part that matters
@@ -171,31 +171,45 @@ presents it once, and the parent issues the key
   landing: a target stays `pending` until the child reports, and "asked to stop"
   (`cancel-pending`) is deliberately distinct from "stopped" (`cancelled`).
 
-### Identity policy
+### Identity coding
 
-The policy belongs to the parent — `keep` or `pseudonymize` — set for the group
-or overridden per child, and the override wins in both directions because it is
-an override, not an escalation (`services/federation/forwarding.ts`).
+The parent decides what its children code before they forward, field by field
+(`services/federation/identityCoding.ts`):
 
-**The default is `keep`, and `keep` forwards the event whole**: the actor's git
-email, the item title, the entire free-form payload. A fresh group has no policy
-row, and no policy row means `keep`. If that is not what you want, it is one
-setting and it is not the one you get by doing nothing — this is the single most
-decision-relevant fact about federating, so it is stated before the nuance
-rather than after it.
+- **Person.** Coded, the user key becomes a per-hub code, and everything that
+  can carry the person goes with it: the actor (OS user, git name, git email),
+  the item title, and the free-form payload, which is reduced to the keys the
+  parent aggregates plus the usage numbers.
+- **Installation.** Coded, the installation id becomes a per-hub code.
+
+Each field is set as a group default and, optionally, overridden per child; the
+override wins in both directions. **The default for both is as written**, and as
+written forwards the event whole. Model, harness, step names, repository and
+ticket are always sent as written.
 
 Two properties make it auditable rather than merely configurable. The child can
-read the policy it is currently forwarding under (`GET /v1/admin/federation`), so
-people are not subject to a control their own admin cannot see. And the policy
-travels **with** each queued row rather than being read at delivery time, so
-switching it can never retroactively change the meaning of rows already queued.
+read the coding it is currently forwarding under (`GET /v1/admin/federation`),
+so people are not subject to a control their own admin cannot see. And the
+coding travels **with** each queued row rather than being read at delivery
+time, so changing it can never retroactively change the meaning of rows already
+queued. The parent names a forwarded person only when the row was queued with
+the person as written AND the parent's own setting for that child still says so.
 
-Under `pseudonymize` the payload is reduced to a known list of forwardable keys
-rather than filtered for known-bad ones: a deny-list on a free-form blob is a
-promise nobody can keep. The pseudonym is derived per child hub from that hub's
-own secret, so the same person appears as two different people to a parent
-watching two sibling hubs, and rotating `AGENFK_HUB_SECRET_KEY` re-pseudonymises
-everyone from that point on. Both are deliberate; neither is reversible.
+With the person coded, the payload is reduced to a known list of forwardable
+keys rather than filtered for known-bad ones: a deny-list on a free-form blob is
+a promise nobody can keep. Times in the rebuilt usage are re-serialised to ISO.
+A code is derived per child hub from that hub's own secret, so the same person
+appears as two different people to a parent watching two sibling hubs, and
+rotating `AGENFK_HUB_SECRET_KEY` re-codes everyone from that point on. Both are
+deliberate; neither is reversible.
+
+This replaced a binary `keep` | `pseudonymize` policy. Upgrading resets an
+existing `pseudonymize` to as written (`identity_policy` is cleared, the new
+columns start empty): data a group hid before the upgrade is sent as written
+after it until an admin codes the fields again. On the wire both shapes travel,
+so either side may be upgraded first: a newer hub sends `identity` and the
+binary `identityPolicy` beside it (`pseudonymize` whenever anything is coded),
+and reads an older peer's `pseudonymize` as both fields coded.
 
 ### Leaving a group
 
@@ -249,6 +263,17 @@ Neither role needs much more than that. `HUB_ARCHITECTURE.md` §2.7 covers what 
 operator actually sets — which is almost nothing, plus one flag for a parent on a
 private network — and why enrolment is deliberately a decision made in the UI
 rather than a variable in the environment.
+
+## Airlock runtime (smolvm)
+
+Airlock (GH-294) sandboxes pi, OpenCode, Claude Code and Codex sessions (GH-356 added the last two, with no launch gate: running them in Airlock is optional). Since CGLAB-696 its only runtime is smolvm (`packages/cli/src/airlock/smolvm.ts`): the Sandbox Runtime (ASRT) it replaced could not mediate non-HTTP egress.
+
+- **One machine per workspace.** `machineNameOf(workspace)`; created on first launch from the policy's image (`image.ts`), started for a session, stopped by the last session out. Concurrent sessions share it only on identical terms (network, model keys, protections, mounts); a command the server runs (`exec.ts`) joins a live session on that session's terms, in a mount namespace of its own.
+- **Egress.** smolvm's mediated egress hands each guest flow to a per-machine decider (`egress.ts`, run detached from `egressMain.js` so it outlives the session that started the machine). It names the flow by SNI / HTTP Host / the DNS audit, applies the policy (`enforce` allow+deny, `observe` deny only and report), and redirects the session's relay and inference flows to host-side services (`serverRelay.ts`, `keyInjector.ts`). Decisions reach the server through the launcher's reporter (`proxyReport.ts`).
+- **Claude Code and Codex (GH-356).** Their per-call hook is `bin/agenfk-airlock-hook.mjs`, which judges only when `AGENFK_AIRLOCK_SANDBOX` says it runs in the machine. A host-held login (the default) puts a stand-in in the guest; the injector asks a `TokenSource` (`tokenSource.ts`) for the real token per request, caches it until 60 s before it expires, and on a 401 invalidates it and tries once more. The login file is the machine's own in either mode (`machineOwn`, bound from `/var/lib/agenfk/own`), seeded from the host's only with `--login mount`. The hooks the host's settings name at `~/.local/bin` are given to the session as wrappers over its `~/.agenfk/bin`.
+- **Files.** Only the spec's write roots are mounted; a root script applies read-only binds and hides (`guestSetupScript`) before the session, which runs as the host user's uid.
+- **Install.** `smolvmInstall.ts` pins the release tarball per platform by sha256 into `~/.agenfk/smolvm/<version>`; the desktop app bundles the same release (`packages/desktop/scripts/bundle-airlock.mjs`).
+- **Conformance.** `airlock-sandbox-conformance.test.ts` runs the guarantees against the pinned smolvm, the base image and the real decider; CI runs it on a KVM Linux runner (`ci.yml`, `airlock-conformance`).
 
 ## Tech Stack
 - **Language**: TypeScript (Strong typing across the stack)

@@ -28,6 +28,7 @@ Welcome to **AgEnFK**, a high-reliability, measurable, and visual framework desi
 - [Multi-Project Support](#multi-project-support)
 - [GitHub Issues Sync](#github-issues-sync)
 - [Corporate Hub](#corporate-hub)
+- [Airlock (sandboxed agent sessions)](#airlock-sandboxed-agent-sessions)
 - [Architecture Deep Dive](#architecture-deep-dive)
 - [Release Channels (`beta` and `main`)](docs/RELEASES.md)
 - [Custom Workflow Flows](#custom-workflow-flows)
@@ -123,7 +124,7 @@ This will:
 >
 > Your choice is persisted in `~/.agenfk/config.json` and honored on every upgrade, so you only need to pass the flag once. You can also flip it later per-platform with `agenfk integration install <platform> --with-mcp` / `--no-mcp`. When MCP tools are present, agents may use them interchangeably with the CLI — the CLI commands remain the canonical, equivalent path.
 
-> **Requirements**: Node.js 22.12+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
+> **Requirements**: Node.js 22.13+ (23.5+ on the Node 23 line), git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
 
 **To update**, run the same command again — npm will fetch the latest from GitHub and re-run setup. A default (no `--with-mcp`) upgrade cleanly unregisters any stale agenfk MCP server, so you never end up in a half-state.
 
@@ -362,9 +363,26 @@ AgEnFK ships an optional self-hosted **Corporate Hub** (`packages/hub` + `packag
 
 The hub does not own your code, your local database, or your editor. Everything you do day-to-day still happens on your machine through your usual AI client + CLI; the hub is a read-mostly observer plus a central place to govern flows and roll out upgrades.
 
+### Administering the hub from the command line
+
+Everything the hub's admin pages do is also available as `agenfk hub admin <area> <verb>`: users and invites, sign-in, API keys, flows, upgrades, Airlock, repositories, models, federation, JIRA, the audit log, and the fleet's events and data. Sign in once with `agenfk hub admin login` (you approve a code in the browser; the session lasts 12 hours), then script against `--json`. See [`docs/HUB_ADMIN_CLI.md`](./docs/HUB_ADMIN_CLI.md).
+
 ### Where to read more
 
 [`HUB_ARCHITECTURE.md`](./HUB_ARCHITECTURE.md) is the operator-grade reference: data model, auth realms (admin sessions vs installation bearer keys), ingest contract, identity-provider setup walkthroughs for Google Cloud Console and Microsoft Entra, the full HTTP surface, and a quick-reference table for who-owns-what.
+
+## Airlock (sandboxed agent sessions)
+
+Airlock runs a pi, OpenCode, Claude Code or Codex session inside a sandbox built from a policy a person sets on the board (or an org admin on the hub): `agenfk airlock pi ...`, `agenfk airlock opencode ...`, `agenfk airlock claude ...`, `agenfk airlock codex ...`.
+
+*   **Required for pi and OpenCode, optional for Claude Code and Codex.** When the policy enforces, a pi or OpenCode session it covers has its tool calls refused unless it runs in Airlock. Claude Code and Codex have no such gate: outside Airlock they run as before, whatever the policy says. Inside it, each tool call is judged as pi's are (Claude Code gets the hook from the launcher, Codex from `~/.codex/hooks.json`, which the installer registers).
+*   **Claude Code and Codex logins.** By default the login is host-held: the machine gets a stand-in, and the host puts the real token there on the way to the model. For Claude Code that is your own login on this machine (its Keychain entry on a Mac); a key in `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is masked instead. `--login mount`, before the client's name, gives the machine its own copy of the login file instead: it starts as yours (or empty, for a /login inside the machine) and nothing written to it reaches yours. For Codex it is your ChatGPT login in `~/.codex/auth.json` (or `$CODEX_HOME`'s): the machine's `auth.json` is a stand-in, and the host answers Codex's token refresh itself. Airlock never refreshes the login on the host: if it has expired, run `codex` here once. A login kept in the OS keyring is not read. An `OPENAI_API_KEY` is masked instead, in either mode.
+
+*   **Runtime: smolvm microVMs.** Each workspace (the folder Airlock is launched from) gets one persistent [smolvm](https://github.com/smol-machines/smolvm) machine, started for a session and stopped when the last one leaves. Sessions run in a Linux guest image: the AgEnFK base image, or the one the policy names. What a session installs there (its Linux `node_modules`, packages) stays on the machine's disk; `agenfk airlock reset` deletes the machine.
+*   **Every connection is decided.** HTTPS, psql, ssh, raw TCP: the host decides each outbound flow before it is dialled, from its destination and first bytes (TLS SNI, HTTP Host) or the DNS lookup behind it. `enforce` allows only the policy's hosts and the session's inference host; `observe` lets everything through and reports what enforce would refuse. Metadata addresses and the host's loopback are never reachable; the AgEnFK server is reached only through the session's relay.
+*   **Files.** The guest sees only the workspace and the client's own state, at their host paths. Credential stores are hidden, AgEnFK's files and git's hooks and config are read-only, and model keys stay on the host: the guest gets a placeholder that is swapped for the key on the way to the inference host.
+*   **Verify and suite runs** of a card a sandboxed session touched run in the same machine (`agenfk airlock exec`), so they see the session's dependencies. A command run beside a live session can reach what that session can.
+*   **Install.** `agenfk airlock install` installs exactly the smolvm version AgEnFK pins (checked against its recorded sha256) into `~/.agenfk/smolvm`; a launch installs it when missing, and install/upgrade do so where Airlock is on. smolvm needs Apple Silicon on macOS, or Linux with KVM; Airlock refuses elsewhere and says why. The desktop app bundles it.
 
 ## Architecture Deep Dive
 

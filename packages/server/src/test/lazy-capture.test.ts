@@ -15,7 +15,6 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -30,7 +29,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, stampCloseGreen } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, IGNORE_REPORT } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -44,7 +44,6 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
@@ -82,13 +81,11 @@ async function setup(opts: { runnerName?: string; sub?: boolean } = {}) {
     s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const top = tmp('agenfk-lz-repo-');
   // With `sub`, the project is a subdirectory of its repository.
+  const at = opts.sub ? 'sub/' : '';
+  const top = echoRepo({ [`${at}a.test.js`]: 'pass adds\npass subtracts\n', [`${at}lib.js`]: 'module.exports = 1;\n', ...IGNORE_REPORT }, 'agenfk-lz-repo-');
+  dirs.push(top);
   const repo = opts.sub ? path.join(top, 'sub') : top;
-  fs.mkdirSync(repo, { recursive: true });
-  fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass adds\npass subtracts\n');
-  fs.writeFileSync(path.join(repo, 'lib.js'), 'module.exports = 1;\n');
-  git(top, 'git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one');
   const tools = tmp('agenfk-lz-tools-');
   const log = path.join(tools, 'runs');
   const runner = path.join(tools, opts.runnerName ?? 'vitest.js');
@@ -181,7 +178,9 @@ describe('acceaa54: a test-only change runs only the changed test files', () => 
     fs.writeFileSync(path.join(t.repo, 'b.test.js'), 'pass divides\n');
     await validate(t.id);
     expect((await captureAt(t.id, 'TESTS')).lazy).toBe(true);
-    const sha = git(t.repo, 'git add -A && git commit -qm close && git rev-parse HEAD');
+    gitSync(t.repo, 'add', '-A');
+    gitSync(t.repo, 'commit', '-qm', 'close');
+    const sha = gitSync(t.repo, 'rev-parse', 'HEAD');
     // The only per-test run on these files is the merged one: nothing to stamp.
     expect(await stampCloseGreen(t.id, t.repo, sha)).toBeNull();
   });
@@ -189,7 +188,8 @@ describe('acceaa54: a test-only change runs only the changed test files', () => 
   it("the merged exit code is the merged results': a file failing at entry and not re-run still fails", async () => {
     const t = await setup();
     fs.writeFileSync(path.join(t.repo, 'c.test.js'), 'fail broken\n');
-    git(t.repo, 'git add . && git commit -qm c');
+    gitSync(t.repo, 'add', '.');
+    gitSync(t.repo, 'commit', '-qm', 'c');
     await enterTests(t);
     expect((await captureAt(t.id, 'PLAN')).exitCode).not.toBe(0);
     fs.writeFileSync(path.join(t.repo, 'b.test.js'), 'pass divides\n');
@@ -233,7 +233,7 @@ describe('acceaa54: a test-only change runs only the changed test files', () => 
   it('a rename is a deletion plus an addition: the old name\'s tests do not survive it', async () => {
     const t = await setup();
     await enterTests(t);
-    git(t.repo, 'git mv a.test.js moved.test.js');
+    gitSync(t.repo, 'mv', 'a.test.js', 'moved.test.js');
     await validate(t.id);
     expect(t.runs().slice(1)).toEqual([['moved.test.js']]);
     const lazy = await captureAt(t.id, 'TESTS');
@@ -266,8 +266,9 @@ describe('acceaa54: a test-only change runs only the changed test files', () => 
     const t = await setup();
     await enterTests(t);
     fs.writeFileSync(path.join(t.repo, 'b.test.js'), 'pass divides\ndirty\n');
-    git(t.repo, 'git add b.test.js && git commit -qm b');
-    expect(git(t.repo, 'git status --porcelain')).toBe('');
+    gitSync(t.repo, 'add', 'b.test.js');
+    gitSync(t.repo, 'commit', '-qm', 'b');
+    expect(gitSync(t.repo, 'status', '--porcelain')).toBe('');
     await validate(t.id);
     expect(t.runs().slice(1)).toEqual([['b.test.js'], 'ALL']);
     const cap = await captureAt(t.id, 'TESTS');

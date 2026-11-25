@@ -1,6 +1,7 @@
 import * as os from 'os';
 import { defineConfig } from 'vitest/config';
 import { sharedResolve, sharedTest } from './scripts/vitest-shared-config.mjs';
+import { resolveMaxWorkers } from './scripts/vitest-workers.mjs';
 
 /**
  * Test files that touch no shared filesystem state, so their files may run
@@ -46,10 +47,20 @@ const SERIAL_INCLUDE = [
   'packages/cli/src/test/**/*.{test,spec}.{ts,tsx}',
 ];
 
+/*
+ * The root `test` block holds ONLY the run-wide options, never a project's.
+ *
+ * vitest 5 merges this block into every inline project below (they have no
+ * `extends: false`), and arrays concatenate: a root `include` of both lists
+ * made `parallel` and `serial` each collect every file, so the whole non-board
+ * suite ran twice, once per project. A root `define` or `setupFiles` would
+ * leak the same way (a root `__AGENFK_VERSION__: 'test'` broke airlock-exec's
+ * version check). Each project brings its own `sharedTest(...)`; the board
+ * brings its own config file. core's vitestParallelism.test.ts guards both.
+ */
+const { coverage } = sharedTest();
+
 export default defineConfig({
-  define: {
-    __AGENFK_VERSION__: JSON.stringify('test'),
-  },
   resolve: sharedResolve,
   test: {
     // NOTE the fileParallelism here. This root-level block is what vitest uses
@@ -59,18 +70,39 @@ export default defineConfig({
     // anyway. Leaving it permissive lets each project decide; a project that
     // must run one file at a time says `fileParallelism: false` itself (none
     // does since GH-274).
-    ...sharedTest({ include: [...PARALLEL_INCLUDE, ...SERIAL_INCLUDE], fileParallelism: true }),
+    fileParallelism: true,
+    // Never concurrent within a file, run-wide (see scripts/vitest-shared-config.mjs).
+    sequence: { concurrent: false },
+    // Coverage is run-wide in vitest: only the root's settings apply.
+    coverage,
     /*
-     * A quarter of the CPUs (at least 2), not vitest's all-but-one (GH-274).
-     * A server, hub or cli file spawns git and node children by the dozen, so a
-     * worker is several CPUs' load. Measured on an 18-CPU machine: at 9 workers
-     * every test ran ~3.9x slower than alone (6996s of test time in an 817s run)
-     * and the heaviest end-to-end tests passed 60s; at 4 workers the server files
-     * ran ~1.35x slower than alone, all green. Set here, at the root, so
-     * `--maxWorkers` on the command line still overrides it for every project; a
-     * project's own value would win over the flag.
+     * The worker count, not vitest's all-but-one: scripts/vitest-workers.mjs.
+     *
+     * POSIX - a quarter of the CPUs, at least 2 (GH-274). A server, hub or cli
+     * file spawns git and node children by the dozen, so a worker is several
+     * CPUs' load and CPU is the bottleneck. Measured on an 18-CPU Linux machine:
+     * at 9 workers every test ran ~3.9x slower than alone (6996s of test time in
+     * an 817s run) and the heaviest end-to-end tests passed 60s; at 4 workers the
+     * server files ran ~1.35x slower than alone, all green.
+     *
+     * win32 - 40% of the CPUs, rounded, at most 8, never fewer than POSIX (#313).
+     * There the same files are wait-bound, not CPU-bound: each spawn waits on
+     * process creation and on the EDR sensor scanning it, so more workers overlap
+     * that wait instead of fighting for CPU. Measured on a 14-CPU Windows 11
+     * machine, 8-file server subset, pre-change code, all green:
+     *
+     *   | maxWorkers | Duration |
+     *   |      3     | 384.6 s  |   (the POSIX rule)
+     *   |      4     | 314.7 s  |
+     *   |      6     | 277.0 s  |   (the win32 rule at 14 CPUs)
+     *   |      8     | 284.0 s  |
+     *
+     * Set here, at the root: the inline projects inherit it. The board's own
+     * config file resolves the same value, because vitest 5 refuses projects
+     * of one sequence.groupOrder whose maxWorkers differ. `--maxWorkers` on the
+     * command line overrides it for every project.
      */
-    maxWorkers: Math.max(2, Math.floor(os.availableParallelism() / 4)),
+    maxWorkers: resolveMaxWorkers({ platform: process.platform, cpus: os.availableParallelism() }),
     projects: [
       {
         test: {
@@ -97,6 +129,7 @@ export default defineConfig({
       // fail in the hundreds. It used to run only from `cd packages/ui`, so the
       // project's verify command and test report - every agenfk gate's view of
       // the suite - never saw a board spec, and a card could break one and pass.
+      // It resolves the same maxWorkers as the root itself (see that file).
       'packages/ui/vitest.config.ts',
     ],
   },

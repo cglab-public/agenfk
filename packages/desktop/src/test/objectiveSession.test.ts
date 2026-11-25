@@ -22,6 +22,7 @@ const deps = (over: Record<string, unknown> = {}) => ({
   resolveProjectCwd: vi.fn(async () => ({ cwd: '/checkout/of/project' })),
   registerRun: vi.fn(),
   emit: vi.fn(),
+  killTree: vi.fn(),
   ...over,
 });
 

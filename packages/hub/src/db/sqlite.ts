@@ -126,6 +126,39 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_device_codes_user_code ON device_codes(user_code);
 
+  -- Admin CLI sign-in (CGLAB-702). A code the CLI starts and a signed-in admin
+  -- approves in the browser; kept apart from device_codes so an admin code can
+  -- never be redeemed as an installation key, nor the other way round.
+  CREATE TABLE IF NOT EXISTS admin_device_codes (
+    device_code TEXT PRIMARY KEY,
+    user_code TEXT NOT NULL UNIQUE,
+    org_id TEXT,
+    user_id TEXT,
+    approved_at TEXT,
+    -- Set by the one poll that collects the grant; the token is minted then,
+    -- so no plaintext waits anywhere between approval and collection.
+    consumed_at TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- The admin CLI's bearer tokens: a second carrier for a user's session, held
+  -- as a hash. Whether its user may act, and as what, is read from users on
+  -- every request, as for the cookie.
+  CREATE TABLE IF NOT EXISTS admin_cli_tokens (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    -- The device grant that minted it. UNIQUE: one grant can never yield a
+    -- second token, whatever fails part-way through issuing the first.
+    grant_code TEXT UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_admin_cli_tokens_org ON admin_cli_tokens(org_id);
+
   CREATE TABLE IF NOT EXISTS used_invites (
     nonce TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
@@ -150,7 +183,8 @@ const SCHEMA_SQLITE = `
     detached_by_email TEXT,
     release_requested_at TEXT,
     release_reason TEXT,
-    identity_policy TEXT
+    identity_person TEXT,
+    identity_installation TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
 
@@ -318,7 +352,8 @@ const SCHEMA_SQLITE = `
     registry_branch TEXT NOT NULL DEFAULT 'main',
     registry_token_enc TEXT,
     registry_copied_at TEXT,
-    identity_policy TEXT,
+    identity_person TEXT,
+    identity_installation TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -644,11 +679,144 @@ const SCHEMA_SQLITE = `
     revision INTEGER NOT NULL DEFAULT 1,
     receipts_mode TEXT NOT NULL DEFAULT 'off' CHECK (receipts_mode IN ('off','shadow','enforce')),
     shadow_threshold INTEGER,
+    producer_mode TEXT NOT NULL DEFAULT 'listed' CHECK (producer_mode IN ('listed','all')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (org_id, remote_url)
   );
   CREATE INDEX IF NOT EXISTS idx_repo_settings_org ON repo_settings(org_id);
+
+  -- Airlock (GH-294). The org's Airlock policy: one row per org, which every
+  -- joined installation adopts and no installation can overrule. revision
+  -- moves on a policy save; ioc_revision moves when only the IOC host list
+  -- changes, so an installation's cached ETag (both numbers) busts on either.
+  -- policy_json holds the normalised policy WITHOUT its IOC list, which lives
+  -- in ioc_hosts_json: a policy save and an IOC save each write only their own
+  -- columns, each compare-and-swapped on its own revision, so neither can
+  -- overwrite the other. Timestamps are ISO TEXT written by the app, identical
+  -- in both dialects.
+  CREATE TABLE IF NOT EXISTS airlock_policies (
+    org_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    policy_json TEXT NOT NULL,
+    ioc_revision INTEGER NOT NULL DEFAULT 0,
+    ioc_hosts_json TEXT NOT NULL DEFAULT '[]',
+    ioc_updated_at TEXT,
+    updated_at TEXT NOT NULL,
+    updated_by_email TEXT
+  );
+
+  -- Which Airlock policy each installation applies (GH-294, HUB-2), as it last
+  -- reported through its event stream: the revision and IOC revision applied
+  -- and when it first applied them (applied_at) and last said so
+  -- (reported_at), and the last hub policy (revision and IOC revision) it
+  -- refused as invalid. Keyed by org
+  -- too, so a row is only ever read within its org. Timestamps are the
+  -- reports' own ISO occurredAt, so an older report landing late is refused.
+  CREATE TABLE IF NOT EXISTS airlock_installations (
+    org_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    applied_revision INTEGER,
+    applied_ioc_revision INTEGER,
+    applied_at TEXT,
+    reported_at TEXT,
+    refused_revision INTEGER,
+    refused_ioc_revision INTEGER,
+    refused_error TEXT,
+    refused_at TEXT,
+    PRIMARY KEY (org_id, installation_id)
+  );
+
+  -- The org's recent Airlock denials and alerts (GH-294, HUB-1): the
+  -- airlock.decision events that denied (or, in observe mode, would have) or
+  -- that raised an alert, out of the events table, which keeps every decision
+  -- including the far more numerous allows. Columns are the payload's fields,
+  -- cut to size at ingest, so the admin's filters read columns rather than
+  -- JSON. Kept as long as the events are (no hub event is purged); keyed by
+  -- org, and ordered by (occurred_at, event_id) for the newest-first cursor.
+  CREATE TABLE IF NOT EXISTS airlock_decisions (
+    org_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    client TEXT,
+    model TEXT,
+    tool TEXT,
+    capability_kind TEXT,
+    target TEXT,
+    decision TEXT NOT NULL,
+    rule TEXT,
+    mode TEXT,
+    source TEXT NOT NULL,
+    alert TEXT,
+    item_id TEXT,
+    revision INTEGER,
+    policy_source TEXT,
+    PRIMARY KEY (org_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_decisions_org_time ON airlock_decisions(org_id, occurred_at, event_id);
+
+  -- Airlock learning proposals (GH-294, TEL-3): the latest report of each
+  -- host each installation forwarded (airlock.learning-proposal), host names
+  -- and counts only. The admin's list groups them by host, so the same host
+  -- proposed by many installations is one row. reported_at is the event's
+  -- own ISO occurredAt, so an older report landing late changes nothing.
+  CREATE TABLE IF NOT EXISTS airlock_learning_reports (
+    org_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    hits INTEGER NOT NULL,
+    proxy_hits INTEGER NOT NULL DEFAULT 0,
+    upload_hits INTEGER NOT NULL DEFAULT 0,
+    clients_json TEXT NOT NULL DEFAULT '[]',
+    context_json TEXT,
+    first_seen TEXT,
+    last_seen TEXT,
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, host, installation_id)
+  );
+
+  -- The Airlock dataset (GH-294, DS-2): full tool-call rows and the labels joined to
+  -- them, for training the semantic scorer. Kept only while the org's switch
+  -- (airlock_dataset_settings, off by default) is on; never in the events table and
+  -- never forwarded to a parent hub. Bounded per org by rows, age and row size
+  -- (services/airlockDataset.ts), pruned at ingest. kind is 'row' or 'label';
+  -- row_id joins a label to its row.
+  CREATE TABLE IF NOT EXISTS airlock_dataset_settings (
+    org_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    updated_by_email TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS airlock_dataset (
+    org_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    row_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    imported INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (org_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_time ON airlock_dataset(org_id, occurred_at, event_id);
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_org_row ON airlock_dataset(org_id, row_id);
+  -- One row per row id (an import sent again, or twice at once, comes under new event ids).
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_airlock_dataset_row ON airlock_dataset(org_id, row_id) WHERE kind = 'row';
+  -- The hosts each kept row reached (its payload's hosts, at most 50), so a learning
+  -- accept labels the rows that reached a host exactly, by index, not by scanning.
+  CREATE TABLE IF NOT EXISTS airlock_dataset_hosts (
+    org_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    row_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, host, row_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_airlock_dataset_hosts_time ON airlock_dataset_hosts(org_id, host, occurred_at);
 
   -- The command's history. One row per revision, written by whoever moved it:
   -- the installation that claimed it first (source 'init', its installation id)
@@ -792,6 +960,29 @@ class SqliteAdapter implements HubDb {
   }
 }
 
+/**
+ * Per-field identity coding (GH-395) on child_hubs and org_settings. Both
+ * tables exist on deployed hubs, so CREATE TABLE IF NOT EXISTS never adds the
+ * columns; without them the ping route's SELECT throws and every child in the
+ * group reads dead on the parent's roster.
+ *
+ * The binary identity_policy that came before is reset, not carried over: an
+ * existing `pseudonymize` becomes as written (both new columns NULL), by the
+ * user's decision. Clearing the old value keeps a downgrade from finding it
+ * half-applied. Nothing writes identity_policy any more, so on every boot
+ * after the first this changes nothing.
+ */
+function migrateIdentityCodingColumns(raw: RawDb): void {
+  for (const table of ['child_hubs', 'org_settings']) {
+    const have = new Set((raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(c => c.name));
+    if (have.size === 0) continue;
+    for (const col of ['identity_person', 'identity_installation']) {
+      if (!have.has(col)) raw.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`);
+    }
+    if (have.has('identity_policy')) raw.exec(`UPDATE ${table} SET identity_policy = NULL WHERE identity_policy IS NOT NULL`);
+  }
+}
+
 export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   // ':memory:' is a real SQLite filename, not a sentinel we intercept — but the
   // mkdir below would try to create a directory named '.' for it, and WAL is
@@ -829,6 +1020,18 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const userCols = raw.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (userCols.length > 0 && !new Set(userCols.map(c => c.name)).has('name')) {
     raw.exec("ALTER TABLE users ADD COLUMN name TEXT");
+  }
+
+  // airlock_learning_reports.upload_hits — how often an installation's sessions
+  // sent a host data (2026-11-02); a hub from before has the table without it.
+  const learningCols = raw.prepare("PRAGMA table_info(airlock_learning_reports)").all() as Array<{ name: string }>;
+  if (learningCols.length > 0 && !new Set(learningCols.map(c => c.name)).has('upload_hits')) {
+    raw.exec("ALTER TABLE airlock_learning_reports ADD COLUMN upload_hits INTEGER NOT NULL DEFAULT 0");
+  }
+  // airlock_learning_reports.context_json — what the installation's import knew
+  // of a host (projects, reverse DNS, a model hint; 2026-11-02).
+  if (learningCols.length > 0 && !new Set(learningCols.map(c => c.name)).has('context_json')) {
+    raw.exec("ALTER TABLE airlock_learning_reports ADD COLUMN context_json TEXT");
   }
 
   // Backfill: canonicalise remote_url forms (ssh / https / with-or-without-.git)
@@ -920,18 +1123,7 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
     `);
   }
 
-  // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
-  // Both tables already exist on deployed hubs, so CREATE TABLE IF NOT EXISTS
-  // never adds them. Without these the ping route's SELECT throws and every
-  // child in the group reads dead on the parent's roster.
-  const chCols = raw.prepare("PRAGMA table_info(child_hubs)").all() as Array<{ name: string }>;
-  if (chCols.length > 0 && !new Set(chCols.map(c => c.name)).has('identity_policy')) {
-    raw.exec("ALTER TABLE child_hubs ADD COLUMN identity_policy TEXT");
-  }
-  const osCols = raw.prepare("PRAGMA table_info(org_settings)").all() as Array<{ name: string }>;
-  if (osCols.length > 0 && !new Set(osCols.map(c => c.name)).has('identity_policy')) {
-    raw.exec("ALTER TABLE org_settings ADD COLUMN identity_policy TEXT");
-  }
+  migrateIdentityCodingColumns(raw);
 
   const ukmCols = raw.prepare("PRAGMA table_info(user_key_merges)").all() as Array<{ name: string }>;
   if (ukmCols.length > 0 && !new Set(ukmCols.map(c => c.name)).has('reverted_at')) {
@@ -947,6 +1139,17 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
     if (!dcHave.has('os_user'))         raw.exec("ALTER TABLE device_codes ADD COLUMN os_user TEXT");
     if (!dcHave.has('git_name'))        raw.exec("ALTER TABLE device_codes ADD COLUMN git_name TEXT");
     if (!dcHave.has('git_email'))       raw.exec("ALTER TABLE device_codes ADD COLUMN git_email TEXT");
+  }
+
+  // repo_settings.producer_mode — RFC-002 Amendment 1 (GH #289). Who may
+  // produce a repository's receipts: 'listed' (the repo_producers allowlist,
+  // which is what every repository meant before this column) or 'all' (any
+  // live installation of the org). A hub that already has repo_settings keeps
+  // its table through CREATE TABLE IF NOT EXISTS, so the column is added here;
+  // the DEFAULT gives every existing repository today's behaviour.
+  const rsCols = raw.prepare("PRAGMA table_info(repo_settings)").all() as Array<{ name: string }>;
+  if (rsCols.length > 0 && !new Set(rsCols.map(c => c.name)).has('producer_mode')) {
+    raw.exec("ALTER TABLE repo_settings ADD COLUMN producer_mode TEXT NOT NULL DEFAULT 'listed' CHECK (producer_mode IN ('listed','all'))");
   }
 
   // api_keys columns added when binding installation identity to magic-link tokens.
@@ -1065,6 +1268,8 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
+  // GH-389 usage overview: a card's steps and closes, by card.
+  raw.exec("CREATE INDEX IF NOT EXISTS idx_events_org_item_type ON events(org_id, item_id, type)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key)");
   // Here, not in SCHEMA_SQLITE: on an upgraded hub the column does not exist
   // until the migration above has run, and CREATE INDEX over a missing column

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
+import { revokeAdminCliToken } from '../auth/adminCliToken.js';
 import { checkEmailAllowlist } from '../auth/oauth.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
@@ -23,11 +24,14 @@ import { parentUrlFromInviteToken, inviteExpiryFromToken } from '../auth/inviteT
 import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
 import {
   readParentBinding, writeParentBinding, clearParentBinding, assertHttpUrl,
-  releaseRequestedFlag, setReleaseRequestedFlag, readBindingStateUnverified, asIdentityPolicy,
+  releaseRequestedFlag, setReleaseRequestedFlag, readBindingStateUnverified,
 } from '../services/federation/parentBinding.js';
 import { outboxDepth } from '../services/federation/federationSync.js';
 import { releaseParentFlows } from '../services/federation/parentFlows.js';
-import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
+import {
+  IDENTITY_FIELDS, IDENTITY_COLUMNS, IDENTITY_SELECT, asFieldCoding, codingFromWire, effectiveIdentityCoding, settingFromRow,
+  type IdentityField, type FieldCoding,
+} from '../services/federation/identityCoding.js';
 import { httpFederationClient, type FederationClient } from '../services/federation/federationClient.js';
 import { publicHubUrl, requestOrigin } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
@@ -157,7 +161,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // queries, so bound them too rather than relying on the guard alone.
   // Keyed by the signed-in user, not the address: the hub is reached through
   // shared corporate egress, and an IP bucket would be an office-wide cap.
-  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret, ctx.db), message: 'Too many requests, slow down.' }));
   const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   const activeAdmins = (orgId: string) => ctx.db.all<SignInAdmin>(ACTIVE_ADMINS_SQL, [orgId]);
@@ -225,6 +229,37 @@ export function adminRouter(ctx: HubServerContext): Router {
     const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
     if (!row) return res.status(404).json({ error: 'auth_config row missing for org' });
     res.json(publicAuthConfig(row));
+  }));
+
+  // ── Admin CLI sessions (CGLAB-702) ──────────────────────────────────────
+  // Live admin CLI tokens of this org, so an admin can end one (a lost laptop)
+  // without waiting out its 12 hours. Never the hash: an id is enough to revoke.
+  router.get('/cli-sessions', guard, asyncRoute(async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<any>(
+      `SELECT t.id, t.user_id, t.created_at, t.expires_at, u.email
+         FROM admin_cli_tokens t LEFT JOIN users u ON u.id = t.user_id
+        WHERE t.org_id = ? AND t.revoked_at IS NULL
+        ORDER BY t.created_at DESC`,
+      [req.session!.orgId],
+    );
+    const now = Date.now();
+    const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : String(v));
+    res.json(rows
+      .filter(r => new Date(r.expires_at).getTime() > now)
+      .map(r => ({
+        id: r.id,
+        userId: r.user_id,
+        userEmail: r.email ?? null,
+        createdAt: iso(r.created_at),
+        expiresAt: iso(r.expires_at),
+        current: req.session!.cliTokenId === r.id,
+      })));
+  }));
+
+  router.delete('/cli-sessions/:id', guard, asyncRoute(async (req: Request, res: Response) => {
+    const ok = await revokeAdminCliToken(ctx.db, req.session!.orgId, String(req.params.id));
+    if (!ok) { res.status(404).json({ error: 'No live admin CLI session with that id' }); return; }
+    res.json({ ok: true });
   }));
 
   // ── API keys (installation tokens) ───────────────────────────────────────
@@ -375,7 +410,9 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/hidden-users/:userKey', guard, asyncRoute(async (req: Request, res: Response) => {
-    const userKey = decodeURIComponent(String(req.params.userKey)).trim().toLowerCase();
+    // Express has already decoded the param; decoding again turned a key
+    // holding %40 into a different person's (and threw on a bare %).
+    const userKey = String(req.params.userKey).trim().toLowerCase();
     const r = await ctx.db.run(
       'DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?',
       [req.session!.orgId, userKey],
@@ -529,7 +566,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/models/meta/:model', guard, asyncRoute(async (req: Request, res: Response) => {
-    const model = validModelId(decodeURIComponent(String(req.params.model)));
+    const model = validModelId(String(req.params.model)) // Express has decoded it once already;
     if (!model) return res.status(400).json({ error: 'Invalid model id.' });
     const r = await ctx.db.run(
       'DELETE FROM model_meta WHERE org_id = ? AND model = ?',
@@ -599,7 +636,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/models/mappings/:aliasModel', guard, asyncRoute(async (req: Request, res: Response) => {
-    const aliasModel = validModelId(decodeURIComponent(String(req.params.aliasModel)));
+    const aliasModel = validModelId(String(req.params.aliasModel)) // Express has decoded it once already;
     if (!aliasModel) return res.status(400).json({ error: 'Invalid alias model id.' });
     const r = await ctx.db.run(
       'DELETE FROM model_mappings WHERE org_id = ? AND alias_model = ?',
@@ -3025,7 +3062,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       try {
         await writeParentBinding(ctx.db, ctx.config.secretKey, {
           parentUrl, token: enrolled.token, childHubId: enrolled.childHubId,
-          identityPolicy: enrolled.identityPolicy,
+          identity: codingFromWire(enrolled),
         });
       } catch (err) {
         // The parent has already created the row and burnt the invite, so a
@@ -3063,9 +3100,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         state: binding.state,
         enrolledAt: binding.enrolledAt,
         outboxDepth: depth,
-        // What this hub is forwarding under right now. Without it a child
-        // admin cannot audit a control their own people are subject to.
-        identityPolicy: binding.identityPolicy,
+        identity: binding.identity,
         releaseRequested,
         // The UI disables Leave on this, and the route enforces it too.
         canLeave: binding.state === 'revoked',
@@ -3143,71 +3178,91 @@ export function adminRouter(ctx: HubServerContext): Router {
 
 
   /**
-   * The group's identity policy (CGLAB-184). Set it here or per child hub;
-   * the per-child value wins in either direction. `null` on a child means
-   * "follow the group". Without these routes the opt-out could only be
-   * enabled with a psql session, which is not a control anyone can operate.
+   * What child hubs code before they forward (GH-395): the person and the
+   * installation, each as written or coded. A group default per field, and
+   * per child hub an override per field (`null` follows the group). Nothing
+   * set is as written. Without these routes the setting could only be
+   * changed with a psql session, which is not a control anyone can operate.
    */
-  router.get('/federation/identity-policy', guard, async (req: Request, res: Response, next) => {
+  /** The fields a request names, each checked; a string is the reason it is refused. */
+  function identityChanges(body: unknown, allowNull: boolean): Partial<Record<IdentityField, FieldCoding | null>> | string {
+    const changes: Partial<Record<IdentityField, FieldCoding | null>> = {};
+    for (const f of IDENTITY_FIELDS) {
+      if (!body || typeof body !== 'object' || !(f in body)) continue;
+      const raw = (body as Record<string, unknown>)[f];
+      if (raw === null && allowNull) { changes[f] = null; continue; }
+      const v = asFieldCoding(raw);
+      if (!v) return `${f} must be 'as-written' or 'coded'${allowNull ? ', or null to follow the group' : ''}`;
+      changes[f] = v;
+    }
+    return Object.keys(changes).length > 0 ? changes : 'name at least one field: person or installation';
+  }
+
+  router.get('/federation/identity', guard, async (req: Request, res: Response, next) => {
     try {
       const orgId = req.session!.orgId;
-      const group = await ctx.db.get<{ identity_policy: string | null }>(
-        'SELECT identity_policy FROM org_settings WHERE org_id = ?', [orgId],
+      const groupRow = await ctx.db.get<Record<string, unknown>>(
+        `SELECT ${IDENTITY_SELECT} FROM org_settings WHERE org_id = ?`, [orgId],
       );
-      const children = await ctx.db.all<{ id: string; name: string; identity_policy: string | null }>(
-        'SELECT id, name, identity_policy FROM child_hubs WHERE org_id = ? AND detached_at IS NULL ORDER BY name ASC',
+      const children = await ctx.db.all<Record<string, unknown> & { id: string; name: string }>(
+        `SELECT id, name, ${IDENTITY_SELECT} FROM child_hubs WHERE org_id = ? AND detached_at IS NULL ORDER BY name ASC`,
         [orgId],
       );
-      const groupPolicy = asIdentityPolicy(group?.identity_policy ?? null);
+      const group = settingFromRow(groupRow);
       res.json({
-        groupPolicy,
-        childHubs: children.map(c => ({
-          id: c.id,
-          name: c.name,
-          policy: c.identity_policy === 'keep' || c.identity_policy === 'pseudonymize' ? c.identity_policy : null,
-          effective: effectiveIdentityPolicy(group?.identity_policy as any ?? null, c.identity_policy as any ?? null),
-        })),
+        group,
+        effective: effectiveIdentityCoding(group, null),
+        childHubs: children.map(c => {
+          const override = settingFromRow(c);
+          return { id: c.id, name: c.name, override, effective: effectiveIdentityCoding(group, override) };
+        }),
       });
     } catch (err) { next(err); }
   });
 
-  router.put('/federation/identity-policy', guard, async (req: Request, res: Response, next) => {
+  router.put('/federation/identity', guard, async (req: Request, res: Response, next) => {
     try {
       const orgId = req.session!.orgId;
-      const raw = req.body?.policy;
-      if (raw !== 'keep' && raw !== 'pseudonymize') {
-        res.status(400).json({ error: "policy must be 'keep' or 'pseudonymize'" });
-        return;
-      }
+      const changes = identityChanges(req.body, false);
+      if (typeof changes === 'string') { res.status(400).json({ error: changes }); return; }
+      const fields = Object.keys(changes) as IdentityField[];
+      const cols = fields.map(f => IDENTITY_COLUMNS[f]);
       await ctx.db.run(
-        `INSERT INTO org_settings (org_id, identity_policy) VALUES (?, ?)
-         ON CONFLICT(org_id) DO UPDATE SET identity_policy = excluded.identity_policy`,
-        [orgId, raw],
+        `INSERT INTO org_settings (org_id, ${cols.join(', ')}) VALUES (?, ${cols.map(() => '?').join(', ')})
+         ON CONFLICT(org_id) DO UPDATE SET ${cols.map(c => `${c} = excluded.${c}`).join(', ')}`,
+        [orgId, ...fields.map(f => changes[f])],
       );
-      console.log(`[FEDERATION] group identity policy for ${orgId} set to ${raw}`);
-      res.json({ groupPolicy: raw });
+      const group = settingFromRow(await ctx.db.get<Record<string, unknown>>(
+        `SELECT ${IDENTITY_SELECT} FROM org_settings WHERE org_id = ?`, [orgId],
+      ));
+      console.log(`[FEDERATION] group identity coding for ${orgId}: person ${group.person ?? 'as-written'}, installation ${group.installation ?? 'as-written'}`);
+      res.json({ group, effective: effectiveIdentityCoding(group, null) });
     } catch (err) { next(err); }
   });
 
-  router.put('/child-hubs/:id/identity-policy', guard, async (req: Request, res: Response, next) => {
+  router.put('/child-hubs/:id/identity', guard, async (req: Request, res: Response, next) => {
     try {
       const orgId = req.session!.orgId;
-      const raw = req.body?.policy;
-      // null clears the override and lets the group default apply again.
-      if (raw !== 'keep' && raw !== 'pseudonymize' && raw !== null) {
-        res.status(400).json({ error: "policy must be 'keep', 'pseudonymize' or null" });
-        return;
-      }
-      if (!(await findChildHub(orgId, String(req.params.id)))) {
+      const id = String(req.params.id);
+      const changes = identityChanges(req.body, true);
+      if (typeof changes === 'string') { res.status(400).json({ error: changes }); return; }
+      if (!(await findChildHub(orgId, id))) {
         res.status(404).json({ error: 'Unknown child hub' });
         return;
       }
+      const fields = Object.keys(changes) as IdentityField[];
       await ctx.db.run(
-        'UPDATE child_hubs SET identity_policy = ? WHERE id = ? AND org_id = ?',
-        [raw, req.params.id, orgId],
+        `UPDATE child_hubs SET ${fields.map(f => `${IDENTITY_COLUMNS[f]} = ?`).join(', ')} WHERE id = ? AND org_id = ?`,
+        [...fields.map(f => changes[f]), id, orgId],
       );
-      console.log(`[FEDERATION] identity policy for child hub ${req.params.id} set to ${raw ?? 'inherit'}`);
-      res.json({ id: req.params.id, policy: raw });
+      const override = settingFromRow(await ctx.db.get<Record<string, unknown>>(
+        `SELECT ${IDENTITY_SELECT} FROM child_hubs WHERE id = ? AND org_id = ?`, [id, orgId],
+      ));
+      const group = settingFromRow(await ctx.db.get<Record<string, unknown>>(
+        `SELECT ${IDENTITY_SELECT} FROM org_settings WHERE org_id = ?`, [orgId],
+      ));
+      console.log(`[FEDERATION] identity coding for child hub ${id}: person ${override.person ?? 'inherit'}, installation ${override.installation ?? 'inherit'}`);
+      res.json({ id, override, effective: effectiveIdentityCoding(group, override) });
     } catch (err) { next(err); }
   });
 

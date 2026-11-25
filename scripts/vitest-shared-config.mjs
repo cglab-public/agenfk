@@ -1,9 +1,9 @@
 /**
  * Shared vitest test config (single source of truth).
  *
- * The root `vitest.config.ts` and `vitest.workspace.ts` both consume this, so
- * timeouts, aliases, the HOME/bcrypt env pin, and the coverage gate can never
- * drift between a plain `vitest run` and a workspace/`--project` run.
+ * Each project in the root `vitest.config.ts` and the single-project configs
+ * (e.g. vitest.windows.config.ts, hub-ui) consume this, so timeouts, aliases, the
+ * HOME/bcrypt env pin, and the coverage gate can never drift between them.
  *
  * `fileParallelism: true` opts a project into running its FILES in separate
  * workers — see vitest.config.ts for which packages run so, and the HOME per

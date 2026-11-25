@@ -282,15 +282,21 @@ describe('KanbanBoard back navigation out of a drill-down', () => {
 
   describe('pending scrolls', () => {
     it('scroll only to the latest of two quick navigations', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
       // Epic One and Other Epic both sit on the top level, so a scroll still
       // queued for the first would visibly yank the board after the second.
       render(<KanbanBoard />, { wrapper });
       await screen.findByText('Other Epic');
       const input = await screen.findByPlaceholderText('Search Item ID or Name...');
+
+      // The first match's scroll waits 100 ms. On the real clock a loaded
+      // machine let it fire before the second navigation, so the clock stops
+      // here and both navigations land inside that window. No
+      // shouldAdvanceTime: nothing below waits on a real timer, so a
+      // waitFor/findBy added after this line would hang.
+      vi.useFakeTimers();
       fireEvent.change(input, { target: { value: 'Epic' } });
       fireEvent.submit(input.closest('form')!);
-      fireEvent.click(await screen.findByTitle('Next match'));
+      fireEvent.click(screen.getByTitle('Next match'));
 
       await act(async () => { vi.advanceTimersByTime(500); });
       expect(scrolled).toHaveLength(1);

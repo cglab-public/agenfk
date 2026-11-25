@@ -105,3 +105,32 @@ describe('CGLAB-12 — codexrules/hooks.json template', () => {
     expect(entry.matcher).toBe('Bash');
   });
 });
+
+// GH-356: Codex's Airlock hook. Codex takes hooks only from hooks.json (with the user's trust), so
+// the installer registers it there; it judges calls only inside the Airlock sandbox and does
+// nothing outside it. Its path is the same in the machine (~/.agenfk/bin is given to the session).
+describe('GH-356 — the Airlock PreToolUse hook for Codex', () => {
+  const AIRLOCK = 'node "/h/.agenfk/bin/agenfk-airlock-hook.mjs"';
+  const airlockEntries = (cfg: any) => (cfg.hooks.PreToolUse ?? []).filter((e: any) => jsonHas(e, 'agenfk-airlock-hook'));
+
+  it('registers it under hooks.PreToolUse, beside the pr-hook', () => {
+    const cfg = buildCodexHooksConfig({}, CMD, AIRLOCK);
+    expect(airlockEntries(cfg)).toHaveLength(1);
+    expect(airlockEntries(cfg)[0].hooks).toEqual([{ type: 'command', command: AIRLOCK }]);
+    expect(cfg.hooks.PostToolUse.some((e: any) => jsonHas(e, 'agenfk-pr-hook'))).toBe(true);
+    expect(cfg).not.toHaveProperty('PreToolUse');
+  });
+
+  it('is idempotent and keeps the user\'s own PreToolUse entries', () => {
+    const mine = { matcher: 'Bash', hooks: [{ type: 'command', command: 'my-guard' }] };
+    const once = buildCodexHooksConfig({ hooks: { PreToolUse: [mine] } }, CMD, AIRLOCK);
+    const twice = buildCodexHooksConfig(once, CMD, AIRLOCK);
+    expect(airlockEntries(twice)).toHaveLength(1);
+    expect(twice.hooks.PreToolUse).toContainEqual(mine);
+  });
+
+  it('without an Airlock command, leaves PreToolUse as it was (older callers)', () => {
+    const cfg = buildCodexHooksConfig({ hooks: { PreToolUse: [] } }, CMD);
+    expect(cfg.hooks.PreToolUse).toEqual([]);
+  });
+});

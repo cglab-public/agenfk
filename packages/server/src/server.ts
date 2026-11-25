@@ -2,7 +2,7 @@ import { StringDecoder } from 'string_decoder';
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
-import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
+import { SQLiteStorageProvider, checkSnapshotFile } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import { insideRoot, isTestPath, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
@@ -17,11 +17,14 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint, NO_VERIFY_COMMAND, VERIFY_COMMAND_FLAG } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint, NO_VERIFY_COMMAND, VERIFY_COMMAND_FLAG, AIRLOCK_SESSION_HEADER, TOKEN_CLIENTS } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
+import { hubConfirmedAbsent } from "./hub/hubClient.js";
 import type { RecordEventInput } from "./hub/index.js";
-import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
+import { flowSyncChannels } from "./hub/flowSync.js";
+import { startHubSync, type HubSyncHandle } from "./hub/hubSync.js";
+import { hubFetch, hubRequestTimeoutMs, hubRequestSignal } from "./hub/hubRequest.js";
 import { publishPendingReceipts } from "./hub/receiptPublisher.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
@@ -29,11 +32,17 @@ import { createWorktree, removeWorktree } from "./worktrees.js";
 import { applySetupResult, SETUP_TIMEOUT_MS, type SetupDecision, type SetupRun } from "./worktreeSetup.js";
 import { readGitHubAccount, signOutGitHub } from "./githubAccount.js";
 import { createOutputCapture, formatBytes, type CapturedOutput } from "./verifyCapture.js";
-import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
-import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
+import { reconcileUpgradeDirective, replayPendingUpgradeOutcome } from "./hub/upgradeSync.js";
+import { reconcileRepointDirective } from "./hub/repointSync.js";
+import type { HubConfig } from "./hub/types.js";
 import { requeueDeadletter, readDeadletterIndicator, RequeueRewriteFailed } from "./hub/deadletter.js";
 import { defaultDeadletterPath } from "./hub/flusher.js";
 import { resolveActor } from "./hub/identity";
+import { createUsageIngestion, defaultIngestionSources, type UsageIngestion } from "./token-ingestion/service.js";
+import { createPriceTable, fetchPublicPriceTable, type PriceTable } from "./token-ingestion/priceTable.js";
+import { computeCardUsage, computeOwnUsage, computeStepUsage, describeCardUsage, describeUsage } from "./usage/stepUsage.js";
+import { createNoCardUsageSender, fileSentState, localMidnight, mergeUsage, noCardUsageByDay, type NoCardUsageSender } from "./usage/noCardUsage.js";
+import type { CardUsage, StepUsage, UsageSummary } from "@agenfk/core";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -59,12 +68,20 @@ import { createServer } from "http";
 import * as net from "net";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
+import { createGitMemo, fenceOf, gitStateMayHaveMoved, isReadOnlyGit, noteChildProcess, rawGitRunner, type GitMemo, type GitRunner } from './gitMemo';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
+import { resolveAirlockPolicy, registerAirlockRoutes, reconcileAirlockStateFile, AIRLOCK_BODY_LIMIT } from './airlock/routes.js';
+import { ensureAirlockReportToken, airlockReportTokenReader } from './airlock/reportToken.js';
+import { airlockCoverageMiddleware, coverWritesIn } from './airlock/coverage.js';
+import { airlockRepoPins } from './airlock/repoPins.js';
+import { airlockCommandFor, airlockArgvFor, airlockHooksOff, noHooksGitEnv, serverUrlFor, type AirlockRunDeps } from './airlock/execWrap.js';
+import { runAirlockSync, releaseHubAirlockPolicy, invalidateAirlockSyncs, airlockDatasetEnabled, currentAirlockGeneration, airlockAuthorityOf } from './hub/airlockSync.js';
+import { readActiveWorkForSession, writeActiveWork, activeWorkKeyFor } from './agent-runs/activeWork.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
 import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
 import { killProcessTree } from './killTree.js';
-import { oneInFlight, readRemoteUrl, remoteCacheLifetimeMs } from './projectRemote.js';
+import { oneInFlight, readRemoteUrl, readAirlockRemoteUrl, remoteCacheLifetimeMs } from './projectRemote.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -90,7 +107,11 @@ export const io = new Server(httpServer, {
   cors: {
     origin: corsOriginFn,
     methods: ["GET", "POST"]
-  }
+  },
+  // Engine.IO answers its requests before Express, so the Airlock middleware never sees them: a
+  // request carrying the sandbox's marker (polling through the relay) is refused here. The
+  // broadcasts carry approval keys and other sessions' runs (da69b17a review).
+  allowRequest: (req, cb) => cb(null, req.headers[AIRLOCK_SESSION_HEADER] === undefined),
 });
 // Requested base port. The server probes upward from here for the first free
 // port (mirrors Vite's default behaviour) and persists the bound port to
@@ -118,8 +139,36 @@ app.use(cors({
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "x-agenfk-internal", "x-agenfk-ui"]
 }));
+// The airlock routes take small bodies (GH-294): parsed here, ahead of the
+// 50mb parser below, which then leaves an already-parsed body alone. Too large
+// is a 413 from the error handler.
+app.use('/airlock', bodyParser.json({ limit: AIRLOCK_BODY_LIMIT }));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
+// SX-1 (8dd7c7c0): requests an Airlock sandbox sends carry its launcher's marker;
+// it never reaches a route, and every card such a request names is recorded as
+// covered, so the commands this server runs for that card's tree run sandboxed.
+app.use(airlockCoverageMiddleware({ storage: () => storage, reportToken: airlockReportTokenReader() }));
+
+// SX-3 (8dd7c7c0): a covered card's commands (verify, suite, captures, worktree
+// setup) run through `agenfk airlock exec`, in the sandbox, while the policy enforces.
+const airlockRunDeps: AirlockRunDeps = {
+  storage: () => storage,
+  effectiveMode: async () => (await resolveAirlockPolicy(storage, hubClient.isEnabled)).effective.mode,
+  // The CLI beside this server (an installed copy is a repo-shaped tree). The
+  // variable is for tests and development checkouts only.
+  cliPath: () => process.env.AGENFK_AIRLOCK_EXEC_CLI || path.resolve(__dirname, '..', '..', 'cli', 'bin', 'agenfk.js'),
+  // exec reads the policy from this server and no other (SX-3 review).
+  apiUrl: () => serverUrlFor(BIND_HOST, boundPort),
+  // ea94c023: the desktop app runs its shipped helper with Electron as Node.
+  ...(process.env.AGENFK_AIRLOCK_EXEC_NODE ? { nodePath: process.env.AGENFK_AIRLOCK_EXEC_NODE } : {}),
+  ...(process.env.AGENFK_AIRLOCK_EXEC_RUN_AS_NODE === '1' ? { lineEnv: { ELECTRON_RUN_AS_NODE: '1' } } : {}),
+};
+
+/** git's environment for this card's own commits and worktrees: hooks off when an Airlock sandbox touched it (SX-3). */
+async function gitEnvForCard(itemId: string | null | undefined): Promise<NodeJS.ProcessEnv | undefined> {
+  return (await airlockHooksOff(airlockRunDeps, itemId)) ? noHooksGitEnv(process.env) : undefined;
+}
 
 // Initialised dynamically in initStorage() based on dbPath file extension.
 let storage: StorageProvider;
@@ -129,16 +178,15 @@ let dbPath: string = "";
 const telemetry = new TelemetryClient();
 
 // Corporate Hub sender — dormant when ~/.agenfk/hub.json is absent. Storage is
-// attached after initStorage(); flusher is started at boot if configured.
+// attached after initStorage(); the hub loop starts at boot if configured.
 const hubClient = new HubClient(getInstallationId(), loadHubConfig());
 let hubFlusher: Flusher | null = null;
-let flowSyncHandle: FlowSyncHandle | null = null;
-// Per-project ETag cache for hub flow reconciles. Shared between the polling
-// reconciler (startFlowSync) and on-demand refreshes (GET .../flow?refresh=true)
-// so the two never re-fetch the same unchanged flow.
+// GH-346: the one loop against the hub (hub/hubSync.ts).
+let hubSyncHandle: HubSyncHandle | null = null;
+// Per-project ETag cache for hub flow reconciles. Shared between the hub loop
+// and on-demand refreshes (GET .../flow?refresh=true) so the two never
+// re-fetch the same unchanged flow.
 const flowSyncEtagCache = new Map<string, string>();
-let upgradeSyncHandle: UpgradeSyncHandle | null = null;
-let repointSyncHandle: RepointSyncHandle | null = null;
 
 // recordHubEvent is a thin wrapper kept at module scope so the many existing
 // io.emit('items_updated', ...) sites can be augmented with one line.
@@ -155,7 +203,7 @@ let repointSyncHandle: RepointSyncHandle | null = null;
 // Returns a Promise so internal awaits work; existing call sites that ignore
 // the return value remain correct because hubClient.recordEvent itself only
 // enqueues into the local outbox (the flusher delivers asynchronously).
-const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
+const recordHubEvent = async (input: RecordEventInput): Promise<boolean> => {
   // No isEnabled gate (CGLAB-11): while the hub is disconnected, events are
   // queued to the local outbox with a pending orgId and stamped at the first
   // boot with a config — dropping them here made pre-login history (incl.
@@ -196,7 +244,8 @@ const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
     externalUrl = externalUrl ?? (externalId === meta.externalId ? meta.externalUrl : null);
   }
 
-  hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId, externalUrl } as RecordEventInput);
+  // Whether the outbox took it: the Airlock dataset keeps a label's link until it did (BUG 003bd959).
+  return hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId, externalUrl } as RecordEventInput);
 };
 
 // projectId → git remote URL ("" when git says there is no remote, null when
@@ -283,6 +332,16 @@ async function resolveProjectRepo(projectId: string): Promise<string | null> {
   const cached = projectRemoteCache.get(projectId);
   return cached && cached.length > 0 ? cached : null;
 }
+
+// The repository for Airlock's per-project overrides (PO-1): pinned per
+// project root under ~/.agenfk/airlock, where no sandbox can write (repoPins.ts),
+// and read again only after a person sets the root (forgetAirlockRepo).
+const airlockRepos = airlockRepoPins({
+  file: path.join(os.homedir(), '.agenfk', 'airlock', 'repo-pins.json'),
+  rootOf: async (projectId) => ((await storage.getProject(projectId)) as any)?.projectRoot ?? null,
+  read: (root) => readAirlockRemoteUrl(root),
+});
+const airlockProjectRepo = (projectId: string): Promise<string | null> => airlockRepos.repoOf(projectId);
 
 // ── Validation log persistence ───────────────────────────────────────────────
 // Full command output from validate_progress is written to
@@ -614,33 +673,86 @@ const purgeItemLogs = (itemId: string): void => {
 // ── Backup ───────────────────────────────────────────────────────────────────
 
 function backupDir(): string { return path.join(os.homedir(), '.agenfk', 'backup'); }
-const MAX_BACKUPS = 10;
+// GH-288: a backup is a snapshot of the whole database, ~its size on disk.
+const MAX_BACKUPS = 5;
+const isBackupFile = (f: string) => f.startsWith('agenfk-backup-') && (f.endsWith('.sqlite') || f.endsWith('.json'));
+/** The backup files, oldest first: .sqlite snapshots and the .json dumps older versions wrote. */
+function listBackups(): string[] {
+  if (!fs.existsSync(backupDir())) return [];
+  return fs.readdirSync(backupDir()).filter(isBackupFile).sort();
+}
+/** The last backup that failed, until one succeeds: `agenfk db status` reports it (it used to reach only api.log). */
+let lastBackupError: { at: string; error: string } | null = null;
 
-const performBackup = async (): Promise<string> => {
-  if (!fs.existsSync(backupDir())) fs.mkdirSync(backupDir(), { recursive: true });
-
-  const [projects, items] = await Promise.all([
-    storage.listProjects(),
-    storage.listItems({ limit: 1_000_000 }),  // all items including archived
-  ]);
-
-  const timestamp = new Date().toISOString().replace(/:/g, '-');
-  const dbType = 'sqlite';
-  const backupFile = path.join(backupDir(), `agenfk-backup-${timestamp}.json`);
-
-  fs.writeFileSync(backupFile, JSON.stringify({ version: '1', backupDate: new Date().toISOString(), dbType, projects, items }, null, 2));
-
-  // Rotate — keep only the MAX_BACKUPS most recent files
-  const existing = fs.readdirSync(backupDir())
-    .filter(f => f.startsWith('agenfk-backup-') && f.endsWith('.json'))
-    .sort();
-  for (const old of existing.slice(0, Math.max(0, existing.length - MAX_BACKUPS))) {
-    fs.unlinkSync(path.join(backupDir(), old));
-  }
-
-  console.log(`[BACKUP] Written: ${backupFile}`);
-  return backupFile;
+// One backup at a time: a manual one asked for while the periodic one runs
+// shares it rather than racing it for files (review of GH-288).
+let backupInFlight: Promise<string> | null = null;
+const performBackup = (): Promise<string> => {
+  if (!backupInFlight) backupInFlight = writeBackup().finally(() => { backupInFlight = null; });
+  return backupInFlight;
 };
+
+async function writeBackup(): Promise<string> {
+  try {
+    if (!fs.existsSync(backupDir())) fs.mkdirSync(backupDir(), { recursive: true });
+    // Names order backups by time, so a name taken waits for the next
+    // millisecond rather than taking a suffix that would sort out of order.
+    const nameAt = () => path.join(backupDir(), `agenfk-backup-${new Date().toISOString().replace(/:/g, '-')}.sqlite`);
+    let backupFile = nameAt();
+    while (fs.existsSync(backupFile)) {
+      await new Promise(r => setTimeout(r, 1));
+      backupFile = nameAt();
+    }
+    await (storage as SQLiteStorageProvider).snapshotTo(backupFile);
+
+    // Rotate: the one just written, and the newest others up to MAX_BACKUPS.
+    // Never by its place in the order alone - after the clock is set back it
+    // would sort oldest and go first.
+    const written = path.basename(backupFile);
+    const others = listBackups().filter(f => f !== written);
+    for (const old of others.slice(0, Math.max(0, others.length - (MAX_BACKUPS - 1)))) {
+      fs.unlinkSync(path.join(backupDir(), old));
+    }
+    lastBackupError = null;
+    console.log(`[BACKUP] Written: ${backupFile}`);
+    return backupFile;
+  } catch (e: any) {
+    lastBackupError = { at: new Date().toISOString(), error: e?.message ?? String(e) };
+    throw e;
+  }
+}
+
+/**
+ * A snapshot the installer staged (~/.agenfk/migration.sqlite, GH-288) becomes
+ * the database of an install that has none yet. Never over a database that
+ * exists: then it stays staged, and the log says why.
+ */
+function restoreStagedSnapshot(dbFile: string): void {
+  const staged = path.join(os.homedir(), '.agenfk', 'migration.sqlite');
+  if (!fs.existsSync(staged)) return;
+  if (fs.existsSync(dbFile)) {
+    console.warn(`[MIGRATION] ${staged} not restored: ${dbFile} already exists. Move one of them aside to choose.`);
+    return;
+  }
+  // Copied beside the database and checked before it takes the database's
+  // name: a copy cut short (a crash, or a staging copy the installer did not
+  // finish) must never open as the live database (review of GH-288).
+  fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+  const restoring = `${dbFile}.restoring`;
+  fs.copyFileSync(staged, restoring);
+  const check = checkSnapshotFile(restoring);
+  if (check !== 'ok') {
+    fs.rmSync(restoring, { force: true });
+    // Not started on an empty database instead: one would then exist, so no
+    // later restore could land, and the periodic backups would rotate empty
+    // snapshots over the good ones (review of GH-288).
+    throw new Error(`[MIGRATION] The backup staged for restore at ${staged} is not a whole database (${check}). `
+      + `Replace it with a good backup from ${backupDir()}, or remove it to start with an empty database, then start AgEnFK again.`);
+  }
+  fs.renameSync(restoring, dbFile);
+  fs.unlinkSync(staged);
+  console.log(`[MIGRATION] Restored the backup snapshot into ${dbFile}`);
+}
 
 // ── Archive / unarchive helpers ──────────────────────────────────────────────
 
@@ -988,7 +1100,11 @@ const syncParentStatus = async (parentId: string, how: RollUp = {}) => {
     const endName = sortedFlowSteps(parentFlow as any).slice(-1)[0]?.name;
     // Keyed on what HAPPENED (a child deferred to it), not on the flow's setting now:
     // turning 'parent' off must not let the owed run slip.
-    if ((owed || flowVerifyAt(parentFlow) === 'parent') && ordered[laggard]?.name === endName && laggard > 0) laggard -= 1;
+    // GH-291: so does a root card in receipts mode - its close owes a fresh run,
+    // and that run is the receipt its PR is reused on. Walked onto the exit step,
+    // it would close having run nothing, with no receipt from it or its children.
+    const freshRootOwed = freshRootClose(parent, parentProject);
+    if ((owed || freshRootOwed || flowVerifyAt(parentFlow) === 'parent') && ordered[laggard]?.name === endName && laggard > 0) laggard -= 1;
     if (parentIdx !== null && laggard > parentIdx) {
       newStatus = ordered[laggard].name as Status;
     }
@@ -1020,9 +1136,20 @@ const syncParentStatus = async (parentId: string, how: RollUp = {}) => {
       .map(w => ({ step: w.step, kind: 'exit' as const, at: timestamp, walked: true, disabled: w.disabled }));
     // Read again for the append (BUG 91d2941d): a verify or record may have landed on the parent since it was read above.
     const fresh: any = walked.length ? await storage.getItem(parent.id) : null;
-    await storage.updateItem(parent.id, { status: newStatus, ...(walked.length ? { stepRecords: [...((fresh ?? parent as any).stepRecords ?? []), ...walked] } : {}) } as any);
+    const statusesOf = async () => JSON.stringify([
+      (await storage.getItem(parent.id))?.status,
+      ...(await storage.listItems({ parentId })).map(c => `${c.id}:${c.status}`).sort(),
+    ]);
+    const before = await statusesOf();
+    const moveUsage = await prepareMoveUsage(parent.id, parent.status, newStatus, parentFlow);
+    // GH-389: computing the usage can take seconds; a child reopened or the
+    // parent moved meanwhile makes this roll-up's decision stale. Skip it: the
+    // change that landed runs its own roll-up.
+    if (await statusesOf() !== before) return;
+    const saved = await saveMove(parent.id, parent, { status: newStatus, ...(walked.length ? { stepRecords: [...((fresh ?? parent as any).stepRecords ?? []), ...walked] } : {}) }, moveUsage);
+    if (!saved) return;
     io.emit('items_updated');
-    recordMoveEvents(parent, parent.status, newStatus, parentFlow);
+    recordMoveEvents(parent, parent.status, newStatus, parentFlow, moveUsage);
   }
   /*
    * Up the tree when this parent moved - and, when something under it was
@@ -1186,6 +1313,9 @@ const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'] as c
  * A rebase is NOT among them. Git can leave REBASE_HEAD behind after a rebase
  * ends, and a stale one declined every later close commit in that repository
  * (#251). Git itself decides "rebase in progress" by these state directories.
+ * A stopped `git am` also lives in rebase-apply/, told apart by the `applying`
+ * marker inside it (an apply-backend rebase writes `rebasing` instead), so the
+ * decline names the operation the author actually started (#309).
  */
 const REBASE_STATE_DIRS = ['rebase-merge', 'rebase-apply'] as const;
 // A multi-commit cherry-pick or revert keeps the rest of its queue in
@@ -1467,8 +1597,10 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
     // --git-path resolves inside a linked worktree's own git dir, and is
     // relative to `root` unless git returns it absolute.
     const where = await git(['rev-parse', '--git-path', dir], root);
-    if (where.ok && fs.existsSync(path.resolve(root, where.out.trim()))) {
-      return stop('declined', `${what} is in progress`);
+    const stateDir = where.ok ? path.resolve(root, where.out.trim()) : null;
+    if (stateDir && fs.existsSync(stateDir)) {
+      const isAm = dir === 'rebase-apply' && fs.existsSync(path.join(stateDir, 'applying'));
+      return stop('declined', `${isAm ? 'a git am session' : what} is in progress`);
     }
   }
 
@@ -1491,10 +1623,18 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
    * it. That module owns "commit the INDEX" and the reason strings;
    * reimplementing either here is how the two would drift.
    */
+  // SX-3 review: the repository's commit hooks are its code; off for a card an Airlock sandbox touched.
+  const commitEnv = await gitEnvForCard(item.id);
   const result = commitStagedForCard(
     item as any,
     root,
-    { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }) },
+    {
+      run: args => {
+        // GH #312: the commit (any write) moves the tree under every verify's memo.
+        try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...(commitEnv ? { env: commitEnv } : {}) }); }
+        finally { if (!isReadOnlyGit(args)) gitStateMayHaveMoved(); }
+      },
+    },
     { message },
   );
   if (result.committed) {
@@ -1542,13 +1682,22 @@ const initStorage = async () => {
   // handle on every OS, and on Windows a database nobody could delete.
   await closeStorage();
   // ec325925: every record write keeps only the captures something still reads.
-  storage = withRecordRetention(new SQLiteStorageProvider());
+  // SX-1: cards written while a request from an Airlock sandbox is handled are covered (airlock/coverage.ts).
+  storage = lockItemWrites(coverWritesIn(withRecordRetention(new SQLiteStorageProvider())));
 
   console.log(`[SERVER_START] Using Database: ${dbPath} (SQLite)`);
+  restoreStagedSnapshot(dbPath);
   await storage.init({ path: dbPath });
   // f8d0a752: the server-wide suite-run limit, read from the settings it lives in.
   await loadSuiteRunSetting();
   await pruneRecordsOnStart();
+  // GH-294: left the hub while the server was down (`agenfk hub logout`): the
+  // hub's Airlock policy becomes the local one before anything reads it.
+  if (!hubClient.isEnabled && hubConfirmedAbsent()) await releaseHubAirlockOnLeave();
+  // GH-294: adapters fall back to this file when the server is unreachable, so
+  // it is rebuilt from the stored policy at every start (a failed write or a
+  // hand edit does not outlive a restart).
+  await reconcileAirlockStateFile(storage, hubClient.isEnabled);
 
   // Apply pending migration (written by install/upgrade when a db.json was detected)
   const migrationPath = path.join(os.homedir(), '.agenfk', 'migration.json');
@@ -1571,7 +1720,55 @@ const initStorage = async () => {
   }
 
   startHubSubsystems();
+  startUsageIngestion();
 };
+
+/**
+ * GH-389: token usage from the harnesses' session logs, ingested locally.
+ * Created on every init so a transition can flush the card's sessions; it
+ * polls only in a real server, never under the test runner (the tests drive
+ * passes themselves and must not read the developer's session folders).
+ */
+let usageIngestion: UsageIngestion | null = null;
+/**
+ * GH-397: the price table turns are priced from at ingestion, and the board
+ * prices older usage from. Under the test runner it never fetches: it serves
+ * only a table saved under the (sandboxed) home directory.
+ */
+let usagePriceTable: PriceTable | null = null;
+function startUsageIngestion(): void {
+  usageIngestion?.stop();
+  const underTest = process.env.NODE_ENV === 'test' || !!process.env.VITEST;
+  const priceTable = createPriceTable({
+    file: path.join(os.homedir(), '.agenfk', 'price-table.json'),
+    fetchTable: underTest ? null : fetchPublicPriceTable,
+  });
+  usagePriceTable = priceTable;
+  void priceTable.load();
+  usageIngestion = createUsageIngestion({ storage, sources: defaultIngestionSources(os.homedir(), process.env), prices: () => priceTable.get() });
+  noCardSender?.stop();
+  noCardSender = createNoCardUsageSender({
+    storage,
+    record: (e) => recordHubEvent(e),
+    state: fileSentState(path.join(os.homedir(), '.agenfk', 'hub-no-card-usage.json')),
+  });
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    usageIngestion.start();
+    noCardSender.start();
+  }
+}
+
+/**
+ * GH-394: each project's usage on no card, queued for the hub as one running
+ * total per local day (usage/noCardUsage.ts). Ticks on its own timer in a real
+ * server; tests call sendNoCardUsageNow.
+ */
+let noCardSender: NoCardUsageSender | null = null;
+
+/** Queue the no-card totals that changed and are due now; how many were queued. */
+export async function sendNoCardUsageNow(): Promise<number> {
+  return noCardSender ? noCardSender.tick() : 0;
+}
 
 /**
  * Close the database and stop the hub subsystems that hold it (#208). Safe to
@@ -1580,14 +1777,13 @@ const initStorage = async () => {
  * next initStorage().
  */
 const closeStorage = async (): Promise<void> => {
-  hubFlusher?.stop();
+  usageIngestion?.stop();
+  usageIngestion = null;
+  await noCardSender?.stop();
+  noCardSender = null;
+  hubSyncHandle?.stop();
+  hubSyncHandle = null;
   hubFlusher = null;
-  flowSyncHandle?.stop();
-  flowSyncHandle = null;
-  upgradeSyncHandle?.stop();
-  upgradeSyncHandle = null;
-  repointSyncHandle?.stop();
-  repointSyncHandle = null;
   await storage?.shutdown?.();
 };
 
@@ -1595,24 +1791,22 @@ const closeStorage = async (): Promise<void> => {
  * (Re)start every hub subsystem against whatever config HubClient currently
  * holds. Extracted from initStorage so `POST /internal/hub/reload` can adopt a
  * freshly-written ~/.agenfk/hub.json without a server restart: the Flusher and
- * both reconcilers capture their credential and base URL at construction, so
+ * the loop's channels capture their credential and base URL at construction, so
  * after `agenfk hub login` issues a replacement token the old objects would
  * keep presenting the revoked one forever. Safe to call repeatedly — it stops
- * the previous handles first.
+ * the previous loop first.
  */
 const startHubSubsystems = (): void => {
 // Attach the corporate-hub outbox to the storage layer and start the flusher
 // when configured. No-op when ~/.agenfk/hub.json is absent.
 //
-// Stop any pre-existing flusher / flow-sync first. initStorage is re-entrant
-// in tests (each setup calls it), and without these stops every re-entry
-// would leak a setInterval timer holding a stale storage reference, which
-// races against the live test's writes and causes hard-to-diagnose flakes
-// (item.id undefined, GET /flows 500, etc).
-hubFlusher?.stop();
-flowSyncHandle?.stop();
-upgradeSyncHandle?.stop();
-repointSyncHandle?.stop();
+// Stop any pre-existing hub loop first. initStorage is re-entrant in tests
+// (each setup calls it), and without this stop every re-entry would leak a
+// timer holding a stale storage reference, which races against the live
+// test's writes and causes hard-to-diagnose flakes (item.id undefined,
+// GET /flows 500, etc).
+hubSyncHandle?.stop();
+hubSyncHandle = null;
 hubClient.attachStorage(storage as SQLiteStorageProvider);
 
 // Never start the outbound hub machinery under a test runner.
@@ -1633,7 +1827,7 @@ if (hubDisabledForTests) {
   hubFlusher = null;
 } else if (hubClient.isEnabled && hubClient.hubConfig) {
   // Stamp events queued while disconnected (pending-org sentinel '') with
-  // the real orgId BEFORE the flusher starts, so pre-login history delivers
+  // the real orgId BEFORE the hub loop starts flushing, so pre-login history delivers
   // instead of being rejected on orgId mismatch.
   try {
     const stamped = (storage as SQLiteStorageProvider).hubOutboxRewriteOrgId(PENDING_ORG, hubClient.hubConfig.orgId);
@@ -1642,21 +1836,9 @@ if (hubDisabledForTests) {
     console.error('[HUB] Failed to stamp pre-login outbox events:', e?.message || e);
   }
   hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
-  hubFlusher.start();
   console.log(`[HUB] Configured: pushing events to ${hubClient.hubConfig.url} (org=${hubClient.hubConfig.orgId})`);
-
-  // Start pulling the org-assigned flow from the Hub. Poll interval can be
-  // tuned via AGENFK_HUB_FLOW_SYNC_INTERVAL_MS (default 5min).
-  const intervalMs = Number(process.env.AGENFK_HUB_FLOW_SYNC_INTERVAL_MS) || undefined;
-  flowSyncHandle = startFlowSync({
-    storage: storage as SQLiteStorageProvider,
-    hubConfig: hubClient.hubConfig,
-    intervalMs,
-    etagCache: flowSyncEtagCache,
-    emit: (event, payload) => io.emit(event, payload),
-    resolveRepo: resolveProjectRepo,
-  });
-  console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
+  // A stopped loop's channels are not the current configuration's: they adopt nothing.
+  let loopStopped = false;
 
   // Story 3 — fleet upgrade reconciler.
   const dbDir = path.dirname(dbPath);
@@ -1688,7 +1870,7 @@ if (hubDisabledForTests) {
 
   // CGLAB-66 — repoint campaign reconciler. Applies an admin-issued move to
   // a new hub DNS name, after re-verifying the target's identity locally.
-  repointSyncHandle = startRepointSync({
+  const repointArgs = {
     hubUrl: hubClient.hubConfig.url,
     hubToken: hubClient.hubConfig.token,
     orgId: hubClient.hubConfig.orgId,
@@ -1696,43 +1878,39 @@ if (hubDisabledForTests) {
     // AGENFK_HUB_URL overrides hub.json, so a rewrite would be a no-op here;
     // the reconciler reports blocked_by_env instead of a false success.
     envHubUrl: process.env.AGENFK_HUB_URL ?? null,
-    intervalMs: Number(process.env.AGENFK_HUB_REPOINT_SYNC_INTERVAL_MS) || undefined,
-    writeConfigImpl: (cfg) => {
+    writeConfigImpl: (cfg: HubConfig) => {
       const target = path.join(os.homedir(), '.agenfk', 'hub.json');
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, JSON.stringify(cfg, null, 2), { mode: 0o600 });
       try { fs.chmodSync(target, 0o600); } catch { /* best effort */ }
     },
-    // Swap the live transport in-process. The Flusher bakes its baseURL and
-    // bearer token in at construction and nothing re-reads hub.json, so
-    // without this the confirmation would be POSTed to the OLD host — where
-    // the hub correctly refuses it and resets the target to pending, forever.
-    // The outbox is in SQLite, not in the Flusher, so the pending
-    // confirmation survives the swap.
-    rebuildTransportImpl: async (cfg) => {
-      const previous = hubFlusher;
-      previous?.stop();
-      const next = new Flusher(storage as SQLiteStorageProvider, cfg, getInstallationId());
-      next.start();
-      hubFlusher = next;
-      console.log(`[HUB_REPOINT_SYNC] Repointed to ${cfg.url}; transport rebuilt.`);
+    // Adopt the verified hub in-process, on EVERY channel (GH-346 review): the
+    // Flusher and the loop's channels bake their base URL and token in, and
+    // nothing re-reads hub.json. Swapping only the Flusher used to leave flows,
+    // Airlock, receipts and upgrades on the old host until a restart. A fresh
+    // loop replaces this one (whose answers then adopt nothing), and the
+    // confirmation below goes out through its new Flusher. The outbox is in
+    // SQLite, not in the Flusher, so the pending confirmation survives the swap.
+    rebuildTransportImpl: async (cfg: HubConfig) => {
+      adoptHubConfig(() => cfg);
+      console.log(`[HUB_REPOINT_SYNC] Repointed to ${cfg.url}; hub sync restarted.`);
     },
     recordEvent,
-    flushNow: (timeoutMs) => hubFlusher!.flushNow(timeoutMs),
-  });
+    flushNow: (timeoutMs?: number) => hubFlusher!.flushNow(timeoutMs),
+    isCurrent: () => !loopStopped,
+  };
 
-  const upgradeIntervalMs = Number(process.env.AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS) || undefined;
-  upgradeSyncHandle = startUpgradeSync({
+  const upgradeArgs: Parameters<typeof reconcileUpgradeDirective>[0] = {
     dbDir,
     currentVersion,
     installationId,
     hubUrl: hubClient.hubConfig.url,
     hubToken: hubClient.hubConfig.token,
-    intervalMs: upgradeIntervalMs,
     fetchImpl: async ({ hubUrl, hubToken, installationId }) => {
       const r = await axios.get(`${hubUrl}/v1/upgrade-directive`, {
         headers: { Authorization: `Bearer ${hubToken}`, 'X-Installation-Id': installationId },
-        timeout: 10_000,
+        timeout: hubRequestTimeoutMs(),
+        signal: hubRequestSignal(),
         validateStatus: (s) => s < 500,
       });
       return { status: r.status, json: async () => r.data };
@@ -1753,10 +1931,50 @@ if (hubDisabledForTests) {
       child.on('exit', (code) => resolve({ exitCode: code, stdout }));
       child.on('error', () => resolve({ exitCode: 1, stdout }));
     }),
+  };
+
+  // GH-346: ONE loop for everything this installation exchanges with the hub.
+  // Each tick starts every channel at once; a slow or failing channel holds up
+  // no other, and every request gives up after hubRequestTimeoutMs().
+  const loop = startHubSync({
+    channels: [
+      { name: 'events', run: () => hubFlusher?.flush() },
+      ...flowSyncChannels({
+        storage: storage as SQLiteStorageProvider,
+        hubConfig: hubClient.hubConfig,
+        fetchImpl: hubFetch,
+        etagCache: flowSyncEtagCache,
+        emit: (event, payload) => io.emit(event, payload),
+        resolveRepo: resolveProjectRepo,
+        activeHubConfig: () => (loopStopped ? null : hubClient.hubConfig),
+        // HUB-2: which Airlock revision this installation applies, through the outbox as fleet upgrades report.
+        reportAirlock: (r) => hubClient.recordEvent({ type: r.type, payload: r.payload }),
+      }),
+      { name: 'repoint', run: () => reconcileRepointDirective(repointArgs) },
+      { name: 'upgrade', run: () => reconcileUpgradeDirective(upgradeArgs) },
+    ],
+    intervalMs: Number(process.env.AGENFK_HUB_SYNC_INTERVAL_MS) || undefined,
+    firstDelayMs: process.env.AGENFK_HUB_SYNC_FIRST_DELAY_MS ? Number(process.env.AGENFK_HUB_SYNC_FIRST_DELAY_MS) : undefined,
   });
-  console.log(`[HUB] Upgrade reconciler running against ${hubClient.hubConfig.url}/v1/upgrade-directive`);
+  hubSyncHandle = { stop: () => { loopStopped = true; loop.stop(); } };
+  console.log(`[HUB] Hub sync running against ${hubClient.hubConfig.url}`);
 
 }
+};
+
+/**
+ * Take a hub configuration on in this process: restart the hub loop on it and
+ * drop the answers of Airlock syncs started under the old one (GH-294). Used by
+ * POST /internal/hub/reload (from hub.json) and by a repoint (the verified
+ * target). Returns whether anything changed.
+ */
+const adoptHubConfig = (loader?: () => HubConfig | null): boolean => {
+  const changed = hubClient.reloadConfig(loader);
+  if (changed) {
+    startHubSubsystems();
+    invalidateAirlockSyncs();
+  }
+  return changed;
 };
 
 
@@ -1988,23 +2206,189 @@ function transitionStamp(
  * closed cards by `item.closed`, so a close it is not told about is a close
  * that never happened on its dashboards.
  */
-function recordMoveEvents(item: { id: string; projectId: string; type: string }, from: string, to: string, flow: TransitionFlow): void {
-  if (to === from) return;
+function recordMoveEvents(item: { id: string; projectId: string; type: string }, from: string, to: string, flow: TransitionFlow, usage: MoveUsage = NO_USAGE): MoveUsage {
+  if (to === from) return NO_USAGE;
   recordHubEvent({
     type: 'step.transitioned',
     projectId: item.projectId,
     itemId: item.id,
-    payload: { fromStatus: from, toStatus: to, itemType: item.type, ...transitionStamp(from, to, flow) },
+    payload: { fromStatus: from, toStatus: to, itemType: item.type, ...transitionStamp(from, to, flow), ...hubUsage(usage.step, usage.own) },
   });
   if (isCompletionStep(to, flow) && !isCompletionStep(from, flow)) {
+    // GH-389: a closed card stops collecting usage; the sessions on it are on none until they pick another.
+    storage.endSessionCards(item.id, new Date().toISOString())
+      .catch((e: Error) => console.error(`[USAGE] could not end the sessions on ${item.id}: ${e.message}`));
     recordHubEvent({
       type: 'item.closed',
       projectId: item.projectId,
       itemId: item.id,
-      payload: { fromStatus: from, toStatus: to, itemType: item.type },
+      payload: { fromStatus: from, toStatus: to, itemType: item.type, ...(usage.card ? { usage: usage.card } : {}) },
     });
   }
+  return usage;
 }
+
+/**
+ * GH-389: the usage of a move - the step being left, and the whole card when
+ * it closes - COMPUTED, not stored. It is stored by saveMove, in the same
+ * write as the move, and only if the move is still valid then.
+ *
+ * Computing it flushes session logs, which can take seconds. Two things follow
+ * (review findings). The move must not be visible while that runs, or a
+ * sibling's roll-up can close the parent ahead of this card's own events. And
+ * the card may move meanwhile (a rollback on the board), so the move is
+ * checked again when saved, and usage for a move that did not happen is never
+ * stored.
+ */
+async function prepareMoveUsage(itemId: string, from: string, to: string, flow: TransitionFlow): Promise<MoveUsage> {
+  if (to === from) return NO_USAGE;
+  const step = await computeMoveStep(itemId, from, to);
+  const closing = isCompletionStep(to, flow) && !isCompletionStep(from, flow);
+  const card = closing ? await computeMoveCard(itemId, step, to) : null;
+  // After the step's flush, so the snapshot holds every turn read so far. A
+  // closing move takes ONE snapshot for its step and its close: two reads could
+  // straddle an ingest and show the hub a close below its step - a "restore".
+  const own = !step ? null : closing && card?.own ? card.own : await computeMoveOwn(itemId);
+  return { step, card, closing, own };
+}
+
+/** What a move adds to the card, against the card as stored now. */
+export function usagePatch(fresh: any, usage: MoveUsage): Record<string, unknown> {
+  return {
+    ...(usage.step ? { usageByStep: [...(fresh.usageByStep ?? []), usage.step] } : {}),
+    // A close always replaces the total, with null when it could not be
+    // computed: an older close's total would otherwise come back to life once
+    // the card is in the step it was taken in again (review finding).
+    ...(usage.closing ? { cardUsage: usage.card ?? null } : {}),
+  };
+}
+
+/*
+ * GH-389: one item write at a time.
+ *
+ * A move is checked and then written, and an `await` between the two lets any
+ * other queued continuation run - SQLite being synchronous underneath does not
+ * make two awaited calls one step (review finding: two overlapping saves both
+ * passed their check). So every item write takes this lock, and saveMove holds
+ * it across its check and its write. Reads are not locked.
+ */
+let itemWriteChain: Promise<unknown> = Promise.resolve();
+function withItemWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = itemWriteChain.then(fn, fn);
+  itemWriteChain = run.catch(() => undefined);
+  return run;
+}
+/** The write underneath the lock, kept on the store: only saveMove, already holding the lock, calls it. */
+const unlockedUpdateItem = (id: string, updates: any): Promise<any> => (storage as any).updateItemUnlocked(id, updates);
+function lockItemWrites<S extends StorageProvider>(s: S): S {
+  const raw = s.updateItem.bind(s);
+  (s as any).updateItemUnlocked = raw;
+  s.updateItem = ((id: string, updates: any) => withItemWriteLock(() => raw(id, updates))) as any;
+  // Creating a card can invalidate a parent's close (a new open child), so it
+  // waits for a close being saved too (review finding). Deleting one cannot:
+  // fewer open children never makes a close wrong.
+  const create = s.createItem.bind(s);
+  s.createItem = ((item: any) => withItemWriteLock(() => create(item))) as any;
+  return s;
+}
+
+/**
+ * Save a move with its usage, if the card is still exactly where the move
+ * started - same status AND no move since (the history length: a card that
+ * went WORK -> TODO -> WORK meanwhile has the status but not the history) -
+ * and, for a close, if nothing under it was reopened meanwhile. Returns null
+ * otherwise. The check and the write happen under the item write lock, so
+ * nothing lands between them.
+ */
+export async function saveMove(
+  itemId: string,
+  expected: { status: string; history?: unknown[] },
+  patch: Record<string, unknown>,
+  usage: MoveUsage,
+): Promise<any | null> {
+  return withItemWriteLock(async () => {
+    const fresh: any = await storage.getItem(itemId);
+    if (!fresh || String(fresh.status) !== String(expected.status)) return null;
+    if ((fresh.history ?? []).length !== (expected.history ?? fresh.history ?? []).length) return null;
+    if (usage.closing && holdsClose(await openDescendants(itemId))) return null;
+    return unlockedUpdateItem(itemId, { ...patch, ...usagePatch(fresh, usage) });
+  });
+}
+
+const movedMeanwhile = (itemId: string, from: string) => ({
+  error: `Card ${itemId} is no longer in ${from}: another move landed while this one was recording its usage, so this one was not applied. Run verify again from where the card is now.`,
+});
+
+/** GH-389: what a move recorded - the left step's usage, and the card's when it closed. */
+interface MoveUsage {
+  step: StepUsage | null;
+  card: CardUsage | null;
+  /** The move closes the card: its total is replaced, and nothing under it may be open. */
+  closing?: boolean;
+  /** The card's own usage to date, for the hub only (never stored on the card). */
+  own?: (UsageSummary & { asOf?: string }) | null;
+}
+const NO_USAGE: MoveUsage = { step: null, card: null };
+
+/** GH-389: the card's own usage to date. Never throws. */
+async function computeMoveOwn(itemId: string): Promise<(UsageSummary & { asOf?: string }) | null> {
+  try {
+    return await computeOwnUsage(storage, itemId);
+  } catch (e) {
+    console.error(`[USAGE] could not compute the own usage of ${itemId}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/** GH-389: a closing card's usage, its descendants' included. Never throws. */
+async function computeMoveCard(itemId: string, step: StepUsage | null, closesIn: string): Promise<CardUsage | null> {
+  try {
+    return await computeCardUsage(storage, itemId, step?.complete ?? true, step, closesIn);
+  } catch (e) {
+    console.error(`[USAGE] could not compute the card usage of ${itemId}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * GH-389: the usage of the step a card is leaving. Never throws and never
+ * blocks the move for long: a failure is logged and the move goes on without
+ * a usage row.
+ */
+async function computeMoveStep(itemId: string, from: string, to: string): Promise<StepUsage | null> {
+  try {
+    const item: any = await storage.getItem(itemId);
+    if (!item) return null;
+    return await computeStepUsage({
+      storage,
+      flush: (sessions) => (usageIngestion ? usageIngestion.flush(sessions) : Promise.resolve(0)),
+      item,
+      from,
+      to,
+      at: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error(`[USAGE] could not compute the usage of ${itemId} in ${from}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * The usage a step.transitioned event carries: the step's totals, and the
+ * card's own usage to date (a cumulative snapshot the hub reconciles with),
+ * never per-turn data.
+ */
+function hubUsage(usage: StepUsage | null, own?: UsageSummary | null): { usage?: Omit<StepUsage, 'step' | 'to'> & { own?: UsageSummary } } {
+  if (!usage) return {};
+  const { step: _step, to: _to, ...rest } = usage;
+  return { usage: { ...rest, ...(own ? { own } : {}) } };
+}
+
+/** The verify reply's usage lines: the step it left, and the whole card when it closed. */
+const usageNote = (moved: MoveUsage | null): string => {
+  const prices = usagePriceTable?.cached() ?? null;
+  return (moved?.step ? `\n\n${describeUsage(moved.step, prices)}` : '') + (moved?.card ? `\n${describeCardUsage(moved.card, prices)}` : '');
+};
 
 /**
  * What `previousStatus` becomes after a status change through PUT/bulk. It is
@@ -2289,18 +2673,32 @@ app.put("/api/telemetry/config", (req: any, res: any) => {
 
 // DB status & backup endpoints
 
-app.get("/db/status", asyncHandler(async (_req: any, res: any) => {
+app.get("/db/status", asyncHandler(async (req: any, res: any) => {
   const dbType = 'sqlite';
-  let backupCount = 0;
-  let latestBackup: string | null = null;
-  if (fs.existsSync(backupDir())) {
-    const files = fs.readdirSync(backupDir())
-      .filter(f => f.startsWith('agenfk-backup-') && f.endsWith('.json'))
-      .sort();
-    backupCount = files.length;
-    latestBackup = files.length > 0 ? files[files.length - 1] : null;
+  const files = listBackups();
+  const backupCount = files.length;
+  const latestBackup = files.length > 0 ? files[files.length - 1] : null;
+  res.json({ dbType, dbPath, backupDir: backupDir(), backupCount, latestBackup, lastBackupError, size: (storage as SQLiteStorageProvider).dbStats({ tables: req.query.tables === '1' }) });
+}));
+
+// GH-288: compact the database in place. VACUUM holds it for its whole
+// duration (the server answers nothing meanwhile), so it never starts while a
+// verify suite run is queued or running: that run's writes would wait on it.
+app.post("/db/vacuum", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
   }
-  res.json({ dbType, dbPath, backupDir: backupDir(), backupCount, latestBackup });
+  const running = cardsWithSuiteRunsInFlight();
+  if (running.length) {
+    return res.status(409).json({
+      error: `A verify suite run is in progress (${running.join(', ')}): vacuum when it finishes.`,
+      running,
+    });
+  }
+  console.log('[DB] Vacuum started');
+  const result = (storage as SQLiteStorageProvider).vacuum();
+  console.log(`[DB] Vacuum done: ${result.before.fileBytes + result.before.walBytes} -> ${result.after.fileBytes + result.after.walBytes} bytes, check: ${result.check}`);
+  res.json(result);
 }));
 
 app.post("/backup", asyncHandler(async (req: any, res: any) => {
@@ -2922,18 +3320,20 @@ app.get("/items/:id/diff", limitExpensive, asyncHandler(async (req: any, res: an
   // A whole generated file can be megabytes; the reader wants the shape, not
   // the payload. Truncated rather than refused, and SAID rather than silently.
   const MAX = 400_000;
-  const run = (args: string[]): string => execFileSync('git', ['-C', root, ...args], {
+  // No program the worktree's config names runs here: the worktree may be one an Airlock session
+  // wrote (CGLAB-696 story review) - no fsmonitor, external diff or textconv.
+  const run = (args: string[]): string => execFileSync('git', ['-C', root, '-c', 'core.fsmonitor=false', ...args], {
     encoding: 'utf8', maxBuffer: MAX * 2, stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
 
   try {
-    let diff = run(['diff', ...(staged ? ['--cached'] : []), '--', rel]);
+    let diff = run(['diff', '--no-ext-diff', '--no-textconv', ...(staged ? ['--cached'] : []), '--', rel]);
     if (!diff && !staged && fs.existsSync(safe)) {
       // UNTRACKED: `git diff` ignores it, so show the whole file as added.
       // --no-index exits 1 when there is a difference, so the output arrives
       // on the throw.
-      try { diff = run(['diff', '--no-index', '--', '/dev/null', rel]); }
+      try { diff = run(['diff', '--no-ext-diff', '--no-textconv', '--no-index', '--', '/dev/null', rel]); }
       catch (e: any) { diff = e?.stdout ?? ''; }
     }
     if (diff.length > MAX) diff = `${diff.slice(0, MAX)}\n… diff truncated\n`;
@@ -3007,6 +3407,7 @@ app.post("/projects/:id/tasks-from-branch", asyncHandler(async (req: any, res: a
       root: defaultWorktreeRoot(),
       branchName: branch,
       setupCommand: project.setupCommand,
+      gitEnv: await gitEnvForCard(created.id),
     });
     const withWorktree = await storage.updateItem(created.id, {
       worktreePath: result.path,
@@ -3114,6 +3515,62 @@ app.delete("/terminal-sessions/:id", asyncHandler(async (req: any, res: any) => 
   res.status(204).end();
 }));
 
+/**
+ * Leaving the hub (GH-294, T3): the hub's Airlock row is copied to local and
+ * dropped, so the org's protection stays in force and becomes editable here.
+ * Never throws: a failure is logged, and the hub row - still in force - stays.
+ */
+async function releaseHubAirlockOnLeave(): Promise<void> {
+  try {
+    const out = await releaseHubAirlockPolicy({ storage });
+    if (out.released) {
+      console.log('[AIRLOCK] Left the hub: its Airlock policy is now this installation\'s local policy.');
+      io.emit('airlock_policy_changed', { source: 'local' });
+    }
+  } catch (e) {
+    console.error('[AIRLOCK] Could not keep the hub policy on leaving the hub:', (e as Error).message);
+  }
+}
+
+// GH-294 TEL-1: the sandbox proxy's reports carry their own token
+// (~/.agenfk/airlock/report-token), checked and made here when missing or
+// unsafe. Unreadable inside the sandbox, unlike verify-token. The route reads
+// the file per request, so a token that cannot be made means reports are refused.
+try {
+  ensureAirlockReportToken();
+} catch (e) {
+  console.warn(`[SERVER_START] Warning: could not check or create ~/.agenfk/airlock/report-token (${(e as Error).message}); Airlock proxy decisions will not be accepted.`);
+}
+
+// Airlock (GH-294): the policy, its authority and the one evaluator. Not under
+// /settings: PUT /settings is unauthenticated and has no notion of the hub
+// owning a value (AFK_ARCHITECTURE.md). A hub-joined installation cannot write
+// it locally; a standalone one always can (no passkeys, 2026-10-27).
+registerAirlockRoutes(app, {
+  storage: () => storage,
+  hubJoined: () => hubClient.isEnabled,
+  // Never fails a request; answers whether the event was queued (false when it was not).
+  recordHubEvent: (event) => recordHubEvent(event as RecordEventInput).catch(() => false),
+  emit: (event, payload) => io.emit(event, payload),
+  activeWork: (sessionId) => readActiveWorkForSession(sessionId),
+  projectRepoOf: airlockProjectRepo,
+  datasetEnabled: () => hubClient.isEnabled && airlockDatasetEnabled(),
+  datasetScope: () => currentAirlockGeneration(),
+  // Lasting, unlike the generation: an approval's dataset rows are kept linked under it across a restart (BUG 9ff092e9).
+  datasetLinkScope: () => (hubClient.isEnabled && hubClient.hubConfig ? airlockAuthorityOf(hubClient.hubConfig) : null),
+  reportToken: airlockReportTokenReader(),
+  refreshFromHub: async () => {
+    if (!hubClient.isEnabled || !hubClient.hubConfig) return;
+    await runAirlockSync({
+      storage,
+      hubConfig: hubClient.hubConfig,
+      fetchImpl: hubFetch,
+      emit: (event, payload) => io.emit(event, payload),
+      activeHubConfig: () => hubClient.hubConfig,
+    });
+  },
+});
+
 app.get("/settings", asyncHandler(async (_req: any, res: any) => {
   // Always 200 with the defaults. A fresh install has nothing stored, and a
   // 404 would push every caller into inventing its own idea of the default.
@@ -3161,7 +3618,31 @@ async function refreshProjectExclusive(projectId: string): Promise<void> {
   const project: any = await storage.getProject(projectId);
   if ((projectExclusiveVersion.get(projectId) ?? 0) === before) projectExclusive.set(projectId, project?.exclusiveSuite === true);
 }
-export async function acquireSuiteRun(projectId: string | undefined, onWait: (w: SuiteWait, line: string) => void): Promise<() => void> {
+/**
+ * The cards with a suite run in flight, queued for a slot or running, by how
+ * many each has (GH-288): `agenfk db vacuum` holds the database for its whole
+ * duration, so it waits for none of them and is refused while any is here.
+ */
+const suiteRunsInFlight = new Map<string, number>();
+export function cardsWithSuiteRunsInFlight(): string[] { return [...suiteRunsInFlight.keys()]; }
+
+export async function acquireSuiteRun(projectId: string | undefined, onWait: (w: SuiteWait, line: string) => void, itemId?: string): Promise<() => void> {
+  if (!itemId) return acquireSuiteSlots(projectId, onWait);
+  suiteRunsInFlight.set(itemId, (suiteRunsInFlight.get(itemId) ?? 0) + 1);
+  let counted = true;
+  const uncount = () => {
+    if (!counted) return;
+    counted = false;
+    const n = (suiteRunsInFlight.get(itemId) ?? 1) - 1;
+    if (n > 0) suiteRunsInFlight.set(itemId, n); else suiteRunsInFlight.delete(itemId);
+  };
+  let release: () => void;
+  try { release = await acquireSuiteSlots(projectId, onWait); }
+  catch (e) { uncount(); throw e; }
+  return () => { uncount(); release(); };
+}
+
+async function acquireSuiteSlots(projectId: string | undefined, onWait: (w: SuiteWait, line: string) => void): Promise<() => void> {
   if (!projectId) return suiteSlots.acquire(w => onWait(w, waitingLine(w)));
   await refreshProjectExclusive(projectId);
   for (;;) {
@@ -4002,11 +4483,11 @@ function unreviewedAfter(root: string, from: string, since: number, mine: Set<st
  * was first verified. The start is where the card and its descendants each
  * began (their first exit heads), merged back to the commit all of them share.
  */
-async function reviewRangeOf(item: any, root: string): Promise<{ from: string; to: string } | { error: string }> {
+async function reviewRangeOf(item: any, root: string, runner: GitRunner = gitRun): Promise<{ from: string; to: string } | { error: string }> {
   const firstHead = (card: any): string | null => (card.stepRecords ?? []).find((r: any) => r?.kind === 'exit' && typeof r.head === 'string')?.head ?? null;
   const heads = [...new Set([item, ...(await descendantsOf(item))].map(firstHead).filter((h): h is string => !!h))];
   if (!heads.length) return { error: `[${String(item.id).slice(0, 8)}] and its cards have no recorded start commit (none left its first step with a tree to read one from), so the range cannot be worked out: record the review with an explicit --range <from>..<to>.` };
-  const git = (args: string[]) => gitRun.run(['-C', root, ...args]).trim();
+  const git = (args: string[]) => runner.run(['-C', root, ...args]).trim();
   let from = heads[0];
   if (heads.length > 1) {
     // Starts recorded in another worktree's history may share no base here: keep the card's own, else the first.
@@ -4151,7 +4632,7 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
         void publishPendingReceipts({
           storage: storage as SQLiteStorageProvider,
           hubConfig: hubClient.hubConfig,
-          fetchImpl: globalThis.fetch as any,
+          fetchImpl: hubFetch,
         }).catch(e => console.error('[HUB_RECEIPTS]', e?.message || e));
       }
     } catch (e: any) {
@@ -4309,7 +4790,9 @@ function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: 
     // Not detached on Windows: there it means DETACHED_PROCESS, which voids
     // CREATE_NO_WINDOW, and cmd.exe then gives every console grandchild
     // (npx, npm, node) a visible window (GH #200). Process groups are POSIX-only anyway.
+    // GH #312: the run may write the tree - its start and its exit end every verify memo's epoch.
     const child = spawn(command, { shell: true, cwd, stdio: onOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore', detached: process.platform !== 'win32', windowsHide: true });
+    noteChildProcess(child);
     if (onOutput) for (const s of [child.stdout, child.stderr]) {
       // Whole characters only: a chunk can end inside a multi-byte one.
       const decoder = new StringDecoder('utf8');
@@ -4348,16 +4831,16 @@ function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: 
  * when the tree cannot be read (not a git repository, no commit yet, git
  * failed): the caller treats that as "cannot say", never as unchanged.
  */
-function treeContentState(root: string, excludeRel: TreeExclude): string | null {
-  return treeContentRead(root, excludeRel)?.state ?? null;
+function treeContentState(root: string, excludeRel: TreeExclude, git: GitRunner = gitRun): string | null {
+  return treeContentRead(root, excludeRel, git)?.state ?? null;
 }
 
 /** treeContentState with the read it hashed: what a fenced run records must come from this one read (de5e5a03). */
-function treeContentRead(root: string, excludeRel: TreeExclude): { state: string; tree: TreeRead } | null {
+function treeContentRead(root: string, excludeRel: TreeExclude, git: GitRunner = gitRun): { state: string; tree: TreeRead } | null {
   try {
-    const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString().trim();
+    const head = git.run(['-C', root, 'rev-parse', 'HEAD'], { timeout: 0, stderr: 'ignore' }).trim();
     if (!head) return null;
-    const tree = treeFiles(root, excludeRel);
+    const tree = treeFiles(root, excludeRel, git);
     return tree === null ? null : { state: `${head}:${tree.hash}`, tree };
   } catch {
     return null;
@@ -4369,8 +4852,8 @@ function treeContentRead(root: string, excludeRel: TreeExclude): { state: string
  * commit leaves unchanged when it commits exactly what the capture ran on, so
  * a capture on the dirty tree can be tied to the commit that follows it.
  */
-function treeFilesState(root: string, excludeRel: TreeExclude): string | null {
-  return treeFiles(root, excludeRel)?.hash ?? null;
+function treeFilesState(root: string, excludeRel: TreeExclude, git: GitRunner = gitRun): string | null {
+  return treeFiles(root, excludeRel, git)?.hash ?? null;
 }
 
 /**
@@ -4412,10 +4895,10 @@ function hashEntries(entries: Iterable<[string, string]>): string {
   for (const [rel, v] of [...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) h.update(`\0${rel}\0${v}`);
   return h.digest('hex');
 }
-function treeFiles(root: string, excludeRel: TreeExclude): TreeRead | null {
+function treeFiles(root: string, excludeRel: TreeExclude, runner: GitRunner = gitRun): TreeRead | null {
   const excluded = excludedBy(excludeRel);
   try {
-    const git = (args: string[], cwd = root) => execFileSync('git', ['-C', cwd, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString();
+    const git = (args: string[], cwd = root) => runner.run(['-C', cwd, ...args], { timeout: 0, maxBuffer: 256 * 1024 * 1024, stderr: 'ignore' });
     const staged = git(['ls-files', '-z', '-s']);
     // --relative (6e0d2fd6): ls-files names paths from `root`, a bare diff from the repository's top - in a project
     // that is a subdirectory they never matched, and a modified tracked file kept its stale index hash.
@@ -4468,8 +4951,8 @@ function treeFiles(root: string, excludeRel: TreeExclude): TreeRead | null {
 const reportRelOf = (root: string, project: any): string | null =>
   reportPathsOf(project?.testReport).map(p => insideRoot(root, path.resolve(root, p))).find(Boolean) ?? null;
 /** Every report the setting names, owned: the files and the directories that hold only them. */
-const reportsOwned = (root: string, setting: any): string[] =>
-  [...new Set(reportPathsOf(setting).flatMap(p => reportOwned(root, insideRoot(root, path.resolve(root, p)), Array.isArray(setting?.surface) ? setting.surface : [])))];
+const reportsOwned = (root: string, setting: any, git: GitRunner = gitRun): string[] =>
+  [...new Set(reportPathsOf(setting).flatMap(p => reportOwned(root, insideRoot(root, path.resolve(root, p)), Array.isArray(setting?.surface) ? setting.surface : [], git)))];
 const toPosixPath = (p: string) => p.split(path.sep).join('/');
 
 /**
@@ -4481,7 +4964,7 @@ const toPosixPath = (p: string) => p.split(path.sep).join('/');
  * directory as a non-test change. A directory holding tracked files (a report
  * written into `test/`) is never owned: only the report file is.
  */
-export function reportOwned(root: string, reportRel: string | null, surface: readonly string[] = []): string[] {
+export function reportOwned(root: string, reportRel: string | null, surface: readonly string[] = [], git: GitRunner = gitRun): string[] {
   if (!reportRel) return [];
   const dir = path.posix.dirname(reportRel);
   if (!dir || dir === '.') return [reportRel];
@@ -4493,13 +4976,13 @@ export function reportOwned(root: string, reportRel: string | null, surface: rea
   const underSurface = surface.some(p => { const d = toPosixPath(path.posix.normalize(p)).replace(/\/$/, ''); return d === '.' || d === '' || dir === d || dir.startsWith(`${d}/`) || d.startsWith(`${dir}/`); });
   if (!reportish || underSurface) return [reportRel];
   try {
-    const tracked = execFileSync('git', ['-C', root, 'ls-files', '-z', '--', dir], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, windowsHide: true }).toString();
+    const tracked = git.run(['-C', root, 'ls-files', '-z', '--', dir], { timeout: 15_000, stderr: 'ignore' });
     return tracked ? [reportRel] : [reportRel, dir];
   } catch {
     return [reportRel];
   }
 }
-const reportOwnedOf = (root: string, project: any): string[] => reportsOwned(root, project?.testReport);
+const reportOwnedOf = (root: string, project: any, git: GitRunner = gitRun): string[] => reportsOwned(root, project?.testReport, git);
 
 /**
  * 3ffc9651 — the state of a tree, clean or dirty: the content of every tracked
@@ -4515,10 +4998,10 @@ const reportOwnedOf = (root: string, project: any): string[] => reportsOwned(roo
  * narrower world at another commit, never content it did not see. Files git
  * ignores are not seen, exactly as a clean green does not see them.
  */
-const treeStateOf = (root: string, project: any): string | null => {
-  const t = treeFiles(root, reportOwnedOf(root, project));
+const treeStateOf = (root: string, project: any, git: GitRunner = gitRun): string | null => {
+  const t = treeFiles(root, reportOwnedOf(root, project, git), git);
   // 19e660ac: and what lies beside a subdirectory project's root.
-  return t && t.shareable ? sharedState(t.hash, outsideContent(root)) : null;
+  return t && t.shareable ? sharedState(t.hash, outsideContent(root, git)) : null;
 };
 /**
  * The state a command check's pass is shared at (3ffc9651 review): the files,
@@ -4526,9 +5009,9 @@ const treeStateOf = (root: string, project: any): string | null => {
  * read the index (a staged-files linter, a secret scan) or the branch, and every
  * card stages its own files before it closes.
  */
-const commandStateOf = (root: string, project: any): string | null => {
-  const t = treeFiles(root, reportOwnedOf(root, project));
-  const head = t && t.shareable ? readHead(root, gitRun) : null;
+const commandStateOf = (root: string, project: any, git: GitRunner = gitRun): string | null => {
+  const t = treeFiles(root, reportOwnedOf(root, project, git), git);
+  const head = t && t.shareable ? readHead(root, git) : null;
   return t && head ? `${head}\0${t.index}\0${t.hash}` : null;
 };
 /**
@@ -4538,12 +5021,12 @@ const commandStateOf = (root: string, project: any): string | null => {
  * step too (ef1342b8) - while the record's filesState and command checks keep every file.
  * Null when the tree cannot be read, or nothing may be shared on it.
  */
-function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null, outsideGiven?: string | null): string | null {
+function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null, outsideGiven?: string | null, git: GitRunner = gitRun): string | null {
   if (!setting) return null;
   // Read only when asked for and not handed in (BUG 91d2941d): null handed in means "not shareable".
-  const outside = outsideGiven === undefined ? outsideContent(root) : outsideGiven;
+  const outside = outsideGiven === undefined ? outsideContent(root, git) : outsideGiven;
   // de5e5a03: from the caller's read when it has one - a fenced run's, so the state is the content it ran on.
-  const tree = read === undefined ? treeFiles(root, reportsOwned(root, setting)) : read;
+  const tree = read === undefined ? treeFiles(root, reportsOwned(root, setting, git), git) : read;
   if (!tree || !tree.shareable) return null;
   const patterns = Array.isArray(setting.reuseIgnore) ? setting.reuseIgnore : DEFAULT_REUSE_IGNORE;
   let ignored = new Set<string>();
@@ -4647,7 +5130,9 @@ function finalVerifyCommandOf(project: any): string | undefined {
   const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
   return (typeof declared === 'string' ? declared : project?.verifyCommand) || undefined;
 }
-async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void; lazyOver?: any; onPhase?: (phase: VerifyPhase) => void }): Promise<CaptureOutcome> {
+async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void; lazyOver?: any; onPhase?: (phase: VerifyPhase) => void; git?: GitRunner }): Promise<CaptureOutcome> {
+  // GH #312: the verify's memo when it hands one down, so a read it already made is not spawned again.
+  const git = opts?.git ?? gitRun;
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   if (!root) {
@@ -4686,19 +5171,19 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
    * the tree may have changed during a whole suite run, and another waiter may
    * already be the new owner.
    */
-  const lazy = setting && opts?.lazyOver ? lazyPlan(root, setting, opts.lazyOver) : null;
+  const lazy = setting && opts?.lazyOver ? lazyPlan(root, setting, opts.lazyOver, git) : null;
   if (lazy) {
-    const out = await runCapture(item, root, setting, command, readCleanTreeSha(root, gitRun), { ...opts, lazy });
+    const out = await runCapture(item, root, setting, command, readCleanTreeSha(root, git), { ...opts, lazy });
     if (out !== LAZY_FALLBACK) return out;
     // The partial run could not stand for the whole suite. The tree may have
     // changed meanwhile, so it is read afresh below, reuse and single-flight included.
     opts?.onOutput?.('[agenfk] the partial run cannot stand for the whole suite: running all of it\n');
   }
   for (let attempt = 0; ; attempt++) {
-    const cleanSha = readCleanTreeSha(root, gitRun);
+    const cleanSha = readCleanTreeSha(root, git);
     // 3ffc9651: the tree's state, dirty or not - what reuse and single-flight key on.
-    const state = treeStateOf(root, project);
-    const reused = await reusableCapture(item, project, root, cleanSha, state, suiteStateOf(root, setting));
+    const state = treeStateOf(root, project, git);
+    const reused = await reusableCapture(item, project, root, cleanSha, state, suiteStateOf(root, setting, undefined, undefined, git), git);
     if (reused) {
       opts?.onPhase?.({ state: 'running', kind: 'reused' });
       const fresh: any = await storage.getItem(item.id);
@@ -4755,7 +5240,9 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
  * narrower baseline, never a green on content it did not see.
  * Resolves to the stamped record, or null.
  */
-export async function stampCloseGreen(itemId: string, root: string, sha: string): Promise<any | null> {
+export async function stampCloseGreen(itemId: string, root: string, sha: string, git: GitRunner = gitRun): Promise<any | null> {
+  // GH #312: a deliberate re-read (F4) - another agent committing since the caller read the tree must be seen.
+  const fence = fenceOf(git);
   const item: any = await storage.getItem(itemId);
   if (!item) return null;
   const project: any = await storage.getProject(item.projectId);
@@ -4763,9 +5250,9 @@ export async function stampCloseGreen(itemId: string, root: string, sha: string)
   if (!setting) return null;
   const runs = (item.stepRecords ?? []).filter((r: any) => isOwnRun(r, setting, root) && stateOfRecord(r) !== null);
   if (!runs.length) return null;
-  if (readCleanTreeSha(root, gitRun) !== sha) return null;
+  if (readCleanTreeSha(root, fence) !== sha) return null;
   // 19e660ac: compared with a stamped filesState, so the content beside the root counts the same way.
-  const files = sharedState(treeFilesState(root, reportsOwned(root, setting)), outsideContent(root));
+  const files = sharedState(treeFilesState(root, reportsOwned(root, setting, fence), fence), outsideContent(root, fence));
   if (!files) return null;
   const last = [...runs].reverse().find((r: any) => stateOfRecord(r) === files);
   if (!last || !capturedGreen(last)) return null;
@@ -4819,9 +5306,9 @@ function relatedPlan(root: string, setting: TestReportSetting, entry: any, chang
 }
 
 /** a36047ea: the hint a whole run gets when only code changed and the project has no related-tests command. */
-function relatedHint(root: string, setting: TestReportSetting, entry: any): string | null {
+function relatedHint(root: string, setting: TestReportSetting, entry: any, git: GitRunner = gitRun): string | null {
   if (setting.relatedCommand || !(entry?.kind === 'capture' && entry.clean === true && typeof entry.head === 'string')) return null;
-  const since = changedSince(root, entry.head, reportsOwned(root, setting));
+  const since = changedSince(root, entry.head, reportsOwned(root, setting, git), git);
   if (!since || since.outside || !since.inside.length || since.inside.every(f => TEST_FILE_NAME.test(f))) return null;
   const vitest = /\bvitest\b/.test(setting.command), jest = /\bjest\b/.test(setting.command);
   const example = vitest ? 'npx vitest related --run {files}' : jest ? 'npx jest --findRelatedTests {files}' : "<your runner's related-tests command> {files}";
@@ -4841,10 +5328,10 @@ const LAZY_MAX_FILES = 200;
  * addition, so a rename cannot hide the file it removed; NUL-separated so no
  * name is mis-split. Null: git failed.
  */
-function changedSince(root: string, head: string, reportRel: TreeExclude): { inside: string[]; outside: boolean } | null {
+function changedSince(root: string, head: string, reportRel: TreeExclude, git: GitRunner = gitRun): { inside: string[]; outside: boolean } | null {
   const excluded = excludedBy(reportRel);
   try {
-    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    const run = (args: string[]) => git.run(['-C', root, ...args], { timeout: 15_000, maxBuffer: 64 * 1024 * 1024, stderr: 'ignore' });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     // --no-relative (c03ae9f7): a user's diff.relative would list only what is under `root`, relative to it.
     const diff = run(['diff', '--no-relative', '--no-renames', '--name-only', '-z', head]).split('\0');
@@ -4874,15 +5361,15 @@ const OUTSIDE_MAX_FILES = 2000;
  * run over an entry needs this unchanged since it: the entry's results were
  * taken with that work beside it.
  */
-export function outsideState(root: string, head: string): string | null {
-  const beside = outsideEntries(root, head);
+export function outsideState(root: string, head: string, git: GitRunner = gitRun): string | null {
+  const beside = outsideEntries(root, head, git);
   return beside === null ? null : beside.length ? hashEntries(beside) : '';
 }
 
 /** outsideState's entries, by repository path: `<mode>:<blob>`, `160000:<commit>`, or 'absent'. [] when nothing differs. */
-function outsideEntries(root: string, head: string): [string, string][] | null {
+function outsideEntries(root: string, head: string, git: GitRunner = gitRun): [string, string][] | null {
   try {
-    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    const run = (args: string[]) => git.run(['-C', root, ...args], { timeout: 15_000, maxBuffer: 64 * 1024 * 1024, stderr: 'ignore' });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     // c03ae9f7: a project at the repository's top has nothing beside it.
     if (!prefix) return [];
@@ -4904,7 +5391,7 @@ function outsideEntries(root: string, head: string): [string, string][] | null {
       else if (st.isDirectory() && fs.existsSync(path.join(abs, '.git'))) {
         // c03ae9f7: a submodule or nested repository - by its commit. 62f87741: its own uncommitted work is not
         // hashed (its status names files, not content), so with any, no partial run.
-        const sub = (args: string[]) => execFileSync('git', ['-C', abs, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+        const sub = (args: string[]) => git.run(['-C', abs, ...args], { timeout: 15_000, maxBuffer: 64 * 1024 * 1024, stderr: 'ignore' });
         if (sub(['status', '--porcelain', '-z'])) return null;
         entries.push([f, `160000:${sub(['rev-parse', 'HEAD']).trim()}`]);
       } else return null;   // anything else cannot be told apart from itself changed: no partial run
@@ -4928,9 +5415,9 @@ function outsideEntries(root: string, head: string): [string, string][] | null {
 const outsideBaseCache = new Map<string, { head: string; files: Map<string, string>; hash: string }>();
 const OUTSIDE_BASE_CACHE_MAX = 16;
 
-function outsideContent(root: string): string | null {
+function outsideContent(root: string, git: GitRunner = gitRun): string | null {
   try {
-    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true });
+    const run = (args: string[]) => git.run(['-C', root, ...args], { timeout: 15_000, maxBuffer: 256 * 1024 * 1024, stderr: 'ignore' });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     if (!prefix) return '';
     const head = run(['rev-parse', 'HEAD']).trim();
@@ -4950,7 +5437,7 @@ function outsideContent(root: string): string | null {
       if (outsideBaseCache.size >= OUTSIDE_BASE_CACHE_MAX) outsideBaseCache.clear();
       outsideBaseCache.set(root, base);
     }
-    const beside = outsideEntries(root, head);
+    const beside = outsideEntries(root, head, git);
     if (beside === null) return null;
     // Nothing differs beside the root: HEAD's content there, already hashed.
     if (!beside.length) return base.hash;
@@ -4978,11 +5465,11 @@ function sharedState(files: string | null | undefined, outside: string | null): 
  * clean head. A change outside `root` is read from git either way, and means
  * the whole suite.
  */
-function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { inside: string[]; outside: boolean } | null {
-  if (!isFileMap(entry.fileShas)) return changedSince(root, entry.head, reportRel);
-  const now = treeFiles(root, reportRel);
+function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude, git: GitRunner = gitRun): { inside: string[]; outside: boolean } | null {
+  if (!isFileMap(entry.fileShas)) return changedSince(root, entry.head, reportRel, git);
+  const now = treeFiles(root, reportRel, git);
   // 83c1cbca: beside `root`, what matters is whether the work there is what the entry ran with.
-  const beside = outsideState(root, entry.head);
+  const beside = outsideState(root, entry.head, git);
   if (!now || beside === null) return null;
   const before: Record<string, string> = entry.fileShas;
   const inside = new Set<string>();
@@ -5009,12 +5496,12 @@ function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { 
  * Files git ignores (a rebuilt dist/, node_modules) are not seen, exactly as
  * reuse of a clean green does not see them.
  */
-function lazyPlan(root: string, setting: TestReportSetting, entry: any): LazyPlan | null {
+function lazyPlan(root: string, setting: TestReportSetting, entry: any, git: GitRunner = gitRun): LazyPlan | null {
   // 6e0d2fd6: an entry that recorded its files works dirty or partial - which is how a TDD coding step is entered.
   if (!(entry?.kind === 'capture' && entry.root === root && entry.available === true && typeof entry.head === 'string'
     && ((entry.clean === true && !entry.lazy) || (isFileMap(entry.fileShas) && typeof entry.outsideState === 'string'))
     && Array.isArray(entry.tests) && ranAsSetNow(entry, setting))) return null;
-  const since = changedSinceEntry(root, entry, reportsOwned(root, setting));
+  const since = changedSinceEntry(root, entry, reportsOwned(root, setting, git), git);
   if (!since || since.outside) return null;
   const changed = since.inside;
   if (!changed.length || changed.length > LAZY_MAX_FILES) return null;
@@ -5045,7 +5532,7 @@ async function withReportLock<T>(key: string, fn: () => Promise<T>, onOutput?: (
 /** runCapture's answer when a lazy run cannot stand for the whole suite: the caller captures the ordinary way. */
 const LAZY_FALLBACK = Symbol('lazy-fallback');
 
-type CaptureRunOpts = { onOutput?: (chunk: string) => void; onPhase?: (phase: VerifyPhase) => void };
+type CaptureRunOpts = { onOutput?: (chunk: string) => void; onPhase?: (phase: VerifyPhase) => void; git?: GitRunner };
 async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: CaptureRunOpts & { lazy: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK>;
 async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: CaptureRunOpts): Promise<CaptureOutcome>;
 async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: CaptureRunOpts & { lazy?: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK> {
@@ -5055,16 +5542,21 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
   const running: VerifyPhase = !lazy ? { state: 'running', kind: 'whole' }
     : lazy.related ? { state: 'running', kind: 'affected', files: lazy.changed.length } : { state: 'running', kind: 'tests-only', files: lazy.ran.length };
   // f8d0a752: inside the report lock, so a card waiting on the lock holds no suite-run slot.
+  // GH #312 review: a wait (the report lock, a suite slot) can last minutes, and another agent may write meanwhile.
+  let waited = false;
   const record = await withReportLock(lockKey, async () => {
     const release = await acquireSuiteRun(item.projectId, (w, line) => {
+      waited = true;
       opts?.onOutput?.(line);
       opts?.onPhase?.({ state: 'queued', ahead: w.ahead });
-    });
+    }, item.id);
     try {
+      // What was read before a wait is not the tree the run starts on: read it afresh.
+      if (waited) gitStateMayHaveMoved();
       opts?.onPhase?.(running);
-      return await runAndRead(item, root, setting, command, cleanSha, opts, lazy);
+      return await runAndRead(item, root, setting, command, cleanSha, opts, lazy, opts?.git ?? gitRun);
     } finally { release(); }
-  }, opts?.onOutput, () => opts?.onPhase?.({ state: 'waiting', on: 'report' }));
+  }, opts?.onOutput, () => { waited = true; opts?.onPhase?.({ state: 'waiting', on: 'report' }); });
   if (record === null) return LAZY_FALLBACK;
   // The card may have moved while the command ran: a record for a step it
   // no longer occupies (or was rolled back over) must not be written.
@@ -5088,10 +5580,10 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
  * file it ran is missing from its report (a runner that reports no file path,
  * as pytest's default JUnit does, cannot be merged by file).
  */
-async function runAndRead(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: { onOutput?: (chunk: string) => void } | undefined, lazy: LazyPlan | undefined): Promise<any | null> {
+async function runAndRead(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: { onOutput?: (chunk: string) => void } | undefined, lazy: LazyPlan | undefined, git: GitRunner): Promise<any | null> {
   const record: any = {
     step: item.status, kind: 'capture', at: new Date().toISOString(),
-    head: readHead(root, gitRun), clean: cleanSha !== null,
+    head: readHead(root, git), clean: cleanSha !== null,
     format: setting ? setting.format : 'exit-code', available: false,
     // What ran, and where: a later card may reuse this record only for the same command in the same tree (961f301d).
     command, root,
@@ -5115,14 +5607,19 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
     reportAbs = reportAbsAll[0] ?? null;
   }
   const reportRel = reportAbs ? insideRoot(root, reportAbs) : null;
-  const owned = setting ? reportsOwned(root, setting) : [];
-  const stateBefore = treeContentState(root, owned);
+  const owned = setting ? reportsOwned(root, setting, git) : [];
+  /*
+   * GH #312: the reads before the run come from the verify's memo - the same epoch as the
+   * plan and the reuse check above - and the run's spawn ends that epoch, so the reads after
+   * it are git's afresh. (The report removed just above is excluded from every state here.)
+   */
+  const stateBefore = treeContentState(root, owned, git);
   // de5e5a03/83c1cbca: the work beside `root` as the run starts - read on both sides, so a change meanwhile counts.
-  const besideBefore = typeof record.head === 'string' ? outsideState(root, record.head) : null;
+  const besideBefore = typeof record.head === 'string' ? outsideState(root, record.head, git) : null;
   // 19e660ac: and the content beside the root, which the shared states fold in - only when it held still.
-  const outsideBefore = outsideContent(root);
+  const outsideBefore = outsideContent(root, git);
   // The plan was made before the run was fenced: the tree must still be what it saw.
-  if (lazy && JSON.stringify(changedSinceEntry(root, lazy.entry, owned)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
+  if (lazy && JSON.stringify(changedSinceEntry(root, lazy.entry, owned, git)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
   if (lazy) {
     // acceaa54: only the changed test files run; the rest keep their entry results.
     Object.assign(record, { lazy: true, ranFiles: lazy.ran, lazyCommand: lazy.command, mergedOver: { step: lazy.entry.step, at: lazy.entry.at, head: lazy.entry.head } });
@@ -5131,9 +5628,12 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       opts?.onOutput?.(`[agenfk] ${lazy.changed.length} file(s) changed since this step began: running the tests they affect over the entry results\n`);
     } else opts?.onOutput?.(`[agenfk] only test files changed since this step began: running ${lazy.ran.length} of them over the entry results\n`);
   }
-  record.exitCode = await runForExitCode(lazy ? lazy.command : command, root, verifyMaxMs(), opts?.onOutput);
+  // SX-3: in the Airlock sandbox when an Airlock sandbox touched this card's tree and the policy enforces.
+  const airlockRun = await airlockCommandFor(airlockRunDeps, item.id, lazy ? lazy.command : command, root);
+  if (airlockRun.sandboxed) opts?.onOutput?.('[agenfk] An Airlock sandbox touched this card, so this run is in the Airlock sandbox (agenfk airlock exec).\n');
+  record.exitCode = await runForExitCode(airlockRun.command, root, verifyMaxMs(), opts?.onOutput);
   // de5e5a03: one read for the fence AND everything the record says the run saw - a later read may see a later tree.
-  const after = treeContentRead(root, owned);
+  const after = treeContentRead(root, owned, git);
   const stateAfter = after?.state ?? null;
   if (setting && reportAbs) {
     try {
@@ -5144,7 +5644,7 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       }
       // What the run saw, without HEAD: a close that commits exactly this can re-stamp it (e99b5015).
       // 19e660ac: with the content beside a subdirectory root, when it did not change during the run; else no state.
-      const outsideAfter = outsideContent(root);
+      const outsideAfter = outsideContent(root, git);
       const outsideHeld = outsideBefore !== null && outsideBefore === outsideAfter ? outsideAfter : null;
       const filesState = sharedState(stateAfter.slice(stateAfter.indexOf(':') + 1), outsideHeld);
       if (filesState) record.filesState = filesState;
@@ -5152,10 +5652,10 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       // 6e0d2fd6: which file held what, for the next step's partial run.
       record.fileShas = after!.tree.files;
       // The map covers `root` only: the work beside it is recorded as one state, when the run saw it stay put (83c1cbca).
-      const besideAfter = typeof record.head === 'string' ? outsideState(root, record.head) : null;
+      const besideAfter = typeof record.head === 'string' ? outsideState(root, record.head, git) : null;
       if (besideBefore !== null && besideBefore === besideAfter) record.outsideState = besideAfter;
       // 32045202: what reuse compares, docs no test names aside.
-      const suite = suiteStateOf(root, setting, after!.tree, outsideHeld);
+      const suite = suiteStateOf(root, setting, after!.tree, outsideHeld, git);
       if (suite) record.suiteState = suite;
       // Each report the command should have written, read as one run's results.
       // One that is missing says which: a suite that crashed before writing its
@@ -5208,7 +5708,7 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       const ambiguous = new Set(parsed.duplicateNames);
       // The project's declared test paths are the surface (9afdba7d); the tree is listed only to suggest some
       // when a name is no file and none are declared. The report this run wrote is never hashed.
-      const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true }).split('\0').filter(Boolean);
+      const listTree = () => git.run(['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
       const surface = surfaceOf(root, [...new Set([...parsed.tests.map(t => t.file), ...parsed.brokenFiles.map(b => b.file)])], setting.surface ?? [], { listTree, exclude: owned });
       record.available = true;
       record.tests = parsed.tests.filter(t => !ambiguous.has(t.name));
@@ -5287,7 +5787,7 @@ function isOwnGreenRun(r: any, setting: TestReportSetting, root: string): boolea
  * the same content the green ran on. So the report is re-read, not re-run
  * (the field card ran its whole suite again for a surface declaration).
  */
-function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: string, sha: string | null, state: string | null, base: any, suite: string | null = null): any | null {
+function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: string, sha: string | null, state: string | null, base: any, suite: string | null = null, git: GitRunner = gitRun): any | null {
   const sameRun = (r: any) => r?.kind === 'capture' && r.root === root && r.available === true && !r.reusedFrom && !r.lazy && capturedGreen(r)
     && r.command === setting.command && r.format === setting.format && r.surfaceScope === 'declared' && Array.isArray(r.tests)
     && JSON.stringify(r.reportPaths ?? null) === JSON.stringify(reportPathsOf(setting))
@@ -5296,9 +5796,9 @@ function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: st
   for (const card of candidates) for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (sameRun(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
   if (!best) return null;
   const { supersededAt: _s, rolledBackTo: _t, surfaceMissing: _m, surfaceSuggested: _g, ...green } = best.r;
-  const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true }).split('\0').filter(Boolean);
+  const listTree = () => git.run(['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
   const files = [...new Set([...(green.tests ?? []).map((t: any) => t.file), ...(green.brokenFiles ?? []).map((b: any) => b.file)])];
-  const surface = surfaceOf(root, files, setting.surface ?? [], { listTree, exclude: reportsOwned(root, setting) });
+  const surface = surfaceOf(root, files, setting.surface ?? [], { listTree, exclude: reportsOwned(root, setting, git) });
   return {
     ...green, ...base,
     surface: { files: surface.files }, surfaceComplete: surface.missing.length === 0, surfaceScope: 'declared', surfaceDeclared: [...(setting.surface ?? [])],
@@ -5335,7 +5835,7 @@ function ranAsSetNow(r: any, setting: TestReportSetting): boolean {
  * content, the card's own included. Only a run that fenced its tree carries a
  * state (its filesState), so a run that saw the tree change never matches.
  */
-async function reusableCapture(item: any, project: any, root: string, sha: string | null, state: string | null = null, suite: string | null = null): Promise<any | null> {
+async function reusableCapture(item: any, project: any, root: string, sha: string | null, state: string | null = null, suite: string | null = null, git: GitRunner = gitRun): Promise<any | null> {
   if (!sha && !state && !suite) return null;
   const setting: TestReportSetting | undefined = project?.testReport;
   // As the capture resolves it (captureStepRecord), the repository's file included.
@@ -5348,12 +5848,12 @@ async function reusableCapture(item: any, project: any, root: string, sha: strin
     const card: any = await storage.getItem(id);
     if (card && card.projectId === item.projectId) candidates.push(card);
   }
-  const base = { step: item.status, kind: 'capture', at: new Date().toISOString(), head: sha ?? readHead(root, gitRun), clean: sha !== null, command, root };
+  const base = { step: item.status, kind: 'capture', at: new Date().toISOString(), head: sha ?? readHead(root, git), clean: sha !== null, command, root };
   if (setting) {
     const same = (r: any) => isOwnGreenRun(r, setting, root) && ((sha !== null && r.clean === true && r.head === sha) || (state !== null && stateOfRecord(r) === state) || (suite !== null && suiteStateOfRecord(r) === suite));
     let best: { card: any; r: any } | null = null;
     for (const card of candidates) for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (same(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
-    if (!best) return resurfacedGreen(candidates, setting, root, sha, state, base, suite);
+    if (!best) return resurfacedGreen(candidates, setting, root, sha, state, base, suite, git);
     const { supersededAt: _s, rolledBackTo: _t, ...green } = best.r;
     return { ...green, ...base, reusedFrom: { itemId: best.card.id, step: best.r.step, at: best.r.at } };
   }
@@ -5454,10 +5954,16 @@ app.put("/projects/:id/project-root", limitExpensive, asyncHandler(async (req: a
   if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
     return res.status(400).json({ error: `Not a directory: ${candidate}` });
   }
+  // One card's tree, never the project's: and Airlock pins the repository it reads from the root.
+  if (await checkoutKind(candidate) === 'linked') {
+    return res.status(400).json({ error: `Refusing ${candidate}: it is a linked git worktree, one card's tree and never the project's root. Use the main checkout.` });
+  }
   try {
     const updated = await storage.updateProject(req.params.id, { projectRoot: candidate } as any);
     if (!updated) return res.status(404).json({ error: "Project not found" });
     forgetProjectRemote(req.params.id);
+    // A person set it (a sandbox may not): Airlock reads its origin again.
+    airlockRepos.forget(req.params.id);
     io.emit('items_updated');
     res.json(updated);
   } catch {
@@ -5536,7 +6042,7 @@ app.get("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
       hubConfig: hubClient.hubConfig,
       projectId: req.params.id,
       remoteUrl: await resolveProjectRepo(req.params.id),
-      fetchImpl: globalThis.fetch as any,
+      fetchImpl: hubFetch,
       emit: (event, payload) => io.emit(event, payload),
       etagCache: flowSyncEtagCache,
     });
@@ -5560,7 +6066,7 @@ app.get("/flows/org-available", asyncHandler(async (_req: any, res: any) => {
   }
   const { url, token } = hubClient.hubConfig;
   try {
-    const r = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/flows/available`, {
+    const r = await hubFetch(`${url.replace(/\/$/, "")}/v1/flows/available`, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
     });
@@ -5594,7 +6100,7 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
   // 1) Write the selection to the hub.
   let sel: any;
   try {
-    sel = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/flows/selection`, {
+    sel = await hubFetch(`${url.replace(/\/$/, "")}/v1/flows/selection`, {
       method: "PUT",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(selectionBody),
@@ -5636,7 +6142,7 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
     hubConfig: hubClient.hubConfig,
     projectId: req.params.id,
     remoteUrl: repo,
-    fetchImpl: globalThis.fetch as any,
+    fetchImpl: hubFetch,
     emit: (event: string, payload: any) => io.emit(event, payload),
     etagCache: flowSyncEtagCache,
   });
@@ -5830,7 +6336,7 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
 
 app.get("/token-events", asyncHandler(async (req: any, res: any) => {
   const { itemId, projectId, client, since, until, limit } = req.query as Record<string, string | undefined>;
-  const ALLOWED_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode']);
+  const ALLOWED_CLIENTS = new Set<string>(TOKEN_CLIENTS);
   if (client && !ALLOWED_CLIENTS.has(client)) {
     return res.status(400).json({ error: `Invalid client '${client}'. Must be one of: ${[...ALLOWED_CLIENTS].join(', ')}` });
   }
@@ -5843,6 +6349,39 @@ app.get("/token-events", asyncHandler(async (req: any, res: any) => {
     limit: limitNum,
   });
   res.json(events);
+}));
+
+/**
+ * GH-394: a project's usage on no card over its last `days` local days
+ * (default 30), from this installation's own store: the total, by model, and
+ * per day. The board's project page reads it.
+ */
+app.get("/usage/no-card", asyncHandler(async (req: any, res: any) => {
+  const { projectId, days } = req.query as Record<string, unknown>;
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId is required' });
+  const span = days === undefined ? 30 : Number(days);
+  if (!Number.isInteger(span) || span < 1 || span > 366) return res.status(400).json({ error: 'days must be a whole number from 1 to 366' });
+  const since = localMidnight(new Date(), span - 1).toISOString();
+  const byDay = await noCardUsageByDay(storage, { projectId, since });
+  const all = mergeUsage(byDay.map(d => d.usage));
+  res.json({
+    projectId,
+    days: span,
+    since,
+    total: all.total,
+    byModel: all.byModel,
+    byDay: byDay.map(d => ({ day: d.day, total: d.usage.total, byModel: d.usage.byModel })),
+  });
+}));
+
+/**
+ * GH-397: the price table this server prices turns with at ingestion, with
+ * when it was fetched, so the board prices older usage (turns with no stored
+ * price) from the same rates. No table yet: no prices.
+ */
+app.get("/usage/prices", asyncHandler(async (_req: any, res: any) => {
+  const table = usagePriceTable ? await usagePriceTable.get() : null;
+  res.json(table ?? { prices: [], fetchedAt: null });
 }));
 
 // ── Agent runs (orchestrated worker transcripts per item) ──────────────────
@@ -5860,9 +6399,67 @@ const RUN_EVENT_KINDS = new Set(['dispatch', 'think', 'tool', 'result', 'diff', 
  * synchronous git on a stalled mount must not pin the event loop for the
  * whole server.
  */
-const runGitSync = (args: readonly string[]): string =>
-  execFileSync('git', args as string[], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5_000, windowsHide: true });
-const gitRun = { run: runGitSync };
+const gitRun: GitRunner = rawGitRunner({ timeout: 5_000 });
+
+/**
+ * The card a session works on, recorded for a gatekeeper that cannot write it itself: one inside
+ * the Airlock sandbox, where ~/.agenfk is unwritable (BUG 3afbbf7e). Keyed to the session, the
+ * note the run recorder and Airlock read; never the shared one, which every session without an
+ * id reads. A sandbox's note is kept under its launch (sandboxSessionKey).
+ */
+app.post("/active-work", asyncHandler(async (req: any, res: any) => {
+  const { itemId, sessionId } = req.body || {};
+  if (typeof itemId !== 'string' || !itemId) return res.status(400).json({ error: 'itemId is required' });
+  // A plain note's file name is the session id: at most 200, under the 255-byte limit. A
+  // sandbox's note is under a fixed-length hash, so its session id may run to 256.
+  const maxSession = typeof req.airlockSession === 'string' ? 256 : 200;
+  if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > maxSession) {
+    return res.status(400).json({ error: `sessionId is required (at most ${maxSession} characters): a note without one would be every session's` });
+  }
+  const item: any = await storage.getItem(itemId);
+  if (!item) return res.status(404).json({ error: `Item ${itemId} not found` });
+  // From a sandbox, under its launch: the session id alone is the sandbox's word (review S3).
+  const key = activeWorkKeyFor(sessionId, typeof req.airlockSession === 'string' ? req.airlockSession : undefined)!.key;
+  writeActiveWork({ itemId: item.id, projectId: item.projectId }, key);
+  res.status(204).end();
+}));
+
+/**
+ * GH-389: the session-to-card journal token attribution reads. A session is on
+ * a card from the moment the gatekeeper authorizes it there (this route, sent
+ * by the CLI with the harness's own transcript session id) or it verifies the
+ * card (handleValidate below). Only clients whose session logs are ingested
+ * mean anything here; the id is a plain identifier, never a path.
+ */
+const SESSION_CARD_CLIENTS = new Set<string>(TOKEN_CLIENTS);
+const SESSION_CARD_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/** Why a (client, session) pair cannot go in the journal, or null when it can. */
+function sessionCardError(client: unknown, sessionId: unknown): string | null {
+  if (typeof client !== 'string' || !SESSION_CARD_CLIENTS.has(client)) return `client must be one of: ${[...SESSION_CARD_CLIENTS].join(', ')}`;
+  if (typeof sessionId !== 'string' || !SESSION_CARD_ID.test(sessionId)) return 'sessionId must be 1-128 characters of letters, digits, _ . : -';
+  return null;
+}
+
+const recordSessionOnCard = (client: string, sessionId: string, item: { id: string; projectId: string }): Promise<void> =>
+  storage.recordSessionCard({ client, sessionId, itemId: item.id, projectId: item.projectId, at: new Date().toISOString() });
+
+app.post("/session-cards", asyncHandler(async (req: any, res: any) => {
+  // Only the CLI, which holds the internal token: without it, any web page
+  // could post a form here and move a session's usage onto another card
+  // (review finding). CORS does not stop a simple form POST.
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: 'Forbidden: /session-cards requires the internal token.' });
+  }
+  const { client, sessionId, itemId } = req.body || {};
+  const invalid = sessionCardError(client, sessionId);
+  if (invalid) return res.status(400).json({ error: invalid });
+  if (typeof itemId !== 'string' || !itemId) return res.status(400).json({ error: 'itemId is required' });
+  const item: any = await storage.getItem(itemId);
+  if (!item) return res.status(404).json({ error: `Item ${itemId} not found` });
+  await recordSessionOnCard(client, sessionId, item);
+  res.status(204).end();
+}));
 
 app.post("/agent-runs", asyncHandler(async (req: any, res: any) => {
   const { itemId, projectId, step, actor, harness, model, sessionId, sourcePath } = req.body || {};
@@ -6213,7 +6810,7 @@ app.post("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, re
   let result;
   try {
     const proj: any = await storage.getProject(item.projectId);
-    result = createWorktree({ repoRoot, root, branchName, setupCommand: proj?.setupCommand });
+    result = createWorktree({ repoRoot, root, branchName, setupCommand: proj?.setupCommand, gitEnv: await gitEnvForCard(item.id) });
   } catch (e: any) {
     return res.status(400).json({ error: e.message });
   }
@@ -6477,7 +7074,7 @@ app.get("/registry/flows", asyncHandler(async (_req: any, res: any) => {
   if (hubClient.isEnabled && hubClient.hubConfig) {
     const { url, token } = hubClient.hubConfig;
     try {
-      const r = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/registry/flows`, {
+      const r = await hubFetch(`${url.replace(/\/$/, "")}/v1/registry/flows`, {
         method: "GET",
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
@@ -6562,7 +7159,7 @@ app.post("/registry/flows/install", limitExpensive, asyncHandler(async (req: any
   if (hubClient.isEnabled && hubClient.hubConfig) {
     const { url: hubUrl, token: hubToken } = hubClient.hubConfig;
     try {
-      const r = await (globalThis.fetch as any)(`${hubUrl.replace(/\/$/, "")}/v1/registry/flows/install`, {
+      const r = await hubFetch(`${hubUrl.replace(/\/$/, "")}/v1/registry/flows/install`, {
         method: "POST",
         headers: { Authorization: `Bearer ${hubToken}`, Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ filename }),
@@ -6705,7 +7302,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
     const publisher = await reportedPublisher();
     let r: any;
     try {
-      r = await (globalThis.fetch as any)(`${url.replace(/\/$/, '')}/v1/registry/flows/publish`, {
+      r = await hubFetch(`${url.replace(/\/$/, '')}/v1/registry/flows/publish`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({
@@ -7937,7 +8534,15 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
   if (externalUrl !== undefined) updates.externalUrl = externalUrl;
 
   try {
-    const updated = await storage.updateItem(req.params.id, updates);
+    // GH-389: a status change saves its usage in the same write, if the card
+    // has not moved meanwhile (computing it can take seconds).
+    const putUsage = statusChanged
+      ? await prepareMoveUsage(req.params.id, currentItem.status, status, activeFlowForEvents!)
+      : NO_USAGE;
+    const updated = statusChanged
+      ? await saveMove(req.params.id, currentItem, updates, putUsage)
+      : await storage.updateItem(req.params.id, updates);
+    if (!updated) return res.status(409).json(movedMeanwhile(req.params.id, currentItem.status));
     // beae41a0/2ec08b41: a card that really moved is no longer held where it waited on a person - a save that
     // leaves the status alone, or a move refused above, keeps the wait.
     if (statusChanged && awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
@@ -7984,19 +8589,11 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
         itemType: updated.type,
         flow_name: await resolveFlowName(updated.projectId),
       });
-      recordHubEvent({
-        type: 'step.transitioned',
-        projectId: updated.projectId,
-        itemId: updated.id,
-        // CGLAB-612: the PUT path is the ROLLBACK path, so its event carries the
-        // same stamp — a rollback between two steps of the revision is compliant.
-        payload: {
-          fromStatus: currentItem.status,
-          toStatus: status,
-          itemType: updated.type,
-          ...(activeFlowForEvents ? transitionStamp(currentItem.status, status, activeFlowForEvents) : {}),
-        },
-      });
+      // CGLAB-612: the PUT path is the ROLLBACK path, so its event carries the
+      // same stamp; GH-389: and it records the usage of the step it leaves. PUT
+      // can never reach a completion step (refused above), so no item.closed.
+      // activeFlowForEvents is set by the validation block under this same condition.
+      recordMoveEvents(updated, currentItem.status, status, activeFlowForEvents!, putUsage);
     } else {
       recordHubEvent({
         type: 'item.updated',
@@ -8567,7 +9164,7 @@ async function withReviewBrief<T extends { status: (code: number) => any; json: 
   return proxy;
 }
 
-async function reviewEvidence(item: any, root: string | null, depth = 0): Promise<any> {
+async function reviewEvidence(item: any, root: string | null, depth = 0, git: GitRunner = gitRun): Promise<any> {
   const descendants = await descendantsOf(item);
   const children = descendants.filter(d => d.parentId === item.id);
   const authors: Array<{ client: string; sessionId: string; agentId: string | null }> = [];
@@ -8584,13 +9181,13 @@ async function reviewEvidence(item: any, root: string | null, depth = 0): Promis
   if (root) {
     for (const d of descendants) {
       try {
-        const out = gitRun.run(['-C', root, 'log', '--format=%H', '--fixed-strings', `--grep=[${d.id}]`]).trim();
+        const out = git.run(['-C', root, 'log', '--format=%H', '--fixed-strings', `--grep=[${d.id}]`]).trim();
         for (const sha of out.split('\n').filter(Boolean)) if (!descendantCommits.includes(sha)) descendantCommits.push(sha);
       } catch { /* no history to read: nothing to require */ }
     }
   }
   // CGLAB-457: the start the range defaults to, for the refusal to name (the card's tree, not the card alone).
-  const range = root && depth === 0 ? await reviewRangeOf(item, root) : null;
+  const range = root && depth === 0 ? await reviewRangeOf(item, root, git) : null;
   const evidence = {
     itemId: item.id,
     ...(range && !('error' in range) ? { rangeFrom: range.from } : {}),
@@ -8601,24 +9198,24 @@ async function reviewEvidence(item: any, root: string | null, depth = 0): Promis
     authors,
     startHead: firstExit?.head ?? null,
     descendantCommits,
-    currentTree: root && depth === 0 ? treeContentState(root, reportOwnedOf(root, await storage.getProject(item.projectId))) : null,
+    currentTree: root && depth === 0 ? treeContentState(root, reportOwnedOf(root, await storage.getProject(item.projectId), git), git) : null,
   };
   // A child counts only when its OWN latest review passes the same test, over
   // its own authors and commits - having a record is not enough (CGLAB-381
   // review). Its tree has moved on since, so the tree is not compared.
   for (const c of children) {
     if (!Array.isArray(c.reviewRecords) || !c.reviewRecords.length) continue;
-    const e = await reviewEvidence(c, root, depth + 1);
-    e.descendantCommits = [...new Set([...e.descendantCommits, ...ownCloseCommits(c.id, root)])];
-    if (judgeReview(e, root, args => gitRun.run(args), { bindTree: false }).outcome === 'pass') evidence.childrenReviewed++;
+    const e = await reviewEvidence(c, root, depth + 1, git);
+    e.descendantCommits = [...new Set([...e.descendantCommits, ...ownCloseCommits(c.id, root, git)])];
+    if (judgeReview(e, root, args => git.run(args), { bindTree: false }).outcome === 'pass') evidence.childrenReviewed++;
   }
   return evidence;
 }
 
 /** The close commits of one card, found by the `[<id>]` its close commit message carries. */
-function ownCloseCommits(id: string, root: string | null): string[] {
+function ownCloseCommits(id: string, root: string | null, git: GitRunner = gitRun): string[] {
   if (!root) return [];
-  try { return gitRun.run(['-C', root, 'log', '--format=%H', '--fixed-strings', `--grep=[${id}]`]).trim().split('\n').filter(Boolean); } catch { return []; }
+  try { return git.run(['-C', root, 'log', '--format=%H', '--fixed-strings', `--grep=[${id}]`]).trim().split('\n').filter(Boolean); } catch { return []; }
 }
 
 /** JIRA keys on a card and its ancestors, nearest first. */
@@ -8700,7 +9297,7 @@ type UnmergedWork = { id: string; title: string; sha: string; branch: string | n
 /** Whether two checkouts share one repository (the same git common dir), so a commit made in one is reachable from the other. */
 function sameRepository(a: string, b: string): boolean {
   const commonDir = (root: string): string | null => {
-    try { return fs.realpathSync(path.resolve(root, runGitSync(['-C', root, 'rev-parse', '--git-common-dir']).trim())); } catch { return null; }
+    try { return fs.realpathSync(path.resolve(root, gitRun.run(['-C', root, 'rev-parse', '--git-common-dir']).trim())); } catch { return null; }
   };
   const ca = commonDir(a);
   return ca !== null && ca === commonDir(b);
@@ -8718,7 +9315,7 @@ function crossTreeDeferral(childRoot: string | null, parentRoot: string | null, 
   const sha = committed || readHead(childRoot, gitRun);
   if (!sha) return null;
   let branch: string | null = null;
-  try { branch = runGitSync(['-C', childRoot, 'rev-parse', '--abbrev-ref', 'HEAD']).trim() || null; } catch { /* detached or unreadable */ }
+  try { branch = gitRun.run(['-C', childRoot, 'rev-parse', '--abbrev-ref', 'HEAD']).trim() || null; } catch { /* detached or unreadable */ }
   return { sha, root: childRoot, branch: branch === 'HEAD' ? null : branch };
 }
 
@@ -8748,7 +9345,7 @@ async function unmergedDeferredWork(item: any, project: any): Promise<UnmergedWo
       const at = child.suiteDeferredCommit;
       if (at?.sha) {
         let merged = false;
-        try { runGitSync(['-C', root, 'merge-base', '--is-ancestor', at.sha, 'HEAD']); merged = true; } catch { /* not an ancestor, or not in this repository */ }
+        try { gitRun.run(['-C', root, 'merge-base', '--is-ancestor', at.sha, 'HEAD']); merged = true; } catch { /* not an ancestor, or not in this repository */ }
         if (!merged) missing.push({ id: child.id, title: child.title, sha: at.sha, branch: at.branch ?? null });
       }
       walk(child.id);
@@ -8766,7 +9363,7 @@ async function unmergedDeferredWork(item: any, project: any): Promise<UnmergedWo
 function uncommittableChanges(root: string, { staged = true }: { staged?: boolean } = {}): string[] | null {
   let out: string;
   // Explicit: a user's status.showUntrackedFiles=no would otherwise hide an untracked file from this check. Null: unreadable.
-  try { out = runGitSync(['-C', root, 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']); } catch { return null; }
+  try { out = gitRun.run(['-C', root, 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']); } catch { return null; }
   // Porcelain is `XY path`: Y is the worktree side, so anything but a space there (untracked `??` included) is not staged.
   // With staged: false (after the commit) a staged change counts too: it is not in the commit either.
   return out.split('\n').filter(l => l.length > 3 && (l[1] !== ' ' || (!staged && l[0] !== ' '))).map(l => l.slice(3));
@@ -8884,6 +9481,8 @@ async function readUpstream(root: string): Promise<UpstreamState> {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_ASKPASS: '', SSH_ASKPASS: '', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=10' };
   const git = (args: string[], timeoutMs = 5000) => new Promise<{ ok: boolean; out: string; err: string }>(resolve => {
     const child = spawn('git', ['-C', root, '-c', 'credential.interactive=never', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true });
+    // GH #312: a fetch writes refs - it ends every verify memo's epoch.
+    if (!isReadOnlyGit(args)) noteChildProcess(child);
     let out = '';
     let err = '';
     let done = false;
@@ -8964,11 +9563,11 @@ async function greenPeersOf(item: any): Promise<any[]> {
   return (await storage.listItems({ projectId: item.projectId, hydrate: false } as any)).filter((s: any) => !s.parentId);
 }
 
-async function siblingGreenOf(item: any, siblings: any[], flow: TransitionFlow, project: any, gateRoot: string | null | undefined, command: string) {
+async function siblingGreenOf(item: any, siblings: any[], flow: TransitionFlow, project: any, gateRoot: string | null | undefined, command: string, git: GitRunner = gitRun) {
   const sharesRoot = !!gateRoot;
-  const treeSha = sharesRoot ? readCleanTreeSha(gateRoot!, gitRun) : null;
+  const treeSha = sharesRoot ? readCleanTreeSha(gateRoot!, git) : null;
   // 3ffc9651: or at this very STATE, dirty or not - every file's content, as the green recorded it.
-  const treeState = sharesRoot ? treeStateOf(gateRoot!, project) : null;
+  const treeState = sharesRoot ? treeStateOf(gateRoot!, project, git) : null;
   let pass: { sibling: any; test: any } | null = null;
   let refusal = treeSha
     ? 'no sibling green is tied to this commit'
@@ -9009,12 +9608,12 @@ const stepHasCommandChecks = (flow: { steps: any[] }, status: string): boolean =
  * a green reused from an earlier run), in the root the command runs in, on the
  * state the tree is still in.
  */
-export function ownCaptureGreenOf(capture: any, command: string, root: string | null | undefined, project: any): any | null {
+export function ownCaptureGreenOf(capture: any, command: string, root: string | null | undefined, project: any, git: GitRunner = gitRun): any | null {
   // A reused green ran nothing on this move (reusedFrom; a re-read surface sets it too): the command is then the one run.
   if (!capture || capture.kind !== 'capture' || !root || capture.lazy || capture.reusedFrom || capture.surfaceRereadFrom || !capturedGreen(capture)) return null;
   if (capture.command !== command || capture.root !== root) return null;
   const state = stateOfRecord(capture);
-  return state !== null && treeStateOf(root, project) === state ? capture : null;
+  return state !== null && treeStateOf(root, project, git) === state ? capture : null;
 }
 
 /**
@@ -9028,21 +9627,22 @@ export function ownCaptureGreenOf(capture: any, command: string, root: string | 
  * Like a capture's green, it needs a report with paths (only fenced runs
  * carry a state) and the report's command to BE the verify command.
  */
-async function closeGreenOnRecord(item: any, project: any, root: string | null | undefined, command: string): Promise<{ green: any; state: string; sha: string | null } | null> {
+async function closeGreenOnRecord(item: any, project: any, root: string | null | undefined, command: string, git: GitRunner = gitRun): Promise<{ green: any; state: string; sha: string | null } | null> {
   const setting: TestReportSetting | undefined = project?.testReport;
   if (!root || !setting || reportPathsOf(setting).length === 0) return null;
   if (effectiveVerifyCommand(project).command !== command) return null;
   // ONE read of the tree: the state matched and the state recorded must be the same content (review: an agent
   // sharing the tree could save a file between two reads, and the close would record its untested edit as green).
-  const sha = readCleanTreeSha(root, gitRun);
-  const read = treeFiles(root, reportOwnedOf(root, project));
+  const sha = readCleanTreeSha(root, git);
+  const read = treeFiles(root, reportOwnedOf(root, project, git), git);
   // HEAD read again after the files: a commit between the two reads would tie this content to the wrong commit.
-  if (!read || !read.shareable || readCleanTreeSha(root, gitRun) !== sha) return null;
+  // GH #312: a deliberate re-read (F1), so from git itself, never from the verify's memo.
+  if (!read || !read.shareable || readCleanTreeSha(root, fenceOf(git)) !== sha) return null;
   // 19e660ac: one read of what lies beside a subdirectory root, for both states.
-  const outside = outsideContent(root);
+  const outside = outsideContent(root, git);
   const state = sharedState(read.hash, outside);
   if (!state) return null;
-  const green = await reusableCapture(item, project, root, sha, state, suiteStateOf(root, setting, read, outside));
+  const green = await reusableCapture(item, project, root, sha, state, suiteStateOf(root, setting, read, outside, git), git);
   return green && green.available === true && capturedGreen(green) ? { green, state, sha } : null;
 }
 
@@ -9136,7 +9736,9 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown;
   // Only on the move that ENDS the flow (a mid-flow boundary runs the command after), with a report the capture
   // is fenced by (no report, no state to hold the green to), and no command check running after the capture.
   const closesOnCapture = cap.runs && !!gateCommand && gateCommand === captureCommand && leavingEndsFlow(sorted as any, index)
-    && !!project?.testReport && reportPathsOf(project.testReport).length > 0 && !stepHasCommandChecks(flow, step);
+    && !!project?.testReport && reportPathsOf(project.testReport).length > 0 && !stepHasCommandChecks(flow, step)
+    // GH-291: as the close (own-capture reuse is refused there): a root card in receipts mode runs the command after.
+    && !freshRootClose(item, project);
   const thenCommand = cap.runs && gateCommand && !closesOnCapture ? gateCommand : undefined;
   const root = item.id ? resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root : project?.projectRoot ?? null;
   // NO_TREE refuses when something needs the capture: a check of THIS step, or the next step's BLOCKING
@@ -9225,7 +9827,8 @@ async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, 
   const index = sorted.findIndex(st => st.name === item.status);
   // The close's order: a sibling's green of this tree, then a green of it on record (ef1342b8), then the command.
   const commandLeg = async (command: string): Promise<{ mode: 'full' | 'sibling-green' | 'reuse'; sibling?: { id: string; title: string }; reusedFrom?: { itemId: string; step: string } }> => {
-    if (leavingEndsFlow(sorted as any, index)) {
+    // GH-291: as the close itself - a root card in receipts mode never carries a sibling's green.
+    if (leavingEndsFlow(sorted as any, index) && !freshRootClose(item, project)) {
       const { pass } = await siblingGreenOf(item, await greenPeersOf(item), flow as TransitionFlow, project, root, command);
       if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title } };
     }
@@ -9494,7 +10097,9 @@ async function noteNoReceipt(itemId: string, reason: string): Promise<void> {
   }
 }
 
-async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun; answers?: Record<string, string> }): Promise<StepGate> {
+async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun; answers?: Record<string, string>; git?: GitRunner }): Promise<StepGate> {
+  // GH #312: the verify's memo, so the checks read what the verify already read in this epoch.
+  const git = opts?.git ?? gitRun;
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
@@ -9522,7 +10127,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   if (planned.runs) {
     const run = opts?.run;
     const lazyOver = await entryCaptureOf(item, sorted, index);
-    const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver });
+    const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver, git });
     if ('error' in out) {
       if (out.error === 'COMMAND_UNREADABLE') {
         unreadable = { message: out.message, command: out.command };
@@ -9532,7 +10137,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     setRunPhase(run, { state: 'checking' });
     // a36047ea: a whole run that only code changes caused, in a project that could have run fewer.
     if (capture && !capture.lazy && !capture.reusedFrom && lazyOver && project?.testReport && project.projectRoot) {
-      const hint = relatedHint(capture.root ?? project.projectRoot, project.testReport, lazyOver);
+      const hint = relatedHint(capture.root ?? project.projectRoot, project.testReport, lazyOver, git);
       if (hint) capture = { ...capture, relatedHint: hint };
     }
   }
@@ -9559,7 +10164,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   // On a step that asks for a passkey, only signed overrides lift a check.
   const signedOnly = stepWantsPasskey(flow as Flow, item.status);
   for (const r of here) if (r.kind === 'override' && typeof r.check === 'string' && (!signedOnly || r.authority === 'passkey')) overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? ''), ...(typeof r.detail === 'string' ? { detail: r.detail } : {}) };
-  const review = resolved.some(c => (c.id === 'review-record' || c.id === 'fixes-reviewed') && c.applicable) ? { ...(await reviewEvidence(item, root)), agenfkVersion: getCurrentVersion() } : undefined;
+  const review = resolved.some(c => (c.id === 'review-record' || c.id === 'fixes-reviewed') && c.applicable) ? { ...(await reviewEvidence(item, root, 0, git)), agenfkVersion: getCurrentVersion() } : undefined;
   // Whoever is advancing the card now is an author too, though no step record carries them yet.
   if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
     review.authors.push({ client: actor.client, sessionId: actor.sessionId, agentId: actor.agentId ?? null });
@@ -9571,8 +10176,10 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const commandResults = commandChecks.length
     ? await judgeCommandChecks(commandChecks, {
       root, origin: (flow as any).origin, approvals: Array.isArray(project?.commandApprovals) ? project.commandApprovals : [], timeoutMs: verifyMaxMs(),
+      // SX-3 review: a covered card's flow command runs in the Airlock sandbox too.
+      airlock: (argv, cwd) => airlockArgvFor(airlockRunDeps, item.id, argv, cwd),
       // 3ffc9651: a pass is shared by this project's cards at the same state of this tree.
-      ...(root ? { share: { scope: `${item.projectId}\0${root}`, itemId: item.id, state: () => commandStateOf(root, project) } } : {}),
+      ...(root ? { share: { scope: `${item.projectId}\0${root}`, itemId: item.id, state: () => commandStateOf(root, project, git) } } : {}),
     })
     : undefined;
   const outcome = evaluateChecks(resolved, {
@@ -9580,12 +10187,12 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     ...(agentReports ? { agentReports } : {}),
     review,
     root,
-    git: args => gitRun.run(args),
+    git: (args, opts) => git.run(args, opts),
     item,
     cardBranch: await branchOfCard(item),
     cardKeys: await keysOfCard(item),
     testPaths: Array.isArray(project?.testReport?.surface) ? project.testReport.surface : [],
-    ignoredPaths: reportPath && root ? reportsOwned(root, project?.testReport) : [],
+    ignoredPaths: reportPath && root ? reportsOwned(root, project?.testReport, git) : [],
     // aa98ccf4: a dirty tree shared with live cards warns instead of blocking.
     ...(resolved.some(c => c.applicable && c.id === 'tree-clean') && root ? { liveTreeMates: await liveTreeMatesOf(item, root, project?.projectRoot, new Set(((flow as any)?.steps ?? []).filter((st: any) => st?.isAnchor || st?.isSpecial).map((st: any) => String(st.name).toUpperCase()))) } : {}),
     deferToCommand,
@@ -9810,7 +10417,16 @@ function runRecorder(run: ValidateRun) {
   };
 }
 
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport>; answers?: Record<string, string>; joined?: boolean }) {
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport>; answers?: Record<string, string>; joined?: boolean; git?: GitMemo }) {
+  // GH-389: the usage of the step this verify moved the card out of, for its reply.
+  let movedUsage: MoveUsage | null = null;
+  /*
+   * GH #312: this verify's git memo - a read-only query asked again within one epoch is answered
+   * from its first answer, never across requests (a continuation of this same verify passes it on).
+   * The deliberate fence re-reads (closeGreenOnRecord's, the close's re-check, stampCloseGreen's)
+   * go to git through its fence; runCommandAndFinalize's reads stay on raw git throughout.
+   */
+  const vgit = opts?.git ?? createGitMemo(gitRun);
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -9857,8 +10473,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    */
   const exitRecord = {
     step: item.status, kind: 'exit' as const, at: new Date().toISOString(),
-    head: effectiveRoot ? readHead(effectiveRoot, gitRun) : null,
-    clean: effectiveRoot ? readCleanTreeSha(effectiveRoot, gitRun) !== null : false,
+    head: effectiveRoot ? readHead(effectiveRoot, vgit) : null,
+    clean: effectiveRoot ? readCleanTreeSha(effectiveRoot, vgit) !== null : false,
     // Who advanced the card, as its harness reports it (CGLAB-381): the review
     // check tells the reviewer apart from every author by this.
     ...(opts?.actor ? { actor: opts.actor } : {}),
@@ -9953,7 +10569,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (!gate && !(currentFlowStep.step.isAnchor && currentFlowStep.index !== 0)) {
     // 961f301d: a person's missing approval is answered first, inline, before anything slow.
     if (await waitsOnPerson(item, activeFlow, project)) {
-      const waiting = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { personFirst: true, answers: opts?.answers });
+      const waiting = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { personFirst: true, answers: opts?.answers, git: vgit });
       if (waiting.blocked) return refuseOnChecks(res, item, waiting);
     }
     const nextName = sorted[currentFlowStep.index + 1]?.name;
@@ -9976,12 +10592,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       void (async () => {
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
-        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run, answers: opts?.answers });
+        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run, answers: opts?.answers, git: vgit });
         if (g.unreadable) {
           return recorder.status(400).json({ error: 'COMMAND_UNREADABLE', message: g.unreadable.message, command: g.unreadable.command });
         }
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
-        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports, answers: opts?.answers });
+        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports, answers: opts?.answers, git: vgit });
       })()
         .catch((err: any) => {
           run.status = 'failed';
@@ -9995,7 +10611,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         });
       return;
     }
-    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { answers: opts?.answers });
+    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { answers: opts?.answers, git: vgit });
     if (gate.unreadable) {
       return res.status(400).json({ error: 'COMMAND_UNREADABLE', message: gate.unreadable.message, command: gate.unreadable.command });
     }
@@ -10079,8 +10695,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const leftTodo = await commitOnLeave(res);
     if (leftTodo.refused) return;
     res = leftTodo.res;
-    const movedToCoding = await storage.updateItem(itemId, { status: codingStep.name as Status, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any);
-    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, codingStep.name, activeFlow);
+    const moveUsage = await prepareMoveUsage(itemId, item.status, codingStep.name, activeFlow);
+    const movedToCoding = await saveMove(itemId, item, { status: codingStep.name as Status, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any, moveUsage);
+    if (!movedToCoding) return res.status(409).json(movedMeanwhile(itemId, item.status));
+    movedUsage = recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, codingStep.name, activeFlow, moveUsage);
     // Entering the first working step is where a worktree earns its keep.
     await ensureWorktreeForItem(movedToCoding, true);
     io.emit('items_updated');
@@ -10088,7 +10706,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const codingCommitNote = commitOnLeaveNote(codingStep.name, stepCommitsOnLeave(sorted as any, codingStep.name));
     const mandatoryNote = (codingStepCriteria ? criteriaBanner(codingStep.name, codingStepCriteria) : '') + (codingCommitNote ? `\n\n${codingCommitNote}` : '');
     const leave = await nextLeaveNote(itemId);
-    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${leave.text}${nowOn(codingStep.name)}`, ...leave.field });
+    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${leave.text}${usageNote(movedUsage)}${nowOn(codingStep.name)}`, ...leave.field });
   }
 
   const nextStep = sorted[currentFlowStep.index + 1];
@@ -10128,7 +10746,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     if (!endsFlow) return '';
     // The configured report (and a directory holding only it) is agenfk's own,
     // never the card's work to stage (d26832d6 #3).
-    const owned = effectiveRoot ? reportOwnedOf(effectiveRoot, project) : [];
+    const owned = effectiveRoot ? reportOwnedOf(effectiveRoot, project, vgit) : [];
     const paths = (result?.unstaged ?? []).filter(f => { const c = f.replace(/\/$/, ''); return !owned.some(o => c === o || c.startsWith(`${o}/`)); });
     const shown = paths.slice(0, UNSTAGED_SHOWN);
     const left = paths.length
@@ -10310,15 +10928,17 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       if (left2.length) return res.status(422).json(deferredUncommittedRefusal(item, childRoot!, left2));
     }
     // The marker the roll-up reads: this parent owes a suite run, whatever its flow says later.
-    const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(crossed ? { suiteDeferredCommit: crossed } : {}), ...(isExitStep ? { failureCount: 0 } : {}) } as any);
-    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+    const moveUsage = await prepareMoveUsage(itemId, item.status, nextStatus, activeFlow);
+    const updated = await saveMove(itemId, item, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(crossed ? { suiteDeferredCommit: crossed } : {}), ...(isExitStep ? { failureCount: 0 } : {}) } as any, moveUsage);
+    if (!updated) return res.status(409).json(movedMeanwhile(itemId, item.status));
+    movedUsage = recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow, moveUsage);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     if (!crossTree && commits) gitResult = await autoGitCommit(updated, (project as any)?.projectRoot);
     const crossNote = crossed
       ? `\n\nThis card's work is in another worktree (${crossed.branch ? `branch ${crossed.branch}, ` : ''}commit ${crossed.sha.substring(0, 12)}): the parent's verify is refused until that commit is merged into the parent's branch (a merge - a squash or a rebase makes new commits, which do not count).`
       : '';
-    return res.json({ status: nextStatus, message: `✅ Validation Passed (suite deferred to the parent)!\n\n${note}${crossNote}\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}` });
+    return res.json({ status: nextStatus, message: `✅ Validation Passed (suite deferred to the parent)!\n\n${note}${crossNote}\nItem moved to ${nextStatus}.${describePush(gitResult)}${usageNote(movedUsage)}${nowOn(nextStatus)}` });
   }
 
   if (isFinalStep && !resolvedCommand) {
@@ -10343,9 +10963,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (${how.how})\n\n${how.note}`, timestamp: new Date() };
     const testId = uuidv4();
     const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], tests: [...testRecords(item.tests), { id: testId, command: resolvedCommand, output: how.recordOutput, status: 'PASSED', executedAt: new Date(), ...how.green }], ...(isExitStep ? { failureCount: 0 } : {}) };
-    const updated = await storage.updateItem(itemId, updates);
+    const moveUsage = await prepareMoveUsage(itemId, item.status, nextStatus, activeFlow);
+    const updated = await saveMove(itemId, item, updates, moveUsage);
+    if (!updated) return r1.status(409).json(movedMeanwhile(itemId, item.status));
     io.emit('items_updated');
-    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+    movedUsage = recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow, moveUsage);
     if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     // Awaited, unlike before: the response describes what the commit did,
     // so it cannot be written before the commit has been attempted. No
@@ -10360,12 +10982,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
      * that commit - recorded, so the next card inherits it by commit too.
      */
     if (how.stampAt && effectiveRoot) {
-      const verifiedSha = readCleanTreeSha(effectiveRoot, gitRun);
-      if (verifiedSha && treeStateOf(effectiveRoot, project) === how.stampAt) {
+      const verifiedSha = readCleanTreeSha(effectiveRoot, vgit);
+      if (verifiedSha && treeStateOf(effectiveRoot, project, vgit) === how.stampAt) {
         const current = await storage.getItem(itemId);
         await storage.updateItem(itemId, { tests: testRecords(current?.tests).map((t: any) => (t.id === testId ? { ...t, commit: verifiedSha } : t)) });
         noteGreen(item.projectId, effectiveRoot, verifiedSha, itemId);
-        try { await stampCloseGreen(itemId, effectiveRoot, verifiedSha); }
+        try { await stampCloseGreen(itemId, effectiveRoot, verifiedSha, vgit); }
         catch (e: any) { console.error(`[validate] stampCloseGreen failed after the close: ${e?.message || e}`); }
         io.emit('items_updated');
       }
@@ -10373,14 +10995,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // The hub counts passes: a close on a green in hand is one (the green's source is in the payload).
     recordHubEvent({ type: 'validate.passed', projectId: item.projectId, itemId, payload: { fromStatus: item.status, toStatus: nextStatus, command: resolvedCommand, via: how.output } });
     recordHubEvent({ type: 'test.logged', projectId: item.projectId, itemId, payload: { command: resolvedCommand, status: 'PASSED', testId, via: how.output } });
-    return r1.json({ status: nextStatus, message: `✅ Validation Passed (${how.how})!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}`, output: how.output });
+    return r1.json({ status: nextStatus, message: `✅ Validation Passed (${how.how})!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${usageNote(movedUsage)}${nowOn(nextStatus)}`, output: how.output });
   };
 
   // ── This move's own capture (36c5ca25) ───────────────────────────────────
   // The gate just ran the verify command as its capture, green, on this very tree: running it again proves nothing new.
   // A command check on this step runs after the capture (a build, say, into ignored files the tree state cannot see): the command then runs after it, as before.
   if (endsFlow && resolvedCommand && gate?.capture && !stepHasCommandChecks(activeFlow, item.status) && !freshRootClose(item, project)) {
-    const own = ownCaptureGreenOf(gate.capture, resolvedCommand, effectiveRoot, project);
+    // GH #312 review: a deliberate re-read (F5) - the capture's own tree read is in this epoch, and another agent may have written since.
+    const own = ownCaptureGreenOf(gate.capture, resolvedCommand, effectiveRoot, project, vgit.fence);
     if (own) {
       const green = { ...(own.clean === true && typeof own.head === 'string' ? { commit: own.head } : {}), treeState: stateOfRecord(own), treeStateVersion: STATE_VERSION, commitRoot: effectiveRoot };
       return closeOnGreen(res, {
@@ -10394,7 +11017,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // 3ffc9651: what an identical sibling run in flight is keyed on, when propagation found nothing yet.
   let siblingFlightKey: string | null = null;
   // A top-level card's peers count only on the move that ends the flow (GH-271).
-  if (item.parentId || endsFlow) {
+  // GH-291: a root card in receipts mode owes a fresh run, whatever a sibling
+  // ran - closing on another card's green leaves no run to make a receipt of,
+  // and the PR it closes is then certified by nobody.
+  if ((item.parentId || endsFlow) && !(endsFlow && freshRootClose(item, project))) {
     const siblings = endsFlow ? await greenPeersOf(item) : await storage.listItems({ parentId: item.parentId });
     // On the move that ends the flow, check siblings that finished it with the same verifyCommand
     if (endsFlow) {
@@ -10421,8 +11047,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * (CGLAB-366).
        */
       const gateRoot = effectiveRoot;
-      const { pass, refusal, treeState } = await siblingGreenOf(item, siblings, activeFlow as TransitionFlow, project, gateRoot, resolvedCommand!);
-      if (pass) {
+      const { pass, refusal: refused, treeSha, treeState } = await siblingGreenOf(item, siblings, activeFlow as TransitionFlow, project, gateRoot, resolvedCommand!, vgit);
+      /*
+       * GH #312 review: a deliberate re-read (F6). siblingGreenOf matched the tree as the
+       * verify's memo holds it, which can be the read the request began with; another agent
+       * may have written since. Before closing on another card's green, git is asked again.
+       */
+      const stillThere = !!pass && readCleanTreeSha(gateRoot!, vgit.fence) === treeSha && treeStateOf(gateRoot!, project, vgit.fence) === treeState;
+      const refusal = pass && !stillThere ? 'the tree changed since it was matched to the sibling green' : refused;
+      if (pass && stillThere) {
         const { sibling: passedSibling, test: siblingTest } = pass;
         const where = siblingTest.commit ? `\`${String(siblingTest.commit).slice(0, 12)}\`` : `\`${String(siblingTest.treeState).slice(0, 12)}\` with the same uncommitted content`;
         const inherited = { ...(siblingTest.commit ? { commit: siblingTest.commit } : {}), ...(currentTreeState(siblingTest) ? { treeState: siblingTest.treeState, treeStateVersion: STATE_VERSION } : {}), commitRoot: gateRoot };
@@ -10451,15 +11084,17 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const left = await commitOnLeave(res);
         if (left.refused) return;
         res = left.res;
-        const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], ...(isExitStep ? { failureCount: 0 } : {}) } as any);
-        recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+        const moveUsage = await prepareMoveUsage(itemId, item.status, nextStatus, activeFlow);
+        const updated = await saveMove(itemId, item, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], ...(isExitStep ? { failureCount: 0 } : {}) } as any, moveUsage);
+        if (!updated) return res.status(409).json(movedMeanwhile(itemId, item.status));
+        movedUsage = recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow, moveUsage);
         // Sibling propagation moves the item into a working step exactly like
         // a verify does. It is the same transition; only the reason differs.
         await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
         const leave = await nextLeaveNote(itemId);
-        return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, output: 'Sibling propagation', ...leave.field });
+        return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${leave.text}${usageNote(movedUsage)}${nowOn(nextStatus)}`, output: 'Sibling propagation', ...leave.field });
       }
     }
   }
@@ -10469,9 +11104,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // A capture of this move that ran and was NOT green is never outvoted by an older green (as stampCloseGreen refuses).
   const gateRanRed = !!gate?.capture && gate.capture.kind === 'capture' && !gate.capture.reusedFrom && !capturedGreen(gate.capture);
   if (endsFlow && resolvedCommand && !gateRanRed && !stepHasCommandChecks(activeFlow, item.status) && !freshRootClose(item, project)) {
-    const onRecord = await closeGreenOnRecord(item, project, effectiveRoot, resolvedCommand);
+    const onRecord = await closeGreenOnRecord(item, project, effectiveRoot, resolvedCommand, vgit);
     // The state it matched, still the tree's: a tree that moved since runs the command.
-    if (onRecord && treeStateOf(effectiveRoot!, project) === onRecord.state) {
+    // GH #312: a deliberate re-read (F3) - an edit landing during closeGreenOnRecord's awaits must be seen.
+    if (onRecord && treeStateOf(effectiveRoot!, project, vgit.fence) === onRecord.state) {
       const from = onRecord.green.reusedFrom ?? {};
       const source = `${from.itemId === itemId ? 'this card' : `card \`${String(from.itemId ?? '').slice(0, 8)}\``}${from.step ? ` at ${from.step}` : ''}${from.at ? ` (${from.at})` : ''}`;
       // The tree that closes: on a docs-only change, not the content the green ran on.
@@ -10490,13 +11126,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const left = await commitOnLeave(res);
     if (left.refused) return;
     res = left.res;
-    const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any);
-    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+    const moveUsage = await prepareMoveUsage(itemId, item.status, nextStatus, activeFlow);
+    const updated = await saveMove(itemId, item, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any, moveUsage);
+    if (!updated) return res.status(409).json(movedMeanwhile(itemId, item.status));
+    movedUsage = recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow, moveUsage);
     await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     const leave = await nextLeaveNote(itemId);
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, ...leave.field });
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${leave.text}${usageNote(movedUsage)}${nowOn(nextStatus)}`, ...leave.field });
   }
 
   // See above: declining beats committing somewhere plausible.
@@ -10538,7 +11176,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     capture.note(line);
     if (run) appendRunOutput(run, line);
     setRunPhase(run, { state: 'queued', ahead: w.ahead });
-  });
+  }, item.id);
   setRunPhase(run, { state: 'running', kind: 'whole' });
 
   // The commit and the working-tree state the command actually ran against,
@@ -10563,12 +11201,21 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // occurrence with no recovery short of a restart. capture.end() is idempotent
   // and owns the close.
   let settledCapture: CapturedOutput | null = null;
+  // SX-3: in the Airlock sandbox when an Airlock sandbox touched this card's tree and the policy enforces.
+  const airlockRun = await airlockCommandFor(airlockRunDeps, itemId, resolvedCommand, runRoot ?? process.cwd());
+  if (airlockRun.sandboxed) capture.note('[agenfk] An Airlock sandbox touched this card, so this command runs in the Airlock sandbox (agenfk airlock exec).\n');
   const { captured, code, timedOut, signal, spawnError } = await (async () => {
    try {
     return await new Promise<{
       captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
     }>((resolve) => {
-    const child = spawn(resolvedCommand, { shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' }, windowsHide: true });
+    // A sandboxed run is a process group of its own, so a timeout's group kill takes all of it (SX-3 review).
+    // GH #312: the command may write the tree - its start and its exit end every verify memo's epoch.
+    const child = spawn(airlockRun.command, {
+      shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' }, windowsHide: true,
+      ...(airlockRun.sandboxed && process.platform !== 'win32' ? { detached: true } : {}),
+    });
+    noteChildProcess(child);
     let killed = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -10675,10 +11322,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         // it started from.
         updates.tests = [...testRecords(item.tests), { id: testId, command: resolvedCommand, output: preview, status: 'PASSED', executedAt: new Date() }];
       }
-      const updated = await storage.updateItem(itemId, updates);
+      const moveUsage = await prepareMoveUsage(itemId, item.status, nextStatus, activeFlow);
+      const updated = await saveMove(itemId, item, updates, moveUsage);
+      if (!updated) return res2.status(409).json(movedMeanwhile(itemId, item.status));
       io.emit('items_updated');
       // Before the roll-up: the child's move is recorded ahead of the parent's.
-      recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+      movedUsage = recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow, moveUsage);
       if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
       // HEAD just before our own close commit. If it moved during the run,
       // another agent landed work this green never covered, so no commit is
@@ -10784,13 +11433,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
               // it is still this request. Not awaited — a hub that is down must
               // not delay the close's reply by a timeout — and its errors are
               // swallowed here because the receipt stays `pending` on the card
-              // either way, so the flow-sync tick will try again. With no hub
+              // either way, so the hub loop's next tick will try again. With no hub
               // configured there is nobody to ask, and nothing is attempted.
               if (hubClient.hubConfig) {
                 void publishPendingReceipts({
                   storage: storage as SQLiteStorageProvider,
                   hubConfig: hubClient.hubConfig,
-                  fetchImpl: globalThis.fetch as any,
+                  fetchImpl: hubFetch,
                 }).catch(e => console.error('[HUB_RECEIPTS]', e?.message || e));
               }
             } catch (e: any) {
@@ -10825,7 +11474,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
     const leave = await nextLeaveNote(itemId);
-    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}${leave.text}${nowOn(nextStatus)}`, output: preview, ...leave.field });
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}${leave.text}${usageNote(movedUsage)}${nowOn(nextStatus)}`, output: preview, ...leave.field });
   } else {
     const updates: any = { status: failureStatus, comments };
     // Same positional predicate as the PASSED record above: a red final gate on
@@ -10929,7 +11578,8 @@ app.get("/items/validate-runs/:runId", asyncHandler(async (req: any, res: any) =
     return res.status(403).json({ error: "Forbidden: validate-runs endpoint requires internal token." });
   }
   const run = validateRuns.get(req.params.runId);
-  if (!run) return res.status(404).json({ error: 'RUN_NOT_FOUND', message: 'Unknown or expired validation run. If the server restarted, check the item\'s comments — the outcome is persisted there.' });
+  const notFound = () => res.status(404).json({ error: 'RUN_NOT_FOUND', message: 'Unknown or expired validation run. If the server restarted, check the item\'s comments — the outcome is persisted there.' });
+  if (!run) return notFound();
   return res.json(run);
 }));
 
@@ -11052,13 +11702,23 @@ function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: st
     if (!decision.ready) void noteOnItem(item.id, decision.notice);
     return;
   }
-  const child = spawn(decision.command, {
+  // SX-3: a covered card's setup script runs in the Airlock sandbox (it is the repository's own code).
+  void airlockCommandFor(airlockRunDeps, item.id, decision.command, worktreePath).then(
+    (run) => runWorktreeSetup(item, decision, worktreePath, run.command),
+    (e) => void noteOnItem(item.id, applySetupResult(decision, { ok: false, output: String(e?.message ?? e), timedOut: false }).notice),
+  );
+}
+
+function runWorktreeSetup(item: any, decision: SetupDecision, worktreePath: string, commandLine: string): void {
+  // GH #312: a setup command writes a tree a verify may be reading.
+  const child = spawn(commandLine, {
     shell: true,
     cwd: worktreePath,
     detached: process.platform !== 'win32',
     env: { ...process.env, FORCE_COLOR: '0' },
     windowsHide: true,
   });
+  noteChildProcess(child);
   let output = '';
   let timedOut = false;
   // A ROLLING TAIL, not a head. The diagnosis is at the END of an install log,
@@ -11102,6 +11762,7 @@ async function ensureWorktreeForItem(item: any, allowSetup = false): Promise<voi
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
       branchName,
+      gitEnv: await gitEnvForCard(item.id),
       /*
        * If origin already has this branch, start there rather than at local
        * HEAD. Raised by review against the PR import: a card whose branch
@@ -11262,9 +11923,13 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
        * aimed at it. Ask git, which knows.
        */
       const kind = resolvedRoot ? await checkoutKind(resolvedRoot) : 'unknown';
-      if (resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
+      if (req.airlockSession !== undefined) {
+        // Its repository picks the project's Airlock overrides (PO-1): never from a sandbox.
+        console.warn(`[PROJECT_ROOT] Not recording ${resolvedRoot ?? cwd} as a project root (item ${item.id}): the request came from an Airlock sandbox`);
+      } else if (resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
         await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
         forgetProjectRemote(item.projectId);
+        airlockRepos.forget(item.projectId);
       } else {
         const why = resolvedRoot === null
           ? 'no .agenfk marker above it (a worktree has none) - it is not a project root'
@@ -11290,6 +11955,11 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
   const parsedAnswers = parseCheckAnswers(req.body.checkAnswers);
   if ('error' in parsedAnswers) return res.status(400).json({ error: parsedAnswers.error });
   const answers = parsedAnswers.answers;
+  // GH-389: the session verifying the card is working on it.
+  if (validatedItem) {
+    const caller = parseActor(req.body.actor);
+    if (caller && !sessionCardError(caller.client, caller.sessionId)) await recordSessionOnCard(caller.client, caller.sessionId, validatedItem);
+  }
   const asyncMode = req.body.async === true || req.body.async === 'true';
   // cf6941e0: a new verify of the card ends its wait on a person; a refusal held by one sets it again.
   if (awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
@@ -11376,8 +12046,10 @@ app.post('/internal/hub/reload', asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: 'Forbidden: hub reload requires internal token.' });
   }
-  const changed = hubClient.reloadConfig();
-  if (changed) startHubSubsystems();
+  const changed = adoptHubConfig();
+  // Leaving the hub (hub.json confirmed gone, not merely unreadable) keeps the
+  // org's Airlock policy, now as the local one.
+  if (changed && !hubClient.isEnabled && hubConfirmedAbsent()) await releaseHubAirlockOnLeave();
   // A rejoin or repoint may change which org's JIRA this installation sees.
   clearHubJiraStatusCache();
   res.json({
@@ -12683,6 +13355,7 @@ app.post("/projects/:id/tasks-from-pr", limitExpensive, asyncHandler(async (req:
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
       branchName: plan.branchName,
+      gitEnv: await gitEnvForCard(created.id),
       // FROM THE FETCHED REF. Without this the branch is cut from local HEAD:
       // a directory named after the PR, containing none of its commits, which
       // an agent then works in and pushes. Found in review, reproduced against
@@ -13024,8 +13697,8 @@ export const API_PATH_PREFIXES = [
   // fails. A guard test in serve-ui.test.ts catches exactly this.
   '/herdr',
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
-  '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
-  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/verify-runs',
+  '/token-events', '/usage', '/session-cards', '/registry', '/items', '/internal', '/jira', '/github',
+  '/releases', '/agent-runs', '/active-work', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/verify-runs',
   // `/decompositions` reviews a proposed tree and writes nothing. Same trap as
   // `/herdr`: without the prefix the desktop answers it with index.html and a
   // 200, so the caller's `r.ok` is true and the JSON parse is what fails.
@@ -13033,6 +13706,9 @@ export const API_PATH_PREFIXES = [
   // `/hub/refusals` feeds the board's refusal indicator (#223). The board has
   // no page under /hub, so nothing of the SPA is shadowed by claiming it.
   '/hub',
+  // `/airlock` is the Airlock policy, decisions, approvals and learning (GH-294).
+  // The board has no page under /airlock, so nothing of the SPA is shadowed.
+  '/airlock',
 ];
 
 /**
@@ -13132,8 +13808,8 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     const shutdown = async () => {
       console.log('[SHUTDOWN] Writing backup before exit...');
       removeServerPortFile();
+      hubSyncHandle?.stop();
       if (hubFlusher) {
-        hubFlusher.stop();
         await hubFlusher.flush().catch(e => console.error('[HUB] Shutdown drain failed:', (e as Error).message));
       }
       await performBackup().catch(e => console.error('[BACKUP] Shutdown backup failed:', e.message));
@@ -13165,6 +13841,11 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
       console.error(`[SERVER_START] Could not find a free port starting at ${REQUESTED_PORT}:`, err.message);
       process.exit(1);
     });
+  }).catch((err) => {
+    // A database that cannot be opened, or a staged restore that is not a
+    // whole database (GH-288): say why and stop, rather than serve without one.
+    console.error(`[SERVER_START] ${err?.message ?? err}`);
+    process.exit(1);
   });
 }
 

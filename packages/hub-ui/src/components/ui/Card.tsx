@@ -4,6 +4,9 @@ import { cn } from './cn';
 /** Card classes, for containers that are not a <section>. */
 export const cardClass = 'bg-surface border border-border-soft rounded-2xl p-5';
 
+/** A long list in a card scrolls within the viewport instead of growing the page. */
+export const scrollClass = 'max-h-[60vh] overflow-y-auto';
+
 /** A neutral surface. Colour belongs to what sits on it, never to the card. */
 export function Card({ className, ...rest }: HTMLAttributes<HTMLElement>) {
   return <section className={cn(cardClass, className)} {...rest} />;

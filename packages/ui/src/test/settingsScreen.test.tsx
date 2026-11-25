@@ -200,6 +200,67 @@ const openSettings = async (section = 'Agents'): Promise<void> => {
   fireEvent.click(within(rail).getByRole('button', { name: new RegExp(`^${section}$`, 'i') }));
 };
 
+/** Which main view is showing: the others are hidden, not unmounted. */
+const shownView = (): string[] =>
+  ['kanban', 'terminal', 'settings', 'project']
+    .filter(id => document.getElementById(`panel-${id}`)?.hidden === false);
+
+// STORY 5f367fa9: Settings replaced the main area with no way back to what
+// was running, a terminal for one.
+describe('leaving it', () => {
+  it('has a Back button that returns to the board it was opened from', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: /^settings$/i });
+    expect(shownView()).toEqual(['kanban']);
+    await openSettingsRaw();
+    expect(shownView()).toEqual(['settings']);
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    fireEvent.click(within(panel).getByRole('button', { name: /^back to tasks$/i }));
+    expect(shownView()).toEqual(['kanban']);
+  });
+
+  const openProjectPage = async (): Promise<void> => {
+    fireEvent.click(await screen.findByRole('button', { name: /^agenfk$/i }));
+    await waitFor(() => expect(shownView()).toEqual(['project']));
+  };
+  // The project page has a Settings of its own; this is the app's.
+  const appSettings = (): void => {
+    fireEvent.click(within(screen.getByTestId('shell-nav')).getByRole('button', { name: /^settings$/i }));
+  };
+
+  it('returns to the project page when that is where Settings was opened', async () => {
+    renderShell();
+    await openProjectPage();
+    appSettings();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    fireEvent.click(within(panel).getByRole('button', { name: /^back to project$/i }));
+    expect(shownView()).toEqual(['project']);
+  });
+
+  it('keeps where it came from when Settings is opened again from Settings', async () => {
+    renderShell();
+    await openProjectPage();
+    appSettings();
+    await screen.findByRole('region', { name: /settings/i });
+    appSettings();
+    const panel = await screen.findByRole('region', { name: /settings/i });
+    fireEvent.click(within(panel).getByRole('button', { name: /^back to project$/i }));
+    expect(shownView()).toEqual(['project']);
+  });
+
+  it('leaves Escape alone', async () => {
+    // Escape closes the menus and dialogs that stay usable over Settings (the
+    // sidebar project menu, What's new); leaving Settings on the same key
+    // would do both at once.
+    renderShell();
+    await openSettingsRaw();
+    await screen.findByRole('region', { name: /settings/i });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(shownView()).toEqual(['settings']);
+  });
+});
+
 describe('getting to it', () => {
   it('pins the entry below the sessions rail, out of the scrolling list', async () => {
     // The projects list has no upper bound. An entry that scrolls with it is
@@ -256,7 +317,12 @@ describe('what it offers', () => {
     const sections = panel.querySelectorAll('[data-testid="settings-section"]');
     expect(sections.length).toBeGreaterThan(0);
     sections.forEach(section => {
-      expect(section.querySelectorAll('[data-testid="setting-row"]').length).toBeGreaterThan(0);
+      // A section is its rows, or one composite panel (Airlock) that says something even while it loads.
+      const rows = section.querySelectorAll('[data-testid="setting-row"]').length;
+      // Content, not a heading: a line of text, a control or a status.
+      const panels = [...section.querySelectorAll('[data-testid="setting-panel"]')]
+        .filter(p => p.querySelector('p, button, select, input, textarea, [role="status"]'));
+      expect(rows + panels.length).toBeGreaterThan(0);
     });
   });
 });
@@ -298,7 +364,7 @@ describe('the shape of it', () => {
     // appearing or vanishing is a decision somebody has to come here and make.
     // General is absent on purpose: it held only the tmux toggle.
     expect(within(rail).getAllByRole('button').map(b => b.textContent))
-      .toEqual(['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Agents']);
+      .toEqual(['Account', 'App', 'Appearance', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents']);
   });
 
   it('lists only sections that have something in them', async () => {
@@ -913,7 +979,7 @@ describe('the section menu carries an icon', () => {
     renderShell();
     await openSettingsRaw();
     const rail = await screen.findByRole('navigation', { name: /settings sections/i });
-    const labels = ['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Agents'];
+    const labels = ['Account', 'App', 'Appearance', 'Notifications', 'Terminal', 'Verification', 'Airlock', 'Agents'];
     expect(within(rail).getAllByRole('button').map(b => b.textContent)).toEqual(labels);
     // The name is what an icon actually breaks, so it is looked up by name
     // rather than read off the svg's aria-hidden.

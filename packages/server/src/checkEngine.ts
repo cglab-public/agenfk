@@ -19,6 +19,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { insideRoot, isTestPath, loadFailureFileOf } from './stepRecords';
+import { SCANNER_LIMITS, flagComments } from './nonFunctionalComments';
 import { CHECK_CATALOGUE, checkDef, type CheckSeverity, type RecordName, type ResolvedCheck } from '@agenfk/core';
 
 export type CheckOutcome = 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
@@ -140,7 +141,7 @@ export interface EngineContext {
   /** The tree the card's commands run in; null when it has none. */
   root: string | null;
   /** `git <args>`; throws on failure. */
-  git: (args: string[]) => string;
+  git: (args: string[], opts?: { maxBuffer?: number }) => string;
   item: { id: string; type: string; externalId?: string | null; projectId?: string };
   /** The card's branch: its own, else its nearest ancestor's. */
   cardBranch: string | null;
@@ -321,6 +322,83 @@ const within = (file: string, dir: string) => {
 function cardsOwn(ctx: EngineContext, files: string[]): string[] {
   return files.filter(f => !ctx.ignoredPaths.some(p => within(f, p)));
 }
+
+/** A path as git prints it in a patch header: C-quoted when it holds unusual bytes. */
+function unquoteGitPath(p: string): string {
+  if (!p.startsWith('"')) return p;
+  const bytes: number[] = [];
+  const esc: Record<string, number> = { n: 10, t: 9, r: 13, b: 8, f: 12, a: 7, v: 11, '"': 34, '\\': 92 };
+  for (let i = 1; i < p.length - 1; i++) {
+    if (p[i] !== '\\') { const ch = String.fromCodePoint(p.codePointAt(i)!); bytes.push(...Buffer.from(ch, 'utf8')); i += ch.length - 1; continue; }
+    const o = /^[0-7]{3}/.exec(p.slice(i + 1, i + 4));
+    if (o) { bytes.push(parseInt(o[0], 8)); i += 3; continue; }
+    bytes.push(esc[p[i + 1]] ?? p.charCodeAt(i + 1));
+    i++;
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+/** GH-392: git output a large step can produce: hundreds of files and their patches. */
+const DIFF_MAX_BUFFER = 512 * 1024 * 1024;
+/** Paths per `git diff` call, so a large step never meets the argument-length limit. */
+const PATHS_PER_DIFF = 400;
+
+/**
+ * GH-392: what the step changed since `from`. `added`: the lines each file
+ * gained, by file - 'all' for a file the step created (committed, staged or
+ * untracked). `removed`: every line the step deleted, one per line, so a
+ * comment that only moved can be told from one that was added.
+ */
+function changesSince(ctx: EngineContext, from: string): { added: Map<string, Set<number> | 'all'>; removed: string } {
+  const run = (args: string[]) => ctx.git(['-C', ctx.root!, ...args], { maxBuffer: DIFF_MAX_BUFFER });
+  const added = new Map<string, Set<number> | 'all'>();
+  const patched: string[][] = [];
+  const entries = run(['diff', '--name-status', '-z', '-M', '--relative', '--no-ext-diff', from]).split('\0');
+  for (let i = 0; i < entries.length; i++) {
+    const status = entries[i];
+    if (!status) continue;
+    if (/^[RC]/.test(status)) { patched.push([entries[i + 1], entries[i + 2]]); i += 2; continue; }
+    const file = entries[++i];
+    if (status === 'A') added.set(file, 'all');
+    else patched.push([file]);
+  }
+  const removed: string[] = [];
+  for (let b = 0; b < patched.length; b += PATHS_PER_DIFF) {
+    const paths = patched.slice(b, b + PATHS_PER_DIFF).flat().map(f => `:(literal)${f}`);
+    const patch = run(['diff', '-U0', '-M', '--text', '--relative', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', from, '--', ...paths]);
+    let file: string | null = null;
+    let oldLeft = 0, newLeft = 0;
+    for (const line of patch.split('\n')) {
+      if (oldLeft > 0 || newLeft > 0) {
+        if (line.startsWith('-')) { removed.push(line.slice(1)); oldLeft--; continue; }
+        if (line.startsWith('+')) { newLeft--; continue; }
+        if (line.startsWith('\\')) continue;
+        oldLeft = newLeft = 0;
+      }
+      if (line.startsWith('+++ ')) {
+        const p = line.slice(4).replace(/\t$/, '');
+        file = p === '/dev/null' ? null : unquoteGitPath(p).replace(/^b\//, '');
+        if (file && !added.has(file)) added.set(file, new Set());
+        continue;
+      }
+      const h = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+      if (h) {
+        oldLeft = h[1] === undefined ? 1 : Number(h[1]);
+        const start = Number(h[2]);
+        newLeft = h[3] === undefined ? 1 : Number(h[3]);
+        const set = file ? added.get(file) : undefined;
+        if (set instanceof Set) for (let l = start; l < start + newLeft; l++) set.add(l);
+      }
+    }
+  }
+  for (const f of run(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) added.set(f, 'all');
+  return { added, removed: removed.length ? removed.join('\n') + '\n' : '' };
+}
+
+/** Files larger than this are named, not read. */
+const MAX_COMMENT_SCAN_BYTES = 2 * 1024 * 1024;
+/** At most this many offending comments are named in a result. */
+const MAX_NAMED_COMMENTS = 50;
 
 const isVerdict = (x: unknown): x is Verdict => !!x && typeof x === 'object' && 'outcome' in (x as any);
 
@@ -521,6 +599,45 @@ export const EVALUATORS: Record<string, Evaluator> = {
       : { outcome: 'pass', detail: `${changed.length} test file(s) changed` };
   },
 
+  'no-nonfunctional-comments': ctx => {
+    if (!ctx.root) return { outcome: 'unavailable', detail: 'the card has no tree (no project root, no worktree)' };
+    if (!ctx.entryHead) return { outcome: 'unavailable', soft: true, detail: 'no entry commit: the card entered this step before checks recorded one (it predates checks)' };
+    let added: Map<string, Set<number> | 'all'>, removed: string;
+    try { ({ added, removed } = changesSince(ctx, ctx.entryHead)); } catch (e: any) {
+      return { outcome: 'unavailable', detail: `git could not list the lines added since ${ctx.entryHead.slice(0, 12)}: ${e?.message ?? e}` };
+    }
+    const flagged: string[] = [];
+    const unknown: string[] = [];
+    const unread: string[] = [];
+    let read = 0;
+    for (const file of cardsOwn(ctx, [...added.keys()]).sort()) {
+      const full = path.join(ctx.root, file);
+      let stat: fs.Stats;
+      try { stat = fs.lstatSync(full); } catch { continue; }
+      if (stat.isSymbolicLink()) { unread.push(`${file} (symbolic link)`); continue; }
+      if (!stat.isFile()) continue;
+      if (stat.size > MAX_COMMENT_SCAN_BYTES) { unread.push(`${file} (larger than 2 MB)`); continue; }
+      let buf: Buffer;
+      try { buf = fs.readFileSync(full); } catch { unread.push(`${file} (unreadable)`); continue; }
+      if (buf.includes(0)) { unread.push(`${file} (binary)`); continue; }
+      const content = buf.toString('utf8');
+      const lines = added.get(file)!;
+      if (lines !== 'all' && !lines.size) continue;
+      let found: ReturnType<typeof flagComments>;
+      try { found = flagComments(file, content, lines === 'all' ? undefined : lines, removed); } catch { unread.push(`${file} (could not be scanned)`); continue; }
+      if (!found) { unknown.push(file); continue; }
+      read++;
+      for (const c of found) flagged.push(`${file}:${c.line} ${c.text}`);
+    }
+    const notRead = [
+      unknown.length ? ` Not read, no comment rules for their type: ${list(unknown)}.` : '',
+      unread.length ? ` Not read: ${list(unread)}.` : '',
+    ].join('');
+    if (!flagged.length) return { outcome: 'pass', detail: `no comment without a function in the lines added to ${read} file(s).${notRead}` };
+    const named = flagged.slice(0, MAX_NAMED_COMMENTS).join(' | ') + (flagged.length > MAX_NAMED_COMMENTS ? ` | …and ${flagged.length - MAX_NAMED_COMMENTS} more` : '');
+    return { outcome: 'fail', detail: `${flagged.length} comment(s) with no function in the lines this step added: ${named}. Remove each, or keep only what has a function: a tool directive (eslint-disable, @ts-expect-error, nosemgrep, noqa, a pragma), a shebang, a license header, a docstring on the declaration it documents, or a JSDoc @file or @module header.${notRead} ${SCANNER_LIMITS}` };
+  },
+
   'no-broken-test-files': ctx => {
     const now = currentTests(ctx);
     if (isVerdict(now)) return now;
@@ -707,7 +824,8 @@ export const EVALUATORS: Record<string, Evaluator> = {
         for (const n of names) { own.add(n); if (other && descendants.has(other)) addedBy.set(n, other); }
       }
       for (const f of z(['diff', '--cached', '--no-renames', '--diff-filter=A', '--name-only', '--relative', '-z'])) own.add(f);
-      for (const f of z(['ls-files', '--others', '--exclude-standard', '-z'])) own.add(f);
+      // Spelled as the server's tree read spells it (GH #312): the same query, so a verify asks git once.
+      for (const f of z(['ls-files', '-z', '--others', '--exclude-standard'])) own.add(f);
     } catch (e: any) {
       return { outcome: 'unavailable', soft: true, detail: `git could not list what was added since ${frozen.head.slice(0, 12)}: ${e?.message ?? e}` };
     }

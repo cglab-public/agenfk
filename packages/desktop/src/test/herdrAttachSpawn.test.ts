@@ -38,6 +38,7 @@ function makeRegistry(over: Partial<ConstructorParameters<typeof PtyRegistry>[0]
     },
     registerRun: info => { registeredRuns.push(info); },
     emit: () => {},
+    killTree: () => {},
     ...over,
   } as never);
 }

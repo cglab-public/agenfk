@@ -21,9 +21,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
 import { storage } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { gitSync } from './helpers/gitFixture';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -80,7 +79,7 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
     const dir = makeRepo();
     fs.mkdirSync(path.join(dir, 'checks'));
     write(dir, 'checks/a.js', 'T add_works add=ok\n');
-    execSync('git rm -rq tests && git add . && git commit -qm checks', { cwd: dir, shell: posixShell() });
+    gitSync(dir, 'rm', '-rq', 'tests'); gitSync(dir, 'add', '.'); gitSync(dir, 'commit', '-qm', 'checks');
     return dir;
   }
 
@@ -122,7 +121,7 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
     const dir = offConvention();
     fs.mkdirSync(path.join(dir, 'more'));
     write(dir, 'more/b.js', 'T add_works add=ok\n');
-    execSync('git add . && git commit -qm more', { cwd: dir, shell: posixShell() });
+    gitSync(dir, 'add', '.'); gitSync(dir, 'commit', '-qm', 'more');
     const { id, pid } = await onWork(dir, 'node junit.cjs checks', { surface: ['checks'] });
     await storage.updateProject(pid, { testReport: report('node junit.cjs checks', 'report.xml', ['checks', 'more']) } as any);
     const r = await validate(id);
@@ -163,7 +162,7 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
     const { dir, id, pid } = await frozenAtCode();
     fs.mkdirSync(path.join(dir, 'helpers'));
     write(dir, 'helpers/h.js', 'x');
-    execSync('git add . && git commit -qm helpers', { cwd: dir, shell: posixShell() });
+    gitSync(dir, 'add', '.'); gitSync(dir, 'commit', '-qm', 'helpers');
     await storage.updateProject(pid, { testReport: { ...REPORT, surface: ['helpers'] } } as any);
     await softly(id);
   });
@@ -302,7 +301,7 @@ describe('CGLAB-380: test checks', () => {
   describe('review findings (CGLAB-380 story review)', () => {
     const unignore = (dir: string) => {
       write(dir, '.gitignore', '');
-      execSync('git add .gitignore && git commit -qm unignore', { cwd: dir, shell: posixShell() });
+      gitSync(dir, 'add', '.gitignore'); gitSync(dir, 'commit', '-qm', 'unignore');
     };
 
     it('the report the capture writes is not the card\'s change, even when it is not gitignored', async () => {

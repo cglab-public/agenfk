@@ -19,9 +19,7 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -36,7 +34,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { cloneGitTemplate, gitSync, writeFiles, type GitTemplateBuild } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -50,14 +48,19 @@ afterAll(async () => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 
+/** One commit on `branch` (#311: a template per branch, cloned per test). */
+const buildRepo = (branch: string): GitTemplateBuild => (dir) => {
+  gitSync(dir, 'init', '-q', '-b', branch);
+  gitSync(dir, 'config', 'user.email', 't@t');
+  gitSync(dir, 'config', 'user.name', 't');
+  writeFiles(dir, { 'tests/a.test.js': 'test', '.gitignore': 'report.*\n' });
+  gitSync(dir, 'add', '.');
+  gitSync(dir, 'commit', '-qm', 'one');
+};
+
 function makeRepo(branch = 'main'): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-engine-meta-'));
+  const dir = cloneGitTemplate(`check-engine-meta:repo:branch=${branch}`, buildRepo(branch), 'agenfk-engine-meta-');
   repos.push(dir);
-  execSync(`git init -q -b ${branch} && git config user.email t@t && git config user.name t`, { cwd: dir, shell: posixShell() });
-  fs.mkdirSync(path.join(dir, 'tests'));
-  fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
-  fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 
@@ -219,7 +222,8 @@ describe('CGLAB-380: git/meta checks', () => {
     it('sees committed changes too: the diff is from the step\'s entry commit', async () => {
       const { dir, id } = await entered();
       fs.writeFileSync(path.join(dir, 'impl.js'), 'code');
-      execSync('git add . && git commit -qm impl', { cwd: dir, shell: posixShell() });
+      gitSync(dir, 'add', '.');
+      gitSync(dir, 'commit', '-qm', 'impl');
       const res = await validate(id);
       expect(res.status).toBe(422);
       expect(byId(res.body.checks, 'only-test-files-changed').detail).toMatch(/impl\.js/);

@@ -15,9 +15,6 @@ import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { execSync } from 'child_process';
 
 vi.hoisted(() => {
   process.env.AGENFK_HUB_URL = process.env.AGENFK_HUB_URL || 'http://hub.test';
@@ -31,7 +28,8 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
-import { posixShell } from './helpers/posixShell';
+import { echoRepo, A } from './helpers/echoRepo';
+import { gitSync } from './helpers/gitFixture';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -64,9 +62,8 @@ async function outboxFor(itemId: string, settleMs = 5000): Promise<any[]> {
 
 let seq = 0;
 async function cardAt(status: string) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-close-'));
+  const dir = echoRepo(A, 'agenfk-hub-close-');
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `close-${++seq}` });
   await storage.updateProject(p.body.id, { projectRoot: dir, verifyCommand: 'exit 0' } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `close-${++seq}`, projectId: p.body.id });
@@ -99,9 +96,8 @@ describe('closing a card emits the hub closure events', () => {
 async function projectOn(steps: any[]) {
   const f = await agent().post('/flows').send({ name: `close-flow-${++seq}`, steps });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-close-'));
+  const dir = echoRepo(A, 'agenfk-hub-close-');
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `close-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, verifyCommand: 'exit 0' } as never);
   return { projectId: p.body.id as string, dir };
@@ -152,7 +148,7 @@ describe('every way a card reaches the end of its flow is a closure the hub sees
     const parent = await make(projectId, 'STORY', 'WORK');
     const done = await make(projectId, 'TASK', 'WORK', parent);
     const next = await make(projectId, 'TASK', 'WORK', parent);
-    const head = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+    const head = gitSync(dir, 'rev-parse', 'HEAD');
     await storage.updateItem(done, { status: 'DONE', tests: [{ id: 't1', command: 'exit 0', status: 'PASSED', executedAt: new Date(), commit: head }] } as any);
     const res = await verify(next);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
