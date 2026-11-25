@@ -65,6 +65,15 @@ export interface WorktreeDeps {
    * card. Absent means "do not check".
    */
   readonly hasCommits?: (dir: string) => boolean;
+  /**
+   * What a directory this OS cannot see is, asked where it lives (INFRA-425).
+   *
+   * On Windows a WSL project's root is /home/..., which `exists` and git above
+   * would answer for the wrong filesystem: "not there", or an error that failed
+   * the card before a terminal opened. Null means the directory is local (or
+   * could not be asked), and the checks above apply.
+   */
+  readonly foreignDir?: (dir: string) => Promise<{ exists: boolean; isRepo: boolean; hasCommits: boolean } | null>;
 }
 
 export interface ResolvedWorktree {
@@ -142,7 +151,16 @@ export async function resolveWorktree(itemId: string, deps: WorktreeDeps): Promi
      * sentence is what the person sees.
      */
     const root = deps.projectRoot ? await deps.projectRoot(itemId).catch(() => null) : null;
-    if (!root || !deps.isRepo || deps.exists?.(root) === false) throw e;
+    if (!root) throw e;
+    const foreign = deps.foreignDir ? await deps.foreignDir(root).catch(() => null) : null;
+    if (foreign) {
+      // Same rules as below, on what the distro said. Git in Windows cannot
+      // look at this directory, so the branch lookup does not apply either.
+      if (!foreign.exists) throw e;
+      if (!foreign.isRepo || !foreign.hasCommits) return { cwd: root, branchName: null };
+      throw e;
+    }
+    if (!deps.isRepo || deps.exists?.(root) === false) throw e;
     /*
      * Not a repository, or a repository with nothing to branch FROM. Both open
      * in the project root, for the same reason: there is no branch to be wrong

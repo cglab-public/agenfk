@@ -78,7 +78,7 @@ const bridge = (): TerminalBridgeApi | null =>
 interface PrefsBridgeApi {
   get(): Promise<{
     autoApprove: boolean; defaultAgentId?: string; askBeforeOpening?: boolean;
-    uiScale?: number; terminalFontSize?: number;
+    uiScale?: number; terminalFontSize?: number; wslDistro?: string;
   }>;
   setAutoApprove(value: boolean): Promise<{ autoApprove: boolean }>;
   setDefaultAgent?(agentId: string): Promise<{ defaultAgentId: string }>;
@@ -86,6 +86,7 @@ interface PrefsBridgeApi {
   setUiScale?(value: number): Promise<unknown>;
   setTerminalFontSize?(value: number): Promise<unknown>;
   onChanged?(cb: (prefs: unknown) => void): () => void;
+  setWslDistro?(distro: string): Promise<unknown>;
 }
 
 /**
@@ -105,11 +106,13 @@ export interface DesktopPrefs {
   readonly uiScale: number;
   /** The terminal font size; 12, the size terminals have always had, by default. */
   readonly terminalFontSize: number;
+  /** The WSL distro terminals open in; '' for the platform's own shell. */
+  readonly wslDistro: string;
 }
 
 /** What a page, or a preload older than a key, reads as. */
 const BROWSER_PREFS: DesktopPrefs = {
-  autoApprove: false, defaultAgentId: '', askBeforeOpening: true, uiScale: 1, terminalFontSize: 12,
+  autoApprove: false, defaultAgentId: '', askBeforeOpening: true, uiScale: 1, terminalFontSize: 12, wslDistro: '',
 };
 
 /**
@@ -130,6 +133,8 @@ const toDesktopPrefs = (stored: Record<string, unknown> | null | undefined): Des
   terminalFontSize: typeof stored?.terminalFontSize === 'number' && Number.isFinite(stored.terminalFontSize)
     ? stored.terminalFontSize
     : BROWSER_PREFS.terminalFontSize,
+  // An older preload has no WSL choice: terminals open the way they always did.
+  wslDistro: typeof stored?.wslDistro === 'string' ? stored.wslDistro : '',
 });
 
 const prefsBridge = (): PrefsBridgeApi | null =>
@@ -208,6 +213,27 @@ export const onPrefsChangedFromBridge = (cb: (prefs: DesktopPrefs) => void): (()
   const prefs = prefsBridge();
   if (typeof prefs?.onChanged !== 'function') return () => {};
   return prefs.onChanged(stored => cb(toDesktopPrefs(stored as Record<string, unknown>)));
+};
+
+/** The WSL distro terminals open in, or '' for the platform shell. Main checks the name. */
+export const setWslDistroOnBridge = (distro: string): Promise<unknown> => {
+  const prefs = prefsBridge();
+  if (typeof prefs?.setWslDistro !== 'function') {
+    return Promise.reject(new Error('This build cannot store that preference.'));
+  }
+  return prefs.setWslDistro(distro);
+};
+
+/**
+ * The WSL distros a terminal may open in. Empty in a browser, off Windows, and
+ * with a preload older than this choice, which is how Settings knows not to
+ * offer it.
+ */
+export const listWslDistrosFromBridge = async (): Promise<string[]> => {
+  const wsl = (window as unknown as { agenfkDesktop?: { wsl?: { distros?: () => Promise<unknown> } } }).agenfkDesktop?.wsl;
+  if (typeof wsl?.distros !== 'function') return [];
+  const listed = await wsl.distros();
+  return Array.isArray(listed) ? listed.filter((d): d is string => typeof d === 'string') : [];
 };
 
 /** Whether opening a terminal asks which agent runs. */

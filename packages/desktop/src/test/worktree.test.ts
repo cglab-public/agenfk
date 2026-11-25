@@ -418,3 +418,53 @@ describe('a branch already checked out somewhere', () => {
     expect(d.worktreeFor).not.toHaveBeenCalled();
   });
 });
+
+describe('review fixes: a project whose root is a Linux path seen from Windows', () => {
+  const refusal = { status: 400, body: JSON.stringify({ error: 'fatal: not a git repository' }), contentType: 'application/json' };
+  const deps = (foreign: unknown, over: Record<string, unknown> = {}) => ({
+    port: 3000,
+    get: vi.fn(async () => refusal),
+    post: vi.fn(async () => refusal),
+    // The local checks would answer for the WRONG filesystem: Windows has no /home.
+    isRepo: vi.fn(() => { throw new Error('asked Windows git about a Linux path'); }),
+    exists: vi.fn(() => false),
+    hasCommits: vi.fn(() => { throw new Error('asked Windows git about a Linux path'); }),
+    projectRoot: vi.fn(async () => '/home/e/repo'),
+    foreignDir: vi.fn(async () => foreign),
+    ...over,
+  });
+
+  it('opens a folder with no git in its root', async () => {
+    const d = deps({ exists: true, isRepo: false, hasCommits: false });
+    expect(await resolveWorktree('i1', d as never)).toEqual({ cwd: '/home/e/repo', branchName: null });
+    expect(d.foreignDir).toHaveBeenCalledWith('/home/e/repo');
+    expect(d.exists).not.toHaveBeenCalled();
+  });
+
+  it('opens a repository with no commits in its root', async () => {
+    expect(await resolveWorktree('i1', deps({ exists: true, isRepo: true, hasCommits: false }) as never))
+      .toEqual({ cwd: '/home/e/repo', branchName: null });
+  });
+
+  it('keeps the server\'s refusal for a real repository', async () => {
+    await expect(resolveWorktree('i1', deps({ exists: true, isRepo: true, hasCommits: true }) as never))
+      .rejects.toThrow(/not a git repository/);
+  });
+
+  it('keeps the server\'s refusal when the directory is not in the distro', async () => {
+    await expect(resolveWorktree('i1', deps({ exists: false, isRepo: false, hasCommits: false }) as never))
+      .rejects.toThrow(/not a git repository/);
+  });
+
+  it('keeps the server\'s refusal when the distro could not be asked', async () => {
+    await expect(resolveWorktree('i1', deps(null) as never)).rejects.toThrow(/not a git repository/);
+  });
+
+  it('leaves a directory Windows can see to the local checks', async () => {
+    const d = deps(null, {
+      isRepo: vi.fn(() => false), exists: vi.fn(() => true), hasCommits: vi.fn(() => true),
+      projectRoot: vi.fn(async () => 'C:\\p'),
+    });
+    expect(await resolveWorktree('i1', d as never)).toEqual({ cwd: 'C:\\p', branchName: null });
+  });
+});

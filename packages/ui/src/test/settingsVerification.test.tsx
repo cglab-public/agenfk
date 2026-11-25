@@ -120,6 +120,22 @@ describe('Settings: Project', () => {
     await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith('p1', { exclusiveSuite: true }));
   });
 
+  // jsdom does no layout, so this pins the structural contract that keeps the
+  // select inside the pane: the wrapper may shrink and is capped by its parent.
+  it('lets the scope select shrink with the pane instead of pinning its width', async () => {
+    renderPanel('p1');
+    fireEvent.click(await screen.findByRole('button', { name: /^Project$/ }));
+    const select = await screen.findByTestId('setting-select-verifyAtScope');
+    const wrapper = select.parentElement as HTMLElement;
+    const wrapperClasses = wrapper.className.split(/\s+/);
+    expect(wrapperClasses).toContain('min-w-0');
+    expect(wrapperClasses).toContain('max-w-full');
+    expect(wrapperClasses).not.toContain('shrink-0');
+    expect(select.className.split(/\s+/)).toContain('min-w-0');
+    expect(select.className.split(/\s+/)).toContain('max-w-full');
+    expect(select.className.split(/\s+/)).not.toContain('shrink-0');
+  });
+
   // CGLAB-670: its subtitle said "every project on this installation".
   it('says its settings apply only to the open project, by name', async () => {
     renderPanel('p1');

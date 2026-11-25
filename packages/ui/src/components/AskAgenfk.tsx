@@ -470,7 +470,7 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onClose }: Ask
           <label className="flex items-center gap-2 text-[11px] text-ink-tertiary">
             Agent
             <span data-testid="ask-agent">
-              <AgentPicker value={agentId} onChange={setAgentId} listAgents={listAgentsFromBridge} refreshAgents={refreshAgentsFromBridge} />
+              <AgentPicker value={agentId} onChange={setAgentId} listAgents={listAgentsFromBridge} refreshAgents={refreshAgentsFromBridge} directory={projects.find(p => p.id === target)?.projectRoot} />
             </span>
           </label>
         </div>

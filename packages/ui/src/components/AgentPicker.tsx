@@ -23,6 +23,11 @@ export interface AgentInfo {
   readonly label: string;
   readonly installed: boolean;
   /**
+   * Where it is installed, on Windows with WSL (INFRA-425). `wsl` null means
+   * not probed, and `installed` is then the whole answer.
+   */
+  readonly availability?: { readonly windows: boolean; readonly wsl: boolean | null };
+  /**
    * Whether this agent has a flag to skip its own permission prompts.
    *
    * Reported by the main process rather than assumed, so the UI can disable the
@@ -42,6 +47,34 @@ export interface AgentPickerProps {
    * again": a browser has nothing to look for.
    */
   readonly refreshAgents?: () => Promise<AgentInfo[]>;
+  /** The directory the terminal will open in, when known: it picks Windows or WSL. */
+  readonly directory?: string;
+}
+
+/** Mirrors isLinuxPath in the desktop's wsl.ts: only a Linux path runs in WSL. */
+const isLinuxDir = (p: string): boolean => p.startsWith('/');
+
+/**
+ * Whether `agent` can launch for `directory`, and when only one side has it,
+ * where. Without a directory the row stays selectable and only hints where.
+ */
+function reach(agent: AgentInfo, directory?: string): { ok: boolean; only?: 'WSL' | 'Windows' } {
+  const a = agent.availability;
+  // `== null`: an older or hand-built payload may carry `wsl: undefined`.
+  if (!a || a.wsl == null) return { ok: agent.installed };
+  if (directory) {
+    const linux = isLinuxDir(directory);
+    const ok = linux ? a.wsl : a.windows;
+    // Installed on the other side is not "Not installed": say where it is.
+    const elsewhere = linux ? a.windows : a.wsl;
+    return ok || !elsewhere ? { ok } : { ok, only: linux ? 'Windows' : 'WSL' };
+  }
+  if (a.windows && a.wsl) return { ok: true };
+  // No project to say where it runs: stay selectable, as before, and hint where
+  // it lives. The launch refuses a mismatch with its own message.
+  if (a.wsl) return { ok: agent.installed, only: 'WSL' };
+  if (a.windows) return { ok: agent.installed, only: 'Windows' };
+  return { ok: false };
 }
 
 /** How to get each agent. Shown on the rows the user cannot pick. */
@@ -75,7 +108,7 @@ const SHELL_FALLBACK: AgentInfo[] = [{ id: 'shell', label: 'Shell', installed: t
  */
 export const SEARCHABLE_AT = 8;
 
-export function AgentPicker({ value, onChange, listAgents, refreshAgents }: AgentPickerProps): React.ReactElement {
+export function AgentPicker({ value, onChange, listAgents, refreshAgents, directory }: AgentPickerProps): React.ReactElement {
   const [open, setOpen] = React.useState(false);
   /*
    * Where the menu goes on SCREEN, because it no longer lives inside the
@@ -184,12 +217,12 @@ export function AgentPicker({ value, onChange, listAgents, refreshAgents }: Agen
   const matches = (a: AgentInfo): boolean =>
     a.label.toLowerCase().includes(query.trim().toLowerCase());
 
-  const installed = all.filter(a => a.installed && matches(a));
-  const missing = all.filter(a => !a.installed && matches(a));
+  const installed = all.filter(a => reach(a, directory).ok && matches(a));
+  const missing = all.filter(a => !reach(a, directory).ok && matches(a));
 
   const choose = (agent: AgentInfo): void => {
     // A row that cannot work is informative, not selectable.
-    if (!agent.installed) return;
+    if (!reach(agent, directory).ok) return;
     onChange(agent.id);
     setOpen(false);
     setQuery('');
@@ -226,31 +259,34 @@ export function AgentPicker({ value, onChange, listAgents, refreshAgents }: Agen
     }
   };
 
-  const Row = ({ agent }: { agent: AgentInfo }): React.ReactElement => (
+  const Row = ({ agent }: { agent: AgentInfo }): React.ReactElement => {
+    const { ok, only } = reach(agent, directory);
+    return (
     <div
       role="option"
       aria-selected={agent.id === value}
-      aria-disabled={!agent.installed}
+      aria-disabled={!ok}
       data-agent-id={agent.id}
-      tabIndex={agent.installed ? -1 : undefined}
+      tabIndex={ok ? -1 : undefined}
       onClick={() => choose(agent)}
       className={clsx(
         'flex items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-sm outline-none',
-        agent.installed
+        ok
           ? 'cursor-pointer text-ink hover:bg-canvas focus:bg-canvas'
           : 'cursor-default text-ink-tertiary',
       )}
     >
       <AgentIcon agentId={agent.id} size={18} />
       <span className="flex-1 truncate">{agent.label}</span>
-      {!agent.installed && (
+      {(!ok || only) && (
         <span className="shrink-0 text-[11px] text-ink-tertiary">
-          {INSTALL_HINT[agent.id] ?? 'Not installed'}
+          {only ? `${only} only` : (INSTALL_HINT[agent.id] ?? 'Not installed')}
         </span>
       )}
-      {agent.id === value && agent.installed && <Check size={15} className="shrink-0 text-accent-ink" />}
+      {agent.id === value && ok && <Check size={15} className="shrink-0 text-accent-ink" />}
     </div>
   );
+  };
 
   return (
     <div className="relative">

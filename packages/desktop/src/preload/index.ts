@@ -17,6 +17,8 @@ export interface AgentInfo {
   readonly id: string;
   readonly label: string;
   readonly installed: boolean;
+  /** Per-target answer on Windows with WSL; `wsl` null = not probed. */
+  readonly availability?: { readonly windows: boolean; readonly wsl: boolean | null };
   /** Whether this agent has a flag to skip its own permission prompts. */
   readonly supportsAutoApprove: boolean;
 }
@@ -128,6 +130,12 @@ export interface AgenfkTerminalApi {
    * closes the app and loses an agent mid-run.
    */
   sessionPersistence(): Promise<{ available: boolean; hint?: string; warning?: string }>;
+  /**
+   * The cockpit of one of this window's sessions (INFRA-425): git, AWS, kube
+   * and Terraform where it runs, and its agent's context and cost. Main
+   * resolves where the session runs; this names only the session.
+   */
+  cockpit(sessionId: string): Promise<unknown>;
 }
 
 /**
@@ -168,6 +176,7 @@ export interface AgenfkPrefs {
   readonly askBeforeOpening: boolean;
   readonly uiScale: number;
   readonly terminalFontSize: number;
+  readonly wslDistro: string;
 }
 
 export interface AgenfkPrefsApi {
@@ -191,6 +200,13 @@ export interface AgenfkPrefsApi {
    * handled in main. Returns the unsubscribe.
    */
   onChanged(cb: (prefs: AgenfkPrefs) => void): () => void;
+  /** The WSL distro terminals open in, or '' for the platform shell. Main checks the name. */
+  setWslDistro(distro: string): Promise<AgenfkPrefs>;
+}
+
+/** WSL on this machine. Present on every platform; empty where there is none. */
+export interface AgenfkWslApi {
+  distros(): Promise<string[]>;
 }
 
 /**
@@ -245,6 +261,7 @@ export interface AgenfkDesktopApi {
   readonly sounds: AgenfkSoundsApi;
   readonly notifications: AgenfkNotificationsApi;
   readonly fullScreen: AgenfkFullScreenApi;
+  readonly wsl: AgenfkWslApi;
 }
 
 /**
@@ -288,6 +305,7 @@ const terminal: AgenfkTerminalApi = {
   onActivity: (sessionId, cb) => demux.on('pty:activity', sessionId, cb as never),
   listAgents: () => ipcRenderer.invoke('agents:list'),
   sessionPersistence: () => ipcRenderer.invoke('sessions:persistence'),
+  cockpit: sessionId => ipcRenderer.invoke('cockpit:get', { sessionId }),
   refreshAgents: () => ipcRenderer.invoke('agents:refresh'),
   // One question to one agent. Ids and a sentence in, what it printed out.
   propose: req => ipcRenderer.invoke('agents:propose', req),
@@ -321,6 +339,11 @@ const prefs: AgenfkPrefsApi = {
   setUiScale: value => ipcRenderer.invoke('prefs:set', { key: 'uiScale', value: Number(value) }),
   setTerminalFontSize: value => ipcRenderer.invoke('prefs:set', { key: 'terminalFontSize', value: Number(value) }),
   onChanged: cb => subscribe('prefs:changed', cb),
+  setWslDistro: distro => ipcRenderer.invoke('prefs:set', { key: 'wslDistro', value: String(distro) }),
+};
+
+const wsl: AgenfkWslApi = {
+  distros: () => ipcRenderer.invoke('wsl:distros'),
 };
 
 const editors: AgenfkEditorsApi = {
@@ -381,6 +404,7 @@ const api: AgenfkDesktopApi = {
   sounds,
   notifications,
   fullScreen,
+  wsl,
   platform: process.platform,
   versions: {
     electron: process.versions.electron,
