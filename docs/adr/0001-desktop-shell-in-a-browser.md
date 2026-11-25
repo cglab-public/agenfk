@@ -14,8 +14,12 @@ UI checks it by shape in `packages/ui/src/desktop.ts`.
 
 Everything else about that UI is an ordinary web page. The API server serves
 the built bundle on its own origin (`AGENFK_SERVE_UI`, CGLAB-165), and the
-packaged app adopts a server already listening on ports 3000–3015 and loads
-the UI from it (it starts its own only when it finds none).
+packaged app adopts a server already listening on ports 3000–3015, or on the
+16 ports from `AGENFK_PORT` (then `PORT`) when one is set
+(`packages/desktop/src/main/adoptPorts.ts`), and loads the UI from it (it
+starts its own only when it finds none). A server that published its port
+outside that range is adopted when it holds the app's database, and the app
+refuses to start a second one when it cannot tell whose database that is.
 
 So the long way to check a UI change is: build, package
 (`npm run pack -w packages/desktop`), quit the app — which kills the terminals
@@ -146,6 +150,9 @@ Electron app:
 - `fullScreen` — whether the window is full screen. Absent, the shell reads
   the window as windowed, so on a `darwin` stub the macOS title bar always
   draws; full screen dropping it is checked in the Electron app.
+- `wsl`: the WSL distros a terminal may open in, on Windows. Absent, Settings
+  does not offer the choice; opening terminals in a distro is checked in the
+  Windows app.
 
 Nor does it cover the main process (server adoption, window chrome, menus),
 packaging or code signing. A sandboxed server has no hub, so screens that

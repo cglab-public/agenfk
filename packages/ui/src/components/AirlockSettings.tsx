@@ -458,8 +458,8 @@ function PolicyForm({
         <p className={LABEL}>Rules</p>
         <div className="mt-2 space-y-3">
           {RULES.map(rule => (
-            <div key={rule.key} className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
+            <div key={rule.key} className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+              <div className="min-w-0 flex-1 basis-56">
                 <label htmlFor={`airlock-rule-${rule.key}`} className="text-[13px] text-ink">{rule.label}</label>
                 <p className={HELP}>{rule.description}</p>
               </div>
@@ -468,7 +468,7 @@ function PolicyForm({
                 value={draft.rules[rule.key]}
                 disabled={readOnly}
                 onChange={e => setDraft(d => ({ ...d, rules: { ...d.rules, [rule.key]: e.target.value as AirlockRuleActionDto } }))}
-                className={clsx(CHOICE, 'shrink-0')}
+                className={clsx(CHOICE, 'max-w-full')}
               >
                 {ACTIONS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
               </select>

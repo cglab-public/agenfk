@@ -170,6 +170,10 @@ export function registerPtyIpc(
     create: (req: { owner: string; repo: string; visibility: 'private' | 'public'; name: string })
       => Promise<{ id: string; name: string }>;
   },
+  /** The WSL distros installed on this machine; absent off Windows (INFRA-425). */
+  wsl?: {
+    distros: () => Promise<string[]>;
+  },
 ): void {
   ipc.handle('pty:spawn', async (event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;
@@ -366,6 +370,12 @@ export function registerPtyIpc(
   ipc.handle('prefs:get', async () => readablePrefs(readPrefs(prefsDir())));
 
   /*
+   * Which distros a terminal may open in. Empty where there is no WSL, which is
+   * how the settings screen knows not to offer the choice at all.
+   */
+  ipc.handle('wsl:distros', async () => (wsl ? wsl.distros() : []));
+
+  /*
    * Editors. The renderer names a CARD and an editor ID — never a path and
    * never a URL — so the set of programs the OS can be asked to launch stays
    * fixed at compile time and the directory comes from the server's record of
@@ -453,6 +463,24 @@ export function registerPtyIpc(
         );
       }
       return readablePrefs(writePref(prefsDir(), 'terminalFontSize', req.value));
+    }
+
+    /*
+     * A distro NAME is the second string allowed across, on the same terms as
+     * the agent id above: it is checked against a list this process produced
+     * (`wsl.exe --list`), never trusted as text, because it becomes an argument
+     * to `wsl.exe --distribution`. '' clears the choice.
+     */
+    if (key === 'wslDistro') {
+      const value = req.value;
+      const installed = wsl ? await wsl.distros() : [];
+      if (typeof value !== 'string' || (value !== '' && !installed.includes(value))) {
+        throw new Error(`Preference "wslDistro" must be '' or one of: ${installed.join(', ') || '(no WSL distro installed)'}`);
+      }
+      const stored = readablePrefs(writePref(prefsDir(), 'wslDistro', value));
+      // Which agents are installed depends on where terminals run now.
+      refreshAgentDetection();
+      return stored;
     }
 
     if (typeof DEFAULT_PREFS[key as keyof typeof DEFAULT_PREFS] !== 'boolean') {

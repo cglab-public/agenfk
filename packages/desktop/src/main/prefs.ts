@@ -109,6 +109,14 @@ export interface Prefs {
 
   /** The xterm font size, 8 to 32. Applied live to open terminals. */
   terminalFontSize: number;
+
+  /**
+   * The WSL distro every terminal opens in, or '' for the platform's own shell
+   * (INFRA-425). Windows only, and only ever a name `wsl.exe --list` printed:
+   * the IPC border checks it against that list, because it is passed to
+   * `wsl.exe --distribution`.
+   */
+  wslDistro: string;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -141,6 +149,8 @@ export const DEFAULT_PREFS: Prefs = {
    */
   uiScale: 1,
   terminalFontSize: 12,
+  // Nobody chose: PowerShell as before, and WSL only where a Linux path forces it.
+  wslDistro: '',
 };
 
 /**
@@ -162,6 +172,7 @@ export interface ReadablePrefs {
   readonly askBeforeOpening: boolean;
   readonly uiScale: number;
   readonly terminalFontSize: number;
+  readonly wslDistro: string;
 }
 
 export function readablePrefs(prefs: Prefs): ReadablePrefs {
@@ -171,6 +182,7 @@ export function readablePrefs(prefs: Prefs): ReadablePrefs {
     askBeforeOpening: prefs.askBeforeOpening,
     uiScale: prefs.uiScale,
     terminalFontSize: prefs.terminalFontSize,
+    wslDistro: prefs.wslDistro,
   };
 }
 

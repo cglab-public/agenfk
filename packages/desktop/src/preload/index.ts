@@ -17,6 +17,8 @@ export interface AgentInfo {
   readonly id: string;
   readonly label: string;
   readonly installed: boolean;
+  /** Per-target answer on Windows with WSL; `wsl` null = not probed. */
+  readonly availability?: { readonly windows: boolean; readonly wsl: boolean | null };
   /** Whether this agent has a flag to skip its own permission prompts. */
   readonly supportsAutoApprove: boolean;
 }
@@ -168,6 +170,7 @@ export interface AgenfkPrefs {
   readonly askBeforeOpening: boolean;
   readonly uiScale: number;
   readonly terminalFontSize: number;
+  readonly wslDistro: string;
 }
 
 export interface AgenfkPrefsApi {
@@ -191,6 +194,13 @@ export interface AgenfkPrefsApi {
    * handled in main. Returns the unsubscribe.
    */
   onChanged(cb: (prefs: AgenfkPrefs) => void): () => void;
+  /** The WSL distro terminals open in, or '' for the platform shell. Main checks the name. */
+  setWslDistro(distro: string): Promise<AgenfkPrefs>;
+}
+
+/** WSL on this machine. Present on every platform; empty where there is none. */
+export interface AgenfkWslApi {
+  distros(): Promise<string[]>;
 }
 
 /**
@@ -245,6 +255,7 @@ export interface AgenfkDesktopApi {
   readonly sounds: AgenfkSoundsApi;
   readonly notifications: AgenfkNotificationsApi;
   readonly fullScreen: AgenfkFullScreenApi;
+  readonly wsl: AgenfkWslApi;
 }
 
 /**
@@ -321,6 +332,11 @@ const prefs: AgenfkPrefsApi = {
   setUiScale: value => ipcRenderer.invoke('prefs:set', { key: 'uiScale', value: Number(value) }),
   setTerminalFontSize: value => ipcRenderer.invoke('prefs:set', { key: 'terminalFontSize', value: Number(value) }),
   onChanged: cb => subscribe('prefs:changed', cb),
+  setWslDistro: distro => ipcRenderer.invoke('prefs:set', { key: 'wslDistro', value: String(distro) }),
+};
+
+const wsl: AgenfkWslApi = {
+  distros: () => ipcRenderer.invoke('wsl:distros'),
 };
 
 const editors: AgenfkEditorsApi = {
@@ -381,6 +397,7 @@ const api: AgenfkDesktopApi = {
   sounds,
   notifications,
   fullScreen,
+  wsl,
   platform: process.platform,
   versions: {
     electron: process.versions.electron,

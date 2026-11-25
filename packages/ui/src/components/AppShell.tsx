@@ -53,6 +53,7 @@ import {
   listEditorsFromBridge, openInEditorFromBridge,
 } from './agentBridge';
 import { SettingsPanel } from './SettingsPanel';
+import { withProjectNames } from '../sessionProject';
 /*
  * Types only. The rail component itself is no longer rendered anywhere - the
  * SESSIONS section it lived in was removed (1a1b8df6) - and importing it kept
@@ -450,6 +451,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
+  /*
+   * Each terminal's project, by name, for the tab header (INFRA-425). Cards
+   * from both lists: the active ones are what most terminals are opened on, and
+   * the full list covers a card that has since left the active steps.
+   */
+  const itemProject = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of [...allItemsForFleet, ...activeWork]) {
+      if (item.id && item.projectId) map.set(item.id, item.projectId);
+    }
+    return map;
+  }, [allItemsForFleet, activeWork]);
+  const namedSessions = React.useMemo(
+    () => withProjectNames(sessions, itemProject, projectNames),
+    [sessions, itemProject, projectNames],
+  );
   const fleetParent = React.useMemo(
     () => allItemsForFleet.find(i => i.id === fleetParentId) ?? null,
     [allItemsForFleet, fleetParentId],
@@ -1996,7 +2013,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {terminalOpened && (
               <div className="flex min-h-0 flex-1 flex-col">
               <TerminalTab
-                sessions={sessions}
+                sessions={namedSessions}
                 sessionStates={sessionStates}
                 /*
                  * The layout is a TREE, owned here (7a717cb8, 3b). The pair
@@ -2298,6 +2315,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           })()}
           listAgents={listAgentsFromBridge}
           refreshAgents={refreshAgentsFromBridge}
+          // A card's worktree sits on its project root's filesystem, so the root
+          // says whether this terminal runs on Windows or in WSL.
+          directory={allProjects.find((p: { id: string; projectRoot?: string }) => p.id === (pending.projectId ?? activeProjectId))?.projectRoot}
           // Shift, never clear: dismissing ONE question must not throw away the
           // rest of the wave. Clearing here was the single-slot habit surviving
           // the queue - and it fails in the direction that loses work silently.

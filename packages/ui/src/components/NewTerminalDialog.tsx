@@ -69,6 +69,8 @@ export interface NewTerminalDialogProps {
   readonly listAgents: () => Promise<AgentInfo[]>;
   /** Detect again; the picker's "Check again". */
   readonly refreshAgents?: () => Promise<AgentInfo[]>;
+  /** Where the terminal opens, when the caller knows; the picker uses it to pick Windows or WSL. */
+  readonly directory?: string;
 }
 
 export function NewTerminalDialog({
@@ -79,6 +81,7 @@ export function NewTerminalDialog({
   onClose,
   listAgents,
   refreshAgents,
+  directory,
 }: NewTerminalDialogProps): React.ReactElement {
   // Claude Code only as the first-run default, when the card has never been
   // worked. After that the card itself is the source of truth.
@@ -180,7 +183,7 @@ export function NewTerminalDialog({
         <div className="space-y-4 px-5 py-5">
           <div>
             <label className="mb-1.5 block text-xs font-semibold text-ink-secondary">Agent</label>
-            <AgentPicker value={agentId} onChange={chooseAgent} listAgents={listAgents} refreshAgents={refreshAgents} />
+            <AgentPicker value={agentId} onChange={chooseAgent} listAgents={listAgents} refreshAgents={refreshAgents} directory={directory} />
           </div>
 
           {error && (
