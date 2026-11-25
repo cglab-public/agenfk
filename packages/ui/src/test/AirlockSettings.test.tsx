@@ -171,6 +171,18 @@ describe('Airlock panel: standalone', () => {
     expect(vi.mocked(api.saveAirlockPolicy).mock.calls[0][0].policy.rules.publishThroughAllowedHost).toBe('off');
   });
 
+  // jsdom does no layout, so this pins the structural contract: a rule row wraps
+  // its select under the text, and the text column may shrink, at narrow widths.
+  it('a rule row wraps its select under the text instead of overflowing a narrow pane', async () => {
+    renderPanel();
+    const select = await screen.findByLabelText('Publishing through an allowed host') as HTMLSelectElement;
+    const row = select.parentElement as HTMLElement;
+    expect(row.className.split(/\s+/)).toContain('flex-wrap');
+    const text = row.firstElementChild as HTMLElement;
+    expect(text.className.split(/\s+/)).toContain('min-w-0');
+    expect(select.className.split(/\s+/)).toContain('max-w-full');
+  });
+
   it('a stale revision shows the conflict and offers a reload', async () => {
     vi.mocked(api.saveAirlockPolicy).mockRejectedValue({
       response: { status: 409, data: { error: 'AIRLOCK_REVISION_CONFLICT', message: 'The policy changed since it was read: it is at revision 5, not 3. Reload and apply the change again.', currentRevision: 5 } },

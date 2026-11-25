@@ -67,10 +67,30 @@ export function bufferBytes(cols: number, rows: number): number {
 export const TERMINAL_FONT_SIZE_MIN = 8;
 export const TERMINAL_FONT_SIZE_MAX = 32;
 
+/**
+ * The terminal font (INFRA-425).
+ *
+ * The bundled JetBrains Mono first: index.css already imports it through
+ * @fontsource-variable, so it is there on every machine and offline. Without
+ * this line xterm used its own default stack, which is DejaVu Sans Mono on
+ * Linux and Courier New on Windows — the "remote desktop" look next to the
+ * same program in Windows Terminal.
+ *
+ * Then the best monospace each OS ships, in case the bundle failed to load:
+ * Cascadia Mono and Consolas (Windows), Menlo (macOS), DejaVu Sans Mono
+ * (most Linux), and the generic family last.
+ */
+export const TERMINAL_FONT_FAMILY =
+  "'JetBrains Mono Variable', 'Cascadia Mono', Consolas, Menlo, 'DejaVu Sans Mono', monospace";
+
+/** The face `document.fonts.load` is asked for before the terminal re-measures. */
+export const TERMINAL_FONT_FACE = "'JetBrains Mono Variable'";
+
 /** The options every terminal in this app is built with. */
 export const TERMINAL_OPTIONS: ITerminalOptions = {
   // A pty writes bare LF. Without this every line stair-steps.
   convertEol: true,
+  fontFamily: TERMINAL_FONT_FAMILY,
   // The size a terminal gets until somebody chooses one in Settings > Appearance.
   fontSize: 12,
   cursorBlink: true,
