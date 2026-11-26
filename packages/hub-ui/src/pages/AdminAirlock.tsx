@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { X } from 'lucide-react';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
 import { Callout, QueryError, buttonClass, cardClass, controlClass, scrollClass } from '../components/ui';
@@ -244,9 +245,20 @@ const TABS = [
 export type AirlockTab = typeof TABS[number]['id'];
 const POLICY_TABS: readonly AirlockTab[] = ['policy', 'network', 'sandbox'];
 
+const PREVIEW_DISMISSED_KEY = 'agenfk.airlock.previewDismissed';
+
+function readPreviewDismissed(): boolean {
+  try { return localStorage.getItem(PREVIEW_DISMISSED_KEY) === '1'; } catch { return false; }
+}
+
 export function AdminAirlock() {
   const airlock = useAirlock();
   const [params, setParams] = useSearchParams();
+  const [previewDismissed, setPreviewDismissed] = useState(readPreviewDismissed);
+  const dismissPreview = () => {
+    setPreviewDismissed(true);
+    try { localStorage.setItem(PREVIEW_DISMISSED_KEY, '1'); } catch { /* ignore storage errors */ }
+  };
   const tab: AirlockTab = TABS.find(t => t.id === params.get('tab'))?.id ?? 'policy';
   const choose = (t: AirlockTab) => setParams(p => { const n = new URLSearchParams(p); n.set('tab', t); return n; }, { replace: true });
   if (airlock.isError && !airlock.data) return <QueryError error={airlock.error} onRetry={() => airlock.refetch()} />;
@@ -255,6 +267,24 @@ export function AdminAirlock() {
   // Every tab's cards stay mounted, hidden when another is open: a card keeps its unsaved edits.
   return (
     <div className="space-y-4">
+      {!previewDismissed && (
+        <Callout
+          tone="warn"
+          title="Airlock is in Preview"
+          action={
+            <button
+              type="button"
+              aria-label="Dismiss preview notice"
+              onClick={dismissPreview}
+              className={buttonClass('ghost', 'sm', 'p-1')}
+            >
+              <X className="w-4 h-4" aria-hidden="true" />
+            </button>
+          }
+        >
+          Airlock is an early preview feature. Policies, rules, and sandbox behaviour may change in upcoming releases.
+        </Callout>
+      )}
       <div role="tablist" aria-label="Airlock sections" className="inline-flex flex-wrap gap-0.5 p-1 rounded-xl border border-border-soft bg-surface">
         {TABS.map(t => (
           <button

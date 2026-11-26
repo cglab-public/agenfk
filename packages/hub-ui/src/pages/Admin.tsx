@@ -42,7 +42,7 @@ export function AdminLayout() {
           <option value="">Overview</option>
           {ADMIN_GROUPS.map(g => (
             <optgroup key={g.id} label={g.label}>
-              {g.sections.map(s => <option key={s.to} value={s.to}>{s.label}</option>)}
+              {g.sections.map(s => <option key={s.to} value={s.to}>{s.badge ? `${s.label} (${s.badge})` : s.label}</option>)}
             </optgroup>
           ))}
         </select>
@@ -59,7 +59,8 @@ export function AdminLayout() {
                   <li key={s.to}>
                     <NavLink to={s.to} className={link}>
                       <s.icon className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      {s.label}
+                      <span className="truncate">{s.label}</span>
+                      {s.badge && <Badge tone="warn" className="ml-auto shrink-0 px-1.5 py-0">{s.badge}</Badge>}
                     </NavLink>
                   </li>
                 ))}

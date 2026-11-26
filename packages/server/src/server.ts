@@ -17,7 +17,7 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint, NO_VERIFY_COMMAND, VERIFY_COMMAND_FLAG, AIRLOCK_SESSION_HEADER } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint, NO_VERIFY_COMMAND, VERIFY_COMMAND_FLAG, AIRLOCK_SESSION_HEADER, TOKEN_CLIENTS } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import { hubConfirmedAbsent } from "./hub/hubClient.js";
@@ -6336,7 +6336,7 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
 
 app.get("/token-events", asyncHandler(async (req: any, res: any) => {
   const { itemId, projectId, client, since, until, limit } = req.query as Record<string, string | undefined>;
-  const ALLOWED_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi']);
+  const ALLOWED_CLIENTS = new Set<string>(TOKEN_CLIENTS);
   if (client && !ALLOWED_CLIENTS.has(client)) {
     return res.status(400).json({ error: `Invalid client '${client}'. Must be one of: ${[...ALLOWED_CLIENTS].join(', ')}` });
   }
@@ -6431,7 +6431,7 @@ app.post("/active-work", asyncHandler(async (req: any, res: any) => {
  * card (handleValidate below). Only clients whose session logs are ingested
  * mean anything here; the id is a plain identifier, never a path.
  */
-const SESSION_CARD_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi']);
+const SESSION_CARD_CLIENTS = new Set<string>(TOKEN_CLIENTS);
 const SESSION_CARD_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 /** Why a (client, session) pair cannot go in the journal, or null when it can. */

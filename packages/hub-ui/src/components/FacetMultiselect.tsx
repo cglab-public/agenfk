@@ -170,7 +170,7 @@ export function FacetMultiselect({
       </div>
 
       {open && (
-        <div id={panelId} className="absolute z-20 mt-2 w-[min(420px,calc(100vw-2rem))] bg-card-glass backdrop-blur border border-border-soft rounded-xl shadow-xl overflow-hidden">
+        <div id={panelId} className="absolute z-20 mt-2 w-[min(420px,calc(100vw-2rem))] bg-surface border border-border-soft rounded-xl shadow-xl overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-border-soft">
             <Search className="w-3.5 h-3.5 text-ink-tertiary" />
             <input

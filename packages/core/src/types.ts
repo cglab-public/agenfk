@@ -22,13 +22,17 @@ export enum ItemType {
 // Populated by packages/server/src/token-ingestion. Replaces agent-self-reported
 // per-item token logging entirely.
 
-export type TokenClient =
-  | 'claude-code'
-  | 'codex'
-  | 'gemini'
-  | 'cursor'
-  | 'opencode'
-  | 'pi';
+export const TOKEN_CLIENTS = [
+  'claude-code',
+  'codex',
+  'gemini',
+  'cursor',
+  'opencode',
+  'pi',
+  'agy',
+] as const;
+
+export type TokenClient = typeof TOKEN_CLIENTS[number];
 
 /**
  * The agents a terminal can be opened with.

@@ -183,8 +183,9 @@ function idsOf(model: string): string[] {
   const lower = model.toLowerCase();
   const bare = lower.replace(/^.*\//, '').replace(/^(?:[a-z-]+\.)+/, '');
   const undated = bare.replace(/-v\d+(?::\d+)?$/, '').replace(/-\d{8}$/, '').replace(/@\d{8}$/, '');
-  const dotted = undated.replace(/-(\d)-(\d)(?=$|-)/, '-$1.$2');
-  return [...new Set([model, lower, bare, undated, dotted])];
+  const effortless = undated.replace(/-(?:minimal|low|medium|high|xhigh)$/, '');
+  const dotted = effortless.replace(/-(\d)-(\d)(?=$|-)/, '-$1.$2');
+  return [...new Set([model, lower, bare, undated, effortless, dotted])];
 }
 
 export const getModelPrice = (model: string, prices: PriceEntry[]): PriceEntry | null => {

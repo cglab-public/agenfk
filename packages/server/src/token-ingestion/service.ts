@@ -5,8 +5,12 @@ import { parseClaudeCodeJsonl, hasSubagents } from './parsers/claude-code';
 import { reattributeNestedHelpers, reattributeSubagentUsage } from './reattribute';
 import { parseCodexJsonl } from './parsers/codex';
 import { parsePiJsonl } from './parsers/pi';
+import { parseAgyJsonl } from './parsers/agy';
 
 const jsonl = (rel: string) => rel.endsWith('.jsonl');
+const isAgyTranscript = (rel: string) =>
+  /^[^/]+\/\.system_generated\/logs\/transcript\.jsonl$/.test(rel.replace(/\\/g, '/'));
+const alwaysOwnClaims = async () => true;
 
 /**
  * Where each harness keeps its session logs (GH-389). Claude Code's folder
@@ -20,10 +24,14 @@ export function defaultIngestionSources(
 ): IngestionSource[] {
   const claudeDir = env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, '.claude');
   const codexDir = env.CODEX_HOME?.trim() || path.join(home, '.codex');
+  const agyCliDir = env.AGY_DATA_DIR?.trim() || path.join(home, '.gemini', 'antigravity-cli');
+  const agyIdeDir = env.ANTIGRAVITY_DATA_DIR?.trim() || path.join(home, '.gemini', 'antigravity');
   return [
     { client: 'claude-code', rootDir: path.join(claudeDir, 'projects'), matches: jsonl, parser: parseClaudeCodeJsonl, ownClaims: hasSubagents },
     { client: 'codex', rootDir: path.join(codexDir, 'sessions'), matches: jsonl, parser: parseCodexJsonl },
     { client: 'pi', rootDir: path.join(home, '.pi', 'agent', 'sessions'), matches: jsonl, parser: parsePiJsonl },
+    { client: 'agy', rootDir: path.join(agyCliDir, 'brain'), matches: isAgyTranscript, parser: parseAgyJsonl, ownClaims: alwaysOwnClaims },
+    { client: 'agy', rootDir: path.join(agyIdeDir, 'brain'), matches: isAgyTranscript, parser: parseAgyJsonl, ownClaims: alwaysOwnClaims },
   ];
 }
 

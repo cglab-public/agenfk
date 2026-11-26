@@ -55,6 +55,23 @@ describe('getModelPrice: a stored price must be the model\'s own (review finding
       expect(getModelPrice('us.anthropic.claude-opus-4-8-v1', rows(order).prices)?.id).toBe('claude-opus-4-8');
     }
   });
+
+  it('strips Antigravity effort suffixes (-minimal, -low, -medium, -high, -xhigh) before matching', () => {
+    const agyPrices = [
+      { id: 'gemini-4-neon', input: 3, output: 15, input_cached: 0.15 },
+      { id: 'gemini-3.8-flash', input: 0.75, output: 3.75, input_cached: 0.075 },
+      { id: 'claude-opus-4', input: 15, output: 75, input_cached: 1.5 },
+      { id: 'claude-opus-4.6', input: 5, output: 25, input_cached: 0.5 },
+    ];
+    for (const suffix of ['minimal', 'low', 'medium', 'high', 'xhigh']) {
+      expect(getModelPrice(`gemini-4-neon-${suffix}`, agyPrices)?.id).toBe('gemini-4-neon');
+    }
+    expect(getModelPrice('gemini-3.8-flash-medium', agyPrices)?.id).toBe('gemini-3.8-flash');
+    // Without effort-suffix stripping, dash-to-dot produces 'claude-opus-4.6-high'
+    // which misses exact match and fuzzy-matches 'claude-opus-4' (wrong price!).
+    expect(getModelPrice('claude-opus-4-6-high', agyPrices)?.id).toBe('claude-opus-4.6');
+    expect(priceTokens('gemini-4-neon-medium', { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 0 }, { prices: agyPrices })).toBeCloseTo(18.15);
+  });
 });
 
 describe('parsePrices', () => {
