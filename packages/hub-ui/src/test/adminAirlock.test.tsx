@@ -112,7 +112,7 @@ const renderPage = (tab?: 'policy' | 'network' | 'sandbox' | 'projects' | 'activ
 /** Opens another of the page's tabs. */
 const goTo = (name: string) => fireEvent.click(screen.getByRole('tab', { name }));
 
-beforeEach(() => { get.mockReset(); put.mockReset(); });
+beforeEach(() => { get.mockReset(); put.mockReset(); localStorage.clear(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('Admin → Airlock', () => {
@@ -124,6 +124,34 @@ describe('Admin → Airlock', () => {
     const nav = screen.getByRole('navigation', { name: /admin sections/i });
     const group = within(nav).getByRole('group', { name: 'Fleet' });
     expect(within(group).getByRole('link', { name: /airlock/i })).toHaveAttribute('href', '/admin/airlock');
+  });
+
+  it('marks Airlock as Preview in the admin navigation (sidebar badge and mobile select)', () => {
+    const fleet = ADMIN_GROUPS.find(g => g.id === 'fleet')!;
+    const airlockSection = fleet.sections.find(s => s.to === 'airlock');
+    expect(airlockSection?.badge).toBe('Preview');
+    hubAnswers(NONE);
+    renderPage();
+    const nav = screen.getByRole('navigation', { name: /admin sections/i });
+    const group = within(nav).getByRole('group', { name: 'Fleet' });
+    const airlockLink = within(group).getByRole('link', { name: /airlock/i });
+    expect(within(airlockLink).getByText('Preview')).toBeInTheDocument();
+    const select = screen.getByRole('combobox', { name: /admin section/i });
+    expect(within(select).getByRole('option', { name: 'Airlock (Preview)' })).toHaveValue('airlock');
+  });
+
+  it('shows a Preview banner on the Airlock page that can be dismissed', async () => {
+    hubAnswers(NONE);
+    renderPage();
+    expect(await screen.findByText(/airlock is in preview/i)).toBeInTheDocument();
+    expect(screen.getByText(/early preview feature/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /dismiss preview notice/i }));
+    expect(screen.queryByText(/airlock is in preview/i)).not.toBeInTheDocument();
+
+    cleanup();
+    renderPage();
+    await screen.findByText(/no airlock policy yet/i);
+    expect(screen.queryByText(/airlock is in preview/i)).not.toBeInTheDocument();
   });
 
   it('says the org has no policy yet, and saves the first one at revision 0', async () => {

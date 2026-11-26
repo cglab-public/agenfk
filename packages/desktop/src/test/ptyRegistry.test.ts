@@ -17,7 +17,7 @@
  *
  * The spawner is injected so none of this needs real processes.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PtyRegistry, MAX_SESSIONS_PER_WINDOW } from '../main/ptyRegistry';
 import { HIGH_WATERMARK } from '../main/flowControl';
 import * as os from 'os';
@@ -82,11 +82,24 @@ const makeSpawner = () =>
 const open = async (registry: PtyRegistry, windowId: number, itemId = 'i1') =>
   (await registry.spawn({ itemId, agentId: 'shell', windowId, cols: 80, rows: 24 })).sessionId;
 
+/**
+ * No-op `killTree` stub for fake-PTY registries.
+ *
+ * Fake PTYs use synthetic PIDs (1000+, 2000+); omitting `killTree` falls back
+ * to the real `killProcessTree` -> `process.kill(-pid, ...)` against arbitrary
+ * host PIDs/PGIDs. Dedicated tree-killing tests supply their own spy.
+ */
+const noopKillTree = () => {};
+
 let registry: PtyRegistry;
 let spawner: ReturnType<typeof makeSpawner>;
 let emitted: Array<{ windowId: number; channel: string; payload: unknown }>;
+let processKillSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
+  processKillSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+    throw new Error('Unexpected real process.kill in fake-PTY test — stub killTree');
+  });
   spawned = [];
   emitted = [];
   spawner = makeSpawner();
@@ -94,7 +107,16 @@ beforeEach(() => {
     spawn: spawner as never,
     resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
     emit: (windowId, channel, payload) => { emitted.push({ windowId, channel, payload }); },
+    killTree: noopKillTree,
   });
+});
+
+afterEach(() => {
+  try {
+    expect(processKillSpy, 'fake-PTY tests must never call real process.kill').not.toHaveBeenCalled();
+  } finally {
+    processKillSpy.mockRestore();
+  }
 });
 
 describe('opening a session', () => {
@@ -125,6 +147,7 @@ describe('opening a session', () => {
       spawn: spawner as never,
       resolveCwd: async () => { throw new Error('no project root'); },
       emit: () => {},
+      killTree: noopKillTree,
     });
     await expect(open(failing, 1)).rejects.toThrow(/project root/);
     expect(failing.countForWindow(1)).toBe(0);
@@ -151,6 +174,7 @@ describe('the environment the shell is born into', () => {
       resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: null }),
       emit: () => {},
       loginPath: () => '/opt/homebrew/bin:/usr/bin',
+      killTree: noopKillTree,
     });
     await open(withLogin, 1);
     const opts = spawner.mock.calls[0][2] as { env: NodeJS.ProcessEnv };
@@ -180,6 +204,7 @@ describe('surviving the app closing', () => {
     resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: null }),
     emit: () => {},
     tmux: { available },
+    killTree: noopKillTree,
   });
 
   it('does NOT use tmux unless asked, even where it is available', async () => {
@@ -343,6 +368,7 @@ const makeRegistry = () => new PtyRegistry({
   spawn: spawner as never,
   resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
   emit: () => {},
+  killTree: noopKillTree,
 });
 
 describe('conversation ids', () => {
@@ -539,6 +565,7 @@ describe('the login PATH arriving late', () => {
       resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
       loginPath: () => arriving,
       emit: () => {},
+      killTree: noopKillTree,
     });
 
     spawned = [];
@@ -559,6 +586,7 @@ describe('the login PATH arriving late', () => {
       resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
       loginPath: () => arriving,
       emit: () => {},
+      killTree: noopKillTree,
     });
 
     spawned = [];
@@ -598,6 +626,7 @@ describe('a resume that finds nothing to continue', () => {
       spawn: makeSpawner() as never,
       resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
       emit: (_w, channel, payload) => { emitted.push({ channel, payload }); },
+      killTree: noopKillTree,
     });
     const { sessionId } = await reg.spawn({
       itemId: 'i1', agentId, windowId: 1, cols: 80, rows: 24, resume: true,
@@ -650,6 +679,7 @@ describe('a resume that finds nothing to continue', () => {
       spawn: makeSpawner() as never,
       resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: null }),
       emit: (_w, channel) => { emitted.push({ channel }); },
+      killTree: noopKillTree,
     });
     await reg.spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
     spawned[0].pty.emitExit!(1);
@@ -758,6 +788,7 @@ describe('a spawn in flight when the window is reaped', () => {
         return { cwd: '/tmp/wt/i1', branchName: 'feat/x' };
       },
       emit: (windowId, channel, payload) => { emitted.push({ windowId, channel, payload }); },
+      killTree: noopKillTree,
     });
     return { registry, release };
   };
@@ -896,6 +927,7 @@ describe('the resume-failure relaunch', () => {
         return { cwd: '/tmp/wt/i1', branchName: 'feat/x' };
       },
       emit: () => {},
+      killTree: noopKillTree,
     });
     const live = await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
     const inFlight = reg.spawn({ itemId: 'i2', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
@@ -947,6 +979,7 @@ describe('a pty that exits synchronously from kill', () => {
     spawn: syncExitSpawner() as never,
     resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
     emit: () => {},
+    killTree: noopKillTree,
   });
 
   const resuming = (reg: PtyRegistry) => reg.spawn({
@@ -1143,6 +1176,7 @@ describe('registering the run when an agent starts', () => {
       resolveCwd,
       emit: () => {},
       registerRun: info => calls.push(info),
+      killTree: noopKillTree,
     });
 
   it('registers one run per spawn, keyed on the AGENT session id', async () => {
@@ -1181,6 +1215,7 @@ describe('the card as the first prompt', () => {
     resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
     emit: () => {},
     promptFor: vi.fn(async () => 'Work on AgEnFK task a1: Port the admin API'),
+    killTree: noopKillTree,
     ...over,
   } as never);
 
@@ -1257,6 +1292,7 @@ describe('a shell with no target', () => {
       resolveCwd: async () => { throw new Error('a shell with no target must not resolve a worktree'); },
       emit: () => {},
       registerRun: (x: unknown) => { runs.push(x); },
+      killTree: noopKillTree,
     });
     await r.spawn({ agentId: 'shell', windowId: 1, cols: 80, rows: 24 } as never);
     // Whatever the platform profile says - powershell.exe on Windows, $SHELL on
@@ -1283,6 +1319,7 @@ describe('opening the agent detection located', () => {
       resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
       emit: () => {},
       locate,
+      killTree: noopKillTree,
       ...(launcher ? { launcher: profileFor(launcher) } : {}),
     });
 

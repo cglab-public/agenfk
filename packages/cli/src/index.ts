@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { readProjectFile, unreadableFileCommand, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets, VERIFY_COMMAND_FLAG, SETUP_COMMAND_FLAG } from '@agenfk/core';
+import { readProjectFile, unreadableFileCommand, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets, VERIFY_COMMAND_FLAG, SETUP_COMMAND_FLAG, TOKEN_CLIENTS } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { recordActiveWork, gatekeeperSessionId, reportSessionCard } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
@@ -4066,7 +4066,7 @@ program
   .requiredOption('--task <n>', 'Task count', (v) => parseInt(v, 10))
   .requiredOption('--bug <n>', 'Bug count', (v) => parseInt(v, 10))
   .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (determine it from your harness config/session log; do not copy an example); recorded on the pr.opened hub event')
-  .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode); recorded on the pr.opened hub event')
+  .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode, agy); recorded on the pr.opened hub event')
   .option('--no-detect-model', 'Do not read the harness session log; report --model exactly as given')
   .action(async (options) => {
     try {
@@ -4099,7 +4099,7 @@ program
   .requiredOption('--task <n>', 'Task count', (v) => parseInt(v, 10))
   .requiredOption('--bug <n>', 'Bug count', (v) => parseInt(v, 10))
   .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (determine it from your harness config/session log; do not copy an example); recorded on the pr.updated hub event')
-  .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode); recorded on the pr.updated hub event')
+  .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode, agy); recorded on the pr.updated hub event')
   .option('--no-detect-model', 'Do not read the harness session log; report --model exactly as given')
   .action(async (options) => {
     try {
@@ -4126,7 +4126,7 @@ program
   .description('Query the server-side token-events store (MCP fallback: query_token_events)')
   .option('--item <id>', 'Filter to events attributed to this item')
   .option('--project <id>', 'Filter to a project')
-  .option('--client <name>', 'Filter to a client (claude-code | codex | gemini | cursor | opencode)')
+  .addOption(new Option('--client <name>', 'Filter to a client').choices(TOKEN_CLIENTS))
   .option('--since <ts>', 'ISO timestamp inclusive lower bound')
   .option('--until <ts>', 'ISO timestamp exclusive upper bound')
   .option('--limit <n>', 'Cap number of rows', (v) => parseInt(v, 10))
@@ -5081,7 +5081,7 @@ prCmd
   .option('--draft', 'Create as a draft PR')
   .option('--base <branch>', 'Target branch of the PR (passed to gh pr create --base). Defaults to gh\'s own detection. Use this when the item branch was cut from a non-default base, e.g. beta.')
   .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (e.g. claude-opus-4-8, glm-5.2) — recorded on the pr.opened hub event. Never copy an example; report your own model.')
-  .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (claude-code, pi, cursor, codex, gemini, opencode) — recorded on the pr.opened hub event.')
+  .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (claude-code, pi, cursor, codex, gemini, opencode, agy) — recorded on the pr.opened hub event.')
   .option('--no-detect-model', 'Do not read the harness session log; report --model exactly as given')
   .action(async (itemId, options) => {
     if (!checkGhCli()) {

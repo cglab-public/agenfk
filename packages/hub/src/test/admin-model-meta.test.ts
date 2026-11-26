@@ -167,10 +167,14 @@ describe('admin model_meta', () => {
       expect(r.body.error).toMatch(/open_weights/);
     });
 
-    it('rejects a harness name — it is a runtime, not a model', () =>
-      put('/v1/admin/models/meta', {
+    it('rejects a harness name — it is a runtime, not a model', async () => {
+      await put('/v1/admin/models/meta', {
         model: 'claude-code', provider: 'Anthropic', licenseClass: 'commercial', license: 'X',
-      }).expect(400));
+      }).expect(400);
+      await put('/v1/admin/models/meta', {
+        model: 'agy', provider: 'Google', licenseClass: 'commercial', license: 'X',
+      }).expect(400);
+    });
 
     it('rejects an over-long model id', async () => {
       const r = await put('/v1/admin/models/meta', {

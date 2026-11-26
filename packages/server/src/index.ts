@@ -14,7 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { toToon, nextPollDelay, POLL_CAP_MS, resolveProjectIdentity, AIRLOCK_CLIENTS } from "@agenfk/core";
+import { toToon, nextPollDelay, POLL_CAP_MS, resolveProjectIdentity, AIRLOCK_CLIENTS, TOKEN_CLIENTS } from "@agenfk/core";
 import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
@@ -235,7 +235,7 @@ const GetItemSchema = z.object({
 const QueryTokenEventsSchema = z.object({
   itemId: z.string().optional(),
   projectId: z.string().optional(),
-  client: z.enum(['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi']).optional(),
+  client: z.enum(TOKEN_CLIENTS).optional(),
   since: z.string().optional(),
   until: z.string().optional(),
   limit: z.number().int().positive().optional(),
@@ -410,7 +410,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               required: ["epic", "story", "task", "bug"],
             },
             model: { type: "string", description: "REQUIRED. YOUR actual model id — determine it from your harness config or current session log; never copy an example. Recorded on the pr.opened hub event." },
-            harness: { type: "string", description: "REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode). Recorded on the pr.opened hub event." },
+            harness: { type: "string", description: "REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode, agy). Recorded on the pr.opened hub event." },
           },
           required: ["itemId", "prNumber", "repo", "sizing", "model", "harness"],
         },
@@ -448,7 +448,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             itemId: { type: "string", description: "Filter to events attributed to this item." },
             projectId: { type: "string" },
-            client: { type: "string", enum: ['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi'] },
+            client: { type: "string", enum: [...TOKEN_CLIENTS] },
             since: { type: "string", description: "ISO timestamp inclusive lower bound." },
             until: { type: "string", description: "ISO timestamp exclusive upper bound." },
             limit: { type: "number" },
