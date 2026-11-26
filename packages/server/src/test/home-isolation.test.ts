@@ -28,6 +28,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execFileSync, spawnSync } from 'child_process';
 import { hubConfigPath } from '../hub/hubClient';
 import { defaultDeadletterPath } from '../hub/flusher';
 import { agenfkDir } from '@agenfk/telemetry';
@@ -40,6 +41,25 @@ vi.mock('os', async (importOriginal) => {
 
 // Set by the vitest config BEFORE the HOME pin — the machine's real home.
 const REAL_HOME = process.env.AGENFK_REAL_HOME;
+
+/**
+ * The config files under `home` that a `git config -z --show-origin --list`
+ * listing read. With -z the origins are the even entries and are printed as
+ * they are; the plain listing quotes a path with accents (#201). git uses
+ * forward slashes whatever the platform, and Windows paths differ in case, so
+ * both sides are compared normalized, on a directory boundary. The repo's own
+ * file is the relative `file:.git/config`, so it is under no home. A file
+ * under one of `sandboxes` belongs to the run, wherever the sandbox sits.
+ */
+function originsUnder(listing: string, home: string, sandboxes: string[] = []): string[] {
+  const norm = (s: string) => s.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+  const under = (file: string, dir: string) => norm(file).startsWith(norm(dir) + '/');
+  const files = listing.split('\0').filter((_, i) => i % 2 === 0 && _.startsWith('file:'));
+  return [...new Set(files)].filter(o => {
+    const file = o.slice('file:'.length);
+    return under(file, home) && !sandboxes.some(s => under(file, s));
+  });
+}
 
 describe('home isolation (item 9c297075)', () => {
   it('the vitest runner pins HOME to a per-run sandbox, not the machine home', () => {
@@ -151,6 +171,74 @@ describe('home isolation (item 9c297075)', () => {
 describe('the launching environment', () => {
   it('does not let AGENFK_SERVE_UI through', () => {
     expect(process.env.AGENFK_SERVE_UI || '').toBe('');
+  });
+
+  // A shell that exports XDG_CONFIG_HOME as an absolute path kept it pointing
+  // at the machine's ~/.config after HOME moved: git then read the developer's
+  // own ignore and config, and a global '.agenfk/' rule failed 7 tests there.
+  it("keeps XDG_CONFIG_HOME inside this worker's HOME, wherever the shell pointed it", () => {
+    expect(process.env.XDG_CONFIG_HOME).toBe(path.join(process.env.HOME!, '.config'));
+  });
+
+  it('sees a config file under the home in a git listing, on Windows and POSIX alike', () => {
+    // Windows: git prints forward slashes, the home carries backslashes and another case.
+    // `git config -z --show-origin --list`: origin, NUL, key, newline, value, NUL.
+    const listing = (...rows: [string, string, string][]) => rows.map(([o, k, v]) => `${o}\0${k}\n${v}\0`).join('');
+    const windows = listing(['file:C:/Users/Fabio/.gitconfig', 'user.name', 'Fabio'], ['file:.git/config', 'core.bare', 'false']);
+    expect(originsUnder(windows, 'C:\\Users\\fabio')).toEqual(['file:C:/Users/Fabio/.gitconfig']);
+    const posix = listing(['file:/home/dev/.config/git/config', 'core.excludesfile', 'x'], ['file:/etc/gitconfig', 'core.autocrlf', 'input'], ['file:.git/config', 'core.bare', 'false']);
+    expect(originsUnder(posix, '/home/dev')).toEqual(['file:/home/dev/.config/git/config']);
+    // A home with accents (#201): -z prints the path as it is, where the plain listing quotes it.
+    expect(originsUnder(listing(['file:/home/Fábio Téixeira/.gitconfig', 'user.name', 'F']), '/home/Fábio Téixeira'))
+      .toEqual(['file:/home/Fábio Téixeira/.gitconfig']);
+    // The repo's own file never counts, even when a value names the home.
+    expect(originsUnder(listing(['file:.git/config', 'core.worktree', '/home/dev/repo']), '/home/dev')).toEqual([]);
+    // Another person's home that only starts with the same letters is not this home.
+    expect(originsUnder(listing(['file:/home/developer/.gitconfig', 'user.name', 'd']), '/home/dev')).toEqual([]);
+    // The run's own sandbox may sit under the real home (the Windows temp dir always does).
+    expect(originsUnder(listing(['file:/home/dev/tmp/run/worker-1/.gitconfig', 'user.name', 't']), '/home/dev', ['/home/dev/tmp/run']))
+      .toEqual([]);
+    // Naming the sandboxes never hides the developer's own file.
+    expect(originsUnder(posix, '/home/dev', ['/tmp/run', '/tmp/run/worker-1', '/home/dev/tmp/run']))
+      .toEqual(['file:/home/dev/.config/git/config']);
+  });
+
+  it('reports a config file git really reads, from a home whose name has accents', () => {
+    // The helper against git's own output, not a hand-made listing: a config
+    // under XDG_CONFIG_HOME is the leak the pin closes.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-git-leak-'));
+    try {
+      const home = path.join(base, 'Fábio Téixeira');
+      const repo = path.join(base, 'repo');
+      fs.mkdirSync(path.join(home, '.config', 'git'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.config', 'git', 'config'), '[user]\n\tname = leak\n');
+      fs.mkdirSync(repo);
+      execFileSync('git', ['init', '-q'], { cwd: repo });
+      const env = { ...process.env, XDG_CONFIG_HOME: path.join(home, '.config') };
+      // A shell that exports GIT_CONFIG_GLOBAL makes git skip the XDG file this test plants.
+      delete env.GIT_CONFIG_GLOBAL;
+      const origins = execFileSync('git', ['config', '-z', '--show-origin', '--list'], { cwd: repo, encoding: 'utf8', env });
+      expect(originsUnder(origins, home)).toHaveLength(1);
+      expect(originsUnder(origins, home, [repo])).toHaveLength(1);
+      expect(originsUnder(origins, path.join(base, 'Fábio'))).toEqual([]);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('lets git read no configuration or ignore rule from the machine home', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-git-pin-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repo });
+      const origins = execFileSync('git', ['config', '-z', '--show-origin', '--list'], { cwd: repo, encoding: 'utf8' });
+      const sandboxes = [process.env.AGENFK_TEST_RUN_HOME, process.env.HOME].filter((d): d is string => !!d);
+      expect(REAL_HOME ? originsUnder(origins, REAL_HOME, sandboxes) : []).toEqual([]);
+      // check-ignore exits 1 for "not ignored": nothing outside this repo may ignore it.
+      const r = spawnSync('git', ['check-ignore', '-q', '--no-index', '.agenfk/local.json'], { cwd: repo });
+      expect(r.status).toBe(1);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it('spells the temp dir and the sandbox HOME in full, as git and realpath report them (#208)', () => {

@@ -18,6 +18,11 @@
  * sandbox HOME into every child's C environ and wraps the run with the
  * home-integrity sentinel.
  *
+ * OUTSIDE THE PIN: git also reads the files that GIT_CONFIG_GLOBAL and
+ * GIT_CONFIG_SYSTEM name, and the system file (/etc/gitconfig). The pin moves
+ * HOME and XDG_CONFIG_HOME only, so a shell that exports either variable
+ * still points git at the developer's file.
+ *
  * The original home is exposed as AGENFK_REAL_HOME for the tests that verify
  * the pin itself (packages/server/src/test/home-isolation.test.ts).
  *
@@ -105,6 +110,10 @@ export function testHomeEnv() {
     cached = {
       HOME: home,
       USERPROFILE: home, // Windows parity; harmless on POSIX
+      // A shell may export XDG_CONFIG_HOME as an absolute path; left alone it
+      // keeps pointing at the machine's ~/.config after HOME moved, and git
+      // reads the developer's own ignore and config from there.
+      XDG_CONFIG_HOME: path.join(home, '.config'),
       // os.tmpdir() reads these on Windows; on POSIX TMPDIR stays as it was.
       ...(process.platform === 'win32' ? { TEMP: TMP, TMP } : {}),
       AGENFK_REAL_HOME: REAL_HOME,
@@ -125,7 +134,7 @@ export function testHomeEnv() {
 export function workerHomeEnv(runHome, poolId) {
   const home = path.join(runHome, `worker-${poolId}`);
   const dbDir = seedHome(home);
-  return { HOME: home, USERPROFILE: home, AGENFK_TEST_DB_DIR: dbDir };
+  return { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'), AGENFK_TEST_DB_DIR: dbDir };
 }
 
 /**
@@ -148,7 +157,7 @@ export function pinWorkerHome(env = process.env, homedir = os.homedir) {
   const runHome = env.AGENFK_TEST_RUN_HOME;
   const poolId = env.VITEST_POOL_ID;
   if (!runHome || !poolId) return false;
-  const before = { HOME: env.HOME, USERPROFILE: env.USERPROFILE, AGENFK_TEST_DB_DIR: env.AGENFK_TEST_DB_DIR };
+  const before = { HOME: env.HOME, USERPROFILE: env.USERPROFILE, XDG_CONFIG_HOME: env.XDG_CONFIG_HOME, AGENFK_TEST_DB_DIR: env.AGENFK_TEST_DB_DIR };
   const own = workerHomeEnv(runHome, poolId);
   Object.assign(env, own);
   if (homedir() === own.HOME) return true;
