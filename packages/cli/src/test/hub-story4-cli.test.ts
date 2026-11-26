@@ -204,7 +204,8 @@ describe('(a) login healthz guard — the fixture-clobber regression gate', () =
     route({ healthz: { service: 'agenfk-hub' }, status: { orgs: {} } });
     mockPost.mockResolvedValue({ status: 200, data: { rewritten: 0, changed: false, enabled: true } });
     await run(makeProgram(), ['hub', 'login', '--url', 'https://hub.acme.com/', '--token', 'tok', '--org', 'acme']);
-    expect(JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'))).toEqual({ url: 'https://hub.acme.com', token: 'tok', orgId: 'acme' });
+    // INFRA-463: an explicit --url login records source 'flag'.
+    expect(JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'))).toEqual({ url: 'https://hub.acme.com', token: 'tok', orgId: 'acme', source: 'flag' });
   });
 });
 
@@ -289,7 +290,8 @@ describe('(b) stale-org detection on login/join — guidance, never auto-rewrite
     const cfg = JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'));
     // Trailing slash stripped, returned hubUrl persisted — a mutation of
     // either lands here.
-    expect(cfg).toEqual({ url: 'https://hub.acme.com', token: 'tok-dev', orgId: 'acme' });
+    // INFRA-463: an explicit --url login records source 'flag'.
+    expect(cfg).toEqual({ url: 'https://hub.acme.com', token: 'tok-dev', orgId: 'acme', source: 'flag' });
     expect(logSpy.mock.calls.flat().join(' ')).toMatch(/Hub configured at https:\/\/hub\.acme\.com \(org=acme\)/);
     expect(logSpy.mock.calls.flat().join(' ')).toMatch(/pushing events with this config/);
   });

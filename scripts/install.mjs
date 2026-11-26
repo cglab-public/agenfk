@@ -9,7 +9,7 @@ import readline from 'readline';
 import { writePrivateFileSync } from './private-file.mjs';
 import { forceLocalFlag, tarPath } from '../bin/tar-flags.mjs';
 import { runTool } from './client-cli.mjs';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, withSkillName, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive, probeServerPort, installAirlockRuntime } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, withSkillName, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive, probeServerPort, installAirlockRuntime, offerHubSignIn } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -1770,6 +1770,8 @@ async function run() {
             say(`  Restart your AI editor to load the rules and hooks. Check the install any time: ${BLUE}agenfk health${NC}`);
             say(`  Anonymous usage data is collected (no paths or project content). Opt out: ${BLUE}agenfk config set telemetry false${NC}`);
         }
+        // Offer the corporate Hub sign-in (INFRA-463); it never fails the install.
+        if (!quiet) await offerHubSignIn({ rootDir }).catch(() => { /* fails open: the install already succeeded */ });
     } else {
         say(`${GREEN}✓ ${onlyPlatform} integration installed - restart ${onlyPlatform} to pick it up${NC}`);
     }

@@ -917,7 +917,8 @@ program
         // server onto the new code. install.mjs is the single owner of the
         // restart now (it spawns `agenfk restart --quiet`); we no longer fire
         // a second `up` here, which would race it for the port.
-        execSync(`node scripts/install.mjs${debuglogFlag}`, {
+        // An upgrade never offers the corporate Hub sign-in (INFRA-463).
+        execSync(`node scripts/install.mjs${debuglogFlag} --no-hub`, {
           cwd: rootDir,
           stdio: isJson ? 'ignore' : 'inherit',
           env: {

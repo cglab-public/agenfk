@@ -13,6 +13,7 @@ import {
   parseDeadletterLines,
   deadletterReasonOf,
   deadletterIndicator,
+  sameHubUrl,
   indicatorHint,
   refusalHint,
   validateRequeueFilters,
@@ -22,6 +23,7 @@ import {
   type RequeueFilters,
   type RequeueSummary,
 } from '@agenfk/core';
+import { discoverHub, type HubSource } from '../hub/discovery';
 
 function readGitConfig(key: string): string | null {
   try {
@@ -69,7 +71,9 @@ function verifyTokenFile(): string { return path.join(os.homedir(), '.agenfk', '
 function deadletterFile(): string { return path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl'); }
 function auditFile(): string { return path.join(os.homedir(), '.agenfk', 'hub-audit.jsonl'); }
 
-interface HubConfig { url: string; token: string; orgId: string }
+// `source` records where the URL came from (INFRA-463); files written before
+// discovery existed have none, and `hub status` reports them as unknown.
+interface HubConfig { url: string; token: string; orgId: string; source?: HubSource }
 
 // One line of ~/.agenfk/hub-deadletter.jsonl (written by the server flusher),
 // and one physical line of the file: an unparseable line keeps entry null and
@@ -490,32 +494,69 @@ export function registerHubCommands(program: Command): void {
   hub
     .command('login')
     .description('Configure this installation to push events to a corporate Hub')
-    .requiredOption('--url <url>', 'Hub base URL, e.g. https://hub.acme.com')
+    .option('--url <url>', 'Hub base URL, e.g. https://hub.acme.com (default: discovered from env, managed config, ~/.agenfk/hub.json or DNS)')
     .option('--token <token>', 'Installation API key (legacy: skips browser flow)')
     .option('--org <orgId>', 'Org identifier (only required with --token)')
     .option('--no-open', 'Do not auto-open the browser; just print the URL')
     .action(async (opts) => {
-      const url = String(opts.url).replace(/\/$/, '');
+      let url: string;
+      let source: HubSource;
+      let discoveredOrg: string | undefined;
+      if (opts.url) {
+        url = String(opts.url).replace(/\/$/, '');
+        source = 'flag';
+      } else {
+        let found;
+        try {
+          found = await discoverHub();
+        } catch (e: any) {
+          console.error(chalk.red(`Hub discovery failed: ${e?.message ?? e}`));
+          console.error(chalk.gray('Pass the hub explicitly: `agenfk hub login --url <hub>`.'));
+          process.exit(1);
+        }
+        if (!found.url || !found.source) {
+          console.error(chalk.red('No Hub found. Discovery tried:'));
+          for (const r of found.reasons) console.error(chalk.red(`  - ${r}`));
+          console.error(chalk.gray('Pass the hub explicitly: `agenfk hub login --url <hub>`.'));
+          process.exit(1);
+        }
+        url = found.url;
+        source = found.source;
+        discoveredOrg = found.orgId;
+        console.log(chalk.gray(`Hub ${url} (source: ${source}).`));
+      }
 
       // Legacy path — explicit token + org, no browser.
       if (opts.token) {
+        // Only an org taken from discovery is checked against the Hub below;
+        // one typed with --org stays the operator's word, as before.
+        const orgFromDiscovery = !opts.org && !!discoveredOrg;
+        if (orgFromDiscovery) opts.org = discoveredOrg;
         if (!opts.org) {
           console.error(chalk.red('--org is required when using --token.'));
           process.exit(1);
         }
-        const cfg: HubConfig = { url, token: String(opts.token), orgId: String(opts.org) };
+        const cfg: HubConfig = { url, token: String(opts.token), orgId: String(opts.org), source };
         // Identity gate BEFORE the token leaves this machine (CGLAB-117).
         if (!await isHubEndpoint(cfg.url, 'hub login')) {
           process.exit(1);
         }
+        let ping: any;
         try {
-          await axios.get(`${cfg.url}/v1/ping`, {
+          ping = (await axios.get(`${cfg.url}/v1/ping`, {
             headers: { Authorization: `Bearer ${cfg.token}`, 'X-Installation-Id': 'cli-login' },
             timeout: 10_000,
-          });
+          })).data;
         } catch (e: any) {
           console.error(chalk.red(`Hub /v1/ping failed: ${e?.response?.status ?? ''} ${e?.message}`));
           console.error(chalk.gray('Refusing to write hub.json — fix the URL/token and try again.'));
+          process.exit(1);
+        }
+        // Same rule as `hub repoint`: the Hub's own answer decides, so an older
+        // Hub whose ping carries no orgId is refused too.
+        if (orgFromDiscovery && ping?.orgId !== cfg.orgId) {
+          console.error(chalk.red(`Refusing login: hub reports orgId=${ping?.orgId} but the discovered source (${source}) says orgId=${cfg.orgId}.`));
+          console.error(chalk.gray('  Nothing was written. Confirm the org with your administrator, or pass --org.'));
           process.exit(1);
         }
         writeHubConfig(cfg);
@@ -600,6 +641,8 @@ export function registerHubCommands(program: Command): void {
       // unverified endpoint and start streaming this org's events and
       // token there (CGLAB-117 story 4).
       const cfg: HubConfig = { url: String(approved.hubUrl ?? url).replace(/\/$/, ''), token: String(approved.token), orgId: String(approved.orgId) };
+      // The recorded source only stays true while the URL does (as in join).
+      if (sameHubUrl(cfg.url, url)) cfg.source = source;
       if (!await isHubEndpoint(cfg.url, 'hub login')) {
         process.exit(1);
       }
@@ -651,6 +694,8 @@ export function registerHubCommands(program: Command): void {
             { timeout: 10_000 },
           );
           const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
+          // The recorded source only stays true while the URL does.
+          if (existing?.source && sameHubUrl(existing.url, cfg.url)) cfg.source = existing.source;
           // Same gate as login: the redeemed response's hubUrl is
           // server-supplied and must identify as agenfk-hub BEFORE the
           // joined token is persisted against it (CGLAB-117 story 4).
@@ -713,9 +758,15 @@ export function registerHubCommands(program: Command): void {
         printRefusals(localDeadletterIndicator());
         return;
       }
-      console.log(`Hub URL:   ${cfg.url}`);
-      console.log(`Org:       ${cfg.orgId}`);
-      console.log(`Token:     ${cfg.token.slice(0, 8)}…`);
+      // AGENFK_HUB_URL wins over hub.json on the server, so show what it uses.
+      const envUrl = process.env.AGENFK_HUB_URL?.trim();
+      console.log(`Hub URL:   ${envUrl ? envUrl.replace(/\/$/, '') : cfg.url}`);
+      console.log(`Source:    ${envUrl ? 'env' : (cfg.source ?? 'unknown')}`);
+      // AGENFK_HUB_ORG / AGENFK_HUB_TOKEN win too (packages/server/src/hub/hubClient.ts).
+      const envOrg = process.env.AGENFK_HUB_ORG?.trim();
+      const envToken = process.env.AGENFK_HUB_TOKEN?.trim();
+      console.log(`Org:       ${envOrg || cfg.orgId}`);
+      console.log(`Token:     ${(envToken || cfg.token).slice(0, 8)}…`);
       const verifyToken = readVerifyToken();
       if (!verifyToken) {
         console.log(chalk.yellow('  (cannot reach local server: ~/.agenfk/verify-token missing)'));
@@ -808,6 +859,8 @@ export function registerHubCommands(program: Command): void {
         token: opts.token ? String(opts.token) : existing.token,
         orgId: opts.orgId ? String(opts.orgId) : existing.orgId,
       };
+      // The source names where the old URL was learnt: a new URL has none.
+      if (existing.source && sameHubUrl(existing.url, candidate.url)) candidate.source = existing.source;
       if (candidate.url === existing.url && candidate.orgId === existing.orgId && candidate.token === existing.token) {
         console.log(chalk.gray('Nothing to change — supply at least one of --url, --org-id, --token.'));
         return;
