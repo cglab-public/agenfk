@@ -118,7 +118,9 @@ describe('gatekeeper hook resolveApiUrl precedence', () => {
 describe('gatekeeper hook port discovery', () => {
   beforeAll(() => {
     fs.mkdirSync(path.join(projectDir, '.agenfk'), { recursive: true });
-    fs.writeFileSync(path.join(projectDir, '.agenfk', 'project.json'), JSON.stringify({ id: 'p1' }));
+    // A linked project: one with no id is blocked before the server is asked,
+    // which would leave both specs below proving nothing about the port.
+    fs.writeFileSync(path.join(projectDir, '.agenfk', 'project.json'), JSON.stringify({ projectId: 'p1' }));
     fs.mkdirSync(path.dirname(editedFile), { recursive: true });
   });
 
@@ -138,7 +140,7 @@ describe('gatekeeper hook port discovery', () => {
   });
 
   it('ALLOWS an edit when the discovered server reports an active task', async () => {
-    const server = await startItemsServer([{ id: 'x', status: 'IN_PROGRESS' }]);
+    const server = await startItemsServer([{ id: 'x', projectId: 'p1', status: 'IN_PROGRESS' }]);
     writePort(server.port);
     try {
       const { stdout } = await runHook();
